@@ -1,0 +1,27 @@
+{
+  "name": "electronics",
+  "display_name": "Electronics",
+  "license": "BSL-1.1",
+  "categories": [
+    "mobile_phone",
+    "laptop",
+    "tablet",
+    "gaming_console",
+    "camera",
+    "audio_equipment",
+    "tv_display",
+    "component_part"
+  ],
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-labels",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

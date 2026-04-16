@@ -1,0 +1,175 @@
+{
+  "name": "diamond",
+  "display_name": "Diamond",
+  "vertical_tags": [
+    "gems_jewelry"
+  ],
+  "fields": [
+    {
+      "key": "origin_type",
+      "label": "Origin",
+      "type": "select",
+      "options": [
+        "Natural",
+        "Lab-Grown"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Color Grade",
+      "type": "select",
+      "options": [
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "M",
+        "N",
+        "O-Z",
+        "Fancy"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "carat",
+      "label": "Carat",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pieces",
+      "label": "Pieces",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cut",
+      "label": "Cut",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "Poor"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "clarity",
+      "label": "Clarity",
+      "type": "select",
+      "options": [
+        "FL",
+        "IF",
+        "VVS1",
+        "VVS2",
+        "VS1",
+        "VS2",
+        "SI1",
+        "SI2",
+        "I1",
+        "I2",
+        "I3"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "shape",
+      "label": "Shape",
+      "type": "select",
+      "options": [
+        "Round",
+        "Princess",
+        "Oval",
+        "Marquise",
+        "Pear",
+        "Cushion",
+        "Emerald",
+        "Asscher",
+        "Radiant",
+        "Heart",
+        "Trillion",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fluorescence",
+      "label": "Fluorescence",
+      "type": "select",
+      "options": [
+        "None",
+        "Faint",
+        "Medium",
+        "Strong",
+        "Very Strong"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "polish",
+      "label": "Polish",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "Poor"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "symmetry",
+      "label": "Symmetry",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "Poor"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "measurements",
+      "label": "Measurements (mm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Certificate No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_body",
+      "label": "Grading Lab",
+      "type": "select",
+      "options": [
+        "GIA",
+        "IGI",
+        "HRD",
+        "AGS",
+        "EGL",
+        "GCAL",
+        "Other"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "carat"
+}

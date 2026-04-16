@@ -1,0 +1,211 @@
+{
+  "name": "colored_stone",
+  "display_name": "Colored Stone",
+  "vertical_tags": [
+    "gems_jewelry"
+  ],
+  "fields": [
+    {
+      "key": "stone_type",
+      "label": "Stone Type",
+      "type": "select",
+      "options": [
+        "Alexandrite",
+        "Amethyst",
+        "Aquamarine",
+        "Chrysoberyl",
+        "Chrysoprase",
+        "Citrine",
+        "Demantoid",
+        "Garnet",
+        "Iolite",
+        "Jade",
+        "Kunzite",
+        "Labradorite",
+        "Malachite",
+        "Moonstone",
+        "Opal",
+        "Paraiba Tourmaline",
+        "Peridot",
+        "Rhodolite",
+        "Rubellite",
+        "Spessartite",
+        "Spinel",
+        "Tanzanite",
+        "Topaz",
+        "Tourmaline",
+        "Tsavorite",
+        "Zircon",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "origin",
+      "label": "Origin",
+      "type": "select",
+      "options": [
+        "Afghanistan",
+        "Australia",
+        "Brazil",
+        "Burma (Myanmar)",
+        "Cambodia",
+        "Colombia",
+        "Ethiopia",
+        "India",
+        "Kenya",
+        "Madagascar",
+        "Mali",
+        "Mozambique",
+        "Nigeria",
+        "Pakistan",
+        "Russia",
+        "Sri Lanka",
+        "Tanzania",
+        "Thailand",
+        "Zambia",
+        "Zimbabwe",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "carat",
+      "label": "Carat",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pieces",
+      "label": "Pieces",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "select",
+      "options": [
+        "Blue",
+        "Bluish-Green",
+        "Cornflower Blue",
+        "Deep Blue",
+        "Golden",
+        "Green",
+        "Greenish-Blue",
+        "Hot Pink",
+        "Lavender",
+        "Light Blue",
+        "Neon Blue",
+        "Orange",
+        "Padparadscha",
+        "Pigeon Blood",
+        "Purple",
+        "Red",
+        "Royal Blue",
+        "Teal",
+        "Violet",
+        "Yellow",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "treatment",
+      "label": "Treatment",
+      "type": "select",
+      "options": [
+        "Unheated",
+        "Heated",
+        "No Indication of Heating",
+        "Beryllium Diffusion",
+        "Fracture Filled",
+        "Glass Filled",
+        "Oiling",
+        "Irradiated",
+        "Laser Drilled",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "clarity",
+      "label": "Clarity",
+      "type": "select",
+      "options": [
+        "Eye Clean",
+        "Slightly Included",
+        "Moderately Included",
+        "Heavily Included",
+        "Loupe Clean"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "shape",
+      "label": "Shape / Cut",
+      "type": "select",
+      "options": [
+        "Round",
+        "Oval",
+        "Cushion",
+        "Pear",
+        "Heart",
+        "Emerald",
+        "Asscher",
+        "Marquise",
+        "Radiant",
+        "Princess",
+        "Trillion",
+        "Cabochon",
+        "Sugarloaf",
+        "Briolette",
+        "Baguette",
+        "Custom"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "measurements",
+      "label": "Measurements (mm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Certificate No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_body",
+      "label": "Grading Lab",
+      "type": "select",
+      "options": [
+        "GRS",
+        "Gübelin",
+        "SSEF",
+        "GIA",
+        "AGL",
+        "Lotus",
+        "AIGS",
+        "GIT",
+        "IGI",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "carat"
+}

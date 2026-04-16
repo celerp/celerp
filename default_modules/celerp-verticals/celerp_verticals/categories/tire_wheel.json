@@ -1,0 +1,83 @@
+{
+  "name": "tire_wheel",
+  "display_name": "Tire & Wheel",
+  "vertical_tags": [
+    "automotive"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Tire",
+        "Wheel / Rim",
+        "Tire + Wheel (Mounted)"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size",
+      "label": "Size",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "tire_type",
+      "label": "Tire Type",
+      "type": "select",
+      "options": [
+        "Summer",
+        "Winter",
+        "All Season",
+        "All Terrain",
+        "Mud Terrain",
+        "Run-Flat",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "load_index",
+      "label": "Load Index",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "speed_rating",
+      "label": "Speed Rating",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "tread_depth",
+      "label": "Tread Depth (mm)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Good - Used",
+        "Fair - Used",
+        "Worn"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

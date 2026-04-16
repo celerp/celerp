@@ -1,0 +1,74 @@
+{
+  "name": "haircare",
+  "display_name": "Haircare",
+  "vertical_tags": [
+    "cosmetics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Shampoo",
+        "Conditioner",
+        "Hair Mask",
+        "Leave-In",
+        "Serum / Oil",
+        "Styling Cream",
+        "Gel",
+        "Mousse",
+        "Dry Shampoo",
+        "Colour Treatment",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "volume_ml",
+      "label": "Volume (ml)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "hair_type",
+      "label": "Hair Type",
+      "type": "select",
+      "options": [
+        "All",
+        "Dry",
+        "Oily",
+        "Colour-Treated",
+        "Curly",
+        "Fine",
+        "Thick",
+        "Damaged",
+        "Scalp Treatment"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

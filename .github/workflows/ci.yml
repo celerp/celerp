@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: celerp_test
+          POSTGRES_USER: celerp
+          POSTGRES_PASSWORD: celerp_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install deps
+        run: pip install -e ".[dev]"
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp_test@localhost:5432/celerp_test
+          ALLOW_INSECURE_JWT: "true"
+        run: alembic upgrade head
+
+      - name: Run tests (SQLite)
+        env:
+          ALLOW_INSECURE_JWT: "true"
+        run: pytest tests/ -q --tb=short --no-cov --ignore=tests/test_visual.py --ignore=tests/test_browser
+
+      - name: Run tests (Postgres)
+        env:
+          DATABASE_URL: postgresql+asyncpg://celerp:celerp_test@localhost:5432/celerp_test
+          ALLOW_INSECURE_JWT: "true"
+        run: pytest tests/ -q --tb=short --no-cov -x --ignore=tests/test_visual.py --ignore=tests/test_browser

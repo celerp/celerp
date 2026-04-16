@@ -1,0 +1,85 @@
+{
+  "name": "beer",
+  "display_name": "Beer",
+  "vertical_tags": [
+    "wine_spirits"
+  ],
+  "fields": [
+    {
+      "key": "brewery",
+      "label": "Brewery",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "style",
+      "label": "Style",
+      "type": "select",
+      "options": [
+        "Lager",
+        "Pilsner",
+        "IPA",
+        "DIPA / TIPA",
+        "Pale Ale",
+        "Amber / Red Ale",
+        "Stout",
+        "Porter",
+        "Wheat / Hefeweizen",
+        "Sour / Lambic",
+        "Saison",
+        "Belgian Strong",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "abv_pct",
+      "label": "ABV %",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "ibu",
+      "label": "IBU",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "volume_ml",
+      "label": "Volume (ml)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "format",
+      "label": "Format",
+      "type": "select",
+      "options": [
+        "Can",
+        "Bottle",
+        "Keg",
+        "Growler"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Best Before",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

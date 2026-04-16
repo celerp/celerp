@@ -1,0 +1,79 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+parts/
+var/
+sdist/
+develop-eggs/
+.installed.cfg
+lib/
+lib64/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+!.env.example
+!.env.production.example
+
+# Database
+*.db
+*.sqlite
+
+# Logs
+*.log
+
+# Session keys
+.sesskey
+
+# Internal dev plans and audits (not for public repo)
+docs/plans/
+docs/audits/
+
+# Client-specific plugins (not for public repo)
+plugins/
+
+# Premium module dev symlinks (local only)
+premium_modules/
+
+# Electron build artifacts
+electron/node_modules/
+electron/dist/
+electron/python-standalone/
+
+# Runtime data (not code)
+context/
+static/attachments/
+certificates/
+migration/
+
+# Script artifacts
+scripts/pdf_samples/
+scripts/pdf_screenshots/
+scripts/verify_pdfs.py
+scripts/pdf_to_png.py
+data/

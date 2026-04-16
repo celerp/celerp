@@ -1,0 +1,25 @@
+{
+  "name": "wine_spirits",
+  "display_name": "Wine & Spirits",
+  "license": "BSL-1.1",
+  "categories": [
+    "wine",
+    "beer",
+    "spirit"
+  ],
+  "company_settings": {
+    "inventory_method": "fifo"
+  },
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-labels",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

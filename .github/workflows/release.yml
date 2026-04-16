@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed to create GitHub Releases and upload assets
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: win
+            arch: x64
+            runner: windows-latest
+          - platform: linux
+            arch: x64
+            runner: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Python (for dep install into bundle)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Download the standalone Python interpreter for the target platform.
+      # On Linux this is the same platform as the runner, so we can use bash.
+      # On Windows the runner is also windows-latest, so bash (Git Bash) works too.
+      - name: Download standalone Python
+        shell: bash
+        run: ./scripts/download-python.sh ${{ matrix.platform }} ${{ matrix.arch }}
+
+      - name: Install Electron dependencies
+        working-directory: electron
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Electron app
+        working-directory: electron
+        run: pnpm run build:${{ matrix.platform }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Windows: suppress electron-builder code signing (unsigned for launch)
+          WIN_CSC_LINK: ""
+
+      - name: Upload artifacts to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: electron/dist/*.exe,electron/dist/*.AppImage,electron/dist/*.dmg
+          fail_on_unmatched_files: false

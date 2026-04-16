@@ -1,0 +1,78 @@
+{
+  "name": "banknote",
+  "display_name": "Banknote",
+  "vertical_tags": [
+    "coins_precious_metals"
+  ],
+  "fields": [
+    {
+      "key": "country",
+      "label": "Country",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "denomination",
+      "label": "Denomination",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Date / Series",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "serial_no",
+      "label": "Serial Number",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "serial_type",
+      "label": "Serial Type",
+      "type": "select",
+      "options": [
+        "Standard",
+        "Low Serial",
+        "Fancy / Radar / Repeater",
+        "Star Note",
+        "Solid",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Grade",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_service",
+      "label": "Grading Service",
+      "type": "select",
+      "options": [
+        "PMG",
+        "PCGS Currency",
+        "Raw / Ungraded",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Cert No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,63 @@
+{
+  "name": "nail",
+  "display_name": "Nail",
+  "vertical_tags": [
+    "cosmetics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Nail Polish",
+        "Gel Polish",
+        "Base Coat",
+        "Top Coat",
+        "Nail Treatment",
+        "Nail Art",
+        "Nail Tools",
+        "Artificial Nails",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Shade",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "finish",
+      "label": "Finish",
+      "type": "select",
+      "options": [
+        "Gloss",
+        "Matte",
+        "Shimmer",
+        "Glitter",
+        "Gel",
+        "Chrome",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

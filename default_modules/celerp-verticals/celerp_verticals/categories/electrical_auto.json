@@ -1,0 +1,76 @@
+{
+  "name": "electrical_auto",
+  "display_name": "Electrical / Electronic (Auto)",
+  "vertical_tags": [
+    "automotive"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Part Type",
+      "type": "select",
+      "options": [
+        "Alternator",
+        "Starter Motor",
+        "Battery",
+        "Sensor",
+        "ECU / Module",
+        "Wiring Harness",
+        "Fuse Box",
+        "Bulb / LED",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "oem_no",
+      "label": "OEM Part No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_make",
+      "label": "Fitment Make",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_model",
+      "label": "Fitment Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_year",
+      "label": "Fitment Year(s)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "OEM Remanufactured",
+        "Aftermarket New",
+        "Used - Good",
+        "Used - Fair",
+        "For Parts / Core"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

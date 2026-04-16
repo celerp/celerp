@@ -1,0 +1,26 @@
+{
+  "name": "books_media",
+  "display_name": "Books & Media",
+  "license": "BSL-1.1",
+  "categories": [
+    "book",
+    "music_vinyl",
+    "music_cd",
+    "film_video",
+    "video_game",
+    "comic",
+    "trading_card"
+  ],
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-labels",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

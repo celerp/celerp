@@ -1,0 +1,88 @@
+{
+  "name": "bag_handbag",
+  "display_name": "Bag & Handbag",
+  "vertical_tags": [
+    "fashion"
+  ],
+  "fields": [
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Tote",
+        "Shoulder Bag",
+        "Crossbody",
+        "Clutch",
+        "Backpack",
+        "Belt Bag",
+        "Briefcase",
+        "Weekend Bag",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions",
+      "label": "Dimensions (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "hardware",
+      "label": "Hardware",
+      "type": "select",
+      "options": [
+        "Gold Tone",
+        "Silver Tone",
+        "Palladium",
+        "Bronze",
+        "None"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Excellent",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "style_code",
+      "label": "Style Code",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

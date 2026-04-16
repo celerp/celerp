@@ -1,0 +1,92 @@
+{
+  "name": "watch_strap",
+  "display_name": "Watch Strap / Band",
+  "vertical_tags": [
+    "watches_accessories"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "select",
+      "options": [
+        "Leather",
+        "Rubber / Silicone",
+        "NATO",
+        "Fabric",
+        "Metal Bracelet",
+        "Ceramic",
+        "Rubber Coated",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "lug_width_mm",
+      "label": "Lug Width (mm)",
+      "type": "select",
+      "options": [
+        "16",
+        "17",
+        "18",
+        "19",
+        "20",
+        "21",
+        "22",
+        "23",
+        "24",
+        "26",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "buckle",
+      "label": "Buckle / Clasp",
+      "type": "select",
+      "options": [
+        "Tang Buckle",
+        "Deployment Clasp",
+        "Folding Clasp",
+        "Butterfly Clasp",
+        "Loop",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "compatible",
+      "label": "Compatible With",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

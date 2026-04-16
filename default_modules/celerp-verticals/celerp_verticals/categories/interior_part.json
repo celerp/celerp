@@ -1,0 +1,83 @@
+{
+  "name": "interior_part",
+  "display_name": "Interior Part",
+  "vertical_tags": [
+    "automotive"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Part Type",
+      "type": "select",
+      "options": [
+        "Seat",
+        "Dashboard",
+        "Steering Wheel",
+        "Trim Panel",
+        "Carpet / Floor Mat",
+        "Sun Visor",
+        "Console",
+        "Speaker",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "oem_no",
+      "label": "OEM Part No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_make",
+      "label": "Fitment Make",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_model",
+      "label": "Fitment Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_year",
+      "label": "Fitment Year(s)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Trim",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "OEM Remanufactured",
+        "Aftermarket New",
+        "Used - Good",
+        "Used - Fair",
+        "For Parts / Core"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

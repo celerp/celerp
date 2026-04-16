@@ -1,0 +1,77 @@
+{
+  "name": "storage_furniture",
+  "display_name": "Storage Furniture",
+  "vertical_tags": [
+    "furniture"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Wardrobe",
+        "Dresser / Chest of Drawers",
+        "Bookshelf",
+        "TV Unit",
+        "Sideboard",
+        "Cabinet",
+        "Filing Cabinet",
+        "Shoe Rack",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Finish",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W×D (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "num_doors",
+      "label": "No. of Doors / Drawers",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "assembly",
+      "label": "Assembly Required",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

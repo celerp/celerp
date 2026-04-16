@@ -1,0 +1,27 @@
+{
+  "name": "agricultural",
+  "display_name": "Agricultural",
+  "license": "BSL-1.1",
+  "categories": [
+    "fresh_produce",
+    "grain_cereal",
+    "seeds",
+    "livestock_feed",
+    "fertilizer_chemical"
+  ],
+  "company_settings": {
+    "inventory_method": "fefo"
+  },
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-labels",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

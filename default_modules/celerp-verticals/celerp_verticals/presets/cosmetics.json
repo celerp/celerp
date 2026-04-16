@@ -1,0 +1,26 @@
+{
+  "name": "cosmetics",
+  "display_name": "Cosmetics & Beauty",
+  "license": "BSL-1.1",
+  "categories": [
+    "skincare",
+    "makeup",
+    "haircare",
+    "fragrance",
+    "nail",
+    "personal_care",
+    "beauty_tool"
+  ],
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-labels",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

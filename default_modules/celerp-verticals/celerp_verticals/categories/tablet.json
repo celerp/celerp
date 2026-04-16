@@ -1,0 +1,81 @@
+{
+  "name": "tablet",
+  "display_name": "Tablet",
+  "vertical_tags": [
+    "electronics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "serial_no",
+      "label": "Serial No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage_gb",
+      "label": "Storage (GB)",
+      "type": "select",
+      "options": [
+        "32",
+        "64",
+        "128",
+        "256",
+        "512"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "connectivity",
+      "label": "Connectivity",
+      "type": "select",
+      "options": [
+        "Wi-Fi",
+        "Wi-Fi + Cellular"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair",
+        "For Parts"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "warranty_exp",
+      "label": "Warranty Expires",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

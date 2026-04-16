@@ -1,0 +1,84 @@
+{
+  "name": "grain_cereal",
+  "display_name": "Grain & Cereal",
+  "vertical_tags": [
+    "agricultural"
+  ],
+  "fields": [
+    {
+      "key": "variety",
+      "label": "Variety",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "origin_country",
+      "label": "Origin Country",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Grade",
+      "type": "select",
+      "options": [
+        "Grade 1",
+        "Grade 2",
+        "Feed Grade",
+        "Organic",
+        "Milling Grade",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "moisture_pct",
+      "label": "Moisture %",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "protein_pct",
+      "label": "Protein %",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "lot_no",
+      "label": "Lot No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "harvest_date",
+      "label": "Harvest Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry / Best Before",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage_condition",
+      "label": "Storage Condition",
+      "type": "select",
+      "options": [
+        "Ambient / Dry",
+        "Temperature Controlled",
+        "Silo"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "kg"
+}

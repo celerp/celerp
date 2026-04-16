@@ -1,0 +1,83 @@
+{
+  "name": "power_tool",
+  "display_name": "Power Tool",
+  "vertical_tags": [
+    "hardware"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Drill / Driver",
+        "Impact Driver",
+        "Circular Saw",
+        "Jigsaw",
+        "Grinder",
+        "Sander",
+        "Router",
+        "Planer",
+        "Nailer",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "voltage",
+      "label": "Voltage",
+      "type": "select",
+      "options": [
+        "12V",
+        "18V",
+        "20V",
+        "36V",
+        "54V",
+        "110V",
+        "220V",
+        "240V",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "power_source",
+      "label": "Power Source",
+      "type": "select",
+      "options": [
+        "Corded",
+        "Cordless (Battery)",
+        "Pneumatic",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Good",
+        "Fair",
+        "For Repair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,86 @@
+{
+  "name": "saas_plan",
+  "display_name": "SaaS Plan",
+  "vertical_tags": [
+    "saas"
+  ],
+  "fields": [
+    {
+      "key": "plan_name",
+      "label": "Plan Name",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "billing_cycle",
+      "label": "Billing Cycle",
+      "type": "select",
+      "options": [
+        "Monthly",
+        "Annual",
+        "Quarterly",
+        "Custom"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "seats_included",
+      "label": "Seats Included",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "price_per_extra_seat",
+      "label": "Extra Seat Price",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage_gb",
+      "label": "Storage (GB)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "trial_days",
+      "label": "Trial Days",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "target_segment",
+      "label": "Target Segment",
+      "type": "select",
+      "options": [
+        "Individuals",
+        "Small Business",
+        "Mid-Market",
+        "Enterprise"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "is_public",
+      "label": "Publicly Listed",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "features",
+      "label": "Features / Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

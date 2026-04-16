@@ -1,0 +1,12 @@
+{
+  "name": "blank",
+  "display_name": "No modules - build your own stack",
+  "license": "BSL-1.1",
+  "categories": [],
+  "modules": [
+    "celerp-verticals",
+    "celerp-ai",
+    "celerp-backup"
+  ],
+  "company_settings": {}
+}

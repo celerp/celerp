@@ -1,0 +1,124 @@
+{
+  "name": "rough_gemstone",
+  "display_name": "Rough Gemstone",
+  "vertical_tags": [
+    "gems_jewelry"
+  ],
+  "fields": [
+    {
+      "key": "stone_type",
+      "label": "Stone Type",
+      "type": "select",
+      "options": [
+        "Alexandrite",
+        "Amethyst",
+        "Aquamarine",
+        "Citrine",
+        "Chrysoberyl",
+        "Emerald",
+        "Garnet",
+        "Ruby",
+        "Sapphire",
+        "Spinel",
+        "Tanzanite",
+        "Tourmaline",
+        "Topaz",
+        "Zircon",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "origin",
+      "label": "Origin / Mine",
+      "type": "select",
+      "options": [
+        "Afghanistan",
+        "Australia",
+        "Brazil",
+        "Burma (Myanmar)",
+        "Cambodia",
+        "Colombia",
+        "Ethiopia",
+        "India",
+        "Kenya",
+        "Madagascar",
+        "Mozambique",
+        "Nigeria",
+        "Pakistan",
+        "Sri Lanka",
+        "Tanzania",
+        "Thailand",
+        "Zambia",
+        "Zimbabwe",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_g",
+      "label": "Weight (g)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pieces",
+      "label": "Pieces",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "carat",
+      "label": "Carat",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "select",
+      "options": [
+        "Blue",
+        "Green",
+        "Red",
+        "Pink",
+        "Purple",
+        "Yellow",
+        "Orange",
+        "White",
+        "Brown",
+        "Black",
+        "Multi",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "treatment",
+      "label": "Treatment",
+      "type": "select",
+      "options": [
+        "None",
+        "Heated",
+        "Irradiated",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "lot_ref",
+      "label": "Lot Reference",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "carat"
+}

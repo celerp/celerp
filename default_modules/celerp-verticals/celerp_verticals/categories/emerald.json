@@ -1,0 +1,141 @@
+{
+  "name": "emerald",
+  "display_name": "Emerald",
+  "vertical_tags": [
+    "gems_jewelry"
+  ],
+  "fields": [
+    {
+      "key": "origin",
+      "label": "Origin",
+      "type": "select",
+      "options": [
+        "Colombia",
+        "Zambia",
+        "Brazil",
+        "Zimbabwe",
+        "Ethiopia",
+        "Afghanistan",
+        "Madagascar",
+        "Russia",
+        "Pakistan",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "carat",
+      "label": "Carat",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pieces",
+      "label": "Pieces",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "select",
+      "options": [
+        "Vivid Green",
+        "Deep Green",
+        "Medium Green",
+        "Light Green",
+        "Bluish-Green",
+        "Yellowish-Green",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "treatment",
+      "label": "Treatment",
+      "type": "select",
+      "options": [
+        "None",
+        "Minor Oiling",
+        "Moderate Oiling",
+        "Significant Oiling",
+        "Fracture Filled",
+        "Cedar Oil",
+        "Opticon",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "clarity",
+      "label": "Clarity",
+      "type": "select",
+      "options": [
+        "Eye Clean",
+        "Slightly Included",
+        "Moderately Included",
+        "Heavily Included",
+        "Loupe Clean"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "shape",
+      "label": "Shape / Cut",
+      "type": "select",
+      "options": [
+        "Emerald",
+        "Round",
+        "Oval",
+        "Cushion",
+        "Pear",
+        "Heart",
+        "Cabochon",
+        "Trillion",
+        "Custom"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "measurements",
+      "label": "Measurements (mm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Certificate No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_body",
+      "label": "Grading Lab",
+      "type": "select",
+      "options": [
+        "GRS",
+        "Gübelin",
+        "SSEF",
+        "GIA",
+        "AGL",
+        "CDTEC",
+        "Lotus",
+        "GIT",
+        "IGI",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "carat"
+}

@@ -1,0 +1,63 @@
+{
+  "name": "component_part",
+  "display_name": "Component / PC Part",
+  "vertical_tags": [
+    "electronics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model / Part No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "CPU",
+        "GPU",
+        "RAM",
+        "SSD",
+        "HDD",
+        "Motherboard",
+        "PSU",
+        "Cooler",
+        "Case",
+        "Network Card",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "specs",
+      "label": "Specs",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair",
+        "For Parts"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

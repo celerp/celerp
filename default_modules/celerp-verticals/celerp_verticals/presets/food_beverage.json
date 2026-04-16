@@ -1,0 +1,28 @@
+{
+  "name": "food_beverage",
+  "display_name": "Food & Beverage",
+  "license": "BSL-1.1",
+  "categories": [
+    "packaged_food",
+    "beverage_nonalc",
+    "fresh_food",
+    "frozen_food",
+    "ingredient_bulk",
+    "confectionery"
+  ],
+  "company_settings": {
+    "inventory_method": "fefo"
+  },
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-labels",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

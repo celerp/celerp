@@ -1,0 +1,43 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: celerp
+      POSTGRES_USER: celerp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-celerp}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U celerp"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    command: uvicorn celerp.main:app --host 0.0.0.0 --port 8000
+    environment:
+      DATABASE_URL: postgresql+asyncpg://celerp:${POSTGRES_PASSWORD:-celerp}@db:5432/celerp
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-60}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ui:
+    build: .
+    command: uvicorn ui.app:app --host 0.0.0.0 --port 8080
+    environment:
+      API_URL: http://api:8000
+    ports:
+      - "8080:8080"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:

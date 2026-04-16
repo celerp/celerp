@@ -1,0 +1,83 @@
+{
+  "name": "fertilizer_chemical",
+  "display_name": "Fertilizer & Agricultural Chemical",
+  "vertical_tags": [
+    "agricultural"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Fertilizer (NPK)",
+        "Fertilizer (Organic)",
+        "Pesticide",
+        "Herbicide",
+        "Fungicide",
+        "Insecticide",
+        "Growth Regulator",
+        "Soil Amendment",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "registration_no",
+      "label": "Registration No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "active_ingredient",
+      "label": "Active Ingredient",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "concentration",
+      "label": "Concentration",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "hazmat_class",
+      "label": "Hazmat Class",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "volume_l",
+      "label": "Volume (L) / Weight (kg)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "kg"
+}

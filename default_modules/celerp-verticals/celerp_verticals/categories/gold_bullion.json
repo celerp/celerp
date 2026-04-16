@@ -1,0 +1,86 @@
+{
+  "name": "gold_bullion",
+  "display_name": "Gold Bullion",
+  "vertical_tags": [
+    "coins_precious_metals"
+  ],
+  "fields": [
+    {
+      "key": "form",
+      "label": "Form",
+      "type": "select",
+      "options": [
+        "Bar",
+        "Round",
+        "Coin (Bullion)",
+        "Granule"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_troy_oz",
+      "label": "Weight (troy oz)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_g",
+      "label": "Weight (g)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "purity",
+      "label": "Purity",
+      "type": "select",
+      "options": [
+        ".9999 (24K)",
+        "999.9",
+        "999",
+        "995",
+        "916 (22K)",
+        "900",
+        "750 (18K)",
+        "585 (14K)",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "mint_refinery",
+      "label": "Mint / Refinery",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "assay_cert_no",
+      "label": "Assay Cert No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Sealed / New",
+        "Excellent",
+        "Good",
+        "Circulated"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "gram"
+}

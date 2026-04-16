@@ -1,0 +1,91 @@
+{
+  "name": "spirit",
+  "display_name": "Spirit",
+  "vertical_tags": [
+    "wine_spirits"
+  ],
+  "fields": [
+    {
+      "key": "distillery",
+      "label": "Distillery / Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "spirit_type",
+      "label": "Spirit Type",
+      "type": "select",
+      "options": [
+        "Whisky / Whiskey",
+        "Bourbon",
+        "Rum",
+        "Tequila",
+        "Mezcal",
+        "Gin",
+        "Vodka",
+        "Brandy / Cognac",
+        "Armagnac",
+        "Calvados",
+        "Grappa",
+        "Pisco",
+        "Liqueur",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "age_statement",
+      "label": "Age Statement",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "abv_pct",
+      "label": "ABV %",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cask_type",
+      "label": "Cask Type",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "bottle_size_ml",
+      "label": "Bottle Size (ml)",
+      "type": "select",
+      "options": [
+        "50",
+        "200",
+        "350",
+        "500",
+        "700",
+        "750",
+        "1000",
+        "1750",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition",
+      "label": "Edition / Release",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch / Bottling No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,105 @@
+{
+  "name": "laptop",
+  "display_name": "Laptop",
+  "vertical_tags": [
+    "electronics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "serial_no",
+      "label": "Serial No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cpu",
+      "label": "CPU",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "ram_gb",
+      "label": "RAM (GB)",
+      "type": "select",
+      "options": [
+        "4",
+        "8",
+        "16",
+        "32",
+        "64",
+        "128"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage_gb",
+      "label": "Storage (GB)",
+      "type": "select",
+      "options": [
+        "128",
+        "256",
+        "512",
+        "1024",
+        "2048"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "screen_in",
+      "label": "Screen (in)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "os",
+      "label": "OS",
+      "type": "select",
+      "options": [
+        "Windows",
+        "macOS",
+        "Linux",
+        "ChromeOS",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair",
+        "For Parts"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "warranty_exp",
+      "label": "Warranty Expires",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

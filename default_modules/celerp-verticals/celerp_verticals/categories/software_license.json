@@ -1,0 +1,85 @@
+{
+  "name": "software_license",
+  "display_name": "Software License",
+  "vertical_tags": [
+    "saas"
+  ],
+  "fields": [
+    {
+      "key": "product_name",
+      "label": "Product Name",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "license_type",
+      "label": "License Type",
+      "type": "select",
+      "options": [
+        "Perpetual",
+        "Annual",
+        "Monthly",
+        "Term",
+        "OEM",
+        "Trial"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "version",
+      "label": "Version",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "seats",
+      "label": "Seats",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "platform",
+      "label": "Platform",
+      "type": "select",
+      "options": [
+        "Web",
+        "Windows",
+        "macOS",
+        "Linux",
+        "Mobile",
+        "Multi-Platform"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "activation_method",
+      "label": "Activation Method",
+      "type": "select",
+      "options": [
+        "License Key",
+        "Account-Based",
+        "Hardware Dongle",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "support_included_months",
+      "label": "Support Included (mo.)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "notes",
+      "label": "Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

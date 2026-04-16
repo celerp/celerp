@@ -1,0 +1,80 @@
+{
+  "name": "medal_token",
+  "display_name": "Medal & Token",
+  "vertical_tags": [
+    "coins_precious_metals"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Military Medal",
+        "Civilian Medal",
+        "Sports Medal",
+        "Commemorative",
+        "Trade Token",
+        "Transportation Token",
+        "Exonumia",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "country",
+      "label": "Country / Issuer",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "composition",
+      "label": "Composition",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "diameter_mm",
+      "label": "Diameter (mm)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Grade / Condition",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_service",
+      "label": "Grading Service",
+      "type": "select",
+      "options": [
+        "PCGS",
+        "NGC",
+        "Raw / Ungraded",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Cert No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

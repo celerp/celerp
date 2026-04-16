@@ -1,0 +1,63 @@
+{
+  "name": "fragrance",
+  "display_name": "Fragrance",
+  "vertical_tags": [
+    "cosmetics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "name",
+      "label": "Fragrance Name",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "concentration",
+      "label": "Concentration",
+      "type": "select",
+      "options": [
+        "Parfum / Extrait",
+        "EDP (Eau de Parfum)",
+        "EDT (Eau de Toilette)",
+        "EDC (Eau de Cologne)",
+        "Body Mist",
+        "Aftershave"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "volume_ml",
+      "label": "Volume (ml)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "gender",
+      "label": "Gender",
+      "type": "select",
+      "options": [
+        "Women",
+        "Men",
+        "Unisex"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

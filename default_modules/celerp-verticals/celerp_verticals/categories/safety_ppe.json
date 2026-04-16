@@ -1,0 +1,59 @@
+{
+  "name": "safety_ppe",
+  "display_name": "Safety & PPE",
+  "vertical_tags": [
+    "hardware"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Helmet / Hard Hat",
+        "Safety Glasses / Goggles",
+        "Gloves",
+        "Hi-Vis Vest",
+        "Harness",
+        "Respirator / Mask",
+        "Ear Protection",
+        "Safety Boots",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size",
+      "label": "Size",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "standard",
+      "label": "Safety Standard",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Good",
+        "Expired / Replace"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

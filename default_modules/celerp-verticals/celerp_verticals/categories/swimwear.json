@@ -1,0 +1,75 @@
+{
+  "name": "swimwear",
+  "display_name": "Swimwear",
+  "vertical_tags": [
+    "fashion"
+  ],
+  "fields": [
+    {
+      "key": "size",
+      "label": "Size",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "style",
+      "label": "Style",
+      "type": "select",
+      "options": [
+        "One-Piece",
+        "Bikini Top",
+        "Bikini Bottom",
+        "Bikini Set",
+        "Boardshorts",
+        "Swim Trunks",
+        "Rash Guard",
+        "Wetsuit",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "gender",
+      "label": "Gender",
+      "type": "select",
+      "options": [
+        "Women",
+        "Men",
+        "Boys",
+        "Girls",
+        "Unisex"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "style_code",
+      "label": "Style Code",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

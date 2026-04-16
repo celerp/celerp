@@ -1,0 +1,86 @@
+{
+  "name": "outerwear",
+  "display_name": "Outerwear",
+  "vertical_tags": [
+    "fashion"
+  ],
+  "fields": [
+    {
+      "key": "size",
+      "label": "Size",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Jacket",
+        "Coat",
+        "Blazer",
+        "Puffer",
+        "Parka",
+        "Trench",
+        "Raincoat",
+        "Vest",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "gender",
+      "label": "Gender",
+      "type": "select",
+      "options": [
+        "Men",
+        "Women",
+        "Unisex",
+        "Boys",
+        "Girls"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "season",
+      "label": "Season",
+      "type": "select",
+      "options": [
+        "AW",
+        "SS",
+        "All Season"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "style_code",
+      "label": "Style Code",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

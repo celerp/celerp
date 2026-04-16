@@ -1,0 +1,118 @@
+{
+  "name": "mineral_specimen",
+  "display_name": "Mineral Specimen",
+  "vertical_tags": [
+    "gems_jewelry"
+  ],
+  "fields": [
+    {
+      "key": "mineral",
+      "label": "Mineral / Species",
+      "type": "select",
+      "options": [
+        "Amethyst",
+        "Aquamarine",
+        "Azurite",
+        "Beryl",
+        "Calcite",
+        "Citrine",
+        "Fluorite",
+        "Galena",
+        "Hematite",
+        "Kunzite",
+        "Malachite",
+        "Meteorite",
+        "Obsidian",
+        "Peridot",
+        "Pyrite",
+        "Quartz",
+        "Rhodochrosite",
+        "Tourmaline",
+        "Tourmaline on Matrix",
+        "Turquoise",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "origin",
+      "label": "Origin / Mine",
+      "type": "select",
+      "options": [
+        "Afghanistan",
+        "Australia",
+        "Bolivia",
+        "Brazil",
+        "China",
+        "Colombia",
+        "DR Congo",
+        "India",
+        "Madagascar",
+        "Mexico",
+        "Morocco",
+        "Namibia",
+        "Pakistan",
+        "Peru",
+        "Russia",
+        "South Africa",
+        "USA",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_g",
+      "label": "Weight (g)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pieces",
+      "label": "Pieces",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Aesthetic Grade",
+      "type": "select",
+      "options": [
+        "Museum Quality",
+        "Fine",
+        "Very Fine",
+        "Good",
+        "Cabinet",
+        "Miniature",
+        "Thumbnail",
+        "Micro"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Perfect",
+        "Near Perfect",
+        "Minor Damage",
+        "Repaired",
+        "Damaged"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "carat"
+}

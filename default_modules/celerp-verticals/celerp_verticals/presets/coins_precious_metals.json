@@ -1,0 +1,26 @@
+{
+  "name": "coins_precious_metals",
+  "display_name": "Coins & Precious Metals",
+  "license": "BSL-1.1",
+  "categories": [
+    "gold_bullion",
+    "silver_bullion",
+    "platinum_bullion",
+    "bullion_coin",
+    "numismatic_coin",
+    "banknote",
+    "medal_token"
+  ],
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-labels",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

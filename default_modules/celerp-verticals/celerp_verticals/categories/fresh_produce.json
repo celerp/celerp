@@ -1,0 +1,82 @@
+{
+  "name": "fresh_produce",
+  "display_name": "Fresh Produce",
+  "vertical_tags": [
+    "agricultural",
+    "food_beverage"
+  ],
+  "fields": [
+    {
+      "key": "origin_country",
+      "label": "Origin Country",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Grade",
+      "type": "select",
+      "options": [
+        "A",
+        "B",
+        "C",
+        "Export",
+        "Organic",
+        "Premium"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "harvest_date",
+      "label": "Harvest Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry / Best Before",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "lot_no",
+      "label": "Lot No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "unit",
+      "label": "Unit",
+      "type": "select",
+      "options": [
+        "kg",
+        "g",
+        "piece",
+        "bunch",
+        "box",
+        "crate",
+        "bag",
+        "pallet",
+        "ton"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage_condition",
+      "label": "Storage Condition",
+      "type": "select",
+      "options": [
+        "Ambient",
+        "Refrigerated",
+        "Frozen",
+        "Controlled Atmosphere"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "kg"
+}

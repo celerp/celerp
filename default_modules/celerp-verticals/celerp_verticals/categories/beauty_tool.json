@@ -1,0 +1,53 @@
+{
+  "name": "beauty_tool",
+  "display_name": "Beauty Tool",
+  "vertical_tags": [
+    "cosmetics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Makeup Brush Set",
+        "Hair Dryer",
+        "Straightener",
+        "Curling Iron",
+        "Facial Device",
+        "Gua Sha / Roller",
+        "Electric Shaver",
+        "Epilator",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

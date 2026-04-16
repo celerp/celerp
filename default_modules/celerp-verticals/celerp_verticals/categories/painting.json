@@ -1,0 +1,138 @@
+{
+  "name": "painting",
+  "display_name": "Painting",
+  "vertical_tags": [
+    "artwork"
+  ],
+  "fields": [
+    {
+      "key": "artist",
+      "label": "Artist",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "title",
+      "label": "Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year_created",
+      "label": "Year Created",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "medium",
+      "label": "Medium",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "support",
+      "label": "Support",
+      "type": "select",
+      "options": [
+        "Canvas",
+        "Linen",
+        "Board / Panel",
+        "Paper",
+        "Metal",
+        "Wood",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "framed_dim_cm",
+      "label": "Framed Dimensions (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "signed",
+      "label": "Signed",
+      "type": "select",
+      "options": [
+        "Signed",
+        "Signed & Dated",
+        "Estate Stamp",
+        "Unsigned",
+        "Attributed"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "provenance",
+      "label": "Provenance",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "exhibited",
+      "label": "Exhibition History",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "literature",
+      "label": "Literature Refs",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "Poor - Needs Restoration"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition_notes",
+      "label": "Condition Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "coa",
+      "label": "Certificate of Authenticity",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "auth_body",
+      "label": "Authentication By",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

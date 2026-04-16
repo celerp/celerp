@@ -1,0 +1,114 @@
+{
+  "name": "drawing",
+  "display_name": "Drawing / Work on Paper",
+  "vertical_tags": [
+    "artwork"
+  ],
+  "fields": [
+    {
+      "key": "artist",
+      "label": "Artist",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "title",
+      "label": "Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year_created",
+      "label": "Year Created",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "medium",
+      "label": "Medium",
+      "type": "select",
+      "options": [
+        "Pencil",
+        "Graphite",
+        "Ink",
+        "Pen & Ink",
+        "Charcoal",
+        "Pastel",
+        "Chalk",
+        "Crayon",
+        "Watercolour",
+        "Gouache",
+        "Mixed Media",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "paper",
+      "label": "Paper",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "signed",
+      "label": "Signed",
+      "type": "select",
+      "options": [
+        "Signed",
+        "Signed & Dated",
+        "Inscribed",
+        "Unsigned"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "provenance",
+      "label": "Provenance",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good - Minor Flaws",
+        "Fair",
+        "Poor"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition_notes",
+      "label": "Condition Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "coa",
+      "label": "Certificate of Authenticity",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

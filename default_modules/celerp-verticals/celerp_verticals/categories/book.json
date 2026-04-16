@@ -1,0 +1,79 @@
+{
+  "name": "book",
+  "display_name": "Book",
+  "vertical_tags": [
+    "books_media"
+  ],
+  "fields": [
+    {
+      "key": "isbn",
+      "label": "ISBN",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "author",
+      "label": "Author",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "publisher",
+      "label": "Publisher",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year Published",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition",
+      "label": "Edition",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "format",
+      "label": "Format",
+      "type": "select",
+      "options": [
+        "Hardcover",
+        "Paperback",
+        "Trade Paperback",
+        "Mass Market",
+        "Large Print",
+        "Signed Edition"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Very Good",
+        "Good",
+        "Acceptable"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

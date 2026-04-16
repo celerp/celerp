@@ -1,0 +1,81 @@
+{
+  "name": "livestock_feed",
+  "display_name": "Livestock Feed",
+  "vertical_tags": [
+    "agricultural"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "species_target",
+      "label": "Target Species",
+      "type": "select",
+      "options": [
+        "Cattle / Beef",
+        "Dairy",
+        "Poultry",
+        "Swine / Pig",
+        "Equine",
+        "Aquaculture",
+        "Sheep / Goat",
+        "Rabbit",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "feed_type",
+      "label": "Feed Type",
+      "type": "select",
+      "options": [
+        "Concentrate",
+        "Supplement",
+        "Premix",
+        "Complete Feed",
+        "Hay",
+        "Silage",
+        "By-Product"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_kg",
+      "label": "Net Weight (kg)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage_condition",
+      "label": "Storage Condition",
+      "type": "select",
+      "options": [
+        "Ambient / Dry",
+        "Cool & Dry",
+        "Refrigerated"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "kg"
+}

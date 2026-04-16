@@ -1,0 +1,68 @@
+{
+  "name": "measuring_instrument",
+  "display_name": "Measuring Instrument",
+  "vertical_tags": [
+    "hardware"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Tape Measure",
+        "Spirit Level",
+        "Digital Level",
+        "Caliper",
+        "Micrometer",
+        "Multimeter",
+        "Clamp Meter",
+        "Laser Level",
+        "Thermometer",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "range",
+      "label": "Range",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "accuracy",
+      "label": "Accuracy",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Good",
+        "Fair",
+        "For Calibration"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,24 @@
+{
+  "name": "saas",
+  "display_name": "SaaS / Software",
+  "license": "BSL-1.1",
+  "categories": [
+    "saas_plan",
+    "software_addon",
+    "software_license"
+  ],
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-labels",
+    "celerp-subscriptions",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-verticals",
+    "celerp-ai"
+  ],
+  "company_settings": {}
+}

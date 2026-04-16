@@ -1,0 +1,56 @@
+{
+  "name": "fluid_lubricant",
+  "display_name": "Fluid & Lubricant",
+  "vertical_tags": [
+    "automotive"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Engine Oil",
+        "Coolant / Antifreeze",
+        "Brake Fluid",
+        "Transmission Fluid",
+        "Power Steering Fluid",
+        "Gear Oil",
+        "Hydraulic Fluid",
+        "Greases",
+        "Fuel Additive",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "spec",
+      "label": "Spec (e.g. 5W-30, DOT4)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "volume_l",
+      "label": "Volume (L)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

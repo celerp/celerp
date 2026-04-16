@@ -1,0 +1,60 @@
+{
+  "name": "kitchen_dining",
+  "display_name": "Kitchen & Dining",
+  "vertical_tags": [
+    "furniture"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Cookware",
+        "Bakeware",
+        "Knife / Cutlery",
+        "Tableware / Dinnerware",
+        "Glassware",
+        "Storage Containers",
+        "Small Appliance",
+        "Kitchen Tool",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pieces",
+      "label": "No. of Pieces (sets)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,115 @@
+{
+  "name": "music_vinyl",
+  "display_name": "Music - Vinyl",
+  "vertical_tags": [
+    "books_media"
+  ],
+  "fields": [
+    {
+      "key": "artist",
+      "label": "Artist / Band",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "title",
+      "label": "Album Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "label",
+      "label": "Record Label",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "catalog_no",
+      "label": "Catalog No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "format",
+      "label": "Format",
+      "type": "select",
+      "options": [
+        "LP (12\")",
+        "EP (12\")",
+        "Single (7\")",
+        "Single (10\")",
+        "Double LP",
+        "Box Set",
+        "Maxi Single (12\")",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pressing",
+      "label": "Pressing",
+      "type": "select",
+      "options": [
+        "Original",
+        "Reissue",
+        "Repress",
+        "Picture Disc",
+        "Colored Vinyl",
+        "180g",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "country",
+      "label": "Country of Pressing",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition_media",
+      "label": "Media Condition",
+      "type": "select",
+      "options": [
+        "Mint (M)",
+        "Near Mint (NM)",
+        "Very Good Plus (VG+)",
+        "Very Good (VG)",
+        "Good Plus (G+)",
+        "Good (G)",
+        "Fair (F)",
+        "Poor (P)"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition_sleeve",
+      "label": "Sleeve Condition",
+      "type": "select",
+      "options": [
+        "Mint (M)",
+        "Near Mint (NM)",
+        "Very Good Plus (VG+)",
+        "Very Good (VG)",
+        "Good Plus (G+)",
+        "Good (G)",
+        "Generic",
+        "None"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

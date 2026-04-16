@@ -1,0 +1,65 @@
+{
+  "name": "pipe_plumbing",
+  "display_name": "Pipe & Plumbing",
+  "vertical_tags": [
+    "hardware"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Pipe",
+        "Elbow",
+        "Tee",
+        "Coupling",
+        "Union",
+        "Valve",
+        "Flange",
+        "Reducer",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "select",
+      "options": [
+        "PVC",
+        "CPVC",
+        "PEX",
+        "Copper",
+        "Galvanized Steel",
+        "Carbon Steel",
+        "Stainless Steel",
+        "Cast Iron",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size",
+      "label": "Size / Diameter",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "standard",
+      "label": "Standard",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pressure_rating",
+      "label": "Pressure Rating",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

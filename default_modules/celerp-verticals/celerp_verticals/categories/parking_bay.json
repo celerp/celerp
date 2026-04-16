@@ -1,0 +1,79 @@
+{
+  "name": "parking_bay",
+  "display_name": "Parking Bay",
+  "vertical_tags": [
+    "property_rental"
+  ],
+  "fields": [
+    {
+      "key": "bay_ref",
+      "label": "Bay No. / Label",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "building",
+      "label": "Building / Project",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "level",
+      "label": "Level",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "bay_type",
+      "label": "Bay Type",
+      "type": "select",
+      "options": [
+        "Covered",
+        "Open Air",
+        "Mechanical",
+        "Motorcycle"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size_class",
+      "label": "Size Class",
+      "type": "select",
+      "options": [
+        "Standard",
+        "Compact",
+        "Oversized"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "occupancy_status",
+      "label": "Occupancy Status",
+      "type": "select",
+      "options": [
+        "Vacant",
+        "Occupied",
+        "Reserved"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "tenant_name",
+      "label": "Current Tenant",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "notes",
+      "label": "Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,84 @@
+{
+  "name": "video_game",
+  "display_name": "Video Game",
+  "vertical_tags": [
+    "books_media"
+  ],
+  "fields": [
+    {
+      "key": "title",
+      "label": "Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "platform",
+      "label": "Platform",
+      "type": "select",
+      "options": [
+        "PS5",
+        "PS4",
+        "PS3",
+        "Xbox Series X/S",
+        "Xbox One",
+        "Xbox 360",
+        "Nintendo Switch",
+        "Wii U",
+        "Wii",
+        "3DS",
+        "DS",
+        "PC",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "region",
+      "label": "Region",
+      "type": "select",
+      "options": [
+        "Region Free",
+        "NTSC-U (North America)",
+        "PAL (Europe)",
+        "NTSC-J (Japan)",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition",
+      "label": "Edition",
+      "type": "select",
+      "options": [
+        "Standard",
+        "Limited Edition",
+        "Collector's Edition",
+        "Game of the Year",
+        "Complete in Box",
+        "Loose Cart / Disc"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New / Sealed",
+        "Like New",
+        "Good",
+        "Acceptable"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

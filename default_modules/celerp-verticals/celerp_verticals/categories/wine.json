@@ -1,0 +1,111 @@
+{
+  "name": "wine",
+  "display_name": "Wine",
+  "vertical_tags": [
+    "wine_spirits"
+  ],
+  "fields": [
+    {
+      "key": "producer",
+      "label": "Producer / Winery",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "vintage",
+      "label": "Vintage",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "varietal",
+      "label": "Varietal / Blend",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "appellation",
+      "label": "Appellation / AOC",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "region",
+      "label": "Region / Country",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "wine_type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Red",
+        "White",
+        "Rosé",
+        "Sparkling",
+        "Champagne",
+        "Dessert / Sweet",
+        "Fortified",
+        "Orange / Skin Contact",
+        "Natural"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "abv_pct",
+      "label": "ABV %",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "bottle_size_ml",
+      "label": "Bottle Size (ml)",
+      "type": "select",
+      "options": [
+        "187",
+        "375",
+        "500",
+        "750",
+        "1000",
+        "1500",
+        "3000",
+        "6000",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "closure",
+      "label": "Closure",
+      "type": "select",
+      "options": [
+        "Cork",
+        "Screwcap",
+        "DIAM",
+        "Glass Stopper",
+        "Crown Cap"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "organic_bio",
+      "label": "Organic / Biodynamic",
+      "type": "select",
+      "options": [
+        "Conventional",
+        "Organic Certified",
+        "Biodynamic Certified",
+        "Natural (Uncertified)"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

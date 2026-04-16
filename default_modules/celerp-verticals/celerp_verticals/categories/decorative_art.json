@@ -1,0 +1,115 @@
+{
+  "name": "decorative_art",
+  "display_name": "Decorative Art Object",
+  "vertical_tags": [
+    "artwork"
+  ],
+  "fields": [
+    {
+      "key": "artist_maker",
+      "label": "Artist / Maker",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "title",
+      "label": "Title / Description",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year_created",
+      "label": "Year / Period",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "medium",
+      "label": "Medium / Material",
+      "type": "select",
+      "options": [
+        "Ceramic / Porcelain",
+        "Glass",
+        "Crystal",
+        "Bronze",
+        "Silver",
+        "Enamel",
+        "Textile",
+        "Wood",
+        "Lacquer",
+        "Mixed Media",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_kg",
+      "label": "Weight (kg)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition",
+      "label": "Edition (if applicable)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "marks",
+      "label": "Maker's Marks",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "provenance",
+      "label": "Provenance",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair - Chips/Repairs",
+        "Poor"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition_notes",
+      "label": "Condition Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "coa",
+      "label": "Certificate of Authenticity",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

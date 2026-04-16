@@ -1,0 +1,102 @@
+{
+  "name": "numismatic_coin",
+  "display_name": "Numismatic Coin",
+  "vertical_tags": [
+    "coins_precious_metals"
+  ],
+  "fields": [
+    {
+      "key": "country",
+      "label": "Country",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "denomination",
+      "label": "Denomination",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "mint_mark",
+      "label": "Mint Mark",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "variety",
+      "label": "Variety / VAM",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "composition",
+      "label": "Composition",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Grade",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_service",
+      "label": "Grading Service",
+      "type": "select",
+      "options": [
+        "PCGS",
+        "NGC",
+        "ANACS",
+        "ICG",
+        "PMG",
+        "Raw / Ungraded",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Cert / Slab No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "mintage",
+      "label": "Mintage",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "strike_type",
+      "label": "Strike Type",
+      "type": "select",
+      "options": [
+        "Business Strike",
+        "Proof",
+        "Specimen",
+        "Burnished",
+        "Matte Proof",
+        "Other"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

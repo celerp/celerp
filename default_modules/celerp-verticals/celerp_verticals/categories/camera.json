@@ -1,0 +1,96 @@
+{
+  "name": "camera",
+  "display_name": "Camera",
+  "vertical_tags": [
+    "electronics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "serial_no",
+      "label": "Serial No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "DSLR",
+        "Mirrorless",
+        "Point & Shoot",
+        "Action",
+        "Medium Format",
+        "Film",
+        "Drone",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "sensor",
+      "label": "Sensor",
+      "type": "select",
+      "options": [
+        "Full Frame",
+        "APS-C",
+        "Micro Four Thirds",
+        "1-inch",
+        "1/2.3\"",
+        "Medium Format",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "megapixels",
+      "label": "Megapixels",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "shutter_count",
+      "label": "Shutter Count",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair",
+        "For Parts"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "warranty_exp",
+      "label": "Warranty Expires",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

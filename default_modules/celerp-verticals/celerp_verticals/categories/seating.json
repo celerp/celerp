@@ -1,0 +1,98 @@
+{
+  "name": "seating",
+  "display_name": "Seating",
+  "vertical_tags": [
+    "furniture"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Sofa",
+        "Armchair",
+        "Dining Chair",
+        "Office Chair",
+        "Bar Stool",
+        "Ottoman",
+        "Bench",
+        "Bean Bag",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Upholstery / Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "frame_material",
+      "label": "Frame Material",
+      "type": "select",
+      "options": [
+        "Solid Wood",
+        "Engineered Wood",
+        "Metal",
+        "Plastic",
+        "Rattan",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Finish",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W×D (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_kg",
+      "label": "Weight (kg)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "max_weight_kg",
+      "label": "Max Load (kg)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "assembly",
+      "label": "Assembly Required",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

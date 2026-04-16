@@ -1,0 +1,88 @@
+{
+  "name": "consulting_service",
+  "display_name": "Consulting Service",
+  "vertical_tags": [
+    "consulting"
+  ],
+  "fields": [
+    {
+      "key": "service_type",
+      "label": "Service Type",
+      "type": "select",
+      "options": [
+        "Hourly",
+        "Day Rate",
+        "Fixed Fee",
+        "Retainer",
+        "Milestone",
+        "Expense Passthrough"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "rate_unit",
+      "label": "Rate Unit",
+      "type": "select",
+      "options": [
+        "Per Hour",
+        "Per Day",
+        "Per Project",
+        "Per Month",
+        "Per Deliverable"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "discipline",
+      "label": "Discipline",
+      "type": "select",
+      "options": [
+        "Strategy",
+        "Technology",
+        "Finance",
+        "HR",
+        "Legal",
+        "Marketing",
+        "Operations",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "seniority_level",
+      "label": "Seniority Level",
+      "type": "select",
+      "options": [
+        "Junior",
+        "Mid",
+        "Senior",
+        "Principal",
+        "Partner",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "deliverable_description",
+      "label": "Deliverable",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "typical_duration",
+      "label": "Typical Duration",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "notes",
+      "label": "Notes / Assumptions",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

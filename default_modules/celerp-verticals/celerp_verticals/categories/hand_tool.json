@@ -1,0 +1,61 @@
+{
+  "name": "hand_tool",
+  "display_name": "Hand Tool",
+  "vertical_tags": [
+    "hardware"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Hammer",
+        "Screwdriver",
+        "Pliers",
+        "Wrench",
+        "Saw",
+        "Chisel",
+        "Level",
+        "Tape Measure",
+        "File",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "part_no",
+      "label": "Part / Model No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Good",
+        "Fair",
+        "For Repair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,110 @@
+{
+  "name": "residential_unit",
+  "display_name": "Residential Unit",
+  "vertical_tags": [
+    "property_rental"
+  ],
+  "fields": [
+    {
+      "key": "unit_ref",
+      "label": "Unit No. / Label",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "building",
+      "label": "Building / Project",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "floor",
+      "label": "Floor",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size_sqm",
+      "label": "Size (sqm)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "bedrooms",
+      "label": "Bedrooms",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "bathrooms",
+      "label": "Bathrooms",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "furnishing",
+      "label": "Furnishing",
+      "type": "select",
+      "options": [
+        "Unfurnished",
+        "Partially Furnished",
+        "Fully Furnished"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "occupancy_status",
+      "label": "Occupancy Status",
+      "type": "select",
+      "options": [
+        "Vacant",
+        "Occupied",
+        "Reserved",
+        "Under Maintenance"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "tenant_name",
+      "label": "Current Tenant",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "lease_start",
+      "label": "Lease Start",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "lease_end",
+      "label": "Lease End",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "deposit_held",
+      "label": "Deposit Held",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "notes",
+      "label": "Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

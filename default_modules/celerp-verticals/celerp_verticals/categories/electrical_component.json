@@ -1,0 +1,63 @@
+{
+  "name": "electrical_component",
+  "display_name": "Electrical Component",
+  "vertical_tags": [
+    "hardware"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Switch",
+        "Socket / Outlet",
+        "Circuit Breaker",
+        "Fuse",
+        "Conduit",
+        "Cable / Wire",
+        "Junction Box",
+        "Connector",
+        "Transformer",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "specs",
+      "label": "Specs",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "voltage",
+      "label": "Voltage Rating",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "amperage",
+      "label": "Amperage",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "ip_rating",
+      "label": "IP Rating",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

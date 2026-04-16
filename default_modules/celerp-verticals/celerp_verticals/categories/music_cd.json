@@ -1,0 +1,74 @@
+{
+  "name": "music_cd",
+  "display_name": "Music - CD",
+  "vertical_tags": [
+    "books_media"
+  ],
+  "fields": [
+    {
+      "key": "artist",
+      "label": "Artist / Band",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "title",
+      "label": "Album Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "label",
+      "label": "Record Label",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "catalog_no",
+      "label": "Catalog No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "format",
+      "label": "Format",
+      "type": "select",
+      "options": [
+        "CD",
+        "2xCD",
+        "Box Set",
+        "Single",
+        "EP",
+        "CD+DVD",
+        "CD+Blu-ray",
+        "SACD",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New / Sealed",
+        "Like New",
+        "Good",
+        "Acceptable"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

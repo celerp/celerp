@@ -1,0 +1,60 @@
+{
+  "name": "soft_furnishing",
+  "display_name": "Soft Furnishing & Textiles",
+  "vertical_tags": [
+    "furniture"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Rug",
+        "Cushion / Pillow",
+        "Throw / Blanket",
+        "Curtain / Drape",
+        "Duvet / Quilt",
+        "Pillow",
+        "Bedsheet Set",
+        "Towel",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Pattern",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,122 @@
+{
+  "name": "pearl",
+  "display_name": "Pearl",
+  "vertical_tags": [
+    "gems_jewelry"
+  ],
+  "fields": [
+    {
+      "key": "pieces",
+      "label": "Pieces",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pearl_type",
+      "label": "Pearl Type",
+      "type": "select",
+      "options": [
+        "Akoya",
+        "South Sea White",
+        "South Sea Golden",
+        "Tahitian",
+        "Freshwater",
+        "Mabe",
+        "Keshi",
+        "Natural"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size_mm",
+      "label": "Size (mm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "shape",
+      "label": "Shape",
+      "type": "select",
+      "options": [
+        "Round",
+        "Near-Round",
+        "Oval",
+        "Button",
+        "Drop",
+        "Baroque",
+        "Semi-Baroque",
+        "Circle"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Overtone",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "luster",
+      "label": "Luster",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "Poor"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "surface",
+      "label": "Surface Quality",
+      "type": "select",
+      "options": [
+        "Clean",
+        "Lightly Spotted",
+        "Moderately Spotted",
+        "Heavily Spotted"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "nacre",
+      "label": "Nacre Thickness",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "strand_length",
+      "label": "Strand Length",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Certificate No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_body",
+      "label": "Grading Lab",
+      "type": "select",
+      "options": [
+        "GIA",
+        "GRS",
+        "Gübelin",
+        "SSEF",
+        "Other"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "carat"
+}

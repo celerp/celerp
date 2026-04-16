@@ -1,0 +1,71 @@
+{
+  "name": "comic",
+  "display_name": "Comic & Graphic Novel",
+  "vertical_tags": [
+    "books_media"
+  ],
+  "fields": [
+    {
+      "key": "title",
+      "label": "Series / Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "issue_no",
+      "label": "Issue No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "publisher",
+      "label": "Publisher",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "variant",
+      "label": "Variant / Cover",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Grade",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_service",
+      "label": "Grading Service",
+      "type": "select",
+      "options": [
+        "CGC",
+        "CBCS",
+        "Raw / Ungraded",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Cert No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,23 @@
+Proprietary Software — All Rights Reserved
+
+Copyright (c) 2026 Noah Severs
+
+This directory and all files within it (the "UI Software") are proprietary
+and confidential. No part of the UI Software may be used, copied, modified,
+merged, published, distributed, sublicensed, or sold without the prior
+written permission of Noah Severs.
+
+The UI Software is provided for reference purposes only as part of the
+Celerp source-available distribution. Viewing the source does not grant
+any license to use, reproduce, or derive works from it.
+
+Attribution Requirement (Non-Removable):
+The "Powered by Celerp" attribution mark in all user-visible output
+(invoices, purchase orders, reports, PDFs, and any other documents or
+exports) may not be removed, obscured, or replaced under any circumstances.
+This requirement applies regardless of any other permissions granted.
+
+The backend API server (celerp/ directory) is licensed separately under
+the Business Source License 1.1. See /LICENSE for details.
+
+For commercial licensing or white-label inquiries: https://celerp.com

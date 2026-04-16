@@ -1,0 +1,72 @@
+{
+  "name": "skincare",
+  "display_name": "Skincare",
+  "vertical_tags": [
+    "cosmetics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Cleanser",
+        "Toner",
+        "Serum",
+        "Moisturiser",
+        "Eye Cream",
+        "SPF / Sunscreen",
+        "Mask",
+        "Exfoliant",
+        "Oil",
+        "Mist",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "volume_ml",
+      "label": "Volume (ml)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "skin_type",
+      "label": "Skin Type",
+      "type": "select",
+      "options": [
+        "All",
+        "Dry",
+        "Oily",
+        "Combination",
+        "Sensitive",
+        "Normal",
+        "Mature"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

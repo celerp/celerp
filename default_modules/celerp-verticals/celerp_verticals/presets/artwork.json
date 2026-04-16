@@ -1,0 +1,25 @@
+{
+  "name": "artwork",
+  "display_name": "Artwork",
+  "license": "BSL-1.1",
+  "categories": [
+    "painting",
+    "sculpture",
+    "print_edition",
+    "art_photography",
+    "drawing",
+    "decorative_art"
+  ],
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-labels",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

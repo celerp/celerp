@@ -1,0 +1,89 @@
+{
+  "name": "audio_equipment",
+  "display_name": "Audio Equipment",
+  "vertical_tags": [
+    "electronics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "serial_no",
+      "label": "Serial No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Headphones",
+        "In-Ear Monitors",
+        "Speaker",
+        "Amplifier",
+        "DAC",
+        "Turntable",
+        "Microphone",
+        "Receiver",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "driver_type",
+      "label": "Driver Type",
+      "type": "select",
+      "options": [
+        "Dynamic",
+        "Planar Magnetic",
+        "Balanced Armature",
+        "Electrostatic",
+        "Bone Conduction",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "connectivity",
+      "label": "Connectivity",
+      "type": "select",
+      "options": [
+        "Wired",
+        "Bluetooth",
+        "USB",
+        "Wi-Fi",
+        "Wired + Wireless",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair",
+        "For Parts"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

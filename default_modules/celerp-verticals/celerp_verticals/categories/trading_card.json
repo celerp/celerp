@@ -1,0 +1,80 @@
+{
+  "name": "trading_card",
+  "display_name": "Trading Card",
+  "vertical_tags": [
+    "books_media"
+  ],
+  "fields": [
+    {
+      "key": "game_set",
+      "label": "Game / Set",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "card_name",
+      "label": "Card Name",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "card_no",
+      "label": "Card No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year / Edition",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "variant",
+      "label": "Variant / Holo",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "language",
+      "label": "Language",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Grade",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_service",
+      "label": "Grading Service",
+      "type": "select",
+      "options": [
+        "PSA",
+        "BGS (Beckett)",
+        "CGC",
+        "SGC",
+        "Raw / Ungraded",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Cert No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

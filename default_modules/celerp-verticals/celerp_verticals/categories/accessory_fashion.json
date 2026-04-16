@@ -1,0 +1,66 @@
+{
+  "name": "accessory_fashion",
+  "display_name": "Accessory (Fashion)",
+  "vertical_tags": [
+    "fashion"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Belt",
+        "Scarf",
+        "Hat",
+        "Sunglasses",
+        "Wallet",
+        "Gloves",
+        "Jewellery",
+        "Tie / Bow Tie",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "gender",
+      "label": "Gender",
+      "type": "select",
+      "options": [
+        "Men",
+        "Women",
+        "Unisex"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "style_code",
+      "label": "Style Code",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,56 @@
+{
+  "name": "personal_care",
+  "display_name": "Personal Care",
+  "vertical_tags": [
+    "cosmetics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Deodorant / Antiperspirant",
+        "Body Wash",
+        "Bar Soap",
+        "Body Lotion",
+        "Shaving",
+        "Oral Care",
+        "Razor",
+        "Sun Care",
+        "Feminine Care",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "volume_ml",
+      "label": "Volume / Weight (ml or g)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

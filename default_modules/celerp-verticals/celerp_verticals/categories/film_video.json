@@ -1,0 +1,91 @@
+{
+  "name": "film_video",
+  "display_name": "Film & Video",
+  "vertical_tags": [
+    "books_media"
+  ],
+  "fields": [
+    {
+      "key": "title",
+      "label": "Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "director",
+      "label": "Director",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "format",
+      "label": "Format",
+      "type": "select",
+      "options": [
+        "4K UHD",
+        "Blu-ray",
+        "DVD",
+        "Blu-ray + Digital",
+        "4K + Blu-ray",
+        "VHS",
+        "LaserDisc",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition",
+      "label": "Edition",
+      "type": "select",
+      "options": [
+        "Standard",
+        "Collector's Edition",
+        "Limited Edition",
+        "Director's Cut",
+        "Extended",
+        "Box Set",
+        "Criterion",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "region",
+      "label": "Region",
+      "type": "select",
+      "options": [
+        "Region Free",
+        "Region A",
+        "Region B",
+        "Region C",
+        "Region 1",
+        "Region 2",
+        "Region 4",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New / Sealed",
+        "Like New",
+        "Good",
+        "Acceptable"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

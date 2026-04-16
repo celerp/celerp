@@ -1,0 +1,117 @@
+{
+  "name": "fine_writing_instrument",
+  "display_name": "Fine Writing Instrument",
+  "vertical_tags": [
+    "watches_accessories"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Fountain Pen",
+        "Rollerball",
+        "Ballpoint",
+        "Mechanical Pencil",
+        "Dip Pen",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material / Finish",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "nib_size",
+      "label": "Nib Size",
+      "type": "select",
+      "options": [
+        "EF",
+        "F",
+        "M",
+        "B",
+        "BB",
+        "Stub",
+        "Italic",
+        "Flex",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "nib_material",
+      "label": "Nib Material",
+      "type": "select",
+      "options": [
+        "Gold 18K",
+        "Gold 14K",
+        "Stainless Steel",
+        "Palladium",
+        "Titanium",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "filling",
+      "label": "Filling System",
+      "type": "select",
+      "options": [
+        "Cartridge / Converter",
+        "Piston",
+        "Vacuum",
+        "Eye Dropper",
+        "Button",
+        "Lever",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Excellent",
+        "Good",
+        "Fair",
+        "For Restoration"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "box_papers",
+      "label": "Box / Papers",
+      "type": "select",
+      "options": [
+        "Full Set",
+        "Box Only",
+        "Papers Only",
+        "None"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

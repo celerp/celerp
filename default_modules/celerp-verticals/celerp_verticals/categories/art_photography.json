@@ -1,0 +1,121 @@
+{
+  "name": "art_photography",
+  "display_name": "Photography (Fine Art)",
+  "vertical_tags": [
+    "artwork"
+  ],
+  "fields": [
+    {
+      "key": "artist",
+      "label": "Artist / Photographer",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "title",
+      "label": "Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year_created",
+      "label": "Year Created",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "technique",
+      "label": "Printing Technique",
+      "type": "select",
+      "options": [
+        "C-Print",
+        "Silver Gelatin",
+        "Chromogenic",
+        "Inkjet / Giclée",
+        "Platinum-Palladium",
+        "Cyanotype",
+        "Dye Transfer",
+        "Daguerreotype",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "paper",
+      "label": "Paper",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition",
+      "label": "Edition (x/y)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "signed",
+      "label": "Signed",
+      "type": "select",
+      "options": [
+        "Signed",
+        "Signed & Numbered",
+        "Estate Stamp",
+        "Unsigned"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "framed",
+      "label": "Framed",
+      "type": "select",
+      "options": [
+        "Framed",
+        "Unframed"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "provenance",
+      "label": "Provenance",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "Poor"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "coa",
+      "label": "Certificate of Authenticity",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

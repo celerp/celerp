@@ -1,0 +1,6 @@
+recursive-include ui/static *
+recursive-include celerp/migrations *.py *.mako *.cfg
+recursive-include default_modules *.py *.json
+include alembic.ini
+include README.md
+include LICENSE

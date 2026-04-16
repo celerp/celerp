@@ -1,0 +1,81 @@
+{
+  "name": "dress_jumpsuit",
+  "display_name": "Dress & Jumpsuit",
+  "vertical_tags": [
+    "fashion"
+  ],
+  "fields": [
+    {
+      "key": "size",
+      "label": "Size",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "length",
+      "label": "Length",
+      "type": "select",
+      "options": [
+        "Mini",
+        "Midi",
+        "Maxi",
+        "Floor Length"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "gender",
+      "label": "Gender",
+      "type": "select",
+      "options": [
+        "Women",
+        "Girls",
+        "Unisex"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "season",
+      "label": "Season",
+      "type": "select",
+      "options": [
+        "SS",
+        "AW",
+        "Resort",
+        "Pre-Fall",
+        "All Season"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "style_code",
+      "label": "Style Code",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

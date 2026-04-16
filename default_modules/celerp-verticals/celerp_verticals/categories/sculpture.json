@@ -1,0 +1,140 @@
+{
+  "name": "sculpture",
+  "display_name": "Sculpture",
+  "vertical_tags": [
+    "artwork"
+  ],
+  "fields": [
+    {
+      "key": "artist",
+      "label": "Artist",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "title",
+      "label": "Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year_created",
+      "label": "Year Created",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "medium",
+      "label": "Medium / Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W×D (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_kg",
+      "label": "Weight (kg)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition",
+      "label": "Edition",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "foundry",
+      "label": "Foundry / Fabricator",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "patina",
+      "label": "Patina / Finish",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "base_included",
+      "label": "Base / Plinth",
+      "type": "select",
+      "options": [
+        "Included",
+        "Not Included",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "signed",
+      "label": "Signed / Stamped",
+      "type": "select",
+      "options": [
+        "Signed",
+        "Foundry Mark",
+        "Both",
+        "None"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "provenance",
+      "label": "Provenance",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "Poor - Needs Restoration"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition_notes",
+      "label": "Condition Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "coa",
+      "label": "Certificate of Authenticity",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "auth_body",
+      "label": "Authentication By",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

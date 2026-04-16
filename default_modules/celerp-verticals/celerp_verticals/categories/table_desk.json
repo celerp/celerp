@@ -1,0 +1,90 @@
+{
+  "name": "table_desk",
+  "display_name": "Table & Desk",
+  "vertical_tags": [
+    "furniture"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Dining Table",
+        "Coffee Table",
+        "Side / End Table",
+        "Console Table",
+        "Desk",
+        "Standing Desk",
+        "Study Table",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Top Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "frame_material",
+      "label": "Frame / Leg Material",
+      "type": "select",
+      "options": [
+        "Solid Wood",
+        "Engineered Wood",
+        "Metal",
+        "Glass",
+        "Marble / Stone",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Finish",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W×D (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "seats",
+      "label": "Seats (dining tables)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "assembly",
+      "label": "Assembly Required",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

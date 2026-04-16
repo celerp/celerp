@@ -1,0 +1,23 @@
+{
+  "name": "watches",
+  "display_name": "Watches & Accessories",
+  "license": "BSL-1.1",
+  "categories": [
+    "watch",
+    "watch_strap",
+    "fine_writing_instrument",
+    "jewelry"
+  ],
+  "modules": [
+    "celerp-inventory",
+    "celerp-warehousing",
+    "celerp-labels",
+    "celerp-docs",
+    "celerp-accounting",
+    "celerp-reports",
+    "celerp-dashboard",
+    "celerp-backup",
+    "celerp-verticals",
+    "celerp-ai"
+  ]
+}

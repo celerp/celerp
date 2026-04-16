@@ -1,0 +1,79 @@
+{
+  "name": "fastener",
+  "display_name": "Fastener",
+  "vertical_tags": [
+    "hardware"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Screw",
+        "Bolt",
+        "Nut",
+        "Washer",
+        "Anchor",
+        "Rivet",
+        "Nail",
+        "Staple",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size",
+      "label": "Size",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "select",
+      "options": [
+        "Steel",
+        "Stainless Steel 304",
+        "Stainless Steel 316",
+        "Brass",
+        "Zinc",
+        "Nylon",
+        "Aluminum",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "standard",
+      "label": "Standard",
+      "type": "select",
+      "options": [
+        "Metric",
+        "Imperial",
+        "UNC",
+        "UNF",
+        "BSW",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "finish",
+      "label": "Finish",
+      "type": "select",
+      "options": [
+        "Plain",
+        "Zinc Plated",
+        "Hot-Dip Galvanized",
+        "Black Oxide",
+        "Stainless",
+        "Brass",
+        "Other"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,89 @@
+{
+  "name": "lighting",
+  "display_name": "Lighting",
+  "vertical_tags": [
+    "furniture"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Table Lamp",
+        "Floor Lamp",
+        "Pendant / Hanging",
+        "Ceiling Flush",
+        "Chandelier",
+        "Wall Sconce",
+        "Desk Lamp",
+        "Outdoor",
+        "LED Strip",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material / Shade",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "bulb_type",
+      "label": "Bulb Type",
+      "type": "select",
+      "options": [
+        "LED",
+        "Incandescent",
+        "Fluorescent",
+        "Halogen",
+        "Smart / Connected",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "wattage",
+      "label": "Max Wattage",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color_temp_k",
+      "label": "Color Temp (K)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "ip_rating",
+      "label": "IP Rating (outdoor)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

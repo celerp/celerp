@@ -1,0 +1,86 @@
+{
+  "name": "tv_display",
+  "display_name": "TV & Display",
+  "vertical_tags": [
+    "electronics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "serial_no",
+      "label": "Serial No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size_in",
+      "label": "Screen Size (in)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "resolution",
+      "label": "Resolution",
+      "type": "select",
+      "options": [
+        "4K UHD",
+        "8K",
+        "1080p Full HD",
+        "720p HD",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "panel_type",
+      "label": "Panel Type",
+      "type": "select",
+      "options": [
+        "OLED",
+        "QLED",
+        "LED",
+        "QNED",
+        "Mini LED",
+        "OLED evo",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair",
+        "For Parts"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "warranty_exp",
+      "label": "Warranty Expires",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

@@ -1,0 +1,67 @@
+{
+  "name": "fresh_food",
+  "display_name": "Fresh Food (Dairy / Meat / Seafood)",
+  "vertical_tags": [
+    "food_beverage"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Dairy",
+        "Meat - Beef",
+        "Meat - Pork",
+        "Meat - Poultry",
+        "Meat - Lamb",
+        "Seafood - Fish",
+        "Seafood - Shellfish",
+        "Deli / Charcuterie",
+        "Egg",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "origin_country",
+      "label": "Origin Country",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch / Lot No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry / Use By",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "allergens",
+      "label": "Allergens",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage_condition",
+      "label": "Storage Condition",
+      "type": "select",
+      "options": [
+        "Refrigerated (0-4°C)",
+        "Frozen (-18°C)",
+        "Chilled (0-8°C)"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "kg"
+}

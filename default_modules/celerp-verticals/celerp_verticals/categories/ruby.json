@@ -1,0 +1,142 @@
+{
+  "name": "ruby",
+  "display_name": "Ruby",
+  "vertical_tags": [
+    "gems_jewelry"
+  ],
+  "fields": [
+    {
+      "key": "origin",
+      "label": "Origin",
+      "type": "select",
+      "options": [
+        "Burma (Myanmar)",
+        "Afghanistan",
+        "Cambodia",
+        "Greenland",
+        "Kenya",
+        "Madagascar",
+        "Mozambique",
+        "Tanzania",
+        "Thailand",
+        "Vietnam",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "carat",
+      "label": "Carat",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "pieces",
+      "label": "Pieces",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color",
+      "type": "select",
+      "options": [
+        "Pigeon Blood",
+        "Deep Red",
+        "Medium Red",
+        "Pinkish-Red",
+        "Purplish-Red",
+        "Vivid Red",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "treatment",
+      "label": "Treatment",
+      "type": "select",
+      "options": [
+        "Unheated",
+        "Heated",
+        "No Indication of Heating",
+        "Fracture Filled",
+        "Glass Filled",
+        "Beryllium Diffusion",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "clarity",
+      "label": "Clarity",
+      "type": "select",
+      "options": [
+        "Eye Clean",
+        "Slightly Included",
+        "Moderately Included",
+        "Heavily Included",
+        "Loupe Clean"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "shape",
+      "label": "Shape / Cut",
+      "type": "select",
+      "options": [
+        "Round",
+        "Oval",
+        "Cushion",
+        "Pear",
+        "Heart",
+        "Emerald",
+        "Marquise",
+        "Cabochon",
+        "Trillion",
+        "Custom"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    },
+    {
+      "key": "measurements",
+      "label": "Measurements (mm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Certificate No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "cert_body",
+      "label": "Grading Lab",
+      "type": "select",
+      "options": [
+        "GRS",
+        "Gübelin",
+        "SSEF",
+        "GIA",
+        "AGL",
+        "Lotus",
+        "AIGS",
+        "GIT",
+        "IGI",
+        "Other"
+      ],
+      "add_new": true,
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "carat"
+}

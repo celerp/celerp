@@ -1,0 +1,86 @@
+{
+  "name": "outdoor_furniture",
+  "display_name": "Outdoor Furniture",
+  "vertical_tags": [
+    "furniture"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Garden Chair",
+        "Garden Table",
+        "Sun Lounger",
+        "Parasol / Umbrella",
+        "Garden Sofa Set",
+        "Hammock",
+        "Planter",
+        "BBQ / Grill",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "select",
+      "options": [
+        "Teak",
+        "Eucalyptus",
+        "Aluminium",
+        "Steel",
+        "Rattan / Wicker",
+        "HDPE Plastic",
+        "Concrete",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Finish",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W×D (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "ip_rating",
+      "label": "Weather Rating",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "assembly",
+      "label": "Assembly Required",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

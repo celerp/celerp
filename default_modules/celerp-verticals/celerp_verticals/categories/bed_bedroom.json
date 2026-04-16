@@ -1,0 +1,97 @@
+{
+  "name": "bed_bedroom",
+  "display_name": "Bed & Bedroom",
+  "vertical_tags": [
+    "furniture"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Bed Frame",
+        "Headboard",
+        "Bedside Table",
+        "Wardrobe",
+        "Dressing Table",
+        "Ottoman Bed",
+        "Bunk Bed",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "size",
+      "label": "Bed Size",
+      "type": "select",
+      "options": [
+        "Single / Twin",
+        "Single XL",
+        "Double / Full",
+        "Queen",
+        "King",
+        "Super King",
+        "US King",
+        "Crib / Toddler",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "material",
+      "label": "Material",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "color",
+      "label": "Color / Finish",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dimensions_cm",
+      "label": "Dimensions H×W×D (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage",
+      "label": "Storage",
+      "type": "select",
+      "options": [
+        "With Storage",
+        "Without Storage",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "assembly",
+      "label": "Assembly Required",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Like New",
+        "Good",
+        "Fair"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

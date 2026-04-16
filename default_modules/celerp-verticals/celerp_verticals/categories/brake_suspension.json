@@ -1,0 +1,99 @@
+{
+  "name": "brake_suspension",
+  "display_name": "Brake & Suspension",
+  "vertical_tags": [
+    "automotive"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Part Type",
+      "type": "select",
+      "options": [
+        "Brake Pad",
+        "Brake Rotor / Disc",
+        "Caliper",
+        "Brake Drum",
+        "Brake Shoe",
+        "Shock Absorber",
+        "Strut",
+        "Spring",
+        "Control Arm",
+        "Tie Rod",
+        "Ball Joint",
+        "Sway Bar Link",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "oem_no",
+      "label": "OEM Part No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_make",
+      "label": "Fitment Make",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_model",
+      "label": "Fitment Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_year",
+      "label": "Fitment Year(s)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fitment_engine",
+      "label": "Fitment Engine",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "axle",
+      "label": "Axle",
+      "type": "select",
+      "options": [
+        "Front",
+        "Rear",
+        "Both",
+        "N/A"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "OEM Remanufactured",
+        "Aftermarket New",
+        "Used - Good",
+        "Used - Fair",
+        "For Parts / Core"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

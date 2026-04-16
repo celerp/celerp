@@ -1,0 +1,100 @@
+{
+  "name": "celerp",
+  "version": "1.0.0",
+  "description": "Free business software — inventory, invoicing, and operations in one place.",
+  "main": "main.js",
+  "author": "Data Universal Limited",
+  "license": "BSL-1.1",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "start": "electron .",
+    "dev": "CELERP_DEV_MODE=1 electron .",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "dependencies": {
+    "embedded-postgres": "^17.9.0-beta.16",
+    "electron-updater": "^6.3.0"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.celerp.app",
+    "productName": "Celerp",
+    "copyright": "Copyright © 2026 Data Universal Limited",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "assets/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../",
+        "to": "app",
+        "filter": [
+          "celerp/**",
+          "default_modules/**",
+          "ui/**",
+          "alembic/**",
+          "alembic.ini",
+          "pyproject.toml",
+          "MANIFEST.in",
+          "!**/__pycache__",
+          "!**/*.pyc",
+          "!tests/**",
+          "!docs/**",
+          "!dev.db",
+          "!celerp.db",
+          "!electron/**",
+          "!scripts/**",
+          "!build/**",
+          "!dist/**",
+          "!*.egg-info/**",
+          "!.venv/**"
+        ]
+      },
+      {
+        "from": "python-standalone/${os}-${arch}",
+        "to": "python"
+      }
+    ],
+    "win": {
+      "icon": "assets/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "assets/icon.png",
+      "category": "Office",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "celerp",
+      "repo": "celerp"
+    }
+  }
+}

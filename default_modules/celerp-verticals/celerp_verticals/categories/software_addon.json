@@ -1,0 +1,56 @@
+{
+  "name": "software_addon",
+  "display_name": "Software Add-on",
+  "vertical_tags": [
+    "saas"
+  ],
+  "fields": [
+    {
+      "key": "addon_name",
+      "label": "Add-on Name",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "addon_type",
+      "label": "Add-on Type",
+      "type": "select",
+      "options": [
+        "Seats",
+        "Storage",
+        "Feature",
+        "Support",
+        "Integration",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "billing_cycle",
+      "label": "Billing Cycle",
+      "type": "select",
+      "options": [
+        "Monthly",
+        "Annual",
+        "One-Time"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "compatible_plans",
+      "label": "Compatible Plans",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "notes",
+      "label": "Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

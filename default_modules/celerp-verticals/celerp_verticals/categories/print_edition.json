@@ -1,0 +1,142 @@
+{
+  "name": "print_edition",
+  "display_name": "Print & Edition",
+  "vertical_tags": [
+    "artwork"
+  ],
+  "fields": [
+    {
+      "key": "artist",
+      "label": "Artist",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "title",
+      "label": "Title",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year_created",
+      "label": "Year Created",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "technique",
+      "label": "Technique",
+      "type": "select",
+      "options": [
+        "Lithograph",
+        "Screenprint / Silkscreen",
+        "Etching",
+        "Aquatint",
+        "Woodblock",
+        "Linocut",
+        "Giclée",
+        "Offset Print",
+        "Mezzotint",
+        "Engraving",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "paper",
+      "label": "Paper / Substrate",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "sheet_size_cm",
+      "label": "Sheet Size (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "image_size_cm",
+      "label": "Image Size (cm)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition",
+      "label": "Edition (x/y)",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "edition_type",
+      "label": "Edition Type",
+      "type": "select",
+      "options": [
+        "Numbered Edition",
+        "Artist's Proof (AP)",
+        "Printer's Proof (PP)",
+        "Hors Commerce (HC)",
+        "Bon à Tirer (BAT)",
+        "Unique",
+        "Open Edition"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "publisher",
+      "label": "Publisher / Printer",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "signed",
+      "label": "Signed",
+      "type": "select",
+      "options": [
+        "Signed in Plate",
+        "Signed by Hand",
+        "Both",
+        "Unsigned"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Excellent",
+        "Very Good",
+        "Good - Minor Flaws",
+        "Fair",
+        "Poor"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition_notes",
+      "label": "Condition Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "coa",
+      "label": "Certificate of Authenticity",
+      "type": "select",
+      "options": [
+        "Yes",
+        "No"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

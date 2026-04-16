@@ -1,0 +1,124 @@
+[project]
+name = "celerp"
+version = "1.0.0"
+description = "Open-source, self-hosted ERP for small businesses"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.10"
+keywords = ["erp", "inventory", "accounting", "self-hosted", "fastapi"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: Other/Proprietary License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business",
+    "Topic :: Office/Business :: Financial :: Accounting",
+]
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-jose[cryptography]>=3.3",
+    "cryptography>=42",
+    "passlib[bcrypt]>=1.7",
+    "numba>=0.59",
+    "numpy>=1.26",
+    "python-multipart>=0.0.9",
+    "aiofiles>=23.0",
+    "httpx>=0.27",
+    "slowapi>=0.1.9",
+    "reportlab>=4.0",
+    "python-fasthtml>=0.12",
+    "psutil>=5.9",
+    "websockets>=12.0",
+    "aiosmtplib>=3.0",
+    "click>=8.0",
+    "python-barcode>=0.15",
+    "qrcode>=7.0",
+    "Pillow>=10.0",
+    "pypdf>=4.0",
+]
+
+[project.urls]
+Homepage = "https://celerp.com"
+Repository = "https://github.com/celerp/celerp"
+Documentation = "https://celerp.com/docs"
+
+[project.scripts]
+celerp = "celerp.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "httpx>=0.27",
+    "faker>=24.0",
+    "aiosqlite>=0.20",
+    "psycopg2-binary>=2.9",
+    "respx>=0.21",
+    "playwright>=1.43",
+    "pytest-playwright>=0.5",
+]
+prod = [
+    "gunicorn>=22.0",
+    "psycopg2-binary>=2.9",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser'"
+norecursedirs = [".git", ".venv", "__pycache__", "build", "dist", "default_modules/*/tests", "premium_modules/*/tests"]
+pythonpath = ["."]
+markers = [
+    "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["celerp*", "ui*", "default_modules"]
+exclude = ["alembic*"]
+
+[tool.setuptools.package-data]
+"celerp" = [
+    "alembic.ini",
+    "migrations/*.py",
+    "migrations/*.mako",
+    "migrations/versions/*.py",
+    "migrations/README.md",
+    "py.typed",
+]
+"ui" = [
+    "static/*",
+    "locales/**/*",
+]
+"default_modules" = [
+    "celerp-accounting/**/*",
+    "celerp-admin/**/*",
+    "celerp-ai/**/*",
+    "celerp-backup/**/*",
+    "celerp-connectors/**/*",
+    "celerp-contacts/**/*",
+    "celerp-dashboard/**/*",
+    "celerp-docs/**/*",
+    "celerp-fulfillment/**/*",
+    "celerp-inventory/**/*",
+    "celerp-labels/**/*",
+    "celerp-manufacturing/**/*",
+    "celerp-reports/**/*",
+    "celerp-subscriptions/**/*",
+    "celerp-verticals/**/*",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

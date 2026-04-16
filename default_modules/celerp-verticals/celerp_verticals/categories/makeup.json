@@ -1,0 +1,75 @@
+{
+  "name": "makeup",
+  "display_name": "Makeup",
+  "vertical_tags": [
+    "cosmetics"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "select",
+      "options": [
+        "Foundation",
+        "Concealer",
+        "Powder",
+        "Blush",
+        "Contour / Bronzer",
+        "Highlighter",
+        "Eyeshadow",
+        "Eyeliner",
+        "Mascara",
+        "Lip Colour",
+        "Lip Liner",
+        "Primer",
+        "Setting Spray",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "shade",
+      "label": "Shade / Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "finish",
+      "label": "Finish",
+      "type": "select",
+      "options": [
+        "Matte",
+        "Satin",
+        "Natural",
+        "Shimmer",
+        "Gloss",
+        "Luminous",
+        "Dewy"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry Date",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

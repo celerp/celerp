@@ -1,0 +1,85 @@
+{
+  "name": "bullion_coin",
+  "display_name": "Bullion Coin",
+  "vertical_tags": [
+    "coins_precious_metals"
+  ],
+  "fields": [
+    {
+      "key": "country",
+      "label": "Country / Program",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "denomination",
+      "label": "Denomination",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "metal",
+      "label": "Metal",
+      "type": "select",
+      "options": [
+        "Gold",
+        "Silver",
+        "Platinum",
+        "Palladium",
+        "Bimetallic"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_troy_oz",
+      "label": "Weight (troy oz)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "purity",
+      "label": "Purity",
+      "type": "select",
+      "options": [
+        ".9999",
+        "999.9",
+        "999",
+        "9999",
+        "916 (22K)",
+        "900",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "mint",
+      "label": "Mint",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "Sealed / New",
+        "BU (Brilliant Uncirculated)",
+        "AU (About Uncirculated)",
+        "Circulated"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

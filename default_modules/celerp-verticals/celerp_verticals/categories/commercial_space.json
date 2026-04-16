@@ -1,0 +1,131 @@
+{
+  "name": "commercial_space",
+  "display_name": "Commercial Space",
+  "vertical_tags": [
+    "property_rental"
+  ],
+  "fields": [
+    {
+      "key": "unit_ref",
+      "label": "Unit / Space Ref.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "building",
+      "label": "Building / Project",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "floor",
+      "label": "Floor / Level",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "nla_sqm",
+      "label": "NLA (sqm)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "space_type",
+      "label": "Space Type",
+      "type": "select",
+      "options": [
+        "Office",
+        "Retail",
+        "Shophouse",
+        "Warehouse",
+        "Showroom",
+        "Mixed Use",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "fit_out",
+      "label": "Fit-Out Status",
+      "type": "select",
+      "options": [
+        "Shell & Core",
+        "Fitted",
+        "Fully Fitted",
+        "Plug & Play"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "permitted_use",
+      "label": "Permitted Use",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "lease_type",
+      "label": "Lease Type",
+      "type": "select",
+      "options": [
+        "Gross Lease",
+        "Net Lease",
+        "Modified Gross",
+        "Triple Net"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "occupancy_status",
+      "label": "Occupancy Status",
+      "type": "select",
+      "options": [
+        "Vacant",
+        "Occupied",
+        "Reserved",
+        "Under Maintenance"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "tenant_name",
+      "label": "Current Tenant",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "lease_start",
+      "label": "Lease Start",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "lease_end",
+      "label": "Lease End",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "deposit_held",
+      "label": "Deposit Held",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "notes",
+      "label": "Notes",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

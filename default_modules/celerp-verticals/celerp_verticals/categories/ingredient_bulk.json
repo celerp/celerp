@@ -1,0 +1,63 @@
+{
+  "name": "ingredient_bulk",
+  "display_name": "Ingredient / Bulk Dry Good",
+  "vertical_tags": [
+    "food_beverage"
+  ],
+  "fields": [
+    {
+      "key": "type",
+      "label": "Type",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "origin_country",
+      "label": "Origin Country",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "grade",
+      "label": "Grade / Purity",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "batch_no",
+      "label": "Batch No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "expiry_date",
+      "label": "Expiry / Best Before",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "allergens",
+      "label": "Allergens",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "storage_condition",
+      "label": "Storage Condition",
+      "type": "select",
+      "options": [
+        "Ambient / Dry",
+        "Cool & Dry",
+        "Refrigerated"
+      ],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "kg"
+}

@@ -1,0 +1,91 @@
+{
+  "name": "jewelry",
+  "display_name": "Jewelry",
+  "vertical_tags": [
+    "gems_jewelry",
+    "watches_accessories"
+  ],
+  "fields": [
+    {
+      "key": "style",
+      "label": "Style",
+      "type": "select",
+      "options": [
+        "Ring",
+        "Necklace",
+        "Bracelet",
+        "Earrings",
+        "Pendant",
+        "Brooch",
+        "Bangle",
+        "Anklet",
+        "Cufflinks",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "metal",
+      "label": "Metal",
+      "type": "select",
+      "options": [
+        "Gold 18K",
+        "Gold 14K",
+        "Gold 9K",
+        "White Gold 18K",
+        "White Gold 14K",
+        "Rose Gold 18K",
+        "Platinum 950",
+        "Silver 925",
+        "Silver 800",
+        "Palladium",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "weight_g",
+      "label": "Total Weight (g)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "stones",
+      "label": "Stones",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "hallmark",
+      "label": "Hallmark / Maker",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New",
+        "Unworn",
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "For Repair"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "certificate_no",
+      "label": "Certificate No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}

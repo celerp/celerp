@@ -1,0 +1,131 @@
+{
+  "name": "watch",
+  "display_name": "Watch",
+  "vertical_tags": [
+    "watches_accessories"
+  ],
+  "fields": [
+    {
+      "key": "brand",
+      "label": "Brand",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "model",
+      "label": "Model",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "reference_no",
+      "label": "Reference No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "serial_no",
+      "label": "Serial No.",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "year",
+      "label": "Year / Period",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "movement",
+      "label": "Movement",
+      "type": "select",
+      "options": [
+        "Automatic",
+        "Manual Wind",
+        "Quartz",
+        "Solar",
+        "Kinetic",
+        "Spring Drive",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "case_material",
+      "label": "Case Material",
+      "type": "select",
+      "options": [
+        "Stainless Steel",
+        "Yellow Gold 18K",
+        "White Gold 18K",
+        "Rose Gold 18K",
+        "Titanium",
+        "Ceramic",
+        "Platinum",
+        "Carbon Fibre",
+        "Other"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "diameter_mm",
+      "label": "Diameter (mm)",
+      "type": "number",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "dial_color",
+      "label": "Dial Color",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "bracelet_strap",
+      "label": "Bracelet / Strap",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    },
+    {
+      "key": "condition",
+      "label": "Condition",
+      "type": "select",
+      "options": [
+        "New / Unworn",
+        "Excellent",
+        "Very Good",
+        "Good",
+        "Fair",
+        "For Service"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "papers",
+      "label": "Papers / Box",
+      "type": "select",
+      "options": [
+        "Full Set",
+        "Papers Only",
+        "Box Only",
+        "None"
+      ],
+      "visible_to_roles": []
+    },
+    {
+      "key": "service_date",
+      "label": "Last Service",
+      "type": "text",
+      "options": [],
+      "visible_to_roles": []
+    }
+  ],
+  "default_sell_by": "piece"
+}
