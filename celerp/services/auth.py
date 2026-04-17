@@ -104,7 +104,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSe
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
     from celerp.services.session_tracker import record as _record_activity
-    _record_activity(str(user.id))
+    _record_activity(str(user.id), company_id=str(company_id))
 
     return user
 

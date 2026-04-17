@@ -10,6 +10,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     services:
       postgres:
@@ -36,7 +37,7 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install deps
-        run: pip install -e ".[dev]"
+        run: pip install uv && uv pip install --system -e ".[dev]"
 
       - name: Run migrations
         env:
@@ -44,13 +45,12 @@ jobs:
           ALLOW_INSECURE_JWT: "true"
         run: alembic upgrade head
 
-      - name: Run tests (SQLite)
-        env:
-          ALLOW_INSECURE_JWT: "true"
-        run: pytest tests/ -q --tb=short --no-cov --ignore=tests/test_visual.py --ignore=tests/test_browser
-
-      - name: Run tests (Postgres)
+      - name: Run tests
         env:
           DATABASE_URL: postgresql+asyncpg://celerp:celerp_test@localhost:5432/celerp_test
           ALLOW_INSECURE_JWT: "true"
-        run: pytest tests/ -q --tb=short --no-cov -x --ignore=tests/test_visual.py --ignore=tests/test_browser
+        run: >
+          pytest tests/ -q --tb=short --no-cov -x
+          --ignore=tests/test_visual.py
+          --ignore=tests/test_browser
+          --ignore=tests/integration

@@ -42,7 +42,7 @@ def test_active_multiple_users():
 
 def test_expired_entries_excluded():
     session_tracker.record("u1")
-    session_tracker._activity["u1"] = time.monotonic() - session_tracker._WINDOW_SECONDS - 1
+    session_tracker._activity[("", "u1")] = time.monotonic() - session_tracker._WINDOW_SECONDS - 1
     assert session_tracker.active_user_ids() == set()
 
 
