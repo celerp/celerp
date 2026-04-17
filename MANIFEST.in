@@ -1,6 +1,37 @@
-recursive-include ui/static *
-recursive-include celerp/migrations *.py *.mako *.cfg
-recursive-include default_modules *.py *.json
-include alembic.ini
 include README.md
 include LICENSE
+include NOTICE
+include alembic.ini
+include ui/LICENSE
+include default_modules/celerp-manufacturing/LICENSE
+include default_modules/celerp-labels/LICENSE
+
+recursive-include celerp *.py *.mako *.cfg *.ini *.md
+recursive-include ui *.py *.css *.js *.png *.json *.html
+recursive-include default_modules *.py *.json *.md
+
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo
+
+prune tests
+prune scripts
+prune electron
+prune core
+prune celerp-cloud
+prune celerp-publish
+prune celerp-marketplace
+prune celerp-mobile
+prune celerp-modules
+prune premium-modules
+prune certificates
+prune screenshots
+prune .github
+prune .venv*
+prune docs
+
+exclude Dockerfile
+exclude docker-compose.yml
+exclude .env.example
+exclude .env.production.example
+exclude .gitignore
