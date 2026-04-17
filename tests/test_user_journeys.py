@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LicenseRef-Proprietary
 
 """User journey tests - Sprint 7.
 

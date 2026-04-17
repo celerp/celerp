@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 
 """Extended compute tests — covers edge cases missing from the basic suite.
 

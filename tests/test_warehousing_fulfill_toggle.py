@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs. All Rights Reserved.
-# SPDX-License-Identifier: Proprietary
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for fulfill toggle (migrated from celerp-fulfillment to celerp-warehousing).
 
 Verifies that the fulfillment toggle, badges, and API endpoints work correctly

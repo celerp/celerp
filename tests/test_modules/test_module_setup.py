@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for scripts/module_setup.py"""
 from __future__ import annotations
 

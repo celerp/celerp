@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs. All Rights Reserved.
-# SPDX-License-Identifier: Proprietary
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for stock receipt creation and confirmation."""
 
 from __future__ import annotations

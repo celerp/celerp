@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for Electron module integration (Phase 5).
 
 These tests verify the JavaScript/Electron functions and the Python module_setup.py

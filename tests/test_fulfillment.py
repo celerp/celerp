@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 
 """Tests for the fulfillment engine: pick algorithm, fulfill/un-fulfill, and lifecycle wiring."""
 

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Coverage gap closers targeting uncovered branches across:
   - routers/docs.py     (filters, pdf, credit_note, doc_taxes, send-void, receive, convert, csv-export)

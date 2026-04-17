@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LicenseRef-Proprietary
 
 """UI behavior tests.
 
@@ -2509,75 +2509,6 @@ class TestManufacturingPage:
             r = await ui_client.post("/manufacturing/mfg:abc123/cancel", cookies=_authed())
         assert r.status_code == 200
         assert b"mfg-detail" in r.content
-
-
-# ── T9: Scanning page ─────────────────────────────────────────────────────────
-
-@pytest.mark.skip(reason="Scanning module disabled until complete")
-class TestScanningPage:
-
-    @pytest.mark.asyncio
-    async def test_scanning_page_renders(self, ui_client):
-        r = await ui_client.get("/scanning", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Scanning" in r.content
-        assert b"scan-input" in r.content
-
-    @pytest.mark.asyncio
-    async def test_scanning_unauthed_redirects(self, ui_client):
-        r = await ui_client.get("/scanning")
-        assert r.status_code == 302
-        assert "/login" in r.headers["location"]
-
-    @pytest.mark.asyncio
-    async def test_scanning_has_batch_panel(self, ui_client):
-        r = await ui_client.get("/scanning", cookies=_authed())
-        assert b"batch-panel" in r.content
-        assert b"Start Batch" in r.content
-
-    @pytest.mark.asyncio
-    async def test_scanning_scan_found(self, ui_client):
-        scan_result = {
-            "entity_id": "item:x1", "entity_type": "item",
-            "state": {"sku": "WIDGET-1", "name": "Widget", "quantity": 10, "status": "active"},
-            "available_actions": ["count", "transfer"],
-        }
-        with (
-            patch("ui.api_client.scan_once", new=AsyncMock(return_value={"event_id": "ev1", "scan_id": "s:1"})),
-            patch("ui.api_client.resolve_scan", new=AsyncMock(return_value=scan_result)),
-        ):
-            r = await ui_client.post("/scanning/scan", data={"code": "WIDGET-1"}, cookies=_authed())
-        assert r.status_code == 200
-        assert b"scan-result--found" in r.content
-        assert b"WIDGET-1" in r.content
-
-    @pytest.mark.asyncio
-    async def test_scanning_scan_not_found(self, ui_client):
-        from ui.api_client import APIError
-        with (
-            patch("ui.api_client.scan_once", new=AsyncMock(return_value={"event_id": "ev1"})),
-            patch("ui.api_client.resolve_scan", new=AsyncMock(side_effect=APIError(404, "not found"))),
-        ):
-            r = await ui_client.post("/scanning/scan", data={"code": "NOEXIST"}, cookies=_authed())
-        assert r.status_code == 200
-        assert b"not found" in r.content.lower()
-
-    @pytest.mark.asyncio
-    async def test_scanning_batch_start(self, ui_client):
-        with patch("ui.api_client.start_batch", new=AsyncMock(return_value={"batch_id": "scan-batch:xyz"})):
-            r = await ui_client.post("/scanning/batch/start", cookies=_authed())
-        assert r.status_code == 200
-        assert b"batch-panel" in r.content
-
-    @pytest.mark.asyncio
-    async def test_scanning_history_panel_present(self, ui_client):
-        r = await ui_client.get("/scanning", cookies=_authed())
-        assert b"scan-history" in r.content
-
-    @pytest.mark.asyncio
-    async def test_scanning_in_sidebar(self, ui_client):
-        r = await ui_client.get("/scanning", cookies=_authed())
-        assert b"/scanning" in r.content
 
 
 # ── T5: CSV import/export ────────────────────────────────────────────────────

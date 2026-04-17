@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Phase A tests: field_schema service, references helper, loader dep enforcement."""
 from __future__ import annotations
 

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for the celerp-warehousing: fulfillment UI renderers and API endpoints."""
 
 from __future__ import annotations

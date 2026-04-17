@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Phase 8: module config tests — labels default-on under Inventory nav, scanning removed."""
 
 from __future__ import annotations

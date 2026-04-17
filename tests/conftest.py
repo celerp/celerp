@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 
 from __future__ import annotations
 
@@ -367,6 +367,12 @@ async def client(session: AsyncSession):
     except Exception:
         pass
     _set_session_token("")  # ensure clean gateway state
+    # Set a mock relay client so concurrent login gate is bypassed.
+    # Tests that specifically test the gate patch _client back to None.
+    from unittest.mock import MagicMock
+    from celerp.gateway.client import set_client as _set_client, get_client as _get_client
+    _saved_client = _get_client()
+    _set_client(MagicMock())
     app.dependency_overrides[get_session] = lambda: session
     # Simulate a connected gateway so direct_connection_limit gate does not fire in tests.
     # We patch the underlying _client variable (not get_client) so that inner tests can
@@ -376,4 +382,5 @@ async def client(session: AsyncSession):
             yield c
     app.dependency_overrides.clear()
     _clear_tracker()
+    _set_client(_saved_client)
     _set_session_token(_saved_token or "")

@@ -1,0 +1,64 @@
+name: Build Binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            build_cmd: pnpm run build:linux
+          - os: windows-latest
+            build_cmd: pnpm run build:win
+          - os: macos-latest
+            build_cmd: pnpm run build:mac
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install deps
+        working-directory: electron
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        working-directory: electron
+        run: ${{ matrix.build_cmd }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.os }}
+          path: |
+            electron/dist/*.dmg
+            electron/dist/*.AppImage
+            electron/dist/*.exe
+          if-no-files-found: warn
+
+      - name: Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            electron/dist/*.dmg
+            electron/dist/*.AppImage
+            electron/dist/*.exe
+          draft: true
