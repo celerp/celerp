@@ -9,9 +9,9 @@
   "scripts": {
     "start": "electron .",
     "dev": "CELERP_DEV_MODE=1 electron .",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux",
-    "build:mac": "electron-builder --mac"
+    "build:win": "electron-builder --win --publish never",
+    "build:linux": "electron-builder --linux --publish never",
+    "build:mac": "electron-builder --mac --publish never"
   },
   "dependencies": {
     "embedded-postgres": "^17.9.0-beta.16",
