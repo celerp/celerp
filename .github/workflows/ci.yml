@@ -12,21 +12,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: celerp_test
-          POSTGRES_USER: celerp
-          POSTGRES_PASSWORD: celerp_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
     steps:
       - uses: actions/checkout@v4
 
@@ -39,15 +24,8 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]"
 
-      - name: Run migrations
-        env:
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp_test@localhost:5432/celerp_test
-          ALLOW_INSECURE_JWT: "true"
-        run: alembic upgrade head
-
       - name: Run tests
         env:
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp_test@localhost:5432/celerp_test
           ALLOW_INSECURE_JWT: "true"
         run: >
           pytest tests/ -q --tb=short --no-cov -x
