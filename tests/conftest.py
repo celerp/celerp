@@ -357,6 +357,7 @@ async def client(session: AsyncSession):
     from httpx import ASGITransport, AsyncClient
     from celerp.services.session_tracker import clear as _clear_tracker
     from celerp.gateway.state import set_session_token as _set_session_token
+    from unittest.mock import patch, MagicMock
 
     _clear_tracker()
     _saved_token = None
@@ -367,8 +368,12 @@ async def client(session: AsyncSession):
         pass
     _set_session_token("")  # ensure clean gateway state
     app.dependency_overrides[get_session] = lambda: session
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
-        yield c
+    # Simulate a connected gateway so direct_connection_limit gate does not fire in tests.
+    # We patch the underlying _client variable (not get_client) so that inner tests can
+    # still override it to None when specifically testing the gate behavior.
+    with patch("celerp.gateway.client._client", MagicMock()):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            yield c
     app.dependency_overrides.clear()
     _clear_tracker()
     _set_session_token(_saved_token or "")

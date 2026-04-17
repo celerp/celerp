@@ -12,22 +12,19 @@ import time
 
 _WINDOW_SECONDS: int = 15 * 60  # match access token TTL
 
-# user_id (str) -> last_seen monotonic timestamp
+# user_id -> last_seen monotonic timestamp
 _activity: dict[str, float] = {}
 
 
-def record(user_id: str) -> None:
+def record(user_id: str, **_: object) -> None:
     """Call on every authenticated API request."""
     _activity[user_id] = time.monotonic()
 
 
-def active_user_ids(*, exclude: str | None = None) -> set[str]:
-    """Return user_ids seen within the activity window, optionally excluding one."""
+def active_user_ids(*, exclude: str | None = None, **_: object) -> set[str]:
+    """Return user_ids seen within the activity window."""
     cutoff = time.monotonic() - _WINDOW_SECONDS
-    return {
-        uid for uid, ts in _activity.items()
-        if ts >= cutoff and uid != exclude
-    }
+    return {uid for uid, ts in _activity.items() if ts >= cutoff and uid != exclude}
 
 
 def evict(user_id: str) -> None:

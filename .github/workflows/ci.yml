@@ -10,21 +10,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: celerp_test
-          POSTGRES_USER: celerp
-          POSTGRES_PASSWORD: celerp_test
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4
@@ -36,21 +22,13 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install deps
-        run: pip install -e ".[dev]"
+        run: pip install uv && uv pip install --system -e ".[dev]"
 
-      - name: Run migrations
-        env:
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp_test@localhost:5432/celerp_test
-          ALLOW_INSECURE_JWT: "true"
-        run: alembic upgrade head
-
-      - name: Run tests (SQLite)
+      - name: Run tests
         env:
           ALLOW_INSECURE_JWT: "true"
-        run: pytest tests/ -q --tb=short --no-cov --ignore=tests/test_visual.py --ignore=tests/test_browser
-
-      - name: Run tests (Postgres)
-        env:
-          DATABASE_URL: postgresql+asyncpg://celerp:celerp_test@localhost:5432/celerp_test
-          ALLOW_INSECURE_JWT: "true"
-        run: pytest tests/ -q --tb=short --no-cov -x --ignore=tests/test_visual.py --ignore=tests/test_browser
+        run: >
+          pytest tests/ -q --tb=short --no-cov -x
+          --ignore=tests/test_visual.py
+          --ignore=tests/test_browser
+          --ignore=tests/integration

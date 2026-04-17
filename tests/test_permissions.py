@@ -1143,10 +1143,11 @@ def _make_jwt(role: str) -> str:
 class TestSidebarRoleFiltering:
     """Sidebar correctly filters nav items by user role."""
 
-    def test_settings_link_hidden_for_operator(self):
+    def test_settings_link_visible_for_operator(self):
+        """Operators see settings/general (password change lives there)."""
         from ui.components.shell import _sidebar
         sidebar_html = str(_sidebar("dashboard", role="operator"))
-        assert 'href="/settings/general"' not in sidebar_html
+        assert 'href="/settings/general"' in sidebar_html
 
     def test_settings_link_visible_for_manager(self):
         from ui.components.shell import _sidebar
