@@ -104,11 +104,6 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "celerp",
-      "repo": "celerp"
     }
   }
 }

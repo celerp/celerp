@@ -73,14 +73,23 @@ jobs:
         working-directory: electron
         run: ${{ matrix.build_cmd }}
 
+      - name: Rename artifacts
+        shell: bash
+        run: |
+          cd electron/dist
+          for f in *.exe; do [ -f "$f" ] && mv "$f" Celerp-Setup.exe; done
+          for f in *.dmg; do [ -f "$f" ] && mv "$f" Celerp-mac.dmg; done
+          for f in *.AppImage; do [ -f "$f" ] && mv "$f" Celerp.AppImage; done
+          ls -la Celerp-* 2>/dev/null || echo "No matching artifacts"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.os }}
           path: |
-            electron/dist/*.dmg
-            electron/dist/*.AppImage
-            electron/dist/*.exe
+            electron/dist/Celerp-Setup.exe
+            electron/dist/Celerp-mac.dmg
+            electron/dist/Celerp.AppImage
           if-no-files-found: warn
 
       - name: Release (tags only)
@@ -88,7 +97,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            electron/dist/*.dmg
-            electron/dist/*.AppImage
-            electron/dist/*.exe
-          draft: true
+            electron/dist/Celerp-Setup.exe
+            electron/dist/Celerp-mac.dmg
+            electron/dist/Celerp.AppImage
+          draft: false
