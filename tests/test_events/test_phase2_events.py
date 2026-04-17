@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 
 from celerp_contacts.projections import apply_contact_event
 from celerp_docs.doc_projections import apply_documents_event

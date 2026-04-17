@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for celerp.modules.loader
 
 Each test gets a fresh temp directory and a clean slot + sys.modules state.

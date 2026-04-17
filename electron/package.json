@@ -10,7 +10,8 @@
     "start": "electron .",
     "dev": "CELERP_DEV_MODE=1 electron .",
     "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux"
+    "build:linux": "electron-builder --linux",
+    "build:mac": "electron-builder --mac"
   },
   "dependencies": {
     "embedded-postgres": "^17.9.0-beta.16",
@@ -73,6 +74,19 @@
           ]
         }
       ]
+    },
+    "mac": {
+      "icon": "assets/icon.icns",
+      "category": "public.app-category.business",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "identity": null
     },
     "linux": {
       "icon": "assets/icon.png",

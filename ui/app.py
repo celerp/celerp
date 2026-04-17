@@ -235,7 +235,6 @@ _CONDITIONAL_UI: list[tuple[str, str]] = [
     ("celerp-docs",        "ui.routes.documents"),
     # ui.routes.lists omitted: list routes are registered by ui.routes.documents
     ("celerp-inventory",   "ui.routes.inventory"),
-    # ("celerp-inventory",   "ui.routes.scanning"),  # Scanning module disabled until properly finished
     ("celerp-contacts",    "ui.routes.contacts"),
     ("celerp-accounting",  "ui.routes.accounting"),
     ("celerp-accounting",  "ui.routes.reconciliation"),

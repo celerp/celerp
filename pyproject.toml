@@ -1,7 +1,7 @@
 [project]
 name = "celerp"
 version = "1.0.0"
-description = "Open-source, self-hosted ERP for small businesses"
+description = "Free, self-hosted ERP for small businesses"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.10"
@@ -66,6 +66,8 @@ dev = [
     "respx>=0.21",
     "playwright>=1.43",
     "pytest-playwright>=0.5",
+    "pytest-timeout>=2.3",
+    "pytest-xdist>=3.5",
 ]
 prod = [
     "gunicorn>=22.0",
@@ -74,7 +76,7 @@ prod = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser'"
+addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser' --timeout=30"
 norecursedirs = [".git", ".venv", "__pycache__", "build", "dist", "default_modules/*/tests", "premium_modules/*/tests"]
 pythonpath = ["."]
 markers = [

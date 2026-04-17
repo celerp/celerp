@@ -1,0 +1,25 @@
+NOTICE — Celerp Multi-License Distribution
+
+This application bundles components under multiple licenses.
+Each component's license governs its use independently.
+
+Component Licenses
+------------------
+
+  electron/              BSL-1.1         See /LICENSE
+  celerp/                BSL-1.1         See /LICENSE
+  default_modules/       BSL-1.1         See /LICENSE
+    celerp-manufacturing MIT             See default_modules/celerp-manufacturing/LICENSE
+    celerp-labels        MIT             See default_modules/celerp-labels/LICENSE
+  ui/                    Proprietary     See ui/LICENSE
+  alembic/               BSL-1.1         See /LICENSE
+
+The root LICENSE (BSL-1.1) applies to all files not covered by a more
+specific LICENSE file in a subdirectory. When a subdirectory contains its
+own LICENSE file, that file governs all files within it.
+
+The "Powered by Celerp" attribution requirement described in both /LICENSE
+and ui/LICENSE applies to all distributions of this software, including
+modified versions and derivative works.
+
+For commercial licensing or white-label inquiries: https://celerp.com

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Final coverage gap closers targeting:
 - items.py  128-130, 134-136, 140-142  (valuation with total_cost/wholesale/retail via import)

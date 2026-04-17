@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for celerp-labels module: CRUD, custom dims, PDF generation, barcode/QR, positions."""
 from __future__ import annotations
 
