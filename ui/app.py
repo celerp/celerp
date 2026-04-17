@@ -160,7 +160,6 @@ app.add_middleware(I18nMiddleware)
 
 # ── Error handlers ─────────────────────────────────────────────────────────────
 
-@app.exception_handler(404)
 async def ui_404_handler(request: Request, exc) -> HTMLResponse:
     from ui.components.shell import base_shell, page_header
     from fasthtml.common import A, Div, P
@@ -176,8 +175,9 @@ async def ui_404_handler(request: Request, exc) -> HTMLResponse:
     from fasthtml.common import to_xml
     return HTMLResponse(to_xml(page), status_code=404)
 
+app.exception_handlers[404] = ui_404_handler
 
-@app.exception_handler(500)
+
 async def ui_500_handler(request: Request, exc) -> HTMLResponse:
     import logging as _logging
     _logging.getLogger(__name__).error("UI 500: %s", exc, exc_info=True)
@@ -194,6 +194,8 @@ async def ui_500_handler(request: Request, exc) -> HTMLResponse:
     )
     from fasthtml.common import to_xml
     return HTMLResponse(to_xml(page), status_code=500)
+
+app.exception_handlers[500] = ui_500_handler
 
 
 _static_dir = os.path.join(os.path.dirname(__file__), "static")
