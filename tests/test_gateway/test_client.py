@@ -248,22 +248,26 @@ async def test_tos_required_error_sets_status(client):
 async def test_tos_required_blocks_reconnect(client, monkeypatch):
     """run() does not reconnect when relay_status is tos_required."""
     connect_calls = []
-    sleep_calls = []
+    wait_calls = []
 
     async def fake_connect():
         connect_calls.append(1)
         # Simulate: first connect gets tos_required, then we stop
         client._relay_status = "tos_required"
 
-    async def fake_sleep(delay):
-        sleep_calls.append(delay)
-        if len(sleep_calls) >= 3:
+    original_stop_event_wait = client._stop_event.wait
+
+    async def counting_wait():
+        wait_calls.append(1)
+        if len(wait_calls) >= 3:
             client._running = False
+        # Raise TimeoutError to simulate wait_for timeout expiring
+        raise asyncio.TimeoutError
 
     import asyncio
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(client._stop_event, "wait", counting_wait)
     monkeypatch.setattr(client, "_connect_and_serve", fake_connect)
     await client.run()
-    # Should have connected once, then slept in tos_required loop
+    # Should have connected once, then looped in tos_required wait
     assert len(connect_calls) == 1
-    assert len(sleep_calls) >= 1
+    assert len(wait_calls) >= 1

@@ -17,7 +17,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from tests.conftest import make_test_token, authed_cookies
+from tests.conftest import make_test_token, authed_cookies, _crm_available
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -348,6 +348,7 @@ class TestDiscovery:
         assert b"Memo" in r.content or b"memo" in r.content or b"Vendor" in r.content
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
     async def test_crm_page_has_deals_tab(self, ui):
         with _Patches(_crm_mocks()):
             r = await ui.get("/contacts/sales", cookies=_c())
@@ -761,18 +762,22 @@ class TestWorkflows:
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
     async def test_deal_move_stage(self, ui):
         with _Patches({"ui.api_client.move_deal_stage": AsyncMock(return_value={"ok": True})}):
             r = await ui.post("/crm/deals/deal:1/stage", cookies=_c(), data={"stage": "qualified"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
     async def test_deal_mark_won(self, ui):
         with _Patches({"ui.api_client.mark_deal_won": AsyncMock(return_value={"ok": True})}):
             r = await ui.post("/crm/deals/deal:1/won", cookies=_c())
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
     async def test_deal_mark_lost(self, ui):
         with _Patches({"ui.api_client.mark_deal_lost": AsyncMock(return_value={"ok": True})}):
             r = await ui.post("/crm/deals/deal:1/lost", cookies=_c(), data={"reason": "price"})
