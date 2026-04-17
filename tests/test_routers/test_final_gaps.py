@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Coverage gap cleanup: docs summary, refund, receive-PO branches, import errors,
 events/engine apply_event, accounting batch error, subscriptions custom/generate,

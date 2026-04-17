@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Seed demo data via the Celerp API.
 Idempotent: skips entities with the same SKU/ref already present.

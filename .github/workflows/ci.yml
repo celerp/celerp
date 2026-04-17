@@ -10,7 +10,7 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v4
@@ -22,13 +22,14 @@ jobs:
           cache-dependency-path: pyproject.toml
 
       - name: Install deps
-        run: pip install uv && uv pip install --system -e ".[dev]"
+        run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist
 
       - name: Run tests
         env:
           ALLOW_INSECURE_JWT: "true"
         run: >
-          pytest tests/ -q --tb=short --no-cov -x
+          timeout 300 pytest tests/ -n auto -x -q --tb=short --no-cov
+          --timeout=30
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
           --ignore=tests/integration

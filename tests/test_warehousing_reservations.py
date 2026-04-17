@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs. All Rights Reserved.
-# SPDX-License-Identifier: Proprietary
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for the reservation system — reserve/release items for pick instructions."""
 
 from __future__ import annotations

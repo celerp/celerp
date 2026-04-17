@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Coverage gap closers for routers/subscriptions.py:
   - _next_run_date: biweekly, quarterly, annually (leap/non-leap), custom branches (lines 79, 86-99)

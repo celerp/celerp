@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 
 """Tests for Phase 1 status lifecycle: revert-to-draft, unvoid, void guards."""
 

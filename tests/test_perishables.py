@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Integration tests for perishable/lot-tracked inventory behaviour:
 - expiry_date attribute wires through to expires_at projection column
 - /reports/expiring returns items correctly

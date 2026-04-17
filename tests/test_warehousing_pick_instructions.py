@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs. All Rights Reserved.
-# SPDX-License-Identifier: Proprietary
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for pick instruction creation, completion, and lifecycle.
 
 These tests run from the core repo's test suite after celerp-warehousing is

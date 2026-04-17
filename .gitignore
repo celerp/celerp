@@ -77,3 +77,21 @@ scripts/pdf_screenshots/
 scripts/verify_pdfs.py
 scripts/pdf_to_png.py
 data/
+
+# Nested repos (separate deployments)
+celerp-cloud/
+celerp-marketplace/
+celerp-mobile/
+celerp-modules/
+celerp-publish/
+
+# Legacy core/ subdirectory (not part of public repo)
+core/
+
+# Nested module repos with their own git
+premium-modules/sales-funnel/celerp-sales-funnel/
+
+# Premium modules (separate licensing)
+premium-modules/
+screenshots/
+logo.png
