@@ -71,8 +71,6 @@ jobs:
 
       - name: Build
         working-directory: electron
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ${{ matrix.build_cmd }}
 
       - name: Upload artifacts
