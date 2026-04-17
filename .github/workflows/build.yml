@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+env:
+  PBS_TAG: "20260414"
+  PBS_PYTHON: "3.12.13"
+
 jobs:
   build:
     strategy:
@@ -16,10 +20,16 @@ jobs:
         include:
           - os: ubuntu-latest
             build_cmd: pnpm run build:linux
+            standalone_dir: linux-x64
+            pbs_triple: x86_64-unknown-linux-gnu
           - os: windows-latest
             build_cmd: pnpm run build:win
+            standalone_dir: win-x64
+            pbs_triple: x86_64-pc-windows-msvc
           - os: macos-latest
             build_cmd: pnpm run build:mac
+            standalone_dir: mac-arm64
+            pbs_triple: aarch64-apple-darwin
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -35,12 +45,34 @@ jobs:
         with:
           version: 9
 
-      - name: Install deps
+      - name: Install Node deps
         working-directory: electron
         run: pnpm install --frozen-lockfile
 
+      - name: Download Python standalone
+        shell: bash
+        run: |
+          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
+          echo "Downloading: $URL"
+          mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
+          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
+
+      - name: Install Python deps into standalone
+        shell: bash
+        run: |
+          DIR="electron/python-standalone/${{ matrix.standalone_dir }}/python"
+          if [ -f "$DIR/python.exe" ]; then
+            PY="$DIR/python.exe"
+          else
+            PY="$DIR/bin/python3"
+          fi
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install .
+
       - name: Build
         working-directory: electron
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ${{ matrix.build_cmd }}
 
       - name: Upload artifacts
