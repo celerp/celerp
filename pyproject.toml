@@ -84,11 +84,10 @@ markers = [
 ]
 
 [tool.setuptools]
-include-package-data = true
+include-package-data = false
 
 [tool.setuptools.packages.find]
-include = ["celerp*", "ui*", "default_modules"]
-exclude = ["alembic*"]
+include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
 
 [tool.setuptools.package-data]
 "celerp" = [
@@ -120,6 +119,9 @@ exclude = ["alembic*"]
     "celerp-subscriptions/**/*",
     "celerp-verticals/**/*",
 ]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["__pycache__/**", "*.pyc", "*.pyo"]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
