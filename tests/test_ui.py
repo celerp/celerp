@@ -1316,6 +1316,12 @@ class TestTableComponent:
 
 
 class TestInventoryCategoryTabs:
+    """Inventory category tabs, status cards, and HTMX content partials.
+
+    Every test must patch ALL 7 api_client calls used by the inventory route's
+    asyncio.gather to avoid mock bleed under xdist parallel execution.
+    """
+
     @pytest.mark.asyncio
     async def test_category_tabs_render_when_counts_present(self, ui_client):
         """Inventory page shows category tabs when valuation has category_counts."""
@@ -1323,6 +1329,10 @@ class TestInventoryCategoryTabs:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
@@ -1337,6 +1347,10 @@ class TestInventoryCategoryTabs:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
