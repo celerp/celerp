@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: BSL-1.1
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Settings - Web Access: Connectors tab."""
 
 from __future__ import annotations
@@ -64,6 +65,31 @@ def _last_sync_info(run) -> FT:
         f"{time_str} · {run.status} · {counts}",
         cls=f"connector-sync-info {status_cls}",
     )
+
+
+async def _fetch_access_token(relay_url: str, instance_id: str, platform: str) -> dict:
+    """Fetch decrypted access token from relay for a platform.
+
+    Returns {"access_token": str, "store_handle": str | None} on success.
+    Raises RuntimeError on failure.
+    """
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.get(
+                f"{relay_url}/tokens/{platform}/access-token",
+                params={"instance_id": instance_id},
+            )
+            if r.status_code == 404:
+                raise RuntimeError(f"No {platform} connection found. Complete the OAuth flow first.")
+            if r.status_code == 401:
+                raise RuntimeError(f"{platform} token expired. Please reconnect.")
+            r.raise_for_status()
+            return r.json()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(f"Relay returned {exc.response.status_code}: {exc.response.text}") from exc
+    except httpx.ConnectError:
+        raise RuntimeError("Cannot reach relay server. Check your internet connection.")
 
 
 async def _fetch_catalog(relay_url: str, instance_id: str) -> list[dict]:
@@ -175,11 +201,13 @@ def _connector_card(
             cls="connector-actions",
         )
     else:
-        # api_key type - show form
+        # api_key type - show form with store URL + credentials
         action_btns = Div(
             Form(
+                Input(name="store_url", placeholder="https://mystore.com",
+                      cls="input input--sm", style="width:220px;"),
                 Input(name="consumer_key", placeholder="Consumer Key",
-                      cls="input input--sm", style="width:180px;"),
+                      cls="input input--sm", style="width:180px;margin-left:6px;"),
                 Input(name="consumer_secret", placeholder="Consumer Secret",
                       type="password", cls="input input--sm",
                       style="width:180px;margin-left:6px;"),
@@ -333,19 +361,27 @@ def setup_routes(app):
         lang = get_lang(request)
 
         try:
-            from celerp.connectors.registry import get_connector
+            from celerp.connectors.registry import get as get_connector
             from celerp.connectors.base import ConnectorContext
             from celerp.connectors.sync_runner import run_sync
+            from ui.config import RELAY_URL
 
             connector = get_connector(platform)
-            ctx = ConnectorContext(instance_id=iid, company_id=iid)
+
+            # Fetch live access token from relay
+            token_data = await _fetch_access_token(RELAY_URL, iid, platform)
+            ctx = ConnectorContext(
+                company_id=iid,
+                access_token=token_data["access_token"],
+                store_handle=token_data.get("store_handle"),
+            )
 
             import asyncio
-            # Sync all entities in background (fire-and-forget for UI responsiveness)
+            # Run sync in background for UI responsiveness
             async def _do_sync():
-                for entity in connector.entities:
+                for entity_enum in connector.supported_entities:
                     try:
-                        await run_sync(connector, ctx, entity)
+                        await run_sync(connector, ctx, entity_enum.value)
                     except Exception:
                         pass
 
@@ -373,6 +409,17 @@ def setup_routes(app):
         iid = ensure_instance_id()
         lang = get_lang(request)
         form = await request.form()
+        store_url = form.get("store_url", "").strip()
+        consumer_key = form.get("consumer_key", "").strip()
+        consumer_secret = form.get("consumer_secret", "").strip()
+
+        if not consumer_key or not consumer_secret:
+            return Div(
+                Span(t("connectors.missing_credentials", lang, default="Consumer key and secret are required."),
+                     cls="flash flash--warning"),
+                id=f"connector-card-{platform}",
+                cls="connector-card",
+            )
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as c:
@@ -380,8 +427,9 @@ def setup_routes(app):
                     f"{RELAY_URL}/tokens/{platform}",
                     json={
                         "instance_id": iid,
-                        "consumer_key": form.get("consumer_key", ""),
-                        "consumer_secret": form.get("consumer_secret", ""),
+                        "consumer_key": consumer_key,
+                        "consumer_secret": consumer_secret,
+                        "store_url": store_url or None,
                     },
                 )
         except Exception as exc:

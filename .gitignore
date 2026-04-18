@@ -95,3 +95,8 @@ premium-modules/sales-funnel/celerp-sales-funnel/
 premium-modules/
 screenshots/
 logo.png
+-e 
+# Internal plan docs (L-087)
+*-rectification-plan*.md
+*-connectors-plan*.md
+*-website-rectification*.md

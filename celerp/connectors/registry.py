@@ -11,6 +11,7 @@ from celerp.connectors.lazada import LazadaConnector
 from celerp.connectors.quickbooks import QuickBooksConnector
 from celerp.connectors.shopee import ShopeeConnector
 from celerp.connectors.shopify import ShopifyConnector
+from celerp.connectors.woocommerce import WooCommerceConnector
 from celerp.connectors.xero import XeroConnector
 
 _registry: dict[str, ConnectorBase] = {
@@ -18,6 +19,7 @@ _registry: dict[str, ConnectorBase] = {
     "quickbooks": QuickBooksConnector(),
     "shopee": ShopeeConnector(),
     "shopify": ShopifyConnector(),
+    "woocommerce": WooCommerceConnector(),
     "xero": XeroConnector(),
 }
 

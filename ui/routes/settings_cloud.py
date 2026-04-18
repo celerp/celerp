@@ -1,4 +1,5 @@
-# SPDX-License-Identifier: BSL-1.1
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
 
 """Settings - Web Access: Cloud Relay connection, TOS, Team infrastructure."""
 

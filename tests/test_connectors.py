@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Tests for celerp/connectors/* and /connectors router.
 
@@ -574,6 +574,9 @@ async def test_xero_sync_contacts(xero, xero_ctx):
 
 
 @pytest.mark.asyncio
-async def test_xero_sync_invoices_not_implemented(xero, xero_ctx):
-    with pytest.raises(NotImplementedError):
-        await xero.sync_invoices(xero_ctx)
+async def test_xero_has_sync_invoices_out(xero, xero_ctx):
+    """Xero implements sync_invoices_out (not NotImplementedError)."""
+    assert hasattr(xero, "sync_invoices_out")
+    # Method is implemented (not the base stub)
+    from celerp.connectors.base import ConnectorBase
+    assert type(xero).sync_invoices_out is not ConnectorBase.sync_invoices_out
