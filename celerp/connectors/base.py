@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -32,6 +33,11 @@ class SyncEntity(str, Enum):
     CONTACTS = "contacts"
     INVENTORY = "inventory"
     INVOICES = "invoices"
+
+
+class ConnectorCategory(str, Enum):
+    WEBSITE = "website"
+    ACCOUNTING = "accounting"
 
 
 @dataclass
@@ -60,25 +66,27 @@ class SyncResult:
 class ConnectorBase(ABC):
     """Abstract base for all platform connectors."""
 
-    name: str          # e.g. "shopify"
-    display_name: str  # e.g. "Shopify"
+    name: str
+    display_name: str
     supported_entities: list[SyncEntity]
     direction: SyncDirection
+    category: ConnectorCategory
+    conflict_strategy: dict[str, str]
 
     @abstractmethod
-    async def sync_products(self, ctx: ConnectorContext) -> SyncResult:
-        """Pull products/variants from platform → Celerp items."""
+    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Pull products/variants from platform -> Celerp items."""
         ...
 
     @abstractmethod
-    async def sync_orders(self, ctx: ConnectorContext) -> SyncResult:
-        """Pull orders from platform → Celerp documents."""
+    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Pull orders from platform -> Celerp documents."""
         ...
 
-    async def sync_inventory(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp inventory levels → platform. Override if supported."""
+    async def sync_inventory(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Push Celerp inventory levels -> platform. Override if supported."""
         raise NotImplementedError(f"{self.name} does not support inventory push")
 
-    async def sync_contacts(self, ctx: ConnectorContext) -> SyncResult:
-        """Pull customers/vendors from platform → Celerp CRM. Override if supported."""
+    async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Pull customers/vendors from platform -> Celerp CRM. Override if supported."""
         raise NotImplementedError(f"{self.name} does not support contact sync")

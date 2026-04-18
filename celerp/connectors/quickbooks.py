@@ -4,7 +4,7 @@
 QuickBooks Online connector.
 
 OAuth model: CelERP relay service holds one registered Intuit app.
-Paying customers authorize via relay → relay returns a short-lived
+Paying customers authorize via relay -> relay returns a short-lived
 access_token injected into ConnectorContext.
 
 QuickBooks token model:
@@ -18,17 +18,20 @@ Reference: https://developer.intuit.com/app/developer/qbo/docs/api/accounting/al
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
 
 from celerp.connectors.base import (
     ConnectorBase,
+    ConnectorCategory,
     ConnectorContext,
     SyncDirection,
     SyncEntity,
     SyncResult,
 )
+import celerp.connectors.upsert as _upsert
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +71,6 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
             resp.raise_for_status()
             data = resp.json()
             query_resp = data.get("QueryResponse", {})
-            # QB returns results under the entity name key
             rows = []
             for key, val in query_resp.items():
                 if isinstance(val, list):
@@ -86,20 +88,27 @@ class QuickBooksConnector(ConnectorBase):
     display_name = "QuickBooks"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVOICES]
     direction = SyncDirection.BIDIRECTIONAL
+    category = ConnectorCategory.ACCOUNTING
+    conflict_strategy = {
+        SyncEntity.PRODUCTS: "newest",
+        SyncEntity.ORDERS: "platform",
+        SyncEntity.CONTACTS: "merge",
+        SyncEntity.INVOICES: "platform",
+    }
 
-    # ── Products (Items in QB) ────────────────────────────────────────────────
+    # -- Products (Items in QB) ------------------------------------------------
 
-    async def sync_products(self, ctx: ConnectorContext) -> SyncResult:
+    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
-        Pull QuickBooks Items → Celerp items.
+        Pull QuickBooks Items -> Celerp items.
 
         Mapping:
-          Item.Sku / Item.Name  → item.sku (Name used if no Sku)
-          Item.Name             → item.name
-          Item.Description      → item.description
-          Item.UnitPrice        → item.sale_price
-          Item.PurchaseCost     → item.cost_price
-          Item.Id               → idempotency_key
+          Item.Sku / Item.Name  -> item.sku (Name used if no Sku)
+          Item.Name             -> item.name
+          Item.Description      -> item.description
+          Item.UnitPrice        -> item.sale_price
+          Item.PurchaseCost     -> item.cost_price
+          Item.Id               -> idempotency_key
         """
         result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
         errors: list[str] = []
@@ -112,7 +121,6 @@ class QuickBooksConnector(ConnectorBase):
 
         for qb_item in items:
             item_type = qb_item.get("Type", "")
-            # Only sync Service and Inventory items
             if item_type not in ("Service", "Inventory", "NonInventory"):
                 result.skipped += 1
                 continue
@@ -138,7 +146,7 @@ class QuickBooksConnector(ConnectorBase):
                     cost_price=float(cost_price) if cost_price else None,
                     idempotency_key=idempotency_key,
                 )
-                created = await _upsert_item(ctx.company_id, item)
+                created = await _upsert.upsert_item(ctx.company_id, item)
                 if created:
                     result.created += 1
                 else:
@@ -153,18 +161,18 @@ class QuickBooksConnector(ConnectorBase):
         )
         return result
 
-    # ── Invoices / Orders ────────────────────────────────────────────────────
+    # -- Invoices / Orders -----------------------------------------------------
 
-    async def sync_orders(self, ctx: ConnectorContext) -> SyncResult:
+    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
-        Pull QuickBooks Invoices → Celerp documents.
+        Pull QuickBooks Invoices -> Celerp documents.
 
         Mapping:
-          Invoice.DocNumber       → doc.ref_id
-          Invoice.CustomerRef     → customer lookup/create
-          Invoice.Line            → doc line_items
-          Invoice.Balance         → used to determine status
-          Invoice.Id              → idempotency_key
+          Invoice.DocNumber       -> doc.ref_id
+          Invoice.CustomerRef     -> customer lookup/create
+          Invoice.Line            -> doc line_items
+          Invoice.Balance         -> used to determine status
+          Invoice.Id              -> idempotency_key
         """
         result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
         errors: list[str] = []
@@ -177,7 +185,7 @@ class QuickBooksConnector(ConnectorBase):
 
         for inv in invoices:
             try:
-                created = await _upsert_invoice(ctx.company_id, inv)
+                created = await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv)
                 if created:
                     result.created += 1
                 else:
@@ -192,10 +200,10 @@ class QuickBooksConnector(ConnectorBase):
         )
         return result
 
-    # ── Contacts ─────────────────────────────────────────────────────────────
+    # -- Contacts --------------------------------------------------------------
 
-    async def sync_contacts(self, ctx: ConnectorContext) -> SyncResult:
-        """Pull QuickBooks Customers → Celerp CRM contacts."""
+    async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Pull QuickBooks Customers -> Celerp CRM contacts."""
         result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
         errors: list[str] = []
 
@@ -207,7 +215,7 @@ class QuickBooksConnector(ConnectorBase):
 
         for customer in customers:
             try:
-                created = await _upsert_contact(ctx.company_id, customer)
+                created = await _upsert.upsert_contact_from_quickbooks(ctx.company_id, customer)
                 if created:
                     result.created += 1
                 else:
@@ -217,20 +225,3 @@ class QuickBooksConnector(ConnectorBase):
 
         result.errors = errors or None
         return result
-
-
-# ── DB upsert helpers ─────────────────────────────────────────────────────────
-
-async def _upsert_item(company_id: str, item) -> bool:
-    from celerp_inventory import services as items_svc
-    return await items_svc.upsert_from_connector(company_id, item)
-
-
-async def _upsert_invoice(company_id: str, invoice: dict) -> bool:
-    from celerp.services import docs as docs_svc
-    return await docs_svc.upsert_invoice_from_quickbooks(company_id, invoice)
-
-
-async def _upsert_contact(company_id: str, customer: dict) -> bool:
-    from celerp_contacts import services as contacts_svc
-    return await contacts_svc.upsert_contact_from_quickbooks(company_id, customer)
