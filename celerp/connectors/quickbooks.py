@@ -23,6 +23,7 @@ from typing import Any
 
 import httpx
 
+from celerp.connectors.http import RateLimitedClient
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
@@ -60,7 +61,7 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
     base = _base_url(ctx)
     results: list[dict[str, Any]] = []
     start = 1
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with RateLimitedClient() as client:
         while True:
             paginated = f"{sql} STARTPOSITION {start} MAXRESULTS {_PAGE_SIZE}"
             resp = await client.get(
@@ -114,7 +115,11 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            items = await _query(ctx, "SELECT * FROM Item WHERE Active = true")
+            sql = (
+                f"SELECT * FROM Item WHERE Active = true AND MetaData.LastUpdatedTime > '{since.isoformat()}'"
+                if since else "SELECT * FROM Item WHERE Active = true"
+            )
+            items = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
             return result
@@ -178,7 +183,11 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            invoices = await _query(ctx, "SELECT * FROM Invoice")
+            sql = (
+                f"SELECT * FROM Invoice WHERE MetaData.LastUpdatedTime > '{since.isoformat()}'"
+                if since else "SELECT * FROM Invoice"
+            )
+            invoices = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
             return result
@@ -208,7 +217,11 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            customers = await _query(ctx, "SELECT * FROM Customer WHERE Active = true")
+            sql = (
+                f"SELECT * FROM Customer WHERE Active = true AND MetaData.LastUpdatedTime > '{since.isoformat()}'"
+                if since else "SELECT * FROM Customer WHERE Active = true"
+            )
+            customers = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
             return result

@@ -21,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from celerp.connectors.http import RateLimitedClient
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
@@ -70,7 +71,7 @@ class ShopifyConnector(ConnectorBase):
         results: list[dict[str, Any]] = []
         base_params: dict | None = {"limit": _PAGE_LIMIT, **(params or {})}
         url = f"{_base_url(ctx)}{path}"
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with RateLimitedClient() as client:
             while url:
                 resp = await client.get(url, headers=_headers(ctx), params=base_params)
                 resp.raise_for_status()
@@ -100,7 +101,7 @@ class ShopifyConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            products = await self._paginate(ctx, "/products.json", "products")
+            products = await self._paginate(ctx, "/products.json", "products", params={"updated_at_min": since.isoformat()} if since else None)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"Shopify API error: {exc}"]
             return result
@@ -161,7 +162,10 @@ class ShopifyConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            orders = await self._paginate(ctx, "/orders.json", "orders", params={"status": "any"})
+            params: dict = {"status": "any"}
+            if since:
+                params["updated_at_min"] = since.isoformat()
+            orders = await self._paginate(ctx, "/orders.json", "orders", params=params)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"Shopify API error: {exc}"]
             return result
@@ -193,7 +197,7 @@ class ShopifyConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            customers = await self._paginate(ctx, "/customers.json", "customers")
+            customers = await self._paginate(ctx, "/customers.json", "customers", params={"updated_at_min": since.isoformat()} if since else None)
         except (httpx.HTTPStatusError, ValueError) as exc:
             result.errors = [f"Shopify API error: {exc}"]
             return result

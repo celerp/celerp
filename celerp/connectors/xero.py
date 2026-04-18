@@ -22,6 +22,7 @@ from typing import Any
 
 import httpx
 
+from celerp.connectors.http import RateLimitedClient
 from celerp.connectors.base import (
     ConnectorBase,
     ConnectorCategory,
@@ -63,15 +64,18 @@ class XeroConnector(ConnectorBase):
 
     # -- Internal helpers ------------------------------------------------------
 
-    async def _paginate(self, ctx: ConnectorContext, path: str, key: str) -> list[dict[str, Any]]:
+    async def _paginate(self, ctx: ConnectorContext, path: str, key: str, since: datetime | None = None) -> list[dict[str, Any]]:
         """Fetch all pages for a resource using Xero's page-based pagination."""
         results: list[dict[str, Any]] = []
         page = 1
-        async with httpx.AsyncClient(timeout=30) as client:
+        headers = _headers(ctx)
+        if since:
+            headers["If-Modified-Since"] = since.strftime("%a, %d %b %Y %H:%M:%S GMT")
+        async with RateLimitedClient() as client:
             while True:
                 resp = await client.get(
                     f"{_API_BASE}{path}",
-                    headers=_headers(ctx),
+                    headers=headers,
                     params={"page": page, "pageSize": _PAGE_SIZE},
                 )
                 resp.raise_for_status()
@@ -101,7 +105,7 @@ class XeroConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            items = await self._paginate(ctx, "/Items", "Items")
+            items = await self._paginate(ctx, "/Items", "Items", since=since)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"Xero API error: {exc}"]
             return result
@@ -159,7 +163,7 @@ class XeroConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            invoices = await self._paginate(ctx, "/Invoices", "Invoices")
+            invoices = await self._paginate(ctx, "/Invoices", "Invoices", since=since)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"Xero API error: {exc}"]
             return result
@@ -192,7 +196,7 @@ class XeroConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            contacts = await self._paginate(ctx, "/Contacts", "Contacts")
+            contacts = await self._paginate(ctx, "/Contacts", "Contacts", since=since)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"Xero API error: {exc}"]
             return result
