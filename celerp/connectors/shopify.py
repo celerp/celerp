@@ -15,6 +15,8 @@ API version: 2024-01 (stable)
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 from datetime import datetime
 from typing import Any
@@ -28,6 +30,7 @@ from celerp.connectors.base import (
     ConnectorContext,
     SyncDirection,
     SyncEntity,
+    SyncFrequency,
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
@@ -56,7 +59,7 @@ class ShopifyConnector(ConnectorBase):
     name = "shopify"
     display_name = "Shopify"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS]
-    direction = SyncDirection.BIDIRECTIONAL
+    direction = SyncDirection.BOTH
     category = ConnectorCategory.WEBSITE
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",
@@ -300,6 +303,53 @@ class ShopifyConnector(ConnectorBase):
             ctx.company_id, result.updated, result.skipped, len(errors),
         )
         return result
+
+    # -- Webhook lifecycle -----------------------------------------------------
+
+    _INBOUND_TOPICS = [
+        "products/create", "products/update", "products/delete",
+        "orders/create", "orders/updated",
+        "inventory_levels/update",
+        "customers/create", "customers/update",
+    ]
+
+    def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:
+        if direction == SyncDirection.OUTBOUND:
+            return []
+        return self._INBOUND_TOPICS
+
+    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[str]:
+        """Register Shopify webhooks. Returns list of webhook IDs."""
+        base = _base_url(ctx)
+        ids: list[str] = []
+        topics = self.webhook_topics_for_direction(self.direction)
+        async with RateLimitedClient() as client:
+            for topic in topics:
+                resp = await client.post(
+                    f"{base}/webhooks.json",
+                    headers=_headers(ctx),
+                    json={"webhook": {"topic": topic, "address": webhook_url, "format": "json"}},
+                )
+                if resp.status_code in (200, 201):
+                    wh = resp.json().get("webhook", {})
+                    ids.append(str(wh.get("id", "")))
+                else:
+                    log.warning("shopify.register_webhook topic=%s status=%d", topic, resp.status_code)
+        return ids
+
+    async def deregister_webhooks(self, ctx: ConnectorContext, webhook_ids: list[str]) -> None:
+        base = _base_url(ctx)
+        async with RateLimitedClient() as client:
+            for wid in webhook_ids:
+                resp = await client.delete(f"{base}/webhooks/{wid}.json", headers=_headers(ctx))
+                if resp.status_code not in (200, 204):
+                    log.warning("shopify.deregister_webhook id=%s status=%d", wid, resp.status_code)
+
+    def validate_webhook(self, payload: bytes, signature: str, secret: str) -> bool:
+        computed = hmac.new(secret.encode(), payload, hashlib.sha256).digest()
+        import base64
+        expected = base64.b64encode(computed).decode()
+        return hmac.compare_digest(expected, signature)
 
 
 # -- Pagination helper ---------------------------------------------------------

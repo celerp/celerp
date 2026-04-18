@@ -7,10 +7,27 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from celerp.connectors.base import ConnectorBase, ConnectorContext, SyncResult
+from celerp.connectors.base import (
+    ConnectorBase,
+    ConnectorContext,
+    SyncDirection,
+    SyncResult,
+    entity_allowed,
+)
 from celerp.models.sync_run import SyncRun
 
 log = logging.getLogger(__name__)
+
+_SYNC_METHODS = {
+    "products": "sync_products",
+    "orders": "sync_orders",
+    "contacts": "sync_contacts",
+    "inventory": "sync_inventory",
+    "products_out": "sync_products_out",
+    "invoices_out": "sync_invoices_out",
+    "inventory_out": "sync_inventory_out",
+}
+_OUTBOUND_ENTITIES = {"products_out", "invoices_out", "inventory_out"}
 
 
 async def run_sync(
@@ -18,25 +35,32 @@ async def run_sync(
     ctx: ConnectorContext,
     entity: str,
     since: datetime | None = None,
+    direction: SyncDirection | None = None,
 ) -> SyncResult:
-    """Execute a sync operation and record a SyncRun audit entry."""
+    """Execute a sync operation and record a SyncRun audit entry.
+
+    If ``direction`` is provided, checks whether ``entity`` is allowed
+    for that direction before running. Returns a failed SyncResult if blocked.
+    """
     from celerp.db import get_session_ctx
 
-    started_at = datetime.now(timezone.utc)
+    # Direction gate
+    if direction and not entity_allowed(entity, direction):
+        return SyncResult(
+            entity=entity,
+            direction=direction,
+            errors=[f"{entity} sync blocked by direction={direction.value}"],
+        )
 
-    sync_method = {
-        "products": connector.sync_products,
-        "orders": connector.sync_orders,
-        "contacts": connector.sync_contacts,
-        "inventory": connector.sync_inventory,
-        "products_out": connector.sync_products_out,
-        "invoices_out": connector.sync_invoices_out,
-    }.get(entity)
-
-    _OUTBOUND_ENTITIES = {"products_out", "invoices_out"}
-
-    if sync_method is None:
+    method_name = _SYNC_METHODS.get(entity)
+    if method_name is None:
         raise ValueError(f"Unknown entity: {entity}")
+
+    sync_method = getattr(connector, method_name, None)
+    if sync_method is None:
+        raise ValueError(f"{connector.name} has no method {method_name}")
+
+    started_at = datetime.now(timezone.utc)
 
     try:
         if entity in _OUTBOUND_ENTITIES:

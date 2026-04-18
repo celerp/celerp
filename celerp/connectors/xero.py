@@ -53,7 +53,7 @@ class XeroConnector(ConnectorBase):
     name = "xero"
     display_name = "Xero"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVOICES]
-    direction = SyncDirection.BIDIRECTIONAL
+    direction = SyncDirection.BOTH
     category = ConnectorCategory.ACCOUNTING
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",

@@ -88,7 +88,7 @@ class QuickBooksConnector(ConnectorBase):
     name = "quickbooks"
     display_name = "QuickBooks"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVOICES]
-    direction = SyncDirection.BIDIRECTIONAL
+    direction = SyncDirection.BOTH
     category = ConnectorCategory.ACCOUNTING
     conflict_strategy = {
         SyncEntity.PRODUCTS: "newest",

@@ -11,6 +11,8 @@ API: WooCommerce REST API v3 (/wp-json/wc/v3/)
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
 from datetime import datetime
 from typing import Any
@@ -24,6 +26,7 @@ from celerp.connectors.base import (
     ConnectorContext,
     SyncDirection,
     SyncEntity,
+    SyncFrequency,
     SyncResult,
 )
 import celerp.connectors.upsert as _upsert
@@ -52,7 +55,7 @@ class WooCommerceConnector(ConnectorBase):
     name = "woocommerce"
     display_name = "WooCommerce"
     category = ConnectorCategory.WEBSITE
-    direction = SyncDirection.BIDIRECTIONAL
+    direction = SyncDirection.BOTH
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVENTORY]
     conflict_strategy = {
         "products": "external_wins",
@@ -268,3 +271,57 @@ class WooCommerceConnector(ConnectorBase):
             ctx.company_id, result.updated, result.skipped, len(errors),
         )
         return result
+
+    # -- Webhook lifecycle -----------------------------------------------------
+
+    _INBOUND_TOPICS = [
+        "product.created", "product.updated", "product.deleted",
+        "order.created", "order.updated",
+        "customer.created", "customer.updated",
+    ]
+
+    def webhook_topics_for_direction(self, direction: SyncDirection) -> list[str]:
+        if direction == SyncDirection.OUTBOUND:
+            return []
+        return self._INBOUND_TOPICS
+
+    async def register_webhooks(self, ctx: ConnectorContext, webhook_url: str) -> list[str]:
+        """Register WooCommerce webhooks via REST API."""
+        base_url = _base_url(ctx)
+        auth = _auth(ctx)
+        ids: list[str] = []
+        topics = self.webhook_topics_for_direction(self.direction)
+        async with RateLimitedClient() as client:
+            for topic in topics:
+                resp = await client.post(
+                    f"{base_url}/webhooks",
+                    auth=auth,
+                    json={
+                        "name": f"CelERP {topic}",
+                        "topic": topic,
+                        "delivery_url": webhook_url,
+                        "status": "active",
+                    },
+                )
+                if resp.status_code in (200, 201):
+                    wh = resp.json()
+                    ids.append(str(wh.get("id", "")))
+                    # WC generates its own secret, stored in the response
+                else:
+                    log.warning("woocommerce.register_webhook topic=%s status=%d", topic, resp.status_code)
+        return ids
+
+    async def deregister_webhooks(self, ctx: ConnectorContext, webhook_ids: list[str]) -> None:
+        base_url = _base_url(ctx)
+        auth = _auth(ctx)
+        async with RateLimitedClient() as client:
+            for wid in webhook_ids:
+                resp = await client.delete(f"{base_url}/webhooks/{wid}", auth=auth, params={"force": "true"})
+                if resp.status_code not in (200, 204):
+                    log.warning("woocommerce.deregister_webhook id=%s status=%d", wid, resp.status_code)
+
+    def validate_webhook(self, payload: bytes, signature: str, secret: str) -> bool:
+        computed = hmac.new(secret.encode(), payload, hashlib.sha256).digest()
+        import base64
+        expected = base64.b64encode(computed).decode()
+        return hmac.compare_digest(expected, signature)
