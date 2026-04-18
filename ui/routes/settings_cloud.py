@@ -31,6 +31,7 @@ def _cloud_tabs(active: str, has_team_features: bool = False, lang: str = "en") 
     tabs = [("status", t("cloud.tab_connection", lang))]
     if has_team_features:
         tabs.append(("infrastructure", t("cloud.tab_infrastructure", lang)))
+    tabs.append(("connectors", t("cloud.tab_connectors", lang, default="Connectors")))
     return Div(
         *[
             A(label, href=f"/settings/cloud?tab={key}",
@@ -503,6 +504,9 @@ def setup_routes(app):
 
         if tab == "infrastructure" and has_team:
             content = _infrastructure_tab()
+        elif tab == "connectors":
+            from ui.routes.settings_connectors import connectors_tab_content
+            content = await connectors_tab_content(lang)
         else:
             content = Div(_cloud_relay_tab(), _backup_summary_card())
             tab = "status"
@@ -510,7 +514,7 @@ def setup_routes(app):
         return base_shell(
             _section_breadcrumb("Web Access"),
             page_header("Web Access"),
-            _cloud_tabs(tab, has_team_features=has_team, lang=lang) if has_team else "",
+            _cloud_tabs(tab, has_team_features=has_team, lang=lang),
             content,
             title="Web Access - Celerp",
             nav_active="web-access",

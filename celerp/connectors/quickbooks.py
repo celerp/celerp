@@ -4,7 +4,7 @@
 QuickBooks Online connector.
 
 OAuth model: CelERP relay service holds one registered Intuit app.
-Paying customers authorize via relay → relay returns a short-lived
+Paying customers authorize via relay -> relay returns a short-lived
 access_token injected into ConnectorContext.
 
 QuickBooks token model:
@@ -18,17 +18,21 @@ Reference: https://developer.intuit.com/app/developer/qbo/docs/api/accounting/al
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
 
+from celerp.connectors.http import RateLimitedClient
 from celerp.connectors.base import (
     ConnectorBase,
+    ConnectorCategory,
     ConnectorContext,
     SyncDirection,
     SyncEntity,
     SyncResult,
 )
+import celerp.connectors.upsert as _upsert
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +61,7 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
     base = _base_url(ctx)
     results: list[dict[str, Any]] = []
     start = 1
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with RateLimitedClient() as client:
         while True:
             paginated = f"{sql} STARTPOSITION {start} MAXRESULTS {_PAGE_SIZE}"
             resp = await client.get(
@@ -68,7 +72,6 @@ async def _query(ctx: ConnectorContext, sql: str) -> list[dict[str, Any]]:
             resp.raise_for_status()
             data = resp.json()
             query_resp = data.get("QueryResponse", {})
-            # QB returns results under the entity name key
             rows = []
             for key, val in query_resp.items():
                 if isinstance(val, list):
@@ -85,34 +88,44 @@ class QuickBooksConnector(ConnectorBase):
     name = "quickbooks"
     display_name = "QuickBooks"
     supported_entities = [SyncEntity.PRODUCTS, SyncEntity.ORDERS, SyncEntity.CONTACTS, SyncEntity.INVOICES]
-    direction = SyncDirection.BIDIRECTIONAL
+    direction = SyncDirection.BOTH
+    category = ConnectorCategory.ACCOUNTING
+    conflict_strategy = {
+        SyncEntity.PRODUCTS: "newest",
+        SyncEntity.ORDERS: "platform",
+        SyncEntity.CONTACTS: "merge",
+        SyncEntity.INVOICES: "platform",
+    }
 
-    # ── Products (Items in QB) ────────────────────────────────────────────────
+    # -- Products (Items in QB) ------------------------------------------------
 
-    async def sync_products(self, ctx: ConnectorContext) -> SyncResult:
+    async def sync_products(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
-        Pull QuickBooks Items → Celerp items.
+        Pull QuickBooks Items -> Celerp items.
 
         Mapping:
-          Item.Sku / Item.Name  → item.sku (Name used if no Sku)
-          Item.Name             → item.name
-          Item.Description      → item.description
-          Item.UnitPrice        → item.sale_price
-          Item.PurchaseCost     → item.cost_price
-          Item.Id               → idempotency_key
+          Item.Sku / Item.Name  -> item.sku (Name used if no Sku)
+          Item.Name             -> item.name
+          Item.Description      -> item.description
+          Item.UnitPrice        -> item.sale_price
+          Item.PurchaseCost     -> item.cost_price
+          Item.Id               -> idempotency_key
         """
         result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.INBOUND)
         errors: list[str] = []
 
         try:
-            items = await _query(ctx, "SELECT * FROM Item WHERE Active = true")
+            sql = (
+                f"SELECT * FROM Item WHERE Active = true AND MetaData.LastUpdatedTime > '{since.isoformat()}'"
+                if since else "SELECT * FROM Item WHERE Active = true"
+            )
+            items = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
             return result
 
         for qb_item in items:
             item_type = qb_item.get("Type", "")
-            # Only sync Service and Inventory items
             if item_type not in ("Service", "Inventory", "NonInventory"):
                 result.skipped += 1
                 continue
@@ -138,7 +151,7 @@ class QuickBooksConnector(ConnectorBase):
                     cost_price=float(cost_price) if cost_price else None,
                     idempotency_key=idempotency_key,
                 )
-                created = await _upsert_item(ctx.company_id, item)
+                created = await _upsert.upsert_item(ctx.company_id, item)
                 if created:
                     result.created += 1
                 else:
@@ -153,31 +166,35 @@ class QuickBooksConnector(ConnectorBase):
         )
         return result
 
-    # ── Invoices / Orders ────────────────────────────────────────────────────
+    # -- Invoices / Orders -----------------------------------------------------
 
-    async def sync_orders(self, ctx: ConnectorContext) -> SyncResult:
+    async def sync_orders(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """
-        Pull QuickBooks Invoices → Celerp documents.
+        Pull QuickBooks Invoices -> Celerp documents.
 
         Mapping:
-          Invoice.DocNumber       → doc.ref_id
-          Invoice.CustomerRef     → customer lookup/create
-          Invoice.Line            → doc line_items
-          Invoice.Balance         → used to determine status
-          Invoice.Id              → idempotency_key
+          Invoice.DocNumber       -> doc.ref_id
+          Invoice.CustomerRef     -> customer lookup/create
+          Invoice.Line            -> doc line_items
+          Invoice.Balance         -> used to determine status
+          Invoice.Id              -> idempotency_key
         """
         result = SyncResult(entity=SyncEntity.ORDERS, direction=SyncDirection.INBOUND)
         errors: list[str] = []
 
         try:
-            invoices = await _query(ctx, "SELECT * FROM Invoice")
+            sql = (
+                f"SELECT * FROM Invoice WHERE MetaData.LastUpdatedTime > '{since.isoformat()}'"
+                if since else "SELECT * FROM Invoice"
+            )
+            invoices = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
             return result
 
         for inv in invoices:
             try:
-                created = await _upsert_invoice(ctx.company_id, inv)
+                created = await _upsert.upsert_invoice_from_quickbooks(ctx.company_id, inv)
                 if created:
                     result.created += 1
                 else:
@@ -192,22 +209,26 @@ class QuickBooksConnector(ConnectorBase):
         )
         return result
 
-    # ── Contacts ─────────────────────────────────────────────────────────────
+    # -- Contacts --------------------------------------------------------------
 
-    async def sync_contacts(self, ctx: ConnectorContext) -> SyncResult:
-        """Pull QuickBooks Customers → Celerp CRM contacts."""
+    async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
+        """Pull QuickBooks Customers -> Celerp CRM contacts."""
         result = SyncResult(entity=SyncEntity.CONTACTS, direction=SyncDirection.INBOUND)
         errors: list[str] = []
 
         try:
-            customers = await _query(ctx, "SELECT * FROM Customer WHERE Active = true")
+            sql = (
+                f"SELECT * FROM Customer WHERE Active = true AND MetaData.LastUpdatedTime > '{since.isoformat()}'"
+                if since else "SELECT * FROM Customer WHERE Active = true"
+            )
+            customers = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
             return result
 
         for customer in customers:
             try:
-                created = await _upsert_contact(ctx.company_id, customer)
+                created = await _upsert.upsert_contact_from_quickbooks(ctx.company_id, customer)
                 if created:
                     result.created += 1
                 else:
@@ -218,19 +239,58 @@ class QuickBooksConnector(ConnectorBase):
         result.errors = errors or None
         return result
 
+    # -- Outbound: Invoices push -----------------------------------------------
 
-# ── DB upsert helpers ─────────────────────────────────────────────────────────
+    async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp invoices -> QuickBooks (outbound)."""
+        result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
+        errors: list[str] = []
+        realm_id = (ctx.extra or {}).get("realm_id") or ctx.store_handle
+        if not realm_id:
+            result.errors = ["realm_id is required for QuickBooks outbound invoice sync"]
+            return result
 
-async def _upsert_item(company_id: str, item) -> bool:
-    from celerp_inventory import services as items_svc
-    return await items_svc.upsert_from_connector(company_id, item)
+        try:
+            invoices = await _upsert.list_unsynced_invoices(ctx.company_id, platform="quickbooks")
+        except Exception as exc:
+            result.errors = [f"Failed to load invoices: {exc}"]
+            return result
 
+        base = f"{_API_BASE}/{realm_id}"
+        async with RateLimitedClient() as client:
+            for inv in invoices:
+                try:
+                    line_items = [
+                        {
+                            "DetailType": "SalesItemLineDetail",
+                            "Amount": float(line.get("total", 0)),
+                            "Description": line.get("description", ""),
+                            "SalesItemLineDetail": {
+                                "Qty": float(line.get("quantity", 1)),
+                                "UnitPrice": float(line.get("unit_price", 0)),
+                            },
+                        }
+                        for line in (inv.get("line_items") or [])
+                    ]
+                    payload = {
+                        "CustomerRef": {"value": inv.get("customer_external_id") or inv.get("customer_name", "")},
+                        "Line": line_items,
+                        "DocNumber": inv.get("ref_id"),
+                    }
+                    resp = await client.post(
+                        f"{base}/invoice",
+                        headers=_headers(ctx),
+                        params={"minorversion": "65"},
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                    result.created += 1
+                except Exception as exc:
+                    errors.append(f"Invoice {inv.get('ref_id')}: {exc}")
 
-async def _upsert_invoice(company_id: str, invoice: dict) -> bool:
-    from celerp.services import docs as docs_svc
-    return await docs_svc.upsert_invoice_from_quickbooks(company_id, invoice)
-
-
-async def _upsert_contact(company_id: str, customer: dict) -> bool:
-    from celerp_contacts import services as contacts_svc
-    return await contacts_svc.upsert_contact_from_quickbooks(company_id, customer)
+        result.errors = errors or None
+        log.info(
+            "quickbooks.sync_invoices_out company=%s created=%d errors=%d",
+            ctx.company_id, result.created, len(errors),
+        )
+        return result
