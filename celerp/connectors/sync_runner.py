@@ -29,13 +29,20 @@ async def run_sync(
         "orders": connector.sync_orders,
         "contacts": connector.sync_contacts,
         "inventory": connector.sync_inventory,
+        "products_out": connector.sync_products_out,
+        "invoices_out": connector.sync_invoices_out,
     }.get(entity)
+
+    _OUTBOUND_ENTITIES = {"products_out", "invoices_out"}
 
     if sync_method is None:
         raise ValueError(f"Unknown entity: {entity}")
 
     try:
-        result = await sync_method(ctx, since=since)
+        if entity in _OUTBOUND_ENTITIES:
+            result = await sync_method(ctx)
+        else:
+            result = await sync_method(ctx, since=since)
     except NotImplementedError:
         result = SyncResult(
             entity=entity,

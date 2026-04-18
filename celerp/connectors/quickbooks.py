@@ -238,3 +238,59 @@ class QuickBooksConnector(ConnectorBase):
 
         result.errors = errors or None
         return result
+
+    # -- Outbound: Invoices push -----------------------------------------------
+
+    async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp invoices -> QuickBooks (outbound)."""
+        result = SyncResult(entity=SyncEntity.INVOICES, direction=SyncDirection.OUTBOUND)
+        errors: list[str] = []
+        realm_id = (ctx.extra or {}).get("realm_id") or ctx.store_handle
+        if not realm_id:
+            result.errors = ["realm_id is required for QuickBooks outbound invoice sync"]
+            return result
+
+        try:
+            invoices = await _upsert.list_unsynced_invoices(ctx.company_id, platform="quickbooks")
+        except Exception as exc:
+            result.errors = [f"Failed to load invoices: {exc}"]
+            return result
+
+        base = f"{_API_BASE}/{realm_id}"
+        async with RateLimitedClient() as client:
+            for inv in invoices:
+                try:
+                    line_items = [
+                        {
+                            "DetailType": "SalesItemLineDetail",
+                            "Amount": float(line.get("total", 0)),
+                            "Description": line.get("description", ""),
+                            "SalesItemLineDetail": {
+                                "Qty": float(line.get("quantity", 1)),
+                                "UnitPrice": float(line.get("unit_price", 0)),
+                            },
+                        }
+                        for line in (inv.get("line_items") or [])
+                    ]
+                    payload = {
+                        "CustomerRef": {"value": inv.get("customer_external_id") or inv.get("customer_name", "")},
+                        "Line": line_items,
+                        "DocNumber": inv.get("ref_id"),
+                    }
+                    resp = await client.post(
+                        f"{base}/invoice",
+                        headers=_headers(ctx),
+                        params={"minorversion": "65"},
+                        json=payload,
+                    )
+                    resp.raise_for_status()
+                    result.created += 1
+                except Exception as exc:
+                    errors.append(f"Invoice {inv.get('ref_id')}: {exc}")
+
+        result.errors = errors or None
+        log.info(
+            "quickbooks.sync_invoices_out company=%s created=%d errors=%d",
+            ctx.company_id, result.created, len(errors),
+        )
+        return result

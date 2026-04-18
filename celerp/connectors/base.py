@@ -90,3 +90,11 @@ class ConnectorBase(ABC):
     async def sync_contacts(self, ctx: ConnectorContext, since: datetime | None = None) -> SyncResult:
         """Pull customers/vendors from platform -> Celerp CRM. Override if supported."""
         raise NotImplementedError(f"{self.name} does not support contact sync")
+
+    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp items -> platform. Override if supported."""
+        raise NotImplementedError(f"{self.name} does not support outbound product sync")
+
+    async def sync_invoices_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp invoices -> platform. Override if supported."""
+        raise NotImplementedError(f"{self.name} does not support outbound invoice sync")
