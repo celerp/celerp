@@ -367,7 +367,7 @@ async def get_valuation(
                 else:
                     v = state.get(key)
                     if v is not None:
-                        price_totals[pl_name] += Decimal(str(v))
+                        price_totals[pl_name] += Decimal(str(v)) * Decimal(str(qty))
             except Exception:
                 pass
 
