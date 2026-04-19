@@ -66,10 +66,6 @@ To add a new module, follow the pattern in any existing module (e.g. `celerp-inv
 - Name test files after the module they test
 - Use `conftest.py` for shared fixtures
 
-## License headers
+## License
 
-Every `.py` file must include a license header. See [LICENSE](LICENSE) for details.
-
-- `celerp/` - BSL-1.1
-- `default_modules/celerp-manufacturing/`, `default_modules/celerp-labels/` - MIT
-- All other modules, UI, tests - LicenseRef-Proprietary
+The project is licensed under [BSL-1.1](LICENSE). By submitting a PR, you agree to license your contribution under the same terms. Don't worry about license headers in your code - we'll sort that out during review.

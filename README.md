@@ -44,6 +44,7 @@ Open **http://localhost:8080**. Done.
 - Recurring subscriptions with automatic invoicing
 - CSV import/export everything - idempotent, audited, column-mapped
 - Multi-company from one install
+- Role-based permissions - owner, manager, staff with controlled access per employee
 - Works offline, no internet required
 
 ---
