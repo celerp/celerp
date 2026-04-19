@@ -1,2 +1,2 @@
--e # Copyright (c) 2026 Noah Severs
+# Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
