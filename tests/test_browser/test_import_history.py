@@ -1,4 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs. All rights reserved.
 """Group 15: Import history + undo — complete an import, verify history tab, undo it.
 
 All default modules are expected to be loaded. Tests are unconditional.

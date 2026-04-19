@@ -1,4 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs. All rights reserved.
 """Group 2: Navigation crawl — all primary routes return 200, no error banners."""
 import pytest
 from playwright.sync_api import expect

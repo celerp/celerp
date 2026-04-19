@@ -1,4 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs. All rights reserved.
 """
 Browser test conftest.
 Starts FastAPI (port 18000) + FastHTML UI (port 18080) in background threads.

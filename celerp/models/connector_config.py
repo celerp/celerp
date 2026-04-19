@@ -58,6 +58,3 @@ class OutboundQueue(Base):
         sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()
     )
     error_message: Mapped[str | None] = mapped_column(sa.Text, nullable=True)
-
-    MAX_RETRIES = 5
-    BACKOFF_MINUTES = [1, 5, 15, 60, 240]  # exponential-ish

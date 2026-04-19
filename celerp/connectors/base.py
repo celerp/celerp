@@ -3,17 +3,20 @@
 """
 Connector base interface.
 
-Each connector (Shopify, QuickBooks, Xero, …) implements ConnectorBase.
-Connectors do NOT hold OAuth tokens directly — tokens are brokered by the
+Each connector (Shopify, QuickBooks, Xero, ...) implements ConnectorBase.
+Connectors do NOT hold OAuth tokens directly - tokens are brokered by the
 CelERP relay service and injected at call time via ConnectorContext.
 
 Sync direction:
-  - INBOUND: external platform → Celerp (pull products, orders, contacts)
-  - OUTBOUND: Celerp → external platform (push invoices, inventory updates)
+  - INBOUND: external platform -> Celerp (pull products, orders, contacts)
+  - OUTBOUND: Celerp -> external platform (push invoices, inventory updates)
   - BOTH: bidirectional
 """
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -140,5 +143,7 @@ class ConnectorBase(ABC):
         return []
 
     def validate_webhook(self, payload: bytes, signature: str, secret: str) -> bool:
-        """Validate HMAC signature of an incoming webhook. Override per platform."""
-        return False
+        """Validate HMAC-SHA256 webhook signature. Works for Shopify and WooCommerce."""
+        computed = hmac.new(secret.encode(), payload, hashlib.sha256).digest()
+        expected = base64.b64encode(computed).decode()
+        return hmac.compare_digest(expected, signature)

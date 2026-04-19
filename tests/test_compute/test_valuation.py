@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
 import numpy as np
 
 from celerp.compute.valuation import compute_fifo_cost, compute_inventory_valuation, compute_weighted_average_cost

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: LicenseRef-Proprietary
 #!/usr/bin/env python3
 """
 Grant the required PostgreSQL privileges to the Celerp app user.

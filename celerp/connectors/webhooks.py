@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
 from celerp.connectors.base import ConnectorContext, SyncDirection, entity_allowed
@@ -71,10 +70,7 @@ async def handle_webhook(
         log.error("webhook: unknown platform %s", event.platform)
         return
 
-    # Run a targeted incremental sync for just this entity type
-    # Use a very recent `since` to minimize data transfer
-    since = datetime.utcnow()  # The webhook itself tells us something changed "now"
-    # Actually, we want ALL recent changes, so use None for targeted fetch
-    # The sync methods handle incremental via since param from last SyncRun
+    # Run a targeted incremental sync for just this entity type.
+    # Pass since=None so the sync methods use the last SyncRun timestamp.
     await run_sync(connector, ctx, entity, direction=direction)
     log.info("webhook: processed %s/%s for %s", event.platform, event.topic, ctx.company_id)

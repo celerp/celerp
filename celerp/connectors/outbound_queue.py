@@ -8,14 +8,19 @@ outbound push. This module processes the queue with exponential backoff.
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 
 import sqlalchemy as sa
 
 from celerp.models.connector_config import OutboundQueue
 
 log = logging.getLogger(__name__)
+
+MAX_RETRIES = 5
+BACKOFF_MINUTES = [1, 5, 15, 60, 240]
 
 
 async def enqueue(
@@ -26,7 +31,6 @@ async def enqueue(
     payload: dict | None = None,
 ) -> None:
     """Add an entity to the outbound push queue."""
-    import json
     from celerp.db import get_session_ctx
 
     entry = OutboundQueue(
@@ -43,11 +47,20 @@ async def enqueue(
         await session.commit()
 
 
-async def process_queue(company_id: str) -> int:
-    """Process all pending/retryable outbound queue entries. Returns count processed."""
+TokenFetcher = Callable[[str, str], Awaitable["ConnectorContext"]]  # noqa: F821
+
+
+async def process_queue(
+    company_id: str,
+    token_fetcher: TokenFetcher | None = None,
+) -> int:
+    """Process all pending/retryable outbound queue entries. Returns count processed.
+
+    token_fetcher: async (company_id, connector_name) -> ConnectorContext
+      If not provided, entries are marked "awaiting_token" and skipped.
+    """
     from celerp.db import get_session_ctx
     import celerp.connectors as connector_registry
-    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.sync_runner import run_sync
 
     now = datetime.now(timezone.utc)
@@ -67,17 +80,49 @@ async def process_queue(company_id: str) -> int:
         entries = [row[0] for row in rows]
 
     for entry in entries:
+        if token_fetcher is None:
+            await _update_status(entry.id, "awaiting_token",
+                                 "No token_fetcher provided - cannot process without credentials")
+            log.warning(
+                "outbound_queue: entry %d skipped - no token_fetcher for %s/%s",
+                entry.id, entry.connector, entry.entity_type,
+            )
+            continue
+
+        try:
+            ctx = await token_fetcher(company_id, entry.connector)
+        except Exception as exc:
+            await _update_status(entry.id, "awaiting_token", f"Token fetch failed: {exc}")
+            log.warning(
+                "outbound_queue: entry %d token fetch failed for %s: %s",
+                entry.id, entry.connector, exc,
+            )
+            continue
+
         try:
             connector = connector_registry.get(entry.connector)
-            # For outbound, we use the entity_type + "_out" convention
             out_entity = f"{entry.entity_type}_out"
-            # This is a simplified push - real implementation would use
-            # the specific entity payload rather than a full sync
-            result = await run_sync(
-                connector,
-                ConnectorContext(company_id=company_id, access_token="", store_handle=""),
-                out_entity,
-            )
+
+            if entry.payload_json:
+                # Push using stored payload via the specific push method
+                payload = json.loads(entry.payload_json)
+                push_method_name = f"sync_{entry.entity_type}_out"
+                push_method = getattr(connector, push_method_name, None)
+                if push_method is not None:
+                    result = await push_method(ctx, payload=payload)
+                else:
+                    log.warning(
+                        "outbound_queue: connector %s has no %s method, falling back to full sync",
+                        entry.connector, push_method_name,
+                    )
+                    result = await run_sync(connector, ctx, out_entity)
+            else:
+                log.warning(
+                    "outbound_queue: entry %d has no payload_json, running full sync for %s/%s",
+                    entry.id, entry.connector, entry.entity_type,
+                )
+                result = await run_sync(connector, ctx, out_entity)
+
             if result.ok:
                 await _update_status(entry.id, "completed")
                 processed += 1
@@ -107,12 +152,12 @@ async def _handle_failure(entry: OutboundQueue, errors: list[str] | None) -> Non
     error_msg = "; ".join(errors) if errors else "Unknown error"
     new_retry = entry.retry_count + 1
 
-    if new_retry >= OutboundQueue.MAX_RETRIES:
+    if new_retry >= MAX_RETRIES:
         await _update_status(entry.id, "failed", error_msg)
         log.warning("outbound_queue: entry %d failed permanently after %d retries", entry.id, new_retry)
         return
 
-    backoff_min = OutboundQueue.BACKOFF_MINUTES[min(new_retry, len(OutboundQueue.BACKOFF_MINUTES) - 1)]
+    backoff_min = BACKOFF_MINUTES[min(new_retry, len(BACKOFF_MINUTES) - 1)]
     next_retry = datetime.now(timezone.utc) + timedelta(minutes=backoff_min)
 
     async with get_session_ctx() as session:
@@ -129,7 +174,7 @@ async def _handle_failure(entry: OutboundQueue, errors: list[str] | None) -> Non
         await session.commit()
 
     log.info("outbound_queue: entry %d retry %d/%d in %dm",
-             entry.id, new_retry, OutboundQueue.MAX_RETRIES, backoff_min)
+             entry.id, new_retry, MAX_RETRIES, backoff_min)
 
 
 async def get_pending_count(company_id: str, connector: str | None = None) -> int:

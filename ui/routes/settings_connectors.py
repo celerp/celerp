@@ -26,6 +26,23 @@ _DEFAULT_FREQUENCY: dict[str, SyncFrequency] = {
     ConnectorCategory.ACCOUNTING.value: SyncFrequency.MANUAL,
 }
 
+_VALID_PLATFORMS: set[str] | None = None
+
+
+def _valid_platforms() -> set[str]:
+    global _VALID_PLATFORMS
+    if _VALID_PLATFORMS is None:
+        from celerp.connectors import all_connectors
+        _VALID_PLATFORMS = {c.name for c in all_connectors()}
+    return _VALID_PLATFORMS
+
+
+def _validate_platform(platform: str):
+    """Return error response if platform is invalid, else None."""
+    if platform not in _valid_platforms():
+        return Span(f"Unknown connector: {platform}", cls="flash flash--warning")
+    return None
+
 
 def _entity_chip(entity: str) -> FT:
     return Span(entity, cls="connector-entity-chip")
@@ -139,7 +156,11 @@ def _webhook_status(connected: bool, category: str, lang: str = "en") -> FT:
 
 async def _fetch_access_token(relay_url: str, instance_id: str, platform: str) -> dict:
     """Fetch decrypted access token from relay for a platform."""
+    import os
     import httpx
+    if not relay_url.startswith("https://"):
+        if not os.environ.get("CELERP_ALLOW_HTTP_RELAY"):
+            raise RuntimeError("Relay URL must use HTTPS. Set CELERP_ALLOW_HTTP_RELAY=1 for development.")
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
             r = await c.get(
@@ -451,6 +472,8 @@ def setup_routes(app):
             return Span(t("error.unauthorized"), cls="flash flash--warning")
         if (r := _check_role(request, "admin")):
             return r
+        if (err := _validate_platform(platform)):
+            return err
 
         from celerp.config import ensure_instance_id
         from celerp.db import get_session_ctx
@@ -494,6 +517,8 @@ def setup_routes(app):
             return Span(t("error.unauthorized"), cls="flash flash--warning")
         if (r := _check_role(request, "admin")):
             return r
+        if (err := _validate_platform(platform)):
+            return err
 
         from celerp.config import ensure_instance_id
         from celerp.db import get_session_ctx
@@ -536,6 +561,8 @@ def setup_routes(app):
             return Span(t("error.unauthorized"), cls="flash flash--warning")
         if (r := _check_role(request, "admin")):
             return r
+        if (err := _validate_platform(platform)):
+            return err
 
         from celerp.config import ensure_instance_id
         from ui.config import RELAY_URL
@@ -571,6 +598,8 @@ def setup_routes(app):
             return Span(t("error.unauthorized"), cls="flash flash--warning")
         if (r := _check_role(request, "admin")):
             return r
+        if (err := _validate_platform(platform)):
+            return err
 
         from celerp.config import ensure_instance_id
         from ui.i18n import get_lang
@@ -622,11 +651,14 @@ def setup_routes(app):
             return Span(t("error.unauthorized"), cls="flash flash--warning")
         if (r := _check_role(request, "admin")):
             return r
+        if (err := _validate_platform(platform)):
+            return err
 
         from celerp.config import ensure_instance_id
         from ui.config import RELAY_URL
         from ui.i18n import get_lang
         import httpx
+        import os
 
         iid = ensure_instance_id()
         lang = get_lang(request)
@@ -642,6 +674,15 @@ def setup_routes(app):
                 id=f"connector-card-{platform}",
                 cls="connector-card",
             )
+
+        if not RELAY_URL.startswith("https://"):
+            if not os.environ.get("CELERP_ALLOW_HTTP_RELAY"):
+                return Div(
+                    Span("Relay URL must use HTTPS. Set CELERP_ALLOW_HTTP_RELAY=1 for development.",
+                         cls="flash flash--warning"),
+                    id=f"connector-card-{platform}",
+                    cls="connector-card",
+                )
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as c:
