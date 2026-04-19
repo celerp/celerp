@@ -90,54 +90,15 @@ The onboarding wizard lets you pick your industry. Modules can be toggled any ti
 
 ## Development
 
-### Prerequisites
-
-- Python 3.11+
-- PostgreSQL 14+
-- Node.js 18+ _(only for Electron desktop build)_
-
-### Setup
-
 ```bash
 git clone git@github.com:celerp/celerp.git
-cd celerp/core
+cd celerp
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-cp .env.example .env   # edit DATABASE_URL and JWT_SECRET
+sudo celerp init   # creates DB, runs migrations, starts servers
 ```
 
-### Database
-
-```bash
-# Ubuntu/Debian
-sudo apt install postgresql && sudo systemctl start postgresql
-sudo -u postgres psql -c "CREATE USER celerp WITH PASSWORD 'devpass';"
-sudo -u postgres psql -c "CREATE DATABASE celerp OWNER celerp;"
-
-# macOS
-brew install postgresql@15 && brew services start postgresql@15
-psql postgres -c "CREATE USER celerp WITH PASSWORD 'devpass';"
-psql postgres -c "CREATE DATABASE celerp OWNER celerp;"
-```
-
-### Run
-
-```bash
-set -a && source .env && set +a
-alembic upgrade head
-
-# Terminal 1 - API
-uvicorn celerp.main:app --reload
-
-# Terminal 2 - UI
-PYTHONPATH=. uvicorn ui.app:app --port 8080 --reload
-```
-
-### Tests
-
-```bash
-pytest tests/ --ignore=tests/test_visual.py
-```
+Open **http://localhost:8080**. Run tests with `pytest tests/`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for environment variables, troubleshooting, and coding guidelines.
 
