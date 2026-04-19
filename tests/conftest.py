@@ -314,7 +314,7 @@ def _mock_get_modules_default():
 
 from celerp.models.base import Base
 
-DATABASE_URL = "sqlite+aiosqlite:///:memory:"
+DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 
 def make_test_token(role: str = "owner", user_id: str = "00000000-0000-0000-0000-000000000001", company_id: str = "00000000-0000-0000-0000-000000000002") -> str:

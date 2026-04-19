@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Tests for bank accounts, transfers, and reconciliation endpoints."""
 from __future__ import annotations
 

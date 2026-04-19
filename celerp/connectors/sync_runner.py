@@ -11,6 +11,7 @@ from celerp.connectors.base import (
     ConnectorBase,
     ConnectorContext,
     SyncDirection,
+    SyncEntity,
     SyncResult,
     entity_allowed,
 )
@@ -46,9 +47,14 @@ async def run_sync(
 
     # Direction gate
     if direction and not entity_allowed(entity, direction):
+        try:
+            entity_enum = SyncEntity(entity)
+        except ValueError:
+            entity_enum = entity  # unknown entity, pass through
+        direction_enum = direction if isinstance(direction, SyncDirection) else SyncDirection(direction)
         return SyncResult(
-            entity=entity,
-            direction=direction,
+            entity=entity_enum,
+            direction=direction_enum,
             errors=[f"{entity} sync blocked by direction={direction.value}"],
         )
 

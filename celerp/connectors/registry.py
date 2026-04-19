@@ -7,17 +7,13 @@ Import connectors here; add new ones in one line.
 from __future__ import annotations
 
 from celerp.connectors.base import ConnectorBase
-from celerp.connectors.lazada import LazadaConnector
 from celerp.connectors.quickbooks import QuickBooksConnector
-from celerp.connectors.shopee import ShopeeConnector
 from celerp.connectors.shopify import ShopifyConnector
 from celerp.connectors.woocommerce import WooCommerceConnector
 from celerp.connectors.xero import XeroConnector
 
 _registry: dict[str, ConnectorBase] = {
-    "lazada": LazadaConnector(),
     "quickbooks": QuickBooksConnector(),
-    "shopee": ShopeeConnector(),
     "shopify": ShopifyConnector(),
     "woocommerce": WooCommerceConnector(),
     "xero": XeroConnector(),

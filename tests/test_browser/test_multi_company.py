@@ -1,4 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs. All rights reserved.
 """Group 14: Multi-company — create second company, switch to it, verify context changes."""
 import pytest
 

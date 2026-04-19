@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Test that demo item prices work even without the inventory projection handler.
 
 Root cause: setup wizard calls reseed BEFORE restarting the API, so the

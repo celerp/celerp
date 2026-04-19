@@ -15,8 +15,6 @@ API version: 2024-01 (stable)
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 from datetime import datetime
 from typing import Any
@@ -344,12 +342,6 @@ class ShopifyConnector(ConnectorBase):
                 resp = await client.delete(f"{base}/webhooks/{wid}.json", headers=_headers(ctx))
                 if resp.status_code not in (200, 204):
                     log.warning("shopify.deregister_webhook id=%s status=%d", wid, resp.status_code)
-
-    def validate_webhook(self, payload: bytes, signature: str, secret: str) -> bool:
-        computed = hmac.new(secret.encode(), payload, hashlib.sha256).digest()
-        import base64
-        expected = base64.b64encode(computed).decode()
-        return hmac.compare_digest(expected, signature)
 
 
 # -- Pagination helper ---------------------------------------------------------

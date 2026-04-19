@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Awaitable, Callable
 
 import sqlalchemy as sa
 
@@ -23,15 +24,22 @@ log = logging.getLogger(__name__)
 _CHECK_INTERVAL_SECONDS = 3600  # check every hour
 _MIN_HOURS_BETWEEN_SYNCS = 23
 
+TokenFetcher = Callable[[str, str], Awaitable["ConnectorContext"]]  # noqa: F821
 
-async def check_and_run_daily_syncs(company_id: str) -> list[str]:
+
+async def check_and_run_daily_syncs(
+    company_id: str,
+    token_fetcher: TokenFetcher | None = None,
+) -> list[str]:
     """Check all connectors with daily frequency and run if due.
 
-    Returns list of connector names that were synced.
+    token_fetcher: async (company_id, connector_name) -> ConnectorContext
+      If not provided, due connectors are logged as warnings but NOT marked synced.
+
+    Returns list of connector names that were successfully synced.
     """
     from celerp.db import get_session_ctx
     import celerp.connectors as connector_registry
-    from celerp.connectors.base import ConnectorContext
     from celerp.connectors.sync_runner import run_sync
 
     now = datetime.now(timezone.utc)
@@ -54,8 +62,6 @@ async def check_and_run_daily_syncs(company_id: str) -> list[str]:
                 continue
 
         # Check if current UTC hour matches configured hour
-        # (user sets local hour; stored as UTC offset would be ideal,
-        # but for simplicity we use UTC hour directly)
         if now.hour != config.daily_sync_hour:
             continue
 
@@ -65,17 +71,32 @@ async def check_and_run_daily_syncs(company_id: str) -> list[str]:
             log.warning("daily_scheduler: unknown connector %s", config.connector)
             continue
 
+        if token_fetcher is None:
+            log.warning(
+                "daily_scheduler: %s is due for sync but no token_fetcher provided - skipping",
+                config.connector,
+            )
+            continue
+
         direction = SyncDirection(config.direction)
         log.info("daily_scheduler: running %s (direction=%s)", config.connector, direction.value)
 
+        try:
+            ctx = await token_fetcher(company_id, config.connector)
+        except Exception as exc:
+            log.warning("daily_scheduler: token fetch failed for %s: %s", config.connector, exc)
+            continue
+
         # Run sync for all supported entities respecting direction
-        ctx = ConnectorContext(company_id=company_id, access_token="", store_handle="")
-        # Note: actual token fetch happens in the UI/caller layer
-        # This scheduler signals that a sync is due; the UI triggers it with real tokens
+        for entity_enum in connector.supported_entities:
+            try:
+                await run_sync(connector, ctx, entity_enum.value, direction=direction)
+            except Exception as exc:
+                log.error("daily_scheduler: sync error %s/%s: %s", config.connector, entity_enum.value, exc)
 
         synced.append(config.connector)
 
-        # Update last_daily_sync_at
+        # Update last_daily_sync_at only after actually running
         async with get_session_ctx() as session:
             await session.execute(
                 sa.update(ConnectorConfig)
@@ -87,11 +108,11 @@ async def check_and_run_daily_syncs(company_id: str) -> list[str]:
     return synced
 
 
-async def scheduler_loop(company_id: str) -> None:
+async def scheduler_loop(company_id: str, token_fetcher: TokenFetcher | None = None) -> None:
     """Background loop that checks for due daily syncs every hour."""
     while True:
         try:
-            synced = await check_and_run_daily_syncs(company_id)
+            synced = await check_and_run_daily_syncs(company_id, token_fetcher=token_fetcher)
             if synced:
                 log.info("daily_scheduler: synced %s", ", ".join(synced))
         except Exception as exc:

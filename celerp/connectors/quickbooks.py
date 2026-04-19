@@ -41,6 +41,15 @@ _SANDBOX_BASE = "https://sandbox-quickbooks.api.intuit.com/v3/company"
 _PAGE_SIZE = 100
 
 
+def _qb_since_filter(field: str, since: datetime | None) -> str:
+    """Build a QB query WHERE clause for incremental sync."""
+    if since is None:
+        return ""
+    if not isinstance(since, datetime):
+        raise TypeError(f"Expected datetime, got {type(since).__name__}")
+    return f" AND {field} > '{since.isoformat()}'"
+
+
 def _base_url(ctx: ConnectorContext) -> str:
     realm_id = ctx.store_handle or ""
     if not realm_id:
@@ -115,10 +124,7 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            sql = (
-                f"SELECT * FROM Item WHERE Active = true AND MetaData.LastUpdatedTime > '{since.isoformat()}'"
-                if since else "SELECT * FROM Item WHERE Active = true"
-            )
+            sql = f"SELECT * FROM Item WHERE Active = true{_qb_since_filter('MetaData.LastUpdatedTime', since)}"
             items = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
@@ -183,10 +189,7 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            sql = (
-                f"SELECT * FROM Invoice WHERE MetaData.LastUpdatedTime > '{since.isoformat()}'"
-                if since else "SELECT * FROM Invoice"
-            )
+            sql = f"SELECT * FROM Invoice{_qb_since_filter('MetaData.LastUpdatedTime', since)}"
             invoices = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]
@@ -217,10 +220,7 @@ class QuickBooksConnector(ConnectorBase):
         errors: list[str] = []
 
         try:
-            sql = (
-                f"SELECT * FROM Customer WHERE Active = true AND MetaData.LastUpdatedTime > '{since.isoformat()}'"
-                if since else "SELECT * FROM Customer WHERE Active = true"
-            )
+            sql = f"SELECT * FROM Customer WHERE Active = true{_qb_since_filter('MetaData.LastUpdatedTime', since)}"
             customers = await _query(ctx, sql)
         except httpx.HTTPStatusError as exc:
             result.errors = [f"QuickBooks API error: {exc}"]

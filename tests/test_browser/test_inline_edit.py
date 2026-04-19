@@ -1,4 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs. All rights reserved.
 """Group 7: Inline edit — create entity via API, click editable field, submit new value."""
 import uuid
 import pytest

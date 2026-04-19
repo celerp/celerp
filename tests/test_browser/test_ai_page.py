@@ -1,4 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs. All rights reserved.
 """
 Browser tests for the AI module UI.
 

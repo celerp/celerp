@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
 """Create label_templates table
 
 Revision ID: labels_001

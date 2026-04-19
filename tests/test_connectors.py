@@ -458,11 +458,11 @@ async def test_handle_webhook_unknown_platform():
 # ── OutboundQueue model ──────────────────────────────────────────────────────
 
 def test_outbound_queue_backoff_minutes():
-    from celerp.models.connector_config import OutboundQueue
-    assert OutboundQueue.MAX_RETRIES == 5
-    assert len(OutboundQueue.BACKOFF_MINUTES) == 5
-    assert OutboundQueue.BACKOFF_MINUTES[0] == 1
-    assert OutboundQueue.BACKOFF_MINUTES[-1] == 240
+    from celerp.connectors.outbound_queue import MAX_RETRIES, BACKOFF_MINUTES
+    assert MAX_RETRIES == 5
+    assert len(BACKOFF_MINUTES) == 5
+    assert BACKOFF_MINUTES[0] == 1
+    assert BACKOFF_MINUTES[-1] == 240
 
 
 # ── ConnectorConfig model ────────────────────────────────────────────────────

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BSL-1.1
 """add bank_statement_lines, reconciliation_rules, extend reconciliation_sessions
 
 Revision ID: k5l6m7n8o9p0

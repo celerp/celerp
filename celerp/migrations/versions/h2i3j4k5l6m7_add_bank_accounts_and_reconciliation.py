@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BSL-1.1
 """add bank_accounts and reconciliation_sessions tables
 
 Revision ID: h2i3j4k5l6m7

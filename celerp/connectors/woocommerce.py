@@ -11,8 +11,6 @@ API: WooCommerce REST API v3 (/wp-json/wc/v3/)
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 from datetime import datetime
 from typing import Any
@@ -319,9 +317,3 @@ class WooCommerceConnector(ConnectorBase):
                 resp = await client.delete(f"{base_url}/webhooks/{wid}", auth=auth, params={"force": "true"})
                 if resp.status_code not in (200, 204):
                     log.warning("woocommerce.deregister_webhook id=%s status=%d", wid, resp.status_code)
-
-    def validate_webhook(self, payload: bytes, signature: str, secret: str) -> bool:
-        computed = hmac.new(secret.encode(), payload, hashlib.sha256).digest()
-        import base64
-        expected = base64.b64encode(computed).decode()
-        return hmac.compare_digest(expected, signature)
