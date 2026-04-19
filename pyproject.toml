@@ -1,6 +1,6 @@
 [project]
 name = "celerp"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Free, self-hosted ERP for small businesses"
 readme = "README.md"
 license = {file = "LICENSE"}
@@ -44,6 +44,7 @@ dependencies = [
     "qrcode>=7.0",
     "Pillow>=10.0",
     "pypdf>=4.0",
+    "psycopg2-binary>=2.9",
 ]
 
 [project.urls]
@@ -124,5 +125,10 @@ include = ["celerp", "celerp.*", "ui", "ui.*", "default_modules"]
 "*" = ["__pycache__/**", "*.pyc", "*.pyo"]
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "setuptools-scm>=8", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+version_scheme = "guess-next-dev"
+local_scheme = "no-local-version"
+tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
