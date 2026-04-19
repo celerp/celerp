@@ -46,8 +46,14 @@ async def _try_auto_activate() -> None:
             _s.gateway_http_url.rstrip("/") if _s.gateway_http_url
             else _s.gateway_url.replace("wss://", "https://").replace("ws://", "http://").replace("/ws/connect", "")
         )
-        async with httpx.AsyncClient(timeout=10.0) as c:
-            r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid})
+        _httpx_log = logging.getLogger("httpx")
+        _prev_level = _httpx_log.level
+        _httpx_log.setLevel(logging.WARNING)
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid})
+        finally:
+            _httpx_log.setLevel(_prev_level)
         if r.status_code != 200:
             return
         data = r.json()
