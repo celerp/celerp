@@ -65,6 +65,7 @@ async def test_items_valuation_with_total_cost_and_retail(client):
             "data": {
                 "sku": f"TC-{uuid.uuid4().hex[:6]}",
                 "name": "ValuationItem",
+                "quantity": 1,
                 "total_cost": 100.0,
                 "wholesale_price": 120.0,
                 "retail_price": 150.0,
