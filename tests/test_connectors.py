@@ -967,3 +967,72 @@ def test_daily_scheduler_min_hours():
 def test_daily_scheduler_check_interval():
     from celerp.connectors.daily_scheduler import _CHECK_INTERVAL_SECONDS
     assert _CHECK_INTERVAL_SECONDS == 3600
+
+
+# -- Lazada connector tests ----------------------------------------------------
+
+def test_lazada_metadata():
+    from celerp.connectors.lazada import LazadaConnector
+    c = LazadaConnector()
+    assert c.name == "lazada"
+    assert c.direction == SyncDirection.INBOUND
+    assert SyncEntity.PRODUCTS in c.supported_entities
+
+
+def test_lazada_sign():
+    from celerp.connectors.lazada import _sign
+    result = _sign("secret123", "/products/get", {"app_key": "12345", "timestamp": "1000000"})
+    assert isinstance(result, str)
+    assert len(result) == 64  # SHA256 hex uppercased = 64 chars
+    # Deterministic
+    assert result == _sign("secret123", "/products/get", {"app_key": "12345", "timestamp": "1000000"})
+
+
+def test_lazada_validate_ctx():
+    from celerp.connectors.lazada import _validate_ctx
+    ctx = ConnectorContext(company_id="test", access_token="tok", store_handle="sg")
+    with pytest.raises(ValueError, match="app_key"):
+        _validate_ctx(ctx)
+    ctx.extra = {"app_key": "123", "app_secret": "sec"}
+    _validate_ctx(ctx)  # should not raise
+
+
+def test_registry_get_lazada():
+    c = connector_registry.get("lazada")
+    assert c.name == "lazada"
+
+
+# -- Shopee connector tests ----------------------------------------------------
+
+def test_shopee_metadata():
+    from celerp.connectors.shopee import ShopeeConnector
+    c = ShopeeConnector()
+    assert c.name == "shopee"
+    assert c.direction == SyncDirection.INBOUND
+    assert SyncEntity.PRODUCTS in c.supported_entities
+
+
+def test_shopee_sign():
+    from celerp.connectors.shopee import _sign
+    result = _sign(123456, "/product/get_item_list", 1000000, "access_tok", 789, "partner_secret")
+    assert isinstance(result, str)
+    assert len(result) == 64
+    # Deterministic
+    assert result == _sign(123456, "/product/get_item_list", 1000000, "access_tok", 789, "partner_secret")
+
+
+def test_shopee_validate_ctx():
+    from celerp.connectors.shopee import _validate_ctx
+    ctx = ConnectorContext(company_id="test", access_token="tok", store_handle=None)
+    with pytest.raises(ValueError, match="shop_id"):
+        _validate_ctx(ctx)
+    ctx.store_handle = "12345"
+    with pytest.raises(ValueError, match="partner_id"):
+        _validate_ctx(ctx)
+    ctx.extra = {"partner_id": 123, "partner_key": "key"}
+    _validate_ctx(ctx)  # should not raise
+
+
+def test_registry_get_shopee():
+    c = connector_registry.get("shopee")
+    assert c.name == "shopee"
