@@ -20,11 +20,11 @@ const { execFileSync } = childProcess;
 const net = require("net");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
-// ── Asar unpack path fix ─────────────────────────────────────────────────────
-// Electron does not reliably patch spawn() or fs.promises.chmod() for asar paths.
-// embedded-postgres resolves binary paths via __dirname inside app.asar, then calls
-// both fs.promises.chmod and spawn() on those paths. Both fail with ENOTDIR because
-// the OS sees app.asar as a file, not a directory.
+// ── Asar path fixes for embedded-postgres ────────────────────────────────────
+// Electron does not reliably patch child_process.spawn() or fs.promises.chmod()
+// for asar paths. embedded-postgres resolves binary paths via __dirname inside
+// app.asar, then calls both on those paths. Both fail with ENOTDIR because the
+// OS sees app.asar as a file, not a directory.
 // Fix: rewrite .asar/ → .asar.unpacked/ before either operation hits the OS.
 
 function rewriteAsarPath(p) {
@@ -34,42 +34,32 @@ function rewriteAsarPath(p) {
   return p;
 }
 
-// Patch child_process.spawn globally so embedded-postgres (which imports spawn
-// directly from 'child_process') also gets the asar path rewrite.
+// Patch child_process.spawn globally — embedded-postgres imports spawn directly
+// from 'child_process', so a local wrapper would not affect it.
 const _spawn = childProcess.spawn.bind(childProcess);
 childProcess.spawn = function spawn(cmd, args, opts) {
   return _spawn(rewriteAsarPath(cmd), args, opts);
 };
-// Keep a local reference for our own use
 const spawn = childProcess.spawn;
 
-// Patch fs.promises.chmod to redirect asar paths to asar.unpacked
+// Patch fs.promises.chmod globally — same reason as spawn above.
 const fsPromises = require("fs").promises;
 const _chmod = fsPromises.chmod.bind(fsPromises);
-fsPromises.chmod = (path, mode) => _chmod(rewriteAsarPath(path), mode);
+fsPromises.chmod = (p, mode) => _chmod(rewriteAsarPath(p), mode);
 
-// ── async-exit-hook graceful shutdown patch ───────────────────────────────────
-// embedded-postgres registers a gracefulShutdown(done) hook via async-exit-hook.
-// async-exit-hook detects async hooks by checking hook.length > 0, and passes
-// a `done` callback. However in certain exit paths (e.g. process 'exit' event
-// fired from Electron's app.quit()), `done` may arrive as undefined, causing
-// "TypeError: done is not a function" inside the generator at shutdown.
-// Fix: wrap the async-exit-hook `add` export so every registered async hook
-// receives a safe no-op done if the caller omits it.
+// Patch async-exit-hook before embedded-postgres loads so gracefulShutdown(done)
+// always receives a callable done. In some Electron exit paths async-exit-hook
+// calls hooks without the done callback, causing "TypeError: done is not a function".
 {
-  const asyncExitHookPath = require.resolve("async-exit-hook");
-  const asyncExitHookModule = require(asyncExitHookPath);
-  const _addHook = asyncExitHookModule;
-  const safeAdd = function(hook) {
-    const safeHook = hook.length > 0
+  const hookPath = require.resolve("async-exit-hook");
+  const originalAdd = require(hookPath);
+  const patchedAdd = function patchedAdd(hook) {
+    return originalAdd(hook.length > 0
       ? function(done) { return hook(typeof done === "function" ? done : () => {}); }
-      : hook;
-    Object.defineProperty(safeHook, "length", { value: hook.length });
-    return _addHook(safeHook);
+      : hook);
   };
-  // Copy all properties from the original add function
-  Object.assign(safeAdd, asyncExitHookModule);
-  require.cache[asyncExitHookPath].exports = safeAdd;
+  Object.assign(patchedAdd, originalAdd);
+  require.cache[hookPath].exports = patchedAdd;
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
