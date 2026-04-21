@@ -549,8 +549,8 @@ app.whenReady().then(async () => {
     loadingWin.close();
     createWindow();
 
-    // Seed demo data on first boot (non-blocking)
-    maybeRunSeed(dbConfig.url);
+    // Seed demo data on first boot (dev only — packaged app users set up their own account)
+    if (IS_DEV) maybeRunSeed(dbConfig.url);
 
     if (!IS_DEV) {
       setupAutoUpdater();

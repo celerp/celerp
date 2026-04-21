@@ -95,6 +95,7 @@ _CONTACTS = [
 ]
 
 
+
 async def login(client: httpx.AsyncClient) -> str:
     r = await client.post("/auth/login", json={"email": EMAIL, "password": PASSWORD})
     if r.is_error:
