@@ -17,7 +17,7 @@ const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const { spawn, execFileSync } = require("child_process");
 const net = require("net");
-const EmbeddedPostgres = require("embedded-postgres");
+let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -107,6 +107,10 @@ async function startPostgres(dbPort) {
   const fs = require("fs");
   fs.mkdirSync(PG_DATA_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
+
+  if (!EmbeddedPostgres) {
+    EmbeddedPostgres = (await import("embedded-postgres")).default;
+  }
 
   pgInstance = new EmbeddedPostgres({
     databaseDir: PG_DATA_DIR,
