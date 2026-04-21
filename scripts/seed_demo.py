@@ -12,13 +12,14 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import sys
 import uuid
 
 import httpx
 
-API_BASE = "http://127.0.0.1:8000"
+API_BASE = os.environ.get("API_BASE", "http://127.0.0.1:8000")
 EMAIL = "admin@demo.test"
 PASSWORD = "demo-password"
 
