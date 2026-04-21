@@ -21,17 +21,28 @@ const net = require("net");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
 // ── Asar unpack path fix ─────────────────────────────────────────────────────
-// Electron does NOT patch child_process.spawn for asar paths (only execFile is
-// patched). embedded-postgres calls spawn() with binary paths that resolve inside
-// app.asar - the OS sees app.asar as a file, not a directory, causing ENOTDIR.
-// Fix: wrap spawn to rewrite any .asar/ path to .asar.unpacked/ before the OS sees it.
+// Electron does not reliably patch spawn() or fs.promises.chmod() for asar paths.
+// embedded-postgres resolves binary paths via __dirname inside app.asar, then calls
+// both fs.promises.chmod and spawn() on those paths. Both fail with ENOTDIR because
+// the OS sees app.asar as a file, not a directory.
+// Fix: rewrite .asar/ → .asar.unpacked/ before either operation hits the OS.
+
+function rewriteAsarPath(p) {
+  if (typeof p === "string" && p.includes("app.asar") && !p.includes("app.asar.unpacked")) {
+    return p.replace(/app\.asar([/\\])/g, "app.asar.unpacked$1");
+  }
+  return p;
+}
+
 const _spawn = childProcess.spawn.bind(childProcess);
 function spawn(cmd, args, opts) {
-  if (typeof cmd === "string" && cmd.includes("app.asar") && !cmd.includes("app.asar.unpacked")) {
-    cmd = cmd.replace(/app\.asar([/\\])/g, "app.asar.unpacked$1");
-  }
-  return _spawn(cmd, args, opts);
+  return _spawn(rewriteAsarPath(cmd), args, opts);
 }
+
+// Patch fs.promises.chmod to redirect asar paths to asar.unpacked
+const fsPromises = require("fs").promises;
+const _chmod = fsPromises.chmod.bind(fsPromises);
+fsPromises.chmod = (path, mode) => _chmod(rewriteAsarPath(path), mode);
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
