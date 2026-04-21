@@ -1315,6 +1315,7 @@ class TestTableComponent:
         assert b"Escape" in r.content
 
 
+@pytest.mark.xdist_group("inventory_category_tabs")
 class TestInventoryCategoryTabs:
     """Inventory category tabs, status cards, and HTMX content partials.
 
