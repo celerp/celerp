@@ -28,6 +28,9 @@
     "directories": {
       "output": "dist"
     },
+    "asarUnpack": [
+      "node_modules/@embedded-postgres/**"
+    ],
     "files": [
       "main.js",
       "preload.js",
