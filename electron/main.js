@@ -15,9 +15,23 @@
 const { app, BrowserWindow, shell, dialog } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
-const { spawn, execFileSync } = require("child_process");
+const childProcess = require("child_process");
+const { execFileSync } = childProcess;
 const net = require("net");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
+
+// ── Asar unpack path fix ─────────────────────────────────────────────────────
+// Electron does NOT patch child_process.spawn for asar paths (only execFile is
+// patched). embedded-postgres calls spawn() with binary paths that resolve inside
+// app.asar - the OS sees app.asar as a file, not a directory, causing ENOTDIR.
+// Fix: wrap spawn to rewrite any .asar/ path to .asar.unpacked/ before the OS sees it.
+const _spawn = childProcess.spawn.bind(childProcess);
+function spawn(cmd, args, opts) {
+  if (typeof cmd === "string" && cmd.includes("app.asar") && !cmd.includes("app.asar.unpacked")) {
+    cmd = cmd.replace(/app\.asar([/\\])/g, "app.asar.unpacked$1");
+  }
+  return _spawn(cmd, args, opts);
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
