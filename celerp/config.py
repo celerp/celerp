@@ -273,11 +273,11 @@ def set_enabled_modules(names: list[str]) -> None:
     """Idempotently add modules to the config file's enabled list.
 
     Resolves transitive dependencies and writes the updated config to disk.
-    No-op if config file does not exist (non-CLI deployments).
+    When no config file exists yet (e.g. Electron binary on first boot),
+    writes a minimal config containing only the [modules] section so the
+    API can load modules after restart without requiring a prior `celerp init`.
     """
     cfg = read_config()
-    if not cfg:
-        return
     _pkg_root = Path(__file__).parent.parent
     module_dir = _pkg_root / "default_modules"
     currently_enabled: list[str] = cfg.get("modules", {}).get("enabled", [])
@@ -286,8 +286,19 @@ def set_enabled_modules(names: list[str]) -> None:
         return
     install_order = resolve_install_order(list(to_add), module_dir)
     new_modules = [n for n in install_order if n not in currently_enabled]
-    if "modules" not in cfg:
-        cfg["modules"] = {}
-    cfg["modules"]["enabled"] = currently_enabled + new_modules
-    write_config(cfg)
+    all_enabled = currently_enabled + new_modules
+    if cfg:
+        # Full config exists — update it in place via write_config.
+        if "modules" not in cfg:
+            cfg["modules"] = {}
+        cfg["modules"]["enabled"] = all_enabled
+        write_config(cfg)
+    else:
+        # No config file yet (e.g. Electron binary first boot).
+        # Write only the [modules] section so we don't corrupt a future
+        # `celerp init` with empty database/auth/server values.
+        path = config_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        enabled_toml = ", ".join(f'"{m}"' for m in all_enabled)
+        path.write_text(f"[modules]\nenabled = [{enabled_toml}]\n")
 
