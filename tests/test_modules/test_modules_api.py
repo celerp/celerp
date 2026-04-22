@@ -17,6 +17,8 @@ from unittest.mock import patch
 
 import pytest
 
+pytestmark = pytest.mark.xdist_group("modules_api")
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
