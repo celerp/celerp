@@ -16,6 +16,7 @@
 const { app, BrowserWindow, shell, dialog } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
+const fs = require("fs");
 const childProcess = require("child_process");
 const { execFileSync } = childProcess;
 const net = require("net");
@@ -150,7 +151,6 @@ function pythonBin() {
 // ── Startup sequence ─────────────────────────────────────────────────────────
 
 async function startPostgres(dbPort) {
-  const fs = require("fs");
   fs.mkdirSync(PG_DATA_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
 
@@ -198,7 +198,6 @@ function runMigrations(dbUrl) {
 
 /** Seed default modules from resources into DATA_DIR/modules/ on first boot. */
 function seedDefaultModules() {
-  const fs = require("fs");
   const srcDir = DEFAULT_MODULES_SRC;
   if (!fs.existsSync(srcDir)) return; // Dev mode, modules already on path
 
@@ -215,7 +214,6 @@ function seedDefaultModules() {
 }
 
 function _copyDirSync(src, dst) {
-  const fs = require("fs");
   fs.mkdirSync(dst, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const s = path.join(src, entry.name);
@@ -246,7 +244,6 @@ function runModuleSetup() {
 
 /** Build ALEMBIC_VERSION_LOCATIONS value from installed module migrations. */
 function _moduleAlembicLocations() {
-  const fs = require("fs");
   const locations = ["celerp/alembic/versions"]; // core migrations location
   if (!fs.existsSync(MODULE_DIR)) return locations.join(" ");
 
@@ -310,7 +307,6 @@ function startUi(dbUrl) {
 
 /** Read or generate a persistent JWT secret stored in userData. */
 function getOrCreateJwtSecret() {
-  const fs = require("fs");
   const secretPath = path.join(DATA_DIR, ".jwt_secret");
   fs.mkdirSync(DATA_DIR, { recursive: true });
   if (fs.existsSync(secretPath)) {
@@ -323,7 +319,6 @@ function getOrCreateJwtSecret() {
 
 /** Read persisted config (external DB, storage, feature flags). */
 function readConfig() {
-  const fs = require("fs");
   const defaults = {
     db_mode: "local",
     external_db_url: "",
@@ -344,10 +339,16 @@ function readConfig() {
 
 /** Persist config changes. */
 function writeConfig(patch) {
-  const fs = require("fs");
   fs.mkdirSync(DATA_DIR, { recursive: true });
   const current = readConfig();
   fs.writeFileSync(CONFIG_PATH, JSON.stringify({ ...current, ...patch }, null, 2), { mode: 0o600 });
+}
+
+/** Returns true if the SaaS grace period is still active. */
+function _isInGrace(flags) {
+  return flags.grace_period_ends
+    ? new Date(flags.grace_period_ends) > new Date()
+    : false;
 }
 
 /**
@@ -358,14 +359,7 @@ function writeConfig(patch) {
 function resolveDatabaseConfig(dbPort) {
   const cfg = readConfig();
   const flags = cfg.feature_flags || {};
-  const now = new Date();
-
-  // External DB is active if:
-  //  1. Feature flag is enabled AND db_mode is "external" AND a URL is configured
-  //  2. OR we are within the grace period (lapse ≤ 15 days ago)
-  const inGrace = flags.grace_period_ends
-    ? new Date(flags.grace_period_ends) > now
-    : false;
+  const inGrace = _isInGrace(flags);
   const externalAllowed = (flags.external_db || inGrace) && cfg.external_db_url;
 
   if (externalAllowed && cfg.db_mode === "external") {
@@ -382,9 +376,7 @@ function resolveDatabaseConfig(dbPort) {
 function resolveStorageEnv() {
   const cfg = readConfig();
   const flags = cfg.feature_flags || {};
-  const now = new Date();
-  const inGrace = flags.grace_period_ends ? new Date(flags.grace_period_ends) > now : false;
-  const storageAllowed = (flags.external_storage || inGrace) && cfg.storage_mode === "s3";
+  const storageAllowed = (flags.external_storage || _isInGrace(flags)) && cfg.storage_mode === "s3";
 
   if (storageAllowed) {
     return {
@@ -400,7 +392,6 @@ function resolveStorageEnv() {
 
 /** Run demo seed on first boot (if DB is fresh). Runs in background after UI opens. */
 async function maybeRunSeed(dbUrl) {
-  const fs = require("fs");
   const seedFlagPath = path.join(DATA_DIR, ".seed_done");
   if (fs.existsSync(seedFlagPath)) return;
 

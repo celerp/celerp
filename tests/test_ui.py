@@ -1450,12 +1450,16 @@ class TestInventoryCategoryTabs:
         ):
             r = await ui_client.get("/inventory?category=Ruby", cookies=_authed())
         assert r.status_code == 200
-        # Status card hrefs must contain category=Ruby so clicking one preserves the filter
-        assert b"category=Ruby" in r.content
-        # Must NOT have a bare /inventory?status=available link (which would drop category)
         html = r.text
         import re
-        bare_status_links = re.findall(r'href="/inventory\?status=\w+"', html)
+        # Isolate the status-cards component (avoid matching nav sidebar links)
+        cards_match = re.search(r'class="status-cards"[^<]*>(.*?)</div>', html, re.DOTALL)
+        assert cards_match, "status-cards div not found in response"
+        cards_html = cards_match.group(0)
+        # Every card href must preserve category=Ruby
+        assert "category=Ruby" in cards_html, "Status card links drop category param"
+        # Must NOT have a bare /inventory?status=... link (which would drop category)
+        bare_status_links = re.findall(r'href="/inventory\?status=\w+"', cards_html)
         assert not bare_status_links, f"Status card links drop category param: {bare_status_links}"
 
     @pytest.mark.asyncio
