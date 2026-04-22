@@ -17,7 +17,6 @@ Data lives in the OS user data directory (`app.getPath("userData")/celerp-data/`
 
 A `.jwt_secret` file is generated on first launch and reused on subsequent starts — the session stays valid across restarts.
 
-Demo data is seeded automatically when the first admin registers via the UI, using `celerp/services/demo.py`.
 
 ## Development
 

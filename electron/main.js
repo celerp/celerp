@@ -428,7 +428,7 @@ function setupAutoUpdater() {
 
   autoUpdater.on("error", (err) => {
     // Log only — update failures must never interrupt the user's work
-    console.error("[updater] error:", err.message);
+    console.error("[updater] error:", err?.message ?? String(err));
   });
 
   autoUpdater.checkForUpdates();
@@ -518,7 +518,7 @@ app.whenReady().then(async () => {
       startUi,
       sentinelPath: restartSentinelPath(),
       onCrash: (err) => {
-        dialog.showErrorBox("Celerp crashed", err.message);
+        dialog.showErrorBox("Celerp crashed", err?.message ?? String(err));
         app.quit();
       },
     });
@@ -530,7 +530,7 @@ app.whenReady().then(async () => {
       setupAutoUpdater();
     }
   } catch (err) {
-    dialog.showErrorBox("Celerp failed to start", err.message);
+    dialog.showErrorBox("Celerp failed to start", err?.message ?? String(err));
     app.quit();
   }
 });
