@@ -102,7 +102,7 @@ let uiProcess = null;
 let apiPort = null;
 let uiPort = null;
 
-const { restartSentinelPath, watchForRestart } = require("./restart");
+const { watchForRestart } = require("./restart");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -519,7 +519,9 @@ app.whenReady().then(async () => {
       setUiProcess: (p) => { uiProcess = p; },
       startApi,
       startUi,
-      sentinelPath: restartSentinelPath(),
+      // Sentinel must live next to PYTHON_CONFIG_PATH so Python's config_path().parent
+      // resolves to the same directory that Electron watches.
+      sentinelPath: path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested"),
       onCrash: (err) => {
         dialog.showErrorBox("Celerp crashed", err?.message ?? String(err));
         app.quit();
