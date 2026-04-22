@@ -11,15 +11,17 @@
     "dev": "CELERP_DEV_MODE=1 electron .",
     "build:win": "electron-builder --win --publish never",
     "build:linux": "electron-builder --linux --publish never",
-    "build:mac": "electron-builder --mac --publish never"
+    "build:mac": "electron-builder --mac --publish never",
+    "test": "NODE_ENV=development jest --forceExit"
   },
   "dependencies": {
-    "embedded-postgres": "^17.9.0-beta.16",
-    "electron-updater": "^6.3.0"
+    "electron-updater": "^6.3.0",
+    "embedded-postgres": "^17.9.0-beta.16"
   },
   "devDependencies": {
     "electron": "^30.0.0",
-    "electron-builder": "^25.0.0"
+    "electron-builder": "^25.0.0",
+    "jest": "^30.3.0"
   },
   "build": {
     "appId": "com.celerp.app",
@@ -109,5 +111,11 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
     }
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/tests/**/*.test.js"
+    ]
   }
 }

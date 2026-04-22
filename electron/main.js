@@ -8,7 +8,8 @@
 //   3. Start FastAPI (celerp) on a dynamic port
 //   4. Start FastHTML UI on a dynamic port
 //   5. Open a BrowserWindow pointed at the UI
-//   6. Shut everything down cleanly on quit
+//   6. Watch for restart sentinel (written by /system/restart) and respawn servers
+//   7. Shut everything down cleanly on quit
 
 "use strict";
 
@@ -98,6 +99,8 @@ let apiProcess = null;
 let uiProcess = null;
 let apiPort = null;
 let uiPort = null;
+
+const { restartSentinelPath, watchForRestart } = require("./restart");
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
@@ -275,7 +278,7 @@ function startApi(dbUrl) {
     };
     apiProcess = spawn(
       pythonBin(),
-      ["-m", "uvicorn", "celerp.main:app", "--host", "127.0.0.1", "--port", String(apiPort)],
+      ["-m", "uvicorn", "celerp.main:app", "--host", "127.0.0.1", "--port", String(apiPort), "--timeout-graceful-shutdown", "3"],
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
     apiProcess.on("error", reject);
@@ -297,7 +300,7 @@ function startUi(dbUrl) {
     };
     uiProcess = spawn(
       pythonBin(),
-      ["-m", "uvicorn", "ui.app:app", "--host", "127.0.0.1", "--port", String(uiPort)],
+      ["-m", "uvicorn", "ui.app:app", "--host", "127.0.0.1", "--port", String(uiPort), "--timeout-graceful-shutdown", "3"],
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
     uiProcess.on("error", reject);
@@ -545,6 +548,19 @@ app.whenReady().then(async () => {
     runMigrations(dbConfig.url);
     await startApi(dbConfig.url);
     await startUi(dbConfig.url);
+
+    watchForRestart(dbConfig.url, {
+      getApiProcess: () => apiProcess,
+      getUiProcess: () => uiProcess,
+      setUiProcess: (p) => { uiProcess = p; },
+      startApi,
+      startUi,
+      sentinelPath: restartSentinelPath(),
+      onCrash: (err) => {
+        dialog.showErrorBox("Celerp crashed", err.message);
+        app.quit();
+      },
+    });
 
     loadingWin.close();
     createWindow();
