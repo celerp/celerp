@@ -214,10 +214,18 @@ async def proxy_attachment(request: Request, path: str) -> Response:
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
-# Determine enabled modules from env (set by cli.py _config_to_env)
+# Determine enabled modules from env (set by cli.py _config_to_env).
+# Fall back to config.toml when env is absent (e.g. Electron binary restart).
 _ENABLED_MODULES: set[str] = set(
     m.strip() for m in os.environ.get("ENABLED_MODULES", "").split(",") if m.strip()
 )
+if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
+    try:
+        from celerp.config import read_config as _read_config
+        _cfg = _read_config()
+        _ENABLED_MODULES = set(_cfg.get("modules", {}).get("enabled") or [])
+    except Exception:
+        pass
 
 # Kernel UI routes — always registered
 for mod in (auth, setup, search, settings, settings_import,
