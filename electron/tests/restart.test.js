@@ -92,6 +92,46 @@ describe("watchForRestart", () => {
     expect(onCrash).not.toHaveBeenCalled();
   });
 
+  test("onRestart callback is invoked after successful respawn", async () => {
+    const { deps } = makeTestDeps({ sentinelExists: true });
+    const onRestart = jest.fn();
+    deps.onRestart = onRestart;
+    const api = deps.getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    api.emit("exit", 0);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(onRestart).toHaveBeenCalledTimes(1);
+  });
+
+  test("onRestart is NOT called when sentinel is absent", async () => {
+    const { deps } = makeTestDeps({ sentinelExists: false });
+    const onRestart = jest.fn();
+    deps.onRestart = onRestart;
+    const api = deps.getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    api.emit("exit", 0);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(onRestart).not.toHaveBeenCalled();
+  });
+
+  test("onRestart is NOT called when respawn fails", async () => {
+    const { deps } = makeTestDeps({ sentinelExists: true });
+    deps.startApi = jest.fn(async () => { throw new Error("boom"); });
+    const onRestart = jest.fn();
+    deps.onRestart = onRestart;
+    const api = deps.getApiProcess();
+
+    watchForRestart("postgres://x", deps);
+    api.emit("exit", 0);
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(onRestart).not.toHaveBeenCalled();
+  });
+
   test("sentinel absent, exit code 0: no crash, no respawn", async () => {
     const { deps, startApi, startUi, onCrash } = makeTestDeps({ sentinelExists: false });
     const api = deps.getApiProcess();
