@@ -390,36 +390,6 @@ function resolveStorageEnv() {
   return { STORAGE_BACKEND: "local" };
 }
 
-/** Run demo seed on first boot (if DB is fresh). Runs in background after UI opens. */
-async function maybeRunSeed(dbUrl) {
-  const seedFlagPath = path.join(DATA_DIR, ".seed_done");
-  if (fs.existsSync(seedFlagPath)) return;
-
-  // Wait a moment for API to be fully ready
-  await new Promise(r => setTimeout(r, 2000));
-
-  try {
-    execFileSync(
-      pythonBin(),
-      ["scripts/seed_demo.py"],
-      {
-        cwd: APP_DIR,
-        env: {
-          ...process.env,
-          DATABASE_URL: dbUrl,
-          JWT_SECRET: getOrCreateJwtSecret(),
-          PYTHONPATH: APP_DIR,
-          API_BASE: `http://127.0.0.1:${apiPort}`,
-        },
-        stdio: "pipe",
-      }
-    );
-    fs.writeFileSync(seedFlagPath, new Date().toISOString());
-  } catch (e) {
-    // Seed failure is non-fatal — user can always import their own data
-    console.error("Demo seed failed (non-fatal):", e.message);
-  }
-}
 
 
 
@@ -555,9 +525,6 @@ app.whenReady().then(async () => {
 
     loadingWin.close();
     createWindow();
-
-    // Seed demo data on first boot (non-blocking)
-    maybeRunSeed(dbConfig.url);
 
     if (!IS_DEV) {
       setupAutoUpdater();
