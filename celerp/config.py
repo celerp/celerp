@@ -177,21 +177,21 @@ def write_config(cfg: dict) -> None:
     enabled_toml = ", ".join(f'"{m}"' for m in enabled)
     lines = [
         "[database]",
-        f'url = "{cfg["database"]["url"]}"',
+        f'url = "{cfg.get("database", {}).get("url", "")}"',
         "",
         "[auth]",
-        f'jwt_secret = "{cfg["auth"]["jwt_secret"]}"',
+        f'jwt_secret = "{cfg.get("auth", {}).get("jwt_secret", "")}"',
         "",
         "[server]",
-        f'api_port = {cfg["server"]["api_port"]}',
-        f'ui_port = {cfg["server"]["ui_port"]}',
+        f'api_port = {cfg.get("server", {}).get("api_port", 0)}',
+        f'ui_port = {cfg.get("server", {}).get("ui_port", 0)}',
         "",
         "[cloud]",
-        f'token = "{cfg["cloud"]["token"]}"',
-        f'instance_id = "{cfg["cloud"].get("instance_id", "")}"',
-        f'public_url = "{cfg["cloud"].get("public_url", "")}"',
-        f'backup_encryption_key = "{cfg["cloud"].get("backup_encryption_key", "")}"',
-        f'tos_version = "{cfg["cloud"].get("tos_version", "")}"',
+        f'token = "{cfg.get("cloud", {}).get("token", "")}"',
+        f'instance_id = "{cfg.get("cloud", {}).get("instance_id", "")}"',
+        f'public_url = "{cfg.get("cloud", {}).get("public_url", "")}"',
+        f'backup_encryption_key = "{cfg.get("cloud", {}).get("backup_encryption_key", "")}"',
+        f'tos_version = "{cfg.get("cloud", {}).get("tos_version", "")}"',
         "",
         "[storage]",
         f'backend = "{cfg.get("storage", {}).get("backend", "local")}"',
@@ -273,9 +273,9 @@ def set_enabled_modules(names: list[str]) -> None:
     """Idempotently add modules to the config file's enabled list.
 
     Resolves transitive dependencies and writes the updated config to disk.
-    When no config file exists yet (e.g. Electron binary on first boot),
-    writes a minimal config containing only the [modules] section so the
-    API can load modules after restart without requiring a prior `celerp init`.
+    Works even when config.toml does not yet exist (e.g. Electron binary on
+    first boot before 'celerp init' is run). write_config() handles missing
+    sections with empty defaults so the file is always well-formed.
     """
     cfg = read_config()
     _pkg_root = Path(__file__).parent.parent
@@ -286,19 +286,8 @@ def set_enabled_modules(names: list[str]) -> None:
         return
     install_order = resolve_install_order(list(to_add), module_dir)
     new_modules = [n for n in install_order if n not in currently_enabled]
-    all_enabled = currently_enabled + new_modules
-    if cfg:
-        # Full config exists — update it in place via write_config.
-        if "modules" not in cfg:
-            cfg["modules"] = {}
-        cfg["modules"]["enabled"] = all_enabled
-        write_config(cfg)
-    else:
-        # No config file yet (e.g. Electron binary first boot).
-        # Write only the [modules] section so we don't corrupt a future
-        # `celerp init` with empty database/auth/server values.
-        path = config_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        enabled_toml = ", ".join(f'"{m}"' for m in all_enabled)
-        path.write_text(f"[modules]\nenabled = [{enabled_toml}]\n")
+    if "modules" not in cfg:
+        cfg["modules"] = {}
+    cfg["modules"]["enabled"] = currently_enabled + new_modules
+    write_config(cfg)
 
