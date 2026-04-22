@@ -526,6 +526,13 @@ app.whenReady().then(async () => {
         dialog.showErrorBox("Celerp crashed", err?.message ?? String(err));
         app.quit();
       },
+      onRestart: () => {
+        // After respawn, API and UI are on new ports. Reload the window to the
+        // new uiPort so the browser is no longer pointed at the dead old port.
+        if (mainWindow) {
+          mainWindow.loadURL(`http://127.0.0.1:${uiPort}`);
+        }
+      },
     });
 
     loadingWin.close();

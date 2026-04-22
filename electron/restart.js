@@ -44,6 +44,7 @@ function restartSentinelPath(proc) {
  *   startUi: (dbUrl: string) => Promise<void>,
  *   sentinelPath: string,
  *   onCrash: (err: Error) => void,
+ *   onRestart?: () => void,
  *   fs?: typeof import("fs"),
  * }} deps
  */
@@ -55,6 +56,7 @@ function watchForRestart(dbUrl, {
   startUi,
   sentinelPath,
   onCrash,
+  onRestart,
   fs: fsOverride,
 }) {
   const proc = getApiProcess();
@@ -70,8 +72,9 @@ function watchForRestart(dbUrl, {
         if (ui) { ui.kill(); setUiProcess(null); }
         await startApi(dbUrl);
         await startUi(dbUrl);
-        watchForRestart(dbUrl, { getApiProcess, getUiProcess, setUiProcess, startApi, startUi, sentinelPath, onCrash, fs });
+        watchForRestart(dbUrl, { getApiProcess, getUiProcess, setUiProcess, startApi, startUi, sentinelPath, onCrash, onRestart, fs });
         console.log("[restart] Servers respawned.");
+        if (onRestart) onRestart();
       } catch (err) {
         onCrash(err);
       }
