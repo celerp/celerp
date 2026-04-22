@@ -85,6 +85,7 @@ const PG_DATA_DIR = path.join(DATA_DIR, "postgres");
 const LOG_DIR = path.join(DATA_DIR, "logs");
 const MODULE_DIR = path.join(DATA_DIR, "modules");
 const CONFIG_PATH = path.join(DATA_DIR, "celerp-config.json");
+const PYTHON_CONFIG_PATH = path.join(DATA_DIR, "config.toml");
 
 // Default modules shipped with the binary (in app resources/default_modules/).
 // Copied to MODULE_DIR on first boot if not already present.
@@ -271,6 +272,7 @@ function startApi(dbUrl) {
       PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
       MODULE_DIR: MODULE_DIR,
       CELERP_DATA_DIR: DATA_DIR,
+      CELERP_CONFIG: PYTHON_CONFIG_PATH,
       ...resolveStorageEnv(),
     };
     apiProcess = spawn(
@@ -293,6 +295,7 @@ function startUi(dbUrl) {
       JWT_SECRET: getOrCreateJwtSecret(),
       PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
       MODULE_DIR: MODULE_DIR,
+      CELERP_CONFIG: PYTHON_CONFIG_PATH,
       ...resolveStorageEnv(),
     };
     uiProcess = spawn(
