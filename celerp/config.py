@@ -170,50 +170,81 @@ def read_config() -> dict:
 
 
 def write_config(cfg: dict) -> None:
-    """Write cfg back to config.toml, including the [modules] section."""
+    """Write cfg back to config.toml.
+
+    Only emits sections that are present in cfg — never writes empty/zero
+    defaults for sections the caller did not touch. This keeps the file
+    minimal on first boot (e.g. only [modules]) and prevents overwriting
+    already-written sections (e.g. [server] with api_port=0).
+    """
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    enabled = cfg.get("modules", {}).get("enabled", [])
-    enabled_toml = ", ".join(f'"{m}"' for m in enabled)
-    lines = [
-        "[database]",
-        f'url = "{cfg.get("database", {}).get("url", "")}"',
-        "",
-        "[auth]",
-        f'jwt_secret = "{cfg.get("auth", {}).get("jwt_secret", "")}"',
-        "",
-        "[server]",
-        f'api_port = {cfg.get("server", {}).get("api_port", 0)}',
-        f'ui_port = {cfg.get("server", {}).get("ui_port", 0)}',
-        "",
-        "[cloud]",
-        f'token = "{cfg.get("cloud", {}).get("token", "")}"',
-        f'instance_id = "{cfg.get("cloud", {}).get("instance_id", "")}"',
-        f'public_url = "{cfg.get("cloud", {}).get("public_url", "")}"',
-        f'backup_encryption_key = "{cfg.get("cloud", {}).get("backup_encryption_key", "")}"',
-        f'tos_version = "{cfg.get("cloud", {}).get("tos_version", "")}"',
-        "",
-        "[storage]",
-        f'backend = "{cfg.get("storage", {}).get("backend", "local")}"',
-        f's3_endpoint = "{cfg.get("storage", {}).get("s3_endpoint", "")}"',
-        f's3_bucket = "{cfg.get("storage", {}).get("s3_bucket", "")}"',
-        f's3_access_key = "{cfg.get("storage", {}).get("s3_access_key", "")}"',
-        f's3_secret_key = "{cfg.get("storage", {}).get("s3_secret_key", "")}"',
-        "",
-        "[database_backup]",
-        f'previous_url = "{cfg.get("database_backup", {}).get("previous_url", "")}"',
-        "",
-        "[storage_backup]",
-        f'backend = "{cfg.get("storage_backup", {}).get("backend", "")}"',
-        f's3_endpoint = "{cfg.get("storage_backup", {}).get("s3_endpoint", "")}"',
-        f's3_bucket = "{cfg.get("storage_backup", {}).get("s3_bucket", "")}"',
-        f's3_access_key = "{cfg.get("storage_backup", {}).get("s3_access_key", "")}"',
-        f's3_secret_key = "{cfg.get("storage_backup", {}).get("s3_secret_key", "")}"',
-        "",
-        "[modules]",
-        f"enabled = [{enabled_toml}]",
-        "",
-    ]
+    lines: list[str] = []
+
+    _str = lambda v: f'"{v}"'
+
+    if "database" in cfg:
+        db = cfg["database"]
+        lines += ["[database]", f'url = {_str(db.get("url", ""))}', ""]
+
+    if "auth" in cfg:
+        auth = cfg["auth"]
+        lines += ["[auth]", f'jwt_secret = {_str(auth.get("jwt_secret", ""))}', ""]
+
+    if "server" in cfg:
+        srv = cfg["server"]
+        lines += [
+            "[server]",
+            f'api_port = {srv.get("api_port", 0)}',
+            f'ui_port = {srv.get("ui_port", 0)}',
+            "",
+        ]
+
+    if "cloud" in cfg:
+        cloud = cfg["cloud"]
+        lines += [
+            "[cloud]",
+            f'token = {_str(cloud.get("token", ""))}',
+            f'instance_id = {_str(cloud.get("instance_id", ""))}',
+            f'public_url = {_str(cloud.get("public_url", ""))}',
+            f'backup_encryption_key = {_str(cloud.get("backup_encryption_key", ""))}',
+            f'tos_version = {_str(cloud.get("tos_version", ""))}',
+            "",
+        ]
+
+    if "storage" in cfg:
+        st = cfg["storage"]
+        lines += [
+            "[storage]",
+            f'backend = {_str(st.get("backend", "local"))}',
+            f's3_endpoint = {_str(st.get("s3_endpoint", ""))}',
+            f's3_bucket = {_str(st.get("s3_bucket", ""))}',
+            f's3_access_key = {_str(st.get("s3_access_key", ""))}',
+            f's3_secret_key = {_str(st.get("s3_secret_key", ""))}',
+            "",
+        ]
+
+    if "database_backup" in cfg:
+        dbak = cfg["database_backup"]
+        lines += ["[database_backup]", f'previous_url = {_str(dbak.get("previous_url", ""))}', ""]
+
+    if "storage_backup" in cfg:
+        sbak = cfg["storage_backup"]
+        lines += [
+            "[storage_backup]",
+            f'backend = {_str(sbak.get("backend", ""))}',
+            f's3_endpoint = {_str(sbak.get("s3_endpoint", ""))}',
+            f's3_bucket = {_str(sbak.get("s3_bucket", ""))}',
+            f's3_access_key = {_str(sbak.get("s3_access_key", ""))}',
+            f's3_secret_key = {_str(sbak.get("s3_secret_key", ""))}',
+            "",
+        ]
+
+    if "modules" in cfg:
+        enabled = cfg["modules"].get("enabled", [])
+        enabled_toml = ", ".join(f'"{m}"' for m in enabled)
+        lines += ["[modules]", f"enabled = [{enabled_toml}]", ""]
+
     path.write_text("\n".join(lines))
 
 
