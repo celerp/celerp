@@ -461,20 +461,18 @@ function createWindow() {
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
 
-  // Intercept htmx hx-confirm on every navigation. window.confirm() is silently
-  // stubbed to false in Electron's renderer, so we override it here via the
-  // contextBridge (window.celerp.showConfirm → IPC → dialog.showMessageBoxSync).
+  // In Electron (contextIsolation=true), window.confirm() is silently stubbed
+  // to false in the renderer. Override it once per page load so ALL confirm()
+  // calls — both onclick handlers and htmx hx-confirm attributes — show a real
+  // native dialog via the contextBridge IPC.
   mainWindow.webContents.on("did-finish-load", () => {
     mainWindow.webContents.executeJavaScript(`
       (function () {
         if (window.__ceConfirmPatched) return;
         window.__ceConfirmPatched = true;
-        document.addEventListener("htmx:confirm", function (e) {
-          if (!e.detail.question) return;
-          e.preventDefault();
-          var ok = window.celerp && window.celerp.showConfirm(e.detail.question);
-          if (ok) e.detail.issueRequest(true);
-        });
+        window.confirm = function (message) {
+          return !!(window.celerp && window.celerp.showConfirm(message));
+        };
       })();
     `).catch(() => {}); // ignore if page is being navigated away
   });
