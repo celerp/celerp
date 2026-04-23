@@ -248,3 +248,56 @@ class TestSecondBootGuards:
     def test_migrations_are_idempotent_upgrade_head(self):
         """runMigrations uses alembic upgrade head which is a no-op if already current."""
         assert "upgrade" in self._src and "head" in self._src
+
+
+class TestElectronConfirmDialog:
+    """Verify the hx-confirm → native dialog bridge is correctly wired in main.js and preload.js."""
+
+    @pytest.fixture(autouse=True)
+    def _src(self):
+        import os
+        p = os.path.join(os.path.dirname(__file__), "../../electron/main.js")
+        with open(p) as f:
+            self.main_src = f.read()
+        p2 = os.path.join(os.path.dirname(__file__), "../../electron/preload.js")
+        with open(p2) as f:
+            self.preload_src = f.read()
+
+    def test_ipcmain_imported(self):
+        """ipcMain must be destructured from 'electron' require."""
+        assert "ipcMain" in self.main_src
+
+    def test_show_confirm_handler_registered(self):
+        """main.js must register an ipcMain.on('show-confirm', ...) handler."""
+        assert 'ipcMain.on("show-confirm"' in self.main_src
+
+    def test_show_confirm_uses_showmessageboxsync(self):
+        """show-confirm handler must use showMessageBoxSync (synchronous) not showMessageBox."""
+        assert "showMessageBoxSync" in self.main_src
+
+    def test_show_confirm_sets_event_returnvalue(self):
+        """show-confirm handler must set event.returnValue for ipcRenderer.sendSync."""
+        assert "event.returnValue" in self.main_src
+
+    def test_preload_exposes_showconfirm(self):
+        """preload.js must expose showConfirm on the contextBridge."""
+        assert "showConfirm" in self.preload_src
+
+    def test_preload_uses_sendsync(self):
+        """showConfirm must use ipcRenderer.sendSync (not invoke) to return synchronously."""
+        assert "sendSync" in self.preload_src
+        assert '"show-confirm"' in self.preload_src
+
+    def test_htmx_confirm_interceptor_in_main(self):
+        """main.js must inject htmx:confirm event listener that calls window.celerp.showConfirm."""
+        assert "htmx:confirm" in self.main_src
+        assert "showConfirm" in self.main_src
+        assert "issueRequest" in self.main_src
+
+    def test_interceptor_attached_on_did_finish_load(self):
+        """Confirm interceptor must be re-injected on did-finish-load (survives htmx navigation)."""
+        assert "did-finish-load" in self.main_src
+
+    def test_interceptor_is_idempotent(self):
+        """Interceptor must guard against double-registration (__ceConfirmPatched sentinel)."""
+        assert "__ceConfirmPatched" in self.main_src
