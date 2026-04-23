@@ -251,7 +251,7 @@ class TestSecondBootGuards:
 
 
 class TestElectronConfirmDialog:
-    """Verify the hx-confirm → native dialog bridge is correctly wired in main.js and preload.js."""
+    """Verify the native confirm dialog bridge is correctly wired in main.js and preload.js."""
 
     @pytest.fixture(autouse=True)
     def _src(self):
@@ -288,16 +288,26 @@ class TestElectronConfirmDialog:
         assert "sendSync" in self.preload_src
         assert '"show-confirm"' in self.preload_src
 
-    def test_htmx_confirm_interceptor_in_main(self):
-        """main.js must inject htmx:confirm event listener that calls window.celerp.showConfirm."""
-        assert "htmx:confirm" in self.main_src
-        assert "showConfirm" in self.main_src
-        assert "issueRequest" in self.main_src
+    def test_window_confirm_overridden(self):
+        """main.js must override window.confirm via did-finish-load injection.
 
-    def test_interceptor_attached_on_did_finish_load(self):
-        """Confirm interceptor must be re-injected on did-finish-load (survives htmx navigation)."""
+        window.confirm() is silently stubbed to false in Electron's renderer
+        (contextIsolation=true). Overriding it makes ALL confirm() calls work:
+        - onclick confirm() in row-menu and bulk delete buttons
+        - htmx's internal confirm(a) call for hx-confirm attributes
+        """
+        assert "window.confirm = function" in self.main_src
+
+    def test_confirm_patch_attached_on_did_finish_load(self):
+        """window.confirm override must be injected on did-finish-load (survives htmx navigation)."""
         assert "did-finish-load" in self.main_src
 
-    def test_interceptor_is_idempotent(self):
-        """Interceptor must guard against double-registration (__ceConfirmPatched sentinel)."""
+    def test_confirm_patch_is_idempotent(self):
+        """Patch must guard against double-registration (__ceConfirmPatched sentinel)."""
         assert "__ceConfirmPatched" in self.main_src
+
+    def test_no_htmx_confirm_interceptor(self):
+        """htmx:confirm event listener must NOT be present - window.confirm override is sufficient.
+        The interceptor was a redundant second mechanism; removing it keeps the code DRY."""
+        assert "htmx:confirm" not in self.main_src
+        assert "issueRequest" not in self.main_src

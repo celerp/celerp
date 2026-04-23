@@ -479,10 +479,9 @@ def data_table(
                     Div(
                         A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
                         Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
-                               hx_delete=f"/api/{entity_type}s/{entity_id}",
-                               hx_target=f"#row-{safe_id}",
-                               hx_swap="outerHTML",
-                               hx_confirm="Delete this item?"),
+                               onclick=f"if(!confirm('Delete this item? This cannot be undone.'))return;"
+                                       f"htmx.ajax('DELETE','/api/{entity_type}s/{entity_id}',"
+                                       f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
                         cls="row-menu-dropdown", id=f"menu-{safe_id}",
                     ),
                     cls="row-menu",

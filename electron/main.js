@@ -268,7 +268,7 @@ function _moduleAlembicLocations() {
   return locations.join(" ");
 }
 
-function startApi(dbUrl) {
+function startApi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     apiPort = await getFreePort();
     const env = {
@@ -279,7 +279,7 @@ function startApi(dbUrl) {
       MODULE_DIR: MODULE_DIR,
       CELERP_DATA_DIR: DATA_DIR,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
-      ...resolveStorageEnv(),
+      ...resolveStorageEnv(cfg),
     };
     apiProcess = spawn(
       pythonBin(),
@@ -291,7 +291,7 @@ function startApi(dbUrl) {
   });
 }
 
-function startUi(dbUrl) {
+function startUi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     uiPort = await getFreePort();
     const env = {
@@ -302,7 +302,7 @@ function startUi(dbUrl) {
       PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
       MODULE_DIR: MODULE_DIR,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
-      ...resolveStorageEnv(),
+      ...resolveStorageEnv(cfg),
     };
     uiProcess = spawn(
       pythonBin(),
@@ -365,8 +365,7 @@ function _isInGrace(flags) {
  * Returns { url, useBundledPg } where useBundledPg drives whether
  * embedded Postgres is started.
  */
-function resolveDatabaseConfig(dbPort) {
-  const cfg = readConfig();
+function resolveDatabaseConfig(dbPort, cfg) {
   const flags = cfg.feature_flags || {};
   const inGrace = _isInGrace(flags);
   const externalAllowed = (flags.external_db || inGrace) && cfg.external_db_url;
@@ -382,8 +381,7 @@ function resolveDatabaseConfig(dbPort) {
 }
 
 /** Build storage-related env vars for API and UI processes. */
-function resolveStorageEnv() {
-  const cfg = readConfig();
+function resolveStorageEnv(cfg) {
   const flags = cfg.feature_flags || {};
   const storageAllowed = (flags.external_storage || _isInGrace(flags)) && cfg.storage_mode === "s3";
 
@@ -463,20 +461,18 @@ function createWindow() {
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
 
-  // Intercept htmx hx-confirm on every navigation. window.confirm() is silently
-  // stubbed to false in Electron's renderer, so we override it here via the
-  // contextBridge (window.celerp.showConfirm → IPC → dialog.showMessageBoxSync).
+  // In Electron (contextIsolation=true), window.confirm() is silently stubbed
+  // to false in the renderer. Override it once per page load so ALL confirm()
+  // calls — both onclick handlers and htmx hx-confirm attributes — show a real
+  // native dialog via the contextBridge IPC.
   mainWindow.webContents.on("did-finish-load", () => {
     mainWindow.webContents.executeJavaScript(`
       (function () {
         if (window.__ceConfirmPatched) return;
         window.__ceConfirmPatched = true;
-        document.addEventListener("htmx:confirm", function (e) {
-          if (!e.detail.question) return;
-          e.preventDefault();
-          var ok = window.celerp && window.celerp.showConfirm(e.detail.question);
-          if (ok) e.detail.issueRequest(true);
-        });
+        window.confirm = function (message) {
+          return !!(window.celerp && window.celerp.showConfirm(message));
+        };
       })();
     `).catch(() => {}); // ignore if page is being navigated away
   });
@@ -530,7 +526,8 @@ app.whenReady().then(async () => {
     }
 
     const dbPort = await getFreePort();
-    const dbConfig = resolveDatabaseConfig(dbPort);
+    const cfg = readConfig();
+    const dbConfig = resolveDatabaseConfig(dbPort, cfg);
 
     // Show a loading state while services boot. A splash window can replace this later.
     const loadingWin = new BrowserWindow({
@@ -550,15 +547,15 @@ app.whenReady().then(async () => {
     seedDefaultModules();
     runModuleSetup();
     runMigrations(dbConfig.url);
-    await startApi(dbConfig.url);
-    await startUi(dbConfig.url);
+    await startApi(dbConfig.url, cfg);
+    await startUi(dbConfig.url, cfg);
 
     watchForRestart(dbConfig.url, {
       getApiProcess: () => apiProcess,
       getUiProcess: () => uiProcess,
       setUiProcess: (p) => { uiProcess = p; },
-      startApi,
-      startUi,
+      startApi: (url) => startApi(url, readConfig()),
+      startUi: (url) => startUi(url, readConfig()),
       // Sentinel must live next to PYTHON_CONFIG_PATH so Python's config_path().parent
       // resolves to the same directory that Electron watches.
       sentinelPath: path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested"),

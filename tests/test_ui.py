@@ -3814,14 +3814,16 @@ class TestItemActionRouteCompleteness:
         assert captured["entity_ids"] == ["gc:TEST-001"]
 
     def test_row_menu_delete_html_targets_correct_endpoint(self):
-        """data_table renders hx-delete pointing at /api/items/{id}, not /api/inventory/."""
+        """data_table renders row-menu delete using onclick+htmx.ajax (same pattern as bulk ops)."""
         from ui.components.table import data_table
         from fasthtml.common import to_xml
         schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
         rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget"}]
         html = to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True))
-        assert 'hx-delete="/api/items/gc:ROW-001"' in html, \
-            "row-menu delete button must target /api/items/{id}, not /api/inventory/{id}"
+        assert "htmx.ajax('DELETE','/api/items/gc:ROW-001'" in html, \
+            "row-menu delete must use htmx.ajax DELETE to /api/items/{id} (same as bulk pattern)"
+        assert 'hx-delete="/api/items/gc:ROW-001"' not in html, \
+            "row-menu delete must not use hx-delete attribute (breaks in Electron via htmx:confirm)"
         assert "/api/inventory/" not in html, \
             "route must not reference deprecated /api/inventory/ path"
 
