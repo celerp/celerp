@@ -337,7 +337,7 @@ def display_cell(
                 type="file",
                 accept="image/*",
                 cls="cell-image-input",
-                hx_post=f"/inventory/{entity_id}/attachments",
+                hx_post=f"/api/items/{entity_id}/attachments",
                 hx_encoding="multipart/form-data",
                 hx_target=f"#img-cell-{entity_id}",
                 hx_swap="outerHTML",
@@ -404,6 +404,7 @@ def data_table(
     link_fn: dict[str, str] | None = None,
     auto_hide_empty: bool = True,
     edit_url_tpl: str | None = None,
+    delete_url_tpl: str | None = None,
 ) -> FT:
     """
     Dynamic spreadsheet table. Headers from schema (never hardcoded), rows from API.
@@ -420,6 +421,8 @@ def data_table(
     edit_url_tpl: URL template for cell editing, with ``{id}`` and ``{field}`` placeholders
                   (e.g. ``"/contacts/{id}/field/{field}/edit"``). Overrides the default
                   ``/api/items/{id}/field/{field}/edit`` for all editable cells.
+    delete_url_tpl: URL template for row-menu delete, with ``{entity_id}`` placeholder
+                    (e.g. ``"/api/items/{entity_id}"``). Defaults to ``/api/items/{entity_id}``.
     """
     visible = [f for f in schema if show_cols is None or f["key"] in show_cols]
     if show_cols:
@@ -472,6 +475,7 @@ def data_table(
     def _row(row: dict) -> FT:
         entity_id = row.get("id") or row.get("entity_id", "")
         safe_id = entity_id.replace(":", "-")
+        _delete_url = (delete_url_tpl or "/api/items/{entity_id}").format(entity_id=entity_id)
         action_cell = [] if not show_row_menu else [
             Td(
                 Div(
@@ -480,7 +484,7 @@ def data_table(
                         A(t("btn.edit"), href=f"/{entity_type}/{entity_id}", cls="row-menu-item"),
                         Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
                                onclick=f"if(!confirm('Delete this item? This cannot be undone.'))return;"
-                                       f"htmx.ajax('DELETE','/api/{entity_type}s/{entity_id}',"
+                                       f"htmx.ajax('DELETE','{_delete_url}',"
                                        f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
                         cls="row-menu-dropdown", id=f"menu-{safe_id}",
                     ),
