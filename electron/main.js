@@ -13,7 +13,7 @@
 
 "use strict";
 
-const { app, BrowserWindow, shell, dialog } = require("electron");
+const { app, BrowserWindow, shell, dialog, ipcMain } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs");
@@ -463,6 +463,24 @@ function createWindow() {
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
 
+  // Intercept htmx hx-confirm on every navigation. window.confirm() is silently
+  // stubbed to false in Electron's renderer, so we override it here via the
+  // contextBridge (window.celerp.showConfirm → IPC → dialog.showMessageBoxSync).
+  mainWindow.webContents.on("did-finish-load", () => {
+    mainWindow.webContents.executeJavaScript(`
+      (function () {
+        if (window.__ceConfirmPatched) return;
+        window.__ceConfirmPatched = true;
+        document.addEventListener("htmx:confirm", function (e) {
+          if (!e.detail.question) return;
+          e.preventDefault();
+          var ok = window.celerp && window.celerp.showConfirm(e.detail.question);
+          if (ok) e.detail.issueRequest(true);
+        });
+      })();
+    `).catch(() => {}); // ignore if page is being navigated away
+  });
+
   // Open external links in the default browser, not in the app
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (!url.startsWith(`http://127.0.0.1:${uiPort}`)) {
@@ -474,6 +492,22 @@ function createWindow() {
 
   mainWindow.on("closed", () => { mainWindow = null; });
 }
+
+// ── IPC handlers ─────────────────────────────────────────────────────────────
+
+// show-confirm: renderer calls window.celerp.showConfirm(message) for hx-confirm
+// dialogs. window.confirm() is silently stubbed to false in Electron's renderer,
+// so htmx hx-confirm never fires without this native dialog bridge.
+ipcMain.on("show-confirm", (event, message) => {
+  const result = dialog.showMessageBoxSync(mainWindow, {
+    type: "question",
+    buttons: ["Cancel", "OK"],
+    defaultId: 1,
+    cancelId: 0,
+    message: String(message),
+  });
+  event.returnValue = result === 1; // true = OK, false = Cancel
+});
 
 // ── App lifecycle ────────────────────────────────────────────────────────────
 
