@@ -2887,7 +2887,8 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                 cls="action-card-row",
             ),
             hx_post=f"/api/items/{entity_id}/expire",
-            hx_swap="none",
+            hx_target="#item-action-error",
+            hx_swap="outerHTML",
         ),
         cls="action-card",
     )
@@ -2901,7 +2902,8 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                 cls="action-card-row",
             ),
             hx_post=f"/api/items/{entity_id}/dispose",
-            hx_swap="none",
+            hx_target="#item-action-error",
+            hx_swap="outerHTML",
         ),
         cls="action-card",
     )

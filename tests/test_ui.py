@@ -3979,6 +3979,8 @@ class TestItemActionHtmlContracts:
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
         assert b'hx-post="/api/items/gc:123/expire"' in r.content
+        assert b'hx-target="#item-action-error"' in r.content
+        assert b'hx-swap="outerHTML"' in r.content
 
     @pytest.mark.asyncio
     async def test_action_card_dispose_url(self, ui_client):
@@ -3995,6 +3997,8 @@ class TestItemActionHtmlContracts:
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
         assert b'hx-post="/api/items/gc:123/dispose"' in r.content
+        assert b'hx-target="#item-action-error"' in r.content
+        assert b'hx-swap="outerHTML"' in r.content
 
     @pytest.mark.asyncio
     async def test_action_card_rtv_url(self, ui_client):
