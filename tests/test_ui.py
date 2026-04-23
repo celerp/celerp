@@ -3902,6 +3902,454 @@ class TestItemActionRouteCompleteness:
         assert b"Invalid" in r.content
 
 
+class TestItemActionHtmlContracts:
+    """HTML-rendering contract tests: assert the item detail page generates
+    the correct hx-post/hx-delete URLs for every action card. These tests
+    catch URL mismatches between component rendering and route definitions
+    before they reach production (lesson from row-menu delete bug)."""
+
+    _PATCHES = {
+        "ui.api_client.get_item_schema": AsyncMock(return_value=_SCHEMA),
+        "ui.api_client.get_item": AsyncMock(return_value=_ITEM),
+        "ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
+        "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
+        "ui.api_client.list_ledger": AsyncMock(return_value={"items": [], "total": 0}),
+        "ui.api_client.get_locations": AsyncMock(return_value={"items": [], "total": 0}),
+        "ui.api_client.list_import_batches": AsyncMock(return_value={"batches": []}),
+    }
+
+    @pytest.mark.asyncio
+    async def test_action_card_split_url(self, ui_client):
+        """Item detail page renders split form targeting /api/items/{id}/split."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-post="/api/items/gc:123/split"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_action_card_duplicate_url(self, ui_client):
+        """Item detail page renders duplicate form targeting /api/items/{id}/duplicate."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-post="/api/items/gc:123/duplicate"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_action_card_expire_url(self, ui_client):
+        """Item detail page renders expire form targeting /api/items/{id}/expire."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-post="/api/items/gc:123/expire"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_action_card_dispose_url(self, ui_client):
+        """Item detail page renders dispose form targeting /api/items/{id}/dispose."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-post="/api/items/gc:123/dispose"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_action_card_rtv_url(self, ui_client):
+        """Item detail page renders return-to-vendor form targeting /api/items/{id}/return-to-vendor
+        when the item has consignment_flag='in'."""
+        consigned_item = {**_ITEM, "consignment_flag": "in", "quantity": 5}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=consigned_item)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-post="/api/items/gc:123/return-to-vendor"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_action_card_bbi_url(self, ui_client):
+        """Item detail page renders bring-back-in form targeting /api/items/{id}/bring-back-in
+        when the item has consignment_flag='out'."""
+        consigned_out = {**_ITEM, "consignment_flag": "out", "quantity": 5}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=consigned_out)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory/gc:123", cookies=_authed())
+        assert r.status_code == 200
+        assert b'hx-post="/api/items/gc:123/bring-back-in"' in r.content
+
+
+class TestItemReturnToVendor:
+    """Route tests for POST /api/items/{entity_id}/return-to-vendor."""
+
+    @pytest.mark.asyncio
+    async def test_rtv_success_redirects(self, ui_client):
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 10.0})),
+            patch("ui.api_client.adjust_item", new=AsyncMock(return_value={"event_id": "e1"})),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/return-to-vendor",
+                data={"quantity": "3"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
+
+    @pytest.mark.asyncio
+    async def test_rtv_reduces_quantity_correctly(self, ui_client):
+        """return-to-vendor adjusts item to current_qty - returned_qty."""
+        captured = {}
+        async def _mock_adjust(token, entity_id, new_qty):
+            captured["new_qty"] = new_qty
+            return {"event_id": "e1"}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 10.0})),
+            patch("ui.api_client.adjust_item", new=_mock_adjust),
+        ):
+            await ui_client.post(
+                "/api/items/gc:123/return-to-vendor",
+                data={"quantity": "3"},
+                cookies=_authed(),
+            )
+        assert captured["new_qty"] == 7.0
+
+    @pytest.mark.asyncio
+    async def test_rtv_zero_quantity_returns_error(self, ui_client):
+        r = await ui_client.post(
+            "/api/items/gc:123/return-to-vendor",
+            data={"quantity": "0"},
+            cookies=_authed(),
+        )
+        assert r.status_code == 200
+        assert b"greater than 0" in r.content.lower() or b"quantity" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_rtv_invalid_quantity_returns_error(self, ui_client):
+        r = await ui_client.post(
+            "/api/items/gc:123/return-to-vendor",
+            data={"quantity": "notanumber"},
+            cookies=_authed(),
+        )
+        assert r.status_code == 200
+        assert b"greater than 0" in r.content.lower() or b"quantity" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_rtv_api_error_shown(self, ui_client):
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 10.0})),
+            patch("ui.api_client.adjust_item", new=AsyncMock(side_effect=APIError(400, "cannot return"))),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/return-to-vendor",
+                data={"quantity": "5"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"cannot return" in r.content
+
+
+class TestItemBringBackIn:
+    """Route tests for POST /api/items/{entity_id}/bring-back-in."""
+
+    @pytest.mark.asyncio
+    async def test_bbi_success_redirects(self, ui_client):
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 5.0})),
+            patch("ui.api_client.adjust_item", new=AsyncMock(return_value={"event_id": "e1"})),
+            patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"event_id": "e2"})),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/bring-back-in",
+                data={"quantity": "5"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
+
+    @pytest.mark.asyncio
+    async def test_bbi_increases_quantity_correctly(self, ui_client):
+        """bring-back-in adjusts item to current_qty + returned_qty."""
+        captured = {}
+        async def _mock_adjust(token, entity_id, new_qty):
+            captured["new_qty"] = new_qty
+            return {"event_id": "e1"}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 3.0})),
+            patch("ui.api_client.adjust_item", new=_mock_adjust),
+            patch("ui.api_client.set_item_status", new=AsyncMock(return_value={})),
+        ):
+            await ui_client.post(
+                "/api/items/gc:123/bring-back-in",
+                data={"quantity": "4"},
+                cookies=_authed(),
+            )
+        assert captured["new_qty"] == 7.0
+
+    @pytest.mark.asyncio
+    async def test_bbi_sets_status_to_available(self, ui_client):
+        captured = {}
+        async def _mock_status(token, entity_id, status):
+            captured["status"] = status
+            return {}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 3.0})),
+            patch("ui.api_client.adjust_item", new=AsyncMock(return_value={})),
+            patch("ui.api_client.set_item_status", new=_mock_status),
+        ):
+            await ui_client.post(
+                "/api/items/gc:123/bring-back-in",
+                data={"quantity": "2"},
+                cookies=_authed(),
+            )
+        assert captured["status"] == "available"
+
+    @pytest.mark.asyncio
+    async def test_bbi_zero_quantity_returns_error(self, ui_client):
+        r = await ui_client.post(
+            "/api/items/gc:123/bring-back-in",
+            data={"quantity": "0"},
+            cookies=_authed(),
+        )
+        assert r.status_code == 200
+        assert b"greater than 0" in r.content.lower() or b"quantity" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_bbi_api_error_shown(self, ui_client):
+        from ui.api_client import APIError
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"quantity": 3.0})),
+            patch("ui.api_client.adjust_item", new=AsyncMock(side_effect=APIError(400, "item locked"))),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/bring-back-in",
+                data={"quantity": "2"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"item locked" in r.content
+
+
+class TestBulkTransferRoute:
+    """Route tests for POST /api/items/bulk/transfer."""
+
+    @pytest.mark.asyncio
+    async def test_bulk_transfer_success(self, ui_client):
+        with patch("ui.api_client.bulk_transfer", new=AsyncMock(return_value={"updated": 2})):
+            r = await ui_client.post(
+                "/api/items/bulk/transfer",
+                data={"selected": ["item:a", "item:b"], "bulk_location_id": "loc:1"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"transferred" in r.content
+
+    @pytest.mark.asyncio
+    async def test_bulk_transfer_no_items_selected(self, ui_client):
+        r = await ui_client.post(
+            "/api/items/bulk/transfer",
+            data={"selected": [], "bulk_location_id": "loc:1"},
+            cookies=_authed(),
+        )
+        assert r.status_code == 200
+        assert b"selected" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_bulk_transfer_no_location(self, ui_client):
+        r = await ui_client.post(
+            "/api/items/bulk/transfer",
+            data={"selected": ["item:a"], "bulk_location_id": ""},
+            cookies=_authed(),
+        )
+        assert r.status_code == 200
+        assert b"location" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_bulk_transfer_passes_correct_args(self, ui_client):
+        captured = {}
+        async def _mock(token, entity_ids, location_id):
+            captured.update({"ids": entity_ids, "loc": location_id})
+            return {"updated": len(entity_ids)}
+        with patch("ui.api_client.bulk_transfer", new=_mock):
+            await ui_client.post(
+                "/api/items/bulk/transfer",
+                data={"selected": ["item:a", "item:b"], "bulk_location_id": "loc:warehouse"},
+                cookies=_authed(),
+            )
+        assert captured["ids"] == ["item:a", "item:b"]
+        assert captured["loc"] == "loc:warehouse"
+
+    @pytest.mark.asyncio
+    async def test_bulk_transfer_api_error_shown(self, ui_client):
+        from ui.api_client import APIError
+        with patch("ui.api_client.bulk_transfer", new=AsyncMock(side_effect=APIError(403, "not allowed"))):
+            r = await ui_client.post(
+                "/api/items/bulk/transfer",
+                data={"selected": ["item:a"], "bulk_location_id": "loc:1"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"not allowed" in r.content
+
+
+class TestAttachmentRoutes:
+    """Route tests for attachment upload and delete."""
+
+    @pytest.mark.asyncio
+    async def test_upload_attachment_success_returns_panel(self, ui_client):
+        """POST /inventory/{id}/attachments returns updated attachments panel on success."""
+        import io
+        from starlette.datastructures import UploadFile as SF
+        file_content = b"fake image data"
+        with (
+            patch("ui.api_client.upload_attachment", new=AsyncMock(return_value={"id": "att:1"})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "attachments": [{"id": "att:1", "filename": "photo.jpg", "url": "/static/attachments/c/photo.jpg"}]})),
+        ):
+            r = await ui_client.post(
+                "/inventory/gc:123/attachments",
+                files={"file": ("photo.jpg", io.BytesIO(file_content), "image/jpeg")},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        # Returns the attachments panel HTML (not a redirect)
+        assert b"photo.jpg" in r.content or b"attachment" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_upload_attachment_no_file_returns_error(self, ui_client):
+        """POST /inventory/{id}/attachments with no file field returns an error message."""
+        r = await ui_client.post(
+            "/inventory/gc:123/attachments",
+            data={},
+            cookies=_authed(),
+        )
+        assert r.status_code == 200
+        assert b"no file" in r.content.lower() or b"file" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_upload_attachment_unauthenticated(self, ui_client):
+        """POST without auth redirects to /login."""
+        import io
+        r = await ui_client.post(
+            "/inventory/gc:123/attachments",
+            files={"file": ("photo.jpg", io.BytesIO(b"data"), "image/jpeg")},
+        )
+        assert r.status_code == 302
+        assert "/login" in r.headers.get("location", "")
+
+    @pytest.mark.asyncio
+    async def test_upload_attachment_api_error_shown(self, ui_client):
+        from ui.api_client import APIError
+        import io
+        with patch("ui.api_client.upload_attachment", new=AsyncMock(side_effect=APIError(413, "file too large"))):
+            r = await ui_client.post(
+                "/inventory/gc:123/attachments",
+                files={"file": ("big.jpg", io.BytesIO(b"data"), "image/jpeg")},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"file too large" in r.content
+
+    @pytest.mark.asyncio
+    async def test_delete_attachment_success(self, ui_client):
+        """DELETE /inventory/{id}/attachments/{att_id} returns 204 with HX-Refresh."""
+        with patch("ui.api_client.delete_attachment", new=AsyncMock(return_value={})):
+            r = await ui_client.delete(
+                "/inventory/gc:123/attachments/att:1",
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert r.headers.get("HX-Refresh") == "true"
+
+    @pytest.mark.asyncio
+    async def test_delete_attachment_unauthenticated(self, ui_client):
+        """DELETE without auth is redirected to /login by the global auth guard."""
+        r = await ui_client.delete("/inventory/gc:123/attachments/att:1")
+        assert r.status_code == 302
+        assert "/login" in r.headers.get("location", "")
+
+    @pytest.mark.asyncio
+    async def test_delete_attachment_passes_correct_ids(self, ui_client):
+        captured = {}
+        async def _mock(token, entity_id, att_id):
+            captured.update({"entity_id": entity_id, "att_id": att_id})
+            return {}
+        with patch("ui.api_client.delete_attachment", new=_mock):
+            await ui_client.delete(
+                "/inventory/gc:XYZ-999/attachments/att:abc",
+                cookies=_authed(),
+            )
+        assert captured["entity_id"] == "gc:XYZ-999"
+        assert captured["att_id"] == "att:abc"
+
+    @pytest.mark.asyncio
+    async def test_delete_attachment_api_error_still_returns_204(self, ui_client):
+        """API error on delete is logged but the response is still 204 (graceful)."""
+        from ui.api_client import APIError
+        with patch("ui.api_client.delete_attachment", new=AsyncMock(side_effect=APIError(404, "not found"))):
+            r = await ui_client.delete(
+                "/inventory/gc:123/attachments/att:missing",
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+
+    def test_attachment_upload_url_in_item_detail_html(self):
+        """_attachments_panel renders fetch POST targeting /inventory/{id}/attachments
+        and hx-delete targeting /inventory/{id}/attachments/{att_id}."""
+        from ui.routes.inventory import _attachments_panel
+        from fasthtml.common import to_xml
+        item_with_attachments = {**_ITEM, "attachments": [
+            {"id": "att:1", "filename": "photo.jpg", "url": "/static/attachments/c/photo.jpg", "type": "image"},
+        ]}
+        html = to_xml(_attachments_panel("gc:ROW-001", item_with_attachments))
+        assert "/inventory/gc:ROW-001/attachments" in html, \
+            "attachment upload fetch must POST to /inventory/{id}/attachments"
+        assert 'hx-delete="/inventory/gc:ROW-001/attachments/att:1"' in html, \
+            "attachment delete button must target DELETE /inventory/{id}/attachments/{att_id}"
+
+
 class TestInventoryBulkActions:
     """List-level bulk action routes: status, transfer, delete."""
 
