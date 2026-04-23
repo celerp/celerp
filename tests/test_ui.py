@@ -3827,6 +3827,18 @@ class TestItemActionRouteCompleteness:
         assert "/api/inventory/" not in html, \
             "route must not reference deprecated /api/inventory/ path"
 
+    def test_row_menu_delete_inventory_entity_type_uses_items_endpoint(self):
+        """data_table with entity_type='inventory' must still DELETE to /api/items/{id}, not /api/inventorys/{id}."""
+        from ui.components.table import data_table
+        from fasthtml.common import to_xml
+        schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
+        rows = [{"entity_id": "item:demo-abc123", "sku": "TEST", "name": "Widget"}]
+        html = to_xml(data_table(schema=schema, rows=rows, entity_type="inventory", show_row_menu=True))
+        assert "htmx.ajax('DELETE','/api/items/item:demo-abc123'" in html, \
+            "row-menu delete with entity_type='inventory' must target /api/items/{id}, not /api/inventorys/{id}"
+        assert "/api/inventorys/" not in html, \
+            "row-menu must never generate /api/inventorys/ (misspelled pluralized route)"
+
     # ── split (additional coverage) ───────────────────────────────────────────
 
     @pytest.mark.asyncio
