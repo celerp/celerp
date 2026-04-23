@@ -3,4 +3,9 @@
 
 from __future__ import annotations
 
-__version__ = "1.0.0"
+from importlib.metadata import version, PackageNotFoundError
+
+try:
+    __version__ = version("celerp")
+except PackageNotFoundError:
+    __version__ = "0.0.0+dev"
