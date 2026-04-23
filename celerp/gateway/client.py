@@ -49,11 +49,52 @@ class GatewayClient:
         self._stop_event = asyncio.Event()
         self._relay_status: str = "inactive"  # inactive | connecting | active | tos_required | error
         self._required_tos_version: str = ""
-        # Cache local server ports for proxy routing
+
+    # ── Port resolution ────────────────────────────────────────────────
+
+    @staticmethod
+    def _port_from_url(env_var: str, fallback: int) -> int:
+        """Extract port from a ``host:port`` URL env var, or return *fallback*.
+
+        Reads env vars at call time (not cached) so the correct port is used
+        even when the env var is set after this class is imported -- e.g. when
+        Electron pre-allocates ports and passes them to child processes.
+        """
+        from urllib.parse import urlparse
+        raw = os.environ.get(env_var, "")
+        if raw:
+            try:
+                parsed = urlparse(raw)
+                if parsed.port:
+                    return parsed.port
+            except Exception:
+                pass
+        return fallback
+
+    def _resolve_ports(self) -> tuple[int, int]:
+        """Return ``(api_port, ui_port)`` using the most reliable source available.
+
+        Priority (highest first):
+        1. ``CELERP_API_URL`` / ``API_URL`` env var (set by Electron for the API process)
+        2. ``CELERP_UI_URL`` env var (set by Electron so the API process knows the UI port)
+        3. ``[server]`` section of ``config.toml``
+        4. Compile-time defaults (8000 / 8080)
+
+        Reading at call time (not cached) ensures correctness even if Electron
+        writes the config after this object is constructed.
+        """
         from celerp.config import read_config
         cfg = read_config() or {}
-        self._ui_port: int = cfg.get("server", {}).get("ui_port", 8080)
-        self._api_port: int = cfg.get("server", {}).get("api_port", 8000)
+        srv = cfg.get("server", {})
+        api_port = self._port_from_url(
+            "CELERP_API_URL",
+            self._port_from_url("API_URL", srv.get("api_port", 8000)),
+        )
+        ui_port = self._port_from_url(
+            "CELERP_UI_URL",
+            srv.get("ui_port", 8080),
+        )
+        return api_port, ui_port
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -263,10 +304,11 @@ class GatewayClient:
             return
 
         # API-only paths go to the API server; everything else to the UI
+        api_port, ui_port = self._resolve_ports()
         if path.startswith("/api/") or path.startswith("/openapi"):
-            port = self._api_port
+            port = api_port
         else:
-            port = self._ui_port
+            port = ui_port
 
         url = f"http://127.0.0.1:{port}{path}"
         if query:

@@ -271,6 +271,9 @@ function _moduleAlembicLocations() {
 function startApi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
     apiPort = await getFreePort();
+    // Pre-allocate uiPort here so we can pass CELERP_UI_URL to the API process.
+    // The UI process will bind to this exact port in startUi().
+    uiPort = await getFreePort();
     const env = {
       ...process.env,
       DATABASE_URL: dbUrl,
@@ -279,6 +282,10 @@ function startApi(dbUrl, cfg) {
       MODULE_DIR: MODULE_DIR,
       CELERP_DATA_DIR: DATA_DIR,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
+      // Expose both ports so GatewayClient can proxy relay traffic to the
+      // correct dynamic ports even inside Electron (no static 8000/8080).
+      CELERP_API_URL: `http://127.0.0.1:${apiPort}`,
+      CELERP_UI_URL: `http://127.0.0.1:${uiPort}`,
       ...resolveStorageEnv(cfg),
     };
     apiProcess = spawn(
@@ -293,7 +300,8 @@ function startApi(dbUrl, cfg) {
 
 function startUi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
-    uiPort = await getFreePort();
+    // uiPort is pre-allocated in startApi() so both processes see consistent ports.
+    // Do NOT call getFreePort() here again.
     const env = {
       ...process.env,
       API_URL: `http://127.0.0.1:${apiPort}`,
