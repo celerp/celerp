@@ -1,8 +1,10 @@
 # Celerp
 
-**Open-source ERP. Runs on your machine. You own everything.**
+**Free business management software for you and your office. Setup in minutes. Easy enough for solo entrepreneurs and powerful enough for large enterprises**
 
-Inventory, invoicing, purchasing, manufacturing, accounting, and CRM - in one app, on your computer. No subscription. No cloud required.
+Inventory, invoicing, purchasing, consignment, manufacturing, accounting, and CRM - in one app, on your computer. No subscription. No cloud required. 
+
+Celerp is simple to use, flexible, customizable, and designed to transition your business into the AI age with no technical knowledge needed to setup your whole office. We want to put businesses back in charge of their data.
 
 [![Tests](https://github.com/celerp/celerp/actions/workflows/ci.yml/badge.svg)](https://github.com/celerp/celerp/actions)
 [![License](https://img.shields.io/badge/license-BSL--1.1-blue)](LICENSE)
@@ -19,7 +21,7 @@ Inventory, invoicing, purchasing, manufacturing, accounting, and CRM - in one ap
 | Linux (.AppImage) | [Latest release](https://github.com/celerp/celerp/releases/latest) |
 | macOS (.dmg) | Coming soon |
 
-**Double-click. No account. No credit card. No server.**
+**Double-click. No account. No credit card. Your computer securely becomes the server for your office**
 
 Or install via pip:
 
@@ -30,6 +32,7 @@ celerp start
 ```
 
 Open **http://localhost:8080**. Done.
+Your office can securely access the system at your IP address :8080.
 
 ---
 
@@ -112,4 +115,15 @@ Issues and PRs welcome. The module system makes it straightforward to add new bu
 
 ## License
 
-[BSL-1.1](LICENSE). Free to use, free to modify, free to self-host. Commercial redistribution restricted for 4 years, after which the code converts to Apache 2.0.
+**Free to download. Free to self-host. Free to build on.**
+
+The core engine is Licensed under [Business Source License 1.1] -
+self-hosting permitted, contributions welcome. Every release automatically
+converts to Apache 2.0 after 4 years.
+
+Default modules are [MIT licensed] -
+do whatever you want.
+
+The UI layer is [source-available, all rights reserved](ui/LICENSE).
+
+One restriction: don't resell Celerp itself as a competing product.
