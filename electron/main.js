@@ -167,7 +167,13 @@ async function startPostgres(dbPort) {
     persistent: true,  // data survives across app restarts
   });
 
-  await pgInstance.initialise();
+  // Only run initdb on first boot — PG_VERSION is written by initdb and
+  // signals that the cluster is already initialised. Calling initialise()
+  // on an existing data directory causes initdb to exit non-zero and crash.
+  const pgVersionFile = path.join(PG_DATA_DIR, "PG_VERSION");
+  if (!fs.existsSync(pgVersionFile)) {
+    await pgInstance.initialise();
+  }
   await pgInstance.start();
 
   // Create database if it doesn't exist yet

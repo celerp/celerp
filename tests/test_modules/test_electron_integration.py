@@ -196,3 +196,55 @@ class TestModuleSetupElectron:
         assert r.returncode == 0
         combined = r.stdout + r.stderr
         assert "testmod" in combined or "dry-run" in combined.lower()
+
+
+# ── Second-boot / re-init guards ──────────────────────────────────────────────
+
+class TestSecondBootGuards:
+    """Verify Electron main.js contains idempotency guards for operations that
+    must only run once (first boot), not on every app launch."""
+
+    @pytest.fixture(autouse=True)
+    def source(self):
+        self._src = ELECTRON_MAIN.read_text()
+
+    def test_postgres_initialise_guarded_by_pg_version_file(self):
+        """initialise() must only be called when PG_VERSION does not exist.
+
+        embedded-postgres.initialise() runs initdb, which fails with non-zero
+        exit if the data directory already contains a Postgres cluster.
+        On second boot this would crash the entire app.
+        """
+        # Guard must check for PG_VERSION sentinel before calling initialise()
+        assert "PG_VERSION" in self._src, (
+            "startPostgres must check for PG_VERSION to skip initdb on second boot"
+        )
+        assert "initialise" in self._src, "initialise() call must still exist for first boot"
+
+        # The guard must come before the initialise() call
+        pg_version_pos = self._src.find("PG_VERSION")
+        initialise_pos = self._src.find("pgInstance.initialise()")
+        assert pg_version_pos < initialise_pos, (
+            "PG_VERSION check must appear before pgInstance.initialise() call"
+        )
+
+    def test_postgres_initialise_inside_conditional(self):
+        """initialise() must be inside an if-block, not called unconditionally."""
+        # Find the block around initialise() — it should be inside an if (!existsSync(...))
+        init_pos = self._src.find("pgInstance.initialise()")
+        # Look backwards from initialise() for the conditional
+        before = self._src[:init_pos]
+        last_if = before.rfind("if (")
+        last_if_content = before[last_if:init_pos]
+        assert "existsSync" in last_if_content, (
+            "pgInstance.initialise() must be inside an if (!fs.existsSync(...)) guard"
+        )
+
+    def test_seed_default_modules_skips_existing(self):
+        """seedDefaultModules must skip already-installed module dirs (idempotent)."""
+        assert "fs.existsSync(dst)" in self._src
+        assert "continue" in self._src
+
+    def test_migrations_are_idempotent_upgrade_head(self):
+        """runMigrations uses alembic upgrade head which is a no-op if already current."""
+        assert "upgrade" in self._src and "head" in self._src
