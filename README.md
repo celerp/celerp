@@ -124,6 +124,6 @@ converts to Apache 2.0 after 4 years.
 Default modules are [MIT licensed] -
 do whatever you want.
 
-The UI layer is [source-available, all rights reserved](ui/LICENSE).
+The UI layer is [source-available, all rights reserved].
 
 One restriction: don't resell Celerp itself as a competing product.
