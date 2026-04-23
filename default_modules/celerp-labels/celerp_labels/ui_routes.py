@@ -1050,9 +1050,9 @@ def setup_ui_routes(app) -> None:
         from ui.config import COOKIE_NAME
         return request.cookies.get(COOKIE_NAME)
 
-    def _api_base(request: Request) -> str:
-        host = request.url.hostname or "localhost"
-        return f"http://{host}:8000"
+    def _api_base(request: Request) -> str:  # noqa: ARG001
+        from ui.config import API_BASE
+        return API_BASE
 
     async def _fetch_templates(request: Request) -> list[dict]:
         token = _token(request)

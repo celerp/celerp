@@ -19,7 +19,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
-from ui.config import get_token as _token
+from ui.config import get_token as _token, API_BASE as _api_base
 from ui.i18n import t, get_lang
 
 _DEFAULT_PER_PAGE = 50
@@ -833,7 +833,7 @@ def setup_routes(app):
             import httpx
             async with httpx.AsyncClient(timeout=5) as c:
                 r = await c.get(
-                    f"http://127.0.0.1:{request.url.port or 8080}/api/labels/templates",
+                    f"{_api_base}/api/labels/templates",
                     headers={"Authorization": f"Bearer {token}"},
                 )
                 templates = r.json() if r.status_code == 200 else []

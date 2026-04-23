@@ -321,3 +321,103 @@ class TestStaleTokenRedirectLoop:
         assert r.headers.get("location", "") == "/", (
             f"Valid token should redirect to /, got {r.headers.get('location')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# REG-005  celerp.__version__ must be read from installed package metadata,
+#          not hardcoded. Hardcoding causes Electron/Mac to show "1.0.0"
+#          regardless of the published git tag.
+# ---------------------------------------------------------------------------
+
+class TestREG005VersionSourceOfTruth:
+    """Ensure __version__ is not a hardcoded string literal.
+
+    Rationale: if the string is hardcoded, it will always read "1.0.0" even
+    after a release tag is pushed, causing the Electron UI to display the
+    wrong version. The canonical source is importlib.metadata which reads
+    from the installed package's METADATA file (populated by the git tag via
+    setuptools-scm).
+    """
+
+    def test_version_not_hardcoded_string(self):
+        """__version__ must be sourced from importlib.metadata, not a literal.
+
+        Specifically: the first (primary) assignment to __version__ at module
+        scope must be a function call (importlib.metadata.version(...)), not a
+        string constant.  A fallback constant inside an except block is fine.
+        """
+        import ast, pathlib
+
+        src = pathlib.Path(__file__).parent.parent / "celerp" / "__init__.py"
+        tree = ast.parse(src.read_text())
+
+        for node in ast.walk(tree):
+            # Only check top-level Assign nodes (not inside try/except handlers)
+            if not isinstance(node, ast.Assign):
+                continue
+            # Skip nodes that are inside an ExceptHandler
+            # We walk the top-level body only
+            if node not in tree.body:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__version__":
+                    assert not isinstance(node.value, ast.Constant), (
+                        "__version__ at module scope must not be a hardcoded string literal. "
+                        "Use importlib.metadata.version('celerp') instead so "
+                        "the version shown in Electron matches the git tag."
+                    )
+
+    def test_version_is_importable_string(self):
+        """__version__ must be a non-empty string at runtime."""
+        from celerp import __version__
+        assert isinstance(__version__, str) and len(__version__) > 0
+
+
+# ---------------------------------------------------------------------------
+# REG-006  celerp-labels: _api_base must use ui.config.API_BASE, not a
+#          hardcoded hostname:8000. Hardcoding broke label creation in the
+#          Electron app where the API runs on a dynamic port.
+# ---------------------------------------------------------------------------
+
+class TestREG006LabelsApiBaseUsesEnvVar:
+    """Ensure the labels module reads the API base from ui.config.API_BASE.
+
+    In Electron the API port is dynamic (assigned by the OS). The UI process
+    receives it via the API_URL env var, surfaced as ui.config.API_BASE.
+    Any hardcoded ':8000' in the labels UI routes causes
+    'All connection attempts failed' on Electron/Mac.
+    """
+
+    def test_labels_ui_routes_no_hardcoded_port(self):
+        """No hardcoded ':8000' in celerp_labels/ui_routes.py."""
+        import pathlib
+
+        src = pathlib.Path(__file__).parent.parent / "default_modules" / "celerp-labels" / "celerp_labels" / "ui_routes.py"
+        text = src.read_text()
+        assert ":8000" not in text, (
+            "celerp_labels/ui_routes.py contains a hardcoded ':8000' port. "
+            "Use ui.config.API_BASE instead so Electron's dynamic API port is respected."
+        )
+
+    def test_labels_ui_routes_uses_config_api_base(self):
+        """_api_base in ui_routes.py must reference ui.config.API_BASE."""
+        import pathlib
+
+        src = pathlib.Path(__file__).parent.parent / "default_modules" / "celerp-labels" / "celerp_labels" / "ui_routes.py"
+        text = src.read_text()
+        assert "API_BASE" in text, (
+            "celerp_labels/ui_routes.py must import and use ui.config.API_BASE "
+            "as the API base URL. Hardcoding the port breaks Electron builds."
+        )
+
+    def test_inventory_no_hardcoded_label_template_port(self):
+        """No hardcoded port in inventory.py's label-templates fetch."""
+        import pathlib
+
+        src = pathlib.Path(__file__).parent.parent / "ui" / "routes" / "inventory.py"
+        text = src.read_text()
+        # The old pattern: http://127.0.0.1:{request.url.port or 8080}
+        assert "request.url.port" not in text or "api/labels/templates" not in text.split("request.url.port")[0].rsplit("\n", 5)[-1], (
+            "inventory.py constructs label template URL from request.url.port (hardcoded pattern). "
+            "Use ui.config.API_BASE instead."
+        )
