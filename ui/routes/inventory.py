@@ -1649,7 +1649,7 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Attachment upload (single file) ──────────────────────────────────────
 
-    @app.post("/inventory/{entity_id}/attachments")
+    @app.post("/api/items/{entity_id}/attachments")
     async def item_upload_attachment(request: Request, entity_id: str):
         token = _token(request)
         if not token:
@@ -1689,7 +1689,7 @@ function celerpPrintLabel(entityId, templateId) {
             )
         return Response("", status_code=200)
 
-    @app.delete("/inventory/{entity_id}/attachments/{att_id}")
+    @app.delete("/api/items/{entity_id}/attachments/{att_id}")
     async def item_delete_attachment(request: Request, entity_id: str, att_id: str):
         token = _token(request)
         if not token:
@@ -2326,7 +2326,7 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
                 Span(a.get("filename", "image"), cls="attachment-name"),
                 Button(t("btn.u00d7"),
                     cls="btn btn--icon btn--danger",
-                    hx_delete=f"/inventory/{entity_id}/attachments/{a['id']}",
+                    hx_delete=f"/api/items/{entity_id}/attachments/{a['id']}",
                     hx_confirm="Remove this image?",
                     hx_target="#attachments-panel",
                     hx_swap="outerHTML",
@@ -2348,7 +2348,7 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
             ),
             Button(t("btn.u00d7"),
                 cls="btn btn--icon btn--danger",
-                hx_delete=f"/inventory/{entity_id}/attachments/{a['id']}",
+                hx_delete=f"/api/items/{entity_id}/attachments/{a['id']}",
                 hx_confirm="Remove this document?",
                 hx_target="#attachments-panel",
                 hx_swap="outerHTML",
@@ -2366,7 +2366,7 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
     fd.append('file', file);
     var statusEl = zone.querySelector('.file-drop-text');
     if (statusEl) statusEl.textContent = 'Uploading...';
-    fetch('/inventory/{entity_id}/attachments', {{
+    fetch('/api/items/{entity_id}/attachments', {{
       method: 'POST',
       body: fd,
     }}).then(function(resp) {{

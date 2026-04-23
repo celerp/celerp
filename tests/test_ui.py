@@ -4258,7 +4258,7 @@ class TestAttachmentRoutes:
 
     @pytest.mark.asyncio
     async def test_upload_attachment_success_returns_panel(self, ui_client):
-        """POST /inventory/{id}/attachments returns updated attachments panel on success."""
+        """POST /api/items/{id}/attachments returns updated attachments panel on success."""
         import io
         from starlette.datastructures import UploadFile as SF
         file_content = b"fake image data"
@@ -4267,7 +4267,7 @@ class TestAttachmentRoutes:
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "attachments": [{"id": "att:1", "filename": "photo.jpg", "url": "/static/attachments/c/photo.jpg"}]})),
         ):
             r = await ui_client.post(
-                "/inventory/gc:123/attachments",
+                "/api/items/gc:123/attachments",
                 files={"file": ("photo.jpg", io.BytesIO(file_content), "image/jpeg")},
                 cookies=_authed(),
             )
@@ -4277,9 +4277,9 @@ class TestAttachmentRoutes:
 
     @pytest.mark.asyncio
     async def test_upload_attachment_no_file_returns_error(self, ui_client):
-        """POST /inventory/{id}/attachments with no file field returns an error message."""
+        """POST /api/items/{id}/attachments with no file field returns an error message."""
         r = await ui_client.post(
-            "/inventory/gc:123/attachments",
+            "/api/items/gc:123/attachments",
             data={},
             cookies=_authed(),
         )
@@ -4291,7 +4291,7 @@ class TestAttachmentRoutes:
         """POST without auth redirects to /login."""
         import io
         r = await ui_client.post(
-            "/inventory/gc:123/attachments",
+            "/api/items/gc:123/attachments",
             files={"file": ("photo.jpg", io.BytesIO(b"data"), "image/jpeg")},
         )
         assert r.status_code == 302
@@ -4303,7 +4303,7 @@ class TestAttachmentRoutes:
         import io
         with patch("ui.api_client.upload_attachment", new=AsyncMock(side_effect=APIError(413, "file too large"))):
             r = await ui_client.post(
-                "/inventory/gc:123/attachments",
+                "/api/items/gc:123/attachments",
                 files={"file": ("big.jpg", io.BytesIO(b"data"), "image/jpeg")},
                 cookies=_authed(),
             )
@@ -4312,10 +4312,10 @@ class TestAttachmentRoutes:
 
     @pytest.mark.asyncio
     async def test_delete_attachment_success(self, ui_client):
-        """DELETE /inventory/{id}/attachments/{att_id} returns 204 with HX-Refresh."""
+        """DELETE /api/items/{id}/attachments/{att_id} returns 204 with HX-Refresh."""
         with patch("ui.api_client.delete_attachment", new=AsyncMock(return_value={})):
             r = await ui_client.delete(
-                "/inventory/gc:123/attachments/att:1",
+                "/api/items/gc:123/attachments/att:1",
                 cookies=_authed(),
             )
         assert r.status_code == 204
@@ -4324,7 +4324,7 @@ class TestAttachmentRoutes:
     @pytest.mark.asyncio
     async def test_delete_attachment_unauthenticated(self, ui_client):
         """DELETE without auth is redirected to /login by the global auth guard."""
-        r = await ui_client.delete("/inventory/gc:123/attachments/att:1")
+        r = await ui_client.delete("/api/items/gc:123/attachments/att:1")
         assert r.status_code == 302
         assert "/login" in r.headers.get("location", "")
 
@@ -4336,7 +4336,7 @@ class TestAttachmentRoutes:
             return {}
         with patch("ui.api_client.delete_attachment", new=_mock):
             await ui_client.delete(
-                "/inventory/gc:XYZ-999/attachments/att:abc",
+                "/api/items/gc:XYZ-999/attachments/att:abc",
                 cookies=_authed(),
             )
         assert captured["entity_id"] == "gc:XYZ-999"
@@ -4348,24 +4348,24 @@ class TestAttachmentRoutes:
         from ui.api_client import APIError
         with patch("ui.api_client.delete_attachment", new=AsyncMock(side_effect=APIError(404, "not found"))):
             r = await ui_client.delete(
-                "/inventory/gc:123/attachments/att:missing",
+                "/api/items/gc:123/attachments/att:missing",
                 cookies=_authed(),
             )
         assert r.status_code == 204
 
     def test_attachment_upload_url_in_item_detail_html(self):
-        """_attachments_panel renders fetch POST targeting /inventory/{id}/attachments
-        and hx-delete targeting /inventory/{id}/attachments/{att_id}."""
+        """_attachments_panel renders fetch POST targeting /api/items/{id}/attachments
+        and hx-delete targeting /api/items/{id}/attachments/{att_id}."""
         from ui.routes.inventory import _attachments_panel
         from fasthtml.common import to_xml
         item_with_attachments = {**_ITEM, "attachments": [
             {"id": "att:1", "filename": "photo.jpg", "url": "/static/attachments/c/photo.jpg", "type": "image"},
         ]}
         html = to_xml(_attachments_panel("gc:ROW-001", item_with_attachments))
-        assert "/inventory/gc:ROW-001/attachments" in html, \
-            "attachment upload fetch must POST to /inventory/{id}/attachments"
-        assert 'hx-delete="/inventory/gc:ROW-001/attachments/att:1"' in html, \
-            "attachment delete button must target DELETE /inventory/{id}/attachments/{att_id}"
+        assert "/api/items/gc:ROW-001/attachments" in html, \
+            "attachment upload fetch must POST to /api/items/{id}/attachments"
+        assert 'hx-delete="/api/items/gc:ROW-001/attachments/att:1"' in html, \
+            "attachment delete button must target DELETE /api/items/{id}/attachments/{att_id}"
 
 
 class TestInventoryBulkActions:

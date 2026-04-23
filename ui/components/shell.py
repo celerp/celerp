@@ -195,7 +195,7 @@ function initImageDropZones(root) {
           var entityId = cell.dataset.entityId;
           var fd = new FormData();
           fd.append('file', e.dataTransfer.files[0]);
-          htmx.ajax('POST', '/inventory/' + entityId + '/attachments', {
+          htmx.ajax('POST', '/api/items/' + entityId + '/attachments', {
             target: '#img-cell-' + entityId,
             swap: 'outerHTML',
             values: fd,

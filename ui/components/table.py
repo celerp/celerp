@@ -337,7 +337,7 @@ def display_cell(
                 type="file",
                 accept="image/*",
                 cls="cell-image-input",
-                hx_post=f"/inventory/{entity_id}/attachments",
+                hx_post=f"/api/items/{entity_id}/attachments",
                 hx_encoding="multipart/form-data",
                 hx_target=f"#img-cell-{entity_id}",
                 hx_swap="outerHTML",
