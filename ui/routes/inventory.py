@@ -1684,6 +1684,31 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _attachments_panel(entity_id, item)
 
+    @app.delete("/api/inventory/{entity_id}")
+    async def item_delete(request: Request, entity_id: str):
+        """Delete a single item from the row-action menu.
+
+        The data_table component renders the row menu with:
+            hx_delete="/api/inventory/{entity_id}"
+            hx_target="#row-{safe_id}"
+            hx_swap="outerHTML"
+
+        Returning an empty 200 causes htmx to replace the row element with
+        nothing, removing it from the DOM immediately without a page reload.
+        """
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.dispose_item(token, entity_id)
+        except APIError as e:
+            return Tr(
+                Td(Span(str(e.detail), cls="flash flash--error"), colspan="100"),
+                id=f"row-{entity_id.replace(':', '-')}",
+            )
+        return _R("", status_code=200)
+
     @app.delete("/inventory/{entity_id}/attachments/{att_id}")
     async def item_delete_attachment(request: Request, entity_id: str, att_id: str):
         from starlette.responses import Response as _R
