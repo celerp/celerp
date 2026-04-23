@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -288,7 +288,6 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             data = b"error\n" + e.detail.encode()
-        from starlette.responses import Response
         return Response(
             content=data,
             media_type="text/csv",
@@ -333,7 +332,6 @@ def setup_routes(app):
         writer.writeheader()
         # Write one empty example row
         writer.writerow({c: "" for c in spec.cols})
-        from starlette.responses import Response
         return Response(
             content=output.getvalue(),
             media_type="text/csv",
@@ -740,10 +738,9 @@ def setup_routes(app):
     @app.post("/inventory/create-blank")
     async def inventory_create_blank(request: Request):
         """Create a minimal item and redirect to its detail page."""
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         import uuid as _uuid
         sku = f"ITEM-{_uuid.uuid4().hex[:8].upper()}"
         try:
@@ -751,10 +748,10 @@ def setup_routes(app):
             item_id = result.get("id", result.get("entity_id", ""))
         except APIError as e:
             if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+                return Response("", status_code=401, headers={"HX-Redirect": "/login"})
             logger.warning("Blank-create item failed: %s", e.detail)
-            return _R("", status_code=500)
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{item_id}"})
+            return Response("", status_code=500)
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{item_id}"})
 
     # /inventory/new: redirect for any bookmarked links
     @app.get("/inventory/new")
@@ -1060,10 +1057,9 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/bulk/merge")
     async def bulk_item_merge(request: Request):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         target_sku_from = str(form.get("target_sku_from", "")).strip()
@@ -1147,10 +1143,9 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/bulk/split")
     async def bulk_item_split(request: Request):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         if len(entity_ids) != 1:
@@ -1253,11 +1248,10 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/send-to")
     async def send_to_action(request: Request):
-        from starlette.responses import Response as _R
         from ui.routes.documents import _line_items_from_inventory
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
         doc_type = str(form.get("send_to_doc_type", "")).strip()
@@ -1275,18 +1269,18 @@ function celerpPrintLabel(entityId, templateId) {
                     combined = (doc.get("line_items") or []) + new_lines
                     subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
                     await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
-                    return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
                 elif doc_type == "list":
                     new_lines = await _line_items_from_inventory(token, entity_ids)
                     lst = await api.get_list(token, target_id)
                     combined = (lst.get("line_items") or []) + new_lines
                     subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
                     await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
-                    return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
                 elif doc_type == "memo":
                     for eid in entity_ids:
                         await api.add_memo_item(token, target_id, {"item_id": eid})
-                    return _R("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{target_id}"})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{target_id}"})
             else:
                 # Create new document
                 if doc_type == "invoice":
@@ -1295,18 +1289,18 @@ function celerpPrintLabel(entityId, templateId) {
                     doc_taxes = await _company_doc_taxes(token)
                     result = await api.create_doc(token, {"doc_type": "invoice", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
                     doc_id = result.get("entity_id") or result.get("id", "")
-                    return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
                 elif doc_type == "list":
                     line_items = await _line_items_from_inventory(token, entity_ids)
                     result = await api.create_list(token, {"list_type": "quotation", "status": "draft", "line_items": line_items})
                     list_id = result.get("entity_id") or result.get("id", "")
-                    return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
                 elif doc_type == "memo":
                     result = await api.create_memo(token)
                     memo_id = result.get("id", "")
                     for eid in entity_ids:
                         await api.add_memo_item(token, memo_id, {"item_id": eid})
-                    return _R("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{memo_id}"})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{memo_id}"})
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         return Div(P(t("inv.unknown_document_type"), cls="flash flash--warning"), id="bulk-action-result")
@@ -1315,10 +1309,9 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/{entity_id}/adjust")
     async def item_adjust(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         try:
             new_qty = float(str(form.get("new_qty", "0")))
@@ -1328,28 +1321,26 @@ function celerpPrintLabel(entityId, templateId) {
             await api.adjust_item(token, entity_id, new_qty)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/transfer")
     async def item_transfer(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         location_id = str(form.get("location_id", "")).strip()
         try:
             await api.transfer_item(token, entity_id, location_id)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/reserve")
     async def item_reserve(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         try:
             qty = float(str(form.get("quantity", "0")))
@@ -1360,14 +1351,13 @@ function celerpPrintLabel(entityId, templateId) {
             await api.reserve_item(token, entity_id, qty, reference)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/unreserve")
     async def item_unreserve(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         try:
             qty = float(str(form.get("quantity", "0")))
@@ -1377,14 +1367,13 @@ function celerpPrintLabel(entityId, templateId) {
             await api.unreserve_item(token, entity_id, qty)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/price")
     async def item_price(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         # Read all price list names dynamically from company settings
         try:
@@ -1404,42 +1393,39 @@ function celerpPrintLabel(entityId, templateId) {
                     await api.set_item_price(token, entity_id, pl_name, price)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/status")
     async def item_status(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         status = str(form.get("status", "")).strip()
         try:
             await api.set_item_status(token, entity_id, status)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/expire")
     async def item_expire(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         reason = str(form.get("reason", "")).strip() or None
         try:
             await api.expire_item(token, entity_id, reason)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/dispose")
     async def item_dispose(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         reason = str(form.get("reason", "")).strip() or None
         notes = str(form.get("notes", "")).strip() or None
@@ -1447,15 +1433,14 @@ function celerpPrintLabel(entityId, templateId) {
             await api.dispose_item(token, entity_id, reason, notes)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/return-to-vendor")
     async def item_return_to_vendor(request: Request, entity_id: str):
         """Return an item received from a bill/PO back to the vendor."""
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         try:
             qty = float(str(form.get("quantity", "0")))
@@ -1474,15 +1459,14 @@ function celerpPrintLabel(entityId, templateId) {
             # Note: the source doc tracking for returns will be enhanced in future
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/bring-back-in")
     async def item_bring_back_in(request: Request, entity_id: str):
         """Return a consigned-out item back into inventory."""
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         try:
             qty = float(str(form.get("quantity", "0")))
@@ -1499,16 +1483,15 @@ function celerpPrintLabel(entityId, templateId) {
             await api.set_item_status(token, entity_id, "available")
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/split")
     async def item_split(request: Request, entity_id: str):
         import json as _json
-        from starlette.responses import Response as _R
         from urllib.parse import quote
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
 
         # Get parent item for SKU
         try:
@@ -1578,14 +1561,13 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         redirect = f"/inventory?q={quote(orig_sku)}" if orig_sku else f"/inventory/{entity_id}"
-        return _R("", status_code=204, headers={"HX-Redirect": redirect})
+        return Response("", status_code=204, headers={"HX-Redirect": redirect})
 
     @app.post("/api/items/merge")
     async def item_merge(request: Request):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         source_entity_ids = [v.strip() for v in form.getlist("source_entity_ids") if v.strip()]
         target_sku_from = str(form.get("target_sku_from", "")).strip()
@@ -1627,14 +1609,13 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error")
         new_id = result.get("id", "")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
 
     @app.post("/api/items/{entity_id}/duplicate")
     async def item_duplicate(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         new_sku = str(form.get("new_sku", "")).strip()
         if not new_sku:
@@ -1664,7 +1645,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         new_id = result.get("id", "")
-        return _R("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
 
     # ── Attachment upload (single file) ──────────────────────────────────────
 
@@ -1684,42 +1665,40 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _attachments_panel(entity_id, item)
 
-    @app.delete("/api/inventory/{entity_id}")
+    @app.delete("/api/items/{entity_id}")
     async def item_delete(request: Request, entity_id: str):
         """Delete a single item from the row-action menu.
 
         The data_table component renders the row menu with:
-            hx_delete="/api/inventory/{entity_id}"
+            hx_delete="/api/items/{entity_id}"
             hx_target="#row-{safe_id}"
             hx_swap="outerHTML"
 
         Returning an empty 200 causes htmx to replace the row element with
         nothing, removing it from the DOM immediately without a page reload.
         """
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.dispose_item(token, entity_id)
+            await api.bulk_delete(token, [entity_id])
         except APIError as e:
             return Tr(
                 Td(Span(str(e.detail), cls="flash flash--error"), colspan="100"),
                 id=f"row-{entity_id.replace(':', '-')}",
             )
-        return _R("", status_code=200)
+        return Response("", status_code=200)
 
     @app.delete("/inventory/{entity_id}/attachments/{att_id}")
     async def item_delete_attachment(request: Request, entity_id: str, att_id: str):
-        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401)
+            return Response("", status_code=401)
         try:
             await api.delete_attachment(token, entity_id, att_id)
         except APIError as e:
             logger.warning("API error on delete attachment %s/%s: %s", entity_id, att_id, e.detail)
-        return _R("", status_code=204, headers={"HX-Refresh": "true"})
+        return Response("", status_code=204, headers={"HX-Refresh": "true"})
 
 
 def _bulk_toolbar(locations: list[dict]) -> FT:
