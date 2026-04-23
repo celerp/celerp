@@ -3776,20 +3776,20 @@ class TestItemActionRouteCompleteness:
         assert r.status_code == 200
         assert b"already disposed" in r.content
 
-    # ── DELETE /api/inventory/{entity_id} (row-menu delete) ──────────────────
+    # ── DELETE /api/items/{entity_id} (row-menu delete) ──────────────────
 
     @pytest.mark.asyncio
     async def test_row_menu_delete_returns_200_removes_row(self, ui_client):
-        """DELETE /api/inventory/{id} returns 200 empty body so htmx removes the row."""
-        with patch("ui.api_client.dispose_item", new=AsyncMock(return_value={"deleted": "gc:abc"})):
-            r = await ui_client.delete("/api/inventory/gc:abc", cookies=_authed())
+        """DELETE /api/items/{id} returns 200 empty body so htmx removes the row."""
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 1})):
+            r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
         assert r.status_code == 200
         assert r.content == b""
 
     @pytest.mark.asyncio
     async def test_row_menu_delete_unauthenticated_redirects(self, ui_client):
         """DELETE without auth cookie is intercepted by _auth_guard → 302 to /login."""
-        r = await ui_client.delete("/api/inventory/gc:abc")
+        r = await ui_client.delete("/api/items/gc:abc")
         assert r.status_code == 302
         assert "/login" in r.headers.get("location", "")
 
@@ -3797,21 +3797,33 @@ class TestItemActionRouteCompleteness:
     async def test_row_menu_delete_api_error_returns_inline_error_row(self, ui_client):
         """On API error, DELETE returns a Tr with an error cell so the row shows the error."""
         from ui.api_client import APIError
-        with patch("ui.api_client.dispose_item", new=AsyncMock(side_effect=APIError(403, "permission denied"))):
-            r = await ui_client.delete("/api/inventory/gc:abc", cookies=_authed())
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(side_effect=APIError(403, "permission denied"))):
+            r = await ui_client.delete("/api/items/gc:abc", cookies=_authed())
         assert r.status_code == 200
         assert b"permission denied" in r.content
 
     @pytest.mark.asyncio
-    async def test_row_menu_delete_calls_dispose_with_correct_id(self, ui_client):
-        """DELETE proxies to api.dispose_item with the correct entity_id."""
+    async def test_row_menu_delete_calls_bulk_delete_with_correct_id(self, ui_client):
+        """DELETE proxies to api.bulk_delete with the entity_id wrapped in a list."""
         captured = {}
-        async def _mock(token, entity_id):
-            captured["entity_id"] = entity_id
-            return {"deleted": entity_id}
-        with patch("ui.api_client.dispose_item", new=_mock):
-            await ui_client.delete("/api/inventory/gc:TEST-001", cookies=_authed())
-        assert captured["entity_id"] == "gc:TEST-001"
+        async def _mock(token, entity_ids):
+            captured["entity_ids"] = entity_ids
+            return {"deleted": len(entity_ids)}
+        with patch("ui.api_client.bulk_delete", new=_mock):
+            await ui_client.delete("/api/items/gc:TEST-001", cookies=_authed())
+        assert captured["entity_ids"] == ["gc:TEST-001"]
+
+    def test_row_menu_delete_html_targets_correct_endpoint(self):
+        """data_table renders hx-delete pointing at /api/items/{id}, not /api/inventory/."""
+        from ui.components.table import data_table
+        from fasthtml.common import to_xml
+        schema = [{"key": "sku", "label": "SKU"}, {"key": "name", "label": "Name"}]
+        rows = [{"entity_id": "gc:ROW-001", "sku": "TEST", "name": "Widget"}]
+        html = to_xml(data_table(schema=schema, rows=rows, entity_type="item", show_row_menu=True))
+        assert 'hx-delete="/api/items/gc:ROW-001"' in html, \
+            "row-menu delete button must target /api/items/{id}, not /api/inventory/{id}"
+        assert "/api/inventory/" not in html, \
+            "route must not reference deprecated /api/inventory/ path"
 
     # ── split (additional coverage) ───────────────────────────────────────────
 
