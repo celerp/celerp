@@ -425,6 +425,7 @@
   "inv.u21a9_return_to_vendor": "↩ An Lieferanten zurückgeben",
   "inv.u23f3_expire": "⏳ Ablaufen",
   "inv.u2702_split": "✂ Aufteilen",
+  "inv.splitting_disabled_hint": "Splitting is disabled for this item. Enable it in Allow Splitting above.",
   "inv.unknown_document_type": "Unbekannter Dokumenttyp.",
   "label._add_item": "+ Artikel hinzufügen",
   "label._add_new": "+ Neu hinzufügen",

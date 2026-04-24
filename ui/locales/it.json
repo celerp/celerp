@@ -425,6 +425,7 @@
   "inv.u21a9_return_to_vendor": "↩ Restituisci al fornitore",
   "inv.u23f3_expire": "⏳ Scadi",
   "inv.u2702_split": "✂ Dividi",
+  "inv.splitting_disabled_hint": "Splitting is disabled for this item. Enable it in Allow Splitting above.",
   "inv.unknown_document_type": "Tipo di documento sconosciuto.",
   "label._add_item": "+ Aggiungi articolo",
   "label._add_new": "+ Aggiungi nuovo",

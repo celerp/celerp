@@ -2847,21 +2847,29 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         )
 
     # 2x2 compact action cards
-    split_card = Div(
-        Form(
-            Strong(t("inv.u2702_split"), cls="action-card-title"),
-            Div(
-                Input(type="text", name="parts", placeholder="e.g. 3,2,1", cls="form-input form-input--sm",
-                      title=f"Comma-separated quantities (current: {current_qty})"),
-                Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
-                cls="action-card-row",
+    allow_splitting = item.get("allow_splitting", True)
+    if allow_splitting:
+        split_card = Div(
+            Form(
+                Strong(t("inv.u2702_split"), cls="action-card-title"),
+                Div(
+                    Input(type="text", name="parts", placeholder="e.g. 3,2,1", cls="form-input form-input--sm",
+                          title=f"Comma-separated quantities (current: {current_qty})"),
+                    Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
+                    cls="action-card-row",
+                ),
+                hx_post=f"/api/items/{entity_id}/split",
+                hx_target="#item-action-error",
+                hx_swap="outerHTML",
             ),
-            hx_post=f"/api/items/{entity_id}/split",
-            hx_target="#item-action-error",
-            hx_swap="outerHTML",
-        ),
-        cls="action-card",
-    )
+            cls="action-card",
+        )
+    else:
+        split_card = Div(
+            Strong(t("inv.u2702_split"), cls="action-card-title"),
+            P(t("inv.splitting_disabled_hint"), cls="action-card-hint"),
+            cls="action-card action-card--disabled",
+        )
 
     duplicate_card = Div(
         Form(

@@ -425,6 +425,7 @@
   "inv.u21a9_return_to_vendor": "\\u21a9 Trả lại cho nhà cung cấp",
   "inv.u23f3_expire": "\\u23f3 Hết hạn",
   "inv.u2702_split": "\\u2702 Tách",
+  "inv.splitting_disabled_hint": "Splitting is disabled for this item. Enable it in Allow Splitting above.",
   "inv.unknown_document_type": "Loại tài liệu không xác định.",
   "label._add_item": "+ Thêm mục",
   "label._add_new": "+ Thêm mới",

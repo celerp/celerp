@@ -79,6 +79,11 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
         flat["location_id"] = location_id
     if location_name:
         flat["location_name"] = location_name
+    # Normalise fields whose absence would misrepresent the effective default.
+    # allow_splitting defaults to True everywhere (backend split check, ItemCreate);
+    # without this, old items without the key in state display as "No" in the UI,
+    # misleading users into thinking splitting is already disabled.
+    flat.setdefault("allow_splitting", True)
     return flat
 
 

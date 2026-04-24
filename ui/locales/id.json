@@ -425,6 +425,7 @@
   "inv.u21a9_return_to_vendor": "\\u21a9 Kembali ke Vendor",
   "inv.u23f3_expire": "\\u23f3 Kedaluwarsa",
   "inv.u2702_split": "\\u2702 Berpisah",
+  "inv.splitting_disabled_hint": "Splitting is disabled for this item. Enable it in Allow Splitting above.",
   "inv.unknown_document_type": "Jenis dokumen tidak diketahui.",
   "label._add_item": "+ Tambahkan Barang",
   "label._add_new": "+ Tambahkan baru",
