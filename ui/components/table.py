@@ -891,6 +891,14 @@ function sendToTypeChanged(docType){
       updateBulkToolbar();
     }
   });
+  document.body.addEventListener('celerpSelectionClear',function(){
+    CelerpSelection.clear();
+    document.querySelectorAll('.row-select').forEach(function(cb){cb.checked=false});
+    var selectAll=document.querySelector('#data-table thead .col-checkbox input');
+    if(selectAll) selectAll.checked=false;
+    updateBulkToolbar();
+    _resetBulkActions();
+  });
   document.body.addEventListener('htmx:afterSwap',function(e){
     if(e.detail&&e.detail.target){
       var tid=e.detail.target.id;
