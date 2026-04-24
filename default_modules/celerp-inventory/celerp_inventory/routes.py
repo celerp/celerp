@@ -123,6 +123,7 @@ class ItemCreate(BaseModel):
     purchase_name: str | None = None       # vendor's product name
     purchase_unit: str | None = None       # unit vendor sells in (e.g. "case", "box")
     purchase_conversion_factor: float | None = None  # sell units per purchase unit (e.g. 24 pcs/case)
+    allow_splitting: bool = True
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
 

@@ -160,6 +160,27 @@ def test_new_sell_by_unit_no_migration():
     assert "pieces" not in state.get("attributes", {})
 
 
+def test_item_created_preserves_allow_splitting_false() -> None:
+    """Projection state must preserve allow_splitting=False from create events."""
+    state = apply_item_event({}, "item.created", {
+        "sku": "NS-001", "name": "No Split", "quantity": 5, "sell_by": "piece",
+        "allow_splitting": False,
+    })
+    assert state["allow_splitting"] is False
+
+
+def test_item_updated_can_disable_allow_splitting() -> None:
+    """Projection state must preserve allow_splitting=False from update events."""
+    state = apply_item_event({}, "item.created", {
+        "sku": "NS-002", "name": "No Split", "quantity": 5, "sell_by": "piece",
+        "allow_splitting": True,
+    })
+    state = apply_item_event(state, "item.updated", {
+        "fields_changed": {"allow_splitting": {"old": True, "new": False}},
+    })
+    assert state["allow_splitting"] is False
+
+
 def test_split_does_not_mark_unavailable():
     """item.split event should NOT set is_available to False."""
     state = apply_item_event(

@@ -530,6 +530,10 @@ async def test_split_blocked_when_allow_splitting_false(client):
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
+    r = await client.get(f"/items/{parent_id}", headers=h)
+    assert r.status_code == 200
+    assert r.json()["allow_splitting"] is False
+
     r = await client.post(f"/items/{parent_id}/split", json={
         "children": [{"sku": "NO-SPLIT-1", "quantity": 3}]
     }, headers=h)
