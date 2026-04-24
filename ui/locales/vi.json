@@ -350,7 +350,7 @@
   "error.session_expired": "Phiên đã hết hạn. Vui lòng làm mới trang và đăng nhập lại.",
   "error.sku_required": "SKU và Tên là bắt buộc.",
   "error.split_invalid_quantities": "Số lượng không hợp lệ - sử dụng các số được phân tách bằng dấu phẩy, ví dụ: 3,2,1",
-  "error.split_min_two": "Việc chia tách yêu cầu ít nhất 2 số lượng.",
+  "error.split_min_two": "Việc chia tách yêu cầu ít nhất 1 số lượng.",
   "error.unauthorized": "trái phép",
   "filter.all_time": "Tất cả thời gian",
   "filter.last_12m": "12 tháng qua",

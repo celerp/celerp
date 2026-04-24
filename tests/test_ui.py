@@ -3412,6 +3412,22 @@ class TestSprint5ItemActions:
         assert "HX-Redirect" in r.headers
 
     @pytest.mark.asyncio
+    async def test_split_item_route_accepts_single_child(self, ui_client):
+        captured = {}
+        async def _mock(token, entity_id, children):
+            captured['children'] = children
+            return {"event_id": "e1"}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
+            patch("ui.api_client.split_item", new=_mock),
+        ):
+            r = await ui_client.post("/api/items/gc:123/split", data={
+                "child_sku_0": "SKU-A", "child_qty_0": "3",
+            }, cookies=_authed())
+        assert r.status_code == 204
+        assert captured['children'] == [{"sku": "SKU-A", "quantity": 3.0}]
+
+    @pytest.mark.asyncio
     async def test_split_item_route_invalid_quantities(self, ui_client):
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
             r = await ui_client.post("/api/items/gc:123/split", data={
@@ -9768,6 +9784,19 @@ class TestBugFixesBatch25Mar6Bugs:
         assert captured[0]["quantity"] == 3.0
         # Child SKU must not be the original parent SKU
         assert captured[0]["sku"] != "RING-001"
+
+
+class TestBuildWorkflowVersioning:
+    def test_build_workflow_sets_electron_version_from_tag(self):
+        workflow = Path('.github/workflows/build.yml').read_text()
+        assert 'Set Electron version from git tag' in workflow
+        assert "data['version'] = os.environ['VERSION']" in workflow
+        assert 'Install Node deps' in workflow
+
+    def test_build_workflow_keeps_versioned_mac_artifact_name(self):
+        workflow = Path('.github/workflows/build.yml').read_text()
+        assert 'Celerp-${VERSION}-arm64.dmg' in workflow
+        assert 'Celerp-mac.dmg' not in workflow
 
 
 class TestInventoryUXFixes:

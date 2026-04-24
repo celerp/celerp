@@ -689,8 +689,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     decimals = unit_cfg["decimals"] if unit_cfg else 0
 
     children = payload.children
-    if len(children) < 2:
-        raise HTTPException(status_code=422, detail="Split requires at least 2 children")
+    if len(children) < 1:
+        raise HTTPException(status_code=422, detail="Split requires at least 1 child")
 
     # Validate each child quantity
     for child in children:

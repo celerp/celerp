@@ -2059,13 +2059,13 @@ async def test_edge_credit_note_exceeds_invoice_total_rejected(client):
 
 
 @pytest.mark.asyncio
-async def test_edge_po_split_mismatch_lengths(client):
-    """Split with only 1 child should be rejected (min 2 children required)."""
+async def test_edge_po_split_accepts_single_child(client):
+    """Split with 1 child should succeed; parent keeps the remainder."""
     token = await _reg(client)
     h = _h(token)
     eid = await _item(client, token, qty=5)
     r = await client.post(f"/items/{eid}/split", headers=h, json={"children": [{"sku": "C1", "quantity": 1.0}]})
-    assert r.status_code == 422
+    assert r.status_code == 200
 
 
 @pytest.mark.asyncio

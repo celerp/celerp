@@ -350,7 +350,7 @@
   "error.session_expired": "Session expired. Please refresh the page and log in again.",
   "error.sku_required": "SKU and Name are required.",
   "error.split_invalid_quantities": "Invalid quantities — use comma-separated numbers, e.g. 3,2,1",
-  "error.split_min_two": "Split requires at least 2 quantities.",
+  "error.split_min_two": "Split requires at least 1 quantity.",
   "error.unauthorized": "Unauthorized",
   "filter.all_time": "All time",
   "filter.last_12m": "Last 12 months",

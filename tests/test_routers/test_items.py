@@ -97,21 +97,20 @@ async def test_items_happy_path(client):
 
 
 @pytest.mark.asyncio
-async def test_items_split_rejects_mismatch_lengths(client):
-    """Split with only 1 child should return 422."""
+async def test_items_split_accepts_single_child(client):
+    """Split with 1 child should succeed; parent keeps the remainder."""
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
     r = await client.post("/items", json={"sku": "SKU1", "name": "Thing", "quantity": 2, "sell_by": "piece"}, headers=headers)
     id = r.json()["id"]
 
-    # Only 1 child — requires at least 2
     r = await client.post(
         f"/items/{id}/split",
         json={"children": [{"sku": "CHILD-1", "quantity": 1.0}]},
         headers=headers,
     )
-    assert r.status_code == 422
+    assert r.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -393,6 +392,36 @@ async def test_barcode_must_be_digits(client):
     r = await client.post("/items", json={"sku": "BC-3", "name": "A", "quantity": 1, "sell_by": "piece", "barcode": "ABC-123"}, headers=h)
     assert r.status_code == 422
     assert "digits" in r.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_split_single_child_keeps_parent_remainder(client):
+    """One split child is valid: parent keeps the remainder quantity."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "PARENT-ONE", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem"}, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [
+            {"sku": "CHILD-ONE", "quantity": 5},
+        ]
+    }, headers=h)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data["children"]) == 1
+
+    r = await client.get(f"/items/{parent_id}", headers=h)
+    assert r.status_code == 200
+    assert float(r.json()["quantity"]) == 15.0
+    assert r.json().get("is_available", True) is True
+
+    child_id = data["children"][0]["id"]
+    r = await client.get(f"/items/{child_id}", headers=h)
+    assert r.status_code == 200
+    assert r.json()["sku"] == "CHILD-ONE"
+    assert float(r.json()["quantity"]) == 5.0
 
 
 @pytest.mark.asyncio

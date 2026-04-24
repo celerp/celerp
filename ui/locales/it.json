@@ -350,7 +350,7 @@
   "error.session_expired": "Sessione scaduta. Aggiorna la pagina e accedi di nuovo.",
   "error.sku_required": "SKU e Nome sono obbligatori.",
   "error.split_invalid_quantities": "Quantità non valide — usa numeri separati da virgola, es. 3,2,1",
-  "error.split_min_two": "La divisione richiede almeno 2 quantità.",
+  "error.split_min_two": "La divisione richiede almeno 1 quantità.",
   "error.unauthorized": "Non autorizzato",
   "filter.all_time": "Tutto il periodo",
   "filter.last_12m": "Ultimi 12 mesi",

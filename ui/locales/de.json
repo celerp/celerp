@@ -350,7 +350,7 @@
   "error.session_expired": "Sitzung abgelaufen. Bitte aktualisieren Sie die Seite und melden Sie sich erneut an.",
   "error.sku_required": "SKU und Name sind erforderlich.",
   "error.split_invalid_quantities": "Ungültige Mengen — verwenden Sie kommagetrennte Zahlen, z. B. 3,2,1",
-  "error.split_min_two": "Zum Aufteilen sind mindestens 2 Mengen erforderlich.",
+  "error.split_min_two": "Zum Aufteilen ist mindestens 1 Menge erforderlich.",
   "error.unauthorized": "Nicht autorisiert",
   "filter.all_time": "Gesamter Zeitraum",
   "filter.last_12m": "Letzte 12 Monate",

@@ -350,7 +350,7 @@
   "error.session_expired": "Sesi berakhir. Silakan segarkan halaman dan masuk lagi.",
   "error.sku_required": "SKU dan Nama wajib diisi.",
   "error.split_invalid_quantities": "Jumlah tidak valid — gunakan angka yang dipisahkan koma, mis. 3,2,1",
-  "error.split_min_two": "Pemisahan membutuhkan minimal 2 kuantitas.",
+  "error.split_min_two": "Pemisahan membutuhkan minimal 1 kuantitas.",
   "error.unauthorized": "Tidak sah",
   "filter.all_time": "Sepanjang waktu",
   "filter.last_12m": "12 bulan terakhir",
