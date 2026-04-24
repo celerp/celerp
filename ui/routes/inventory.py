@@ -836,7 +836,7 @@ def setup_routes(app):
                     f"{_api_base}/api/labels/templates",
                     headers={"Authorization": f"Bearer {token}"},
                 )
-                templates = r.json() if r.status_code == 200 else []
+                templates = r.json().get("items", []) if r.status_code == 200 else []
         except Exception:
             templates = []
         if not templates:
