@@ -396,6 +396,36 @@ async def test_barcode_must_be_digits(client):
 
 
 @pytest.mark.asyncio
+async def test_split_single_child_keeps_parent_remainder(client):
+    """One split child is valid: parent keeps the remainder quantity."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "PARENT-ONE", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem"}, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [
+            {"sku": "CHILD-ONE", "quantity": 5},
+        ]
+    }, headers=h)
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data["children"]) == 1
+
+    r = await client.get(f"/items/{parent_id}", headers=h)
+    assert r.status_code == 200
+    assert float(r.json()["quantity"]) == 15.0
+    assert r.json().get("is_available", True) is True
+
+    child_id = data["children"][0]["id"]
+    r = await client.get(f"/items/{child_id}", headers=h)
+    assert r.status_code == 200
+    assert r.json()["sku"] == "CHILD-ONE"
+    assert float(r.json()["quantity"]) == 5.0
+
+
+@pytest.mark.asyncio
 async def test_split_creates_children(client):
     """Split must create child items and reduce parent quantity."""
     token = await _token(client)
