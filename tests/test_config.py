@@ -16,6 +16,36 @@ from pathlib import Path
 import pytest
 
 # ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _restore_config_module():
+    """Reload celerp.config after each test to undo any module-level mutations.
+
+    Tests in this file call importlib.reload(celerp.config), which replaces the
+    module-level `settings` singleton. Without this fixture, the mutated singleton
+    leaks into subsequent test files and causes failures in tests that depend on
+    the original settings values (e.g. test_main.py gateway_token checks).
+    """
+    import celerp.config as mod
+    original_env = os.environ.get("CELERP_CONFIG")
+    yield
+    # Restore the env var and reload so settings is fresh for the next file.
+    if original_env is None:
+        os.environ.pop("CELERP_CONFIG", None)
+    else:
+        os.environ["CELERP_CONFIG"] = original_env
+    importlib.reload(mod)
+    # Re-bind the `settings` reference in celerp.main (which imports it at
+    # module level) so it points to the freshly reloaded settings object.
+    # We must NOT reload celerp.main itself because that recreates `app`,
+    # breaking any conftest fixtures that captured it at import time.
+    import celerp.main as _main_mod
+    _main_mod.settings = mod.settings
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

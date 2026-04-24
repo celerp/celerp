@@ -425,6 +425,7 @@
   "inv.u21a9_return_to_vendor": "\\u21a9 Return to Vendor",
   "inv.u23f3_expire": "\\u23f3 Expire",
   "inv.u2702_split": "\\u2702 Split",
+  "inv.splitting_disabled_hint": "Splitting is disabled for this item. Enable it in Allow Splitting above.",
   "inv.unknown_document_type": "Unknown document type.",
   "label._add_item": "+ Add Item",
   "label._add_new": "+ Add new",

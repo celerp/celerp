@@ -554,3 +554,47 @@ async def test_split_allowed_when_allow_splitting_true(client):
         "children": [{"sku": "YES-SPLIT-1", "quantity": 3}]
     }, headers=h)
     assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_item_create_default_allow_splitting_is_true(client):
+    """GET /items/{id} must return allow_splitting=True when not explicitly set on creation.
+
+    ItemCreate defaults allow_splitting=True, so new items are always splittable by default.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "LEGACY-SPLIT", "name": "Legacy Item", "quantity": 10, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r = await client.get(f"/items/{parent_id}", headers=h)
+    assert r.status_code == 200
+    assert r.json()["allow_splitting"] is True
+
+
+@pytest.mark.asyncio
+async def test_split_blocked_after_patch_to_false(client):
+    """Split must be blocked after a PATCH sets allow_splitting to False.
+
+    Covers the end-to-end path: item created (default True) -> PATCH to False -> split rejected.
+    This is the scenario where users set Allow Splitting = No via the item detail UI.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "PATCH-NO-SPLIT", "name": "Patchable Item", "quantity": 10, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r = await client.get(f"/items/{parent_id}", headers=h)
+    assert r.json()["allow_splitting"] is True
+
+    r = await client.patch(f"/items/{parent_id}", json={"fields_changed": {"allow_splitting": {"old": True, "new": False}}}, headers=h)
+    assert r.status_code == 200
+
+    r = await client.get(f"/items/{parent_id}", headers=h)
+    assert r.json()["allow_splitting"] is False
+
+    r = await client.post(f"/items/{parent_id}/split", json={"children": [{"sku": "PATCH-NO-SPLIT-1", "quantity": 3}]}, headers=h)
+    assert r.status_code == 422
+    assert "Allow Splitting" in r.json()["detail"]

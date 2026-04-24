@@ -1486,7 +1486,9 @@ a:hover { text-decoration: underline; }
 /* ─── Action cards grid (item detail) ─────────────────────────────── */
 .action-cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 8px; }
 .action-card { border: 1px solid var(--c-border); border-radius: var(--radius); padding: 10px 12px; background: var(--c-bg2); }
+.action-card--disabled { opacity: 0.55; cursor: not-allowed; }
 .action-card-title { display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.action-card-hint { font-size: 11px; color: var(--c-muted, #888); margin: 0; }
 .action-card-row { display: flex; gap: 6px; align-items: center; }
 .action-card-row .form-input--sm { flex: 1; min-width: 0; }
 .form-input--sm { padding: 4px 8px; font-size: 12px; height: 28px; }
