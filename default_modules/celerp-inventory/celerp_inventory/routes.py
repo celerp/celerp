@@ -670,6 +670,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     if parent is None or not parent.state.get("is_available", True):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
+    if not parent.state.get("allow_splitting", True):
+        raise HTTPException(
+            status_code=422,
+            detail="Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting.",
+        )
+
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_sell_by = parent.state.get("sell_by") or "piece"
     parent_category = parent.state.get("category")

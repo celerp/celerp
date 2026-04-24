@@ -1978,6 +1978,7 @@ async def fulfill_doc(
                     "created_at": s.get("created_at") or "",
                     "expires_at": s.get("expires_at"),
                     "cost_price": float(s.get("cost_price") or 0),
+                    "allow_splitting": bool(s.get("allow_splitting", True)),
                 })
 
     pick_result = compute_pick_plan(state.get("line_items", []), available_inv)

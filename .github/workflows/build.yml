@@ -93,10 +93,10 @@ jobs:
         shell: bash
         run: |
           cd electron/dist
-          VERSION="${GITHUB_REF_NAME#v}"
-          for f in *.exe; do [ -f "$f" ] && mv "$f" "Celerp-${VERSION}-Setup.exe"; done
-          for f in *.dmg; do [ -f "$f" ] && mv "$f" "Celerp-${VERSION}-arm64.dmg"; done
-          for f in *.AppImage; do [ -f "$f" ] && mv "$f" "Celerp-${VERSION}.AppImage"; done
+          # Static names so website download links never need updating.
+          for f in *.exe; do [ -f "$f" ] && mv "$f" Celerp-Setup.exe; done
+          for f in *.dmg; do [ -f "$f" ] && mv "$f" Celerp-mac.dmg; done
+          for f in *.AppImage; do [ -f "$f" ] && mv "$f" Celerp.AppImage; done
           ls -la Celerp-* 2>/dev/null || echo "No matching artifacts"
 
       - name: Upload artifacts
@@ -104,9 +104,9 @@ jobs:
         with:
           name: binaries-${{ matrix.os }}
           path: |
-            electron/dist/Celerp-*-Setup.exe
-            electron/dist/Celerp-*-arm64.dmg
-            electron/dist/Celerp-*.AppImage
+            electron/dist/Celerp-Setup.exe
+            electron/dist/Celerp-mac.dmg
+            electron/dist/Celerp.AppImage
           if-no-files-found: warn
 
       - name: Release (tags only)
@@ -114,7 +114,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            electron/dist/Celerp-*-Setup.exe
-            electron/dist/Celerp-*-arm64.dmg
-            electron/dist/Celerp-*.AppImage
+            electron/dist/Celerp-Setup.exe
+            electron/dist/Celerp-mac.dmg
+            electron/dist/Celerp.AppImage
           draft: false

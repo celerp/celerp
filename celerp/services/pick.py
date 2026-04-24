@@ -100,6 +100,7 @@ def compute_pick_plan(
                 continue
 
             cost = float(item.get("cost_price") or 0)
+            allow_split = item.get("allow_splitting", True)
 
             if avail <= needed + 1e-9:
                 # Take entire item
@@ -112,8 +113,8 @@ def compute_pick_plan(
                 ))
                 needed -= avail
                 remaining[eid] = 0
-            else:
-                # Partial — need to split
+            elif allow_split:
+                # Partial pick — split allowed
                 picks.append(PickLine(
                     item_id=eid,
                     sku=item.get("sku", ""),
@@ -124,6 +125,7 @@ def compute_pick_plan(
                 ))
                 remaining[eid] -= needed
                 needed = 0
+            # else: splitting not allowed — skip this item, keep looking for another
 
         if needed > 1e-9:
             unfulfilled.append({"sku": line_sku, "short_qty": round(needed, 6)})
