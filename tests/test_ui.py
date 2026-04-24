@@ -7819,7 +7819,7 @@ class TestInventoryItemDetailFixes:
     @pytest.mark.asyncio
     async def test_item_label_templates_route_source_uses_tpl_not_translation_function(self, ui_client):
         """Label-template route source must dereference tpl entries, not the translation function t."""
-        src = Path("/mnt/storage/agent_storage/celerp/ui/routes/inventory.py").read_text()
+        src = (Path(__file__).parent.parent / "ui" / "routes" / "inventory.py").read_text()
         assert 'tpl.get("name", "Template")' in src
         assert "celerpPrintLabel('{entity_id}','{tpl['id']}')" in src
         assert 't.get("name", "Template")' not in src
