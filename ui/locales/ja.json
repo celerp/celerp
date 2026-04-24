@@ -350,7 +350,7 @@
   "error.session_expired": "セッションの有効期限が切れました。ページを更新して再度ログインしてください。",
   "error.sku_required": "SKU と名前は必須です。",
   "error.split_invalid_quantities": "無効な数量 — カンマ区切りの数値を使用してください。 3,2,1",
-  "error.split_min_two": "分割には少なくとも 2 つの数量が必要です。",
+  "error.split_min_two": "分割には少なくとも 1 つの数量が必要です。",
   "error.unauthorized": "無許可",
   "filter.all_time": "全期間",
   "filter.last_12m": "過去12ヶ月",

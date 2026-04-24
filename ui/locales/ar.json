@@ -350,7 +350,7 @@
   "error.session_expired": "انتهت صلاحية الجلسة. يرجى تحديث الصفحة وتسجيل الدخول مرة أخرى.",
   "error.sku_required": "SKU والاسم مطلوبان.",
   "error.split_invalid_quantities": "كميات غير صالحة — استخدم أرقامًا مفصولة بفواصل، على سبيل المثال. 3,2,1",
-  "error.split_min_two": "يتطلب التقسيم كميتين على الأقل.",
+  "error.split_min_two": "يتطلب التقسيم كمية واحدة على الأقل.",
   "error.unauthorized": "غير مصرح به",
   "filter.all_time": "كل الوقت",
   "filter.last_12m": "آخر 12 شهراً",
