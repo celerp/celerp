@@ -20,6 +20,7 @@ class ItemCreated(BaseModel):
     category: str | None = None
     location_id: str | None = None
     sell_by: str | None = None
+    allow_splitting: bool = True
     weight: float | None = None
     weight_unit: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
@@ -34,6 +35,7 @@ class ItemSnapshot(BaseModel):
     category: str | None = None
     location_id: str | None = None
     sell_by: str | None = None
+    allow_splitting: bool = True
     weight: float | None = None
     weight_unit: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
