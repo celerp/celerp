@@ -166,9 +166,12 @@ _SLOT_CONTRIBUTIONS = [
     {"slot": "nav", "contrib": {"group": "Sales Documents", "key": "lists", "href": "/lists", "label": "Lists", "order": 21, "_module": "celerp-docs"}},
     {"slot": "nav", "contrib": {"group": "Sales", "key": "subscriptions", "href": "/subscriptions", "label": "Subscriptions", "order": 25, "_module": "celerp-subscriptions"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory", "href": "/inventory", "label": "Inventory", "order": 30, "settings_href": "/settings/inventory", "_module": "celerp-inventory"}},
-    {"slot": "nav", "contrib": {"group": "Inventory", "key": "scanning", "href": "/scanning", "label": "Scanning", "order": 31, "_module": "celerp-inventory"}},
+    {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_sold", "href": "/inventory?status=sold", "label": "Sold Inventory", "order": 31, "_module": "celerp-inventory"}},
+    {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_archived", "href": "/inventory?status=archived", "label": "Archived Inventory", "order": 32, "_module": "celerp-inventory"}},
+    {"slot": "nav", "contrib": {"group": "Inventory", "key": "scanning", "href": "/scanning", "label": "Scanning", "order": 33, "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "order": 50, "settings_href": "/settings/accounting", "_module": "celerp-accounting"}},
-    {"slot": "nav", "contrib": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "order": 51, "_module": "celerp-reports"}},
+    {"slot": "nav", "contrib": {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "order": 52, "_module": "celerp-accounting"}},
+    {"slot": "nav", "contrib": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "order": 53, "_module": "celerp-reports"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "manufacturing", "href": "/manufacturing", "label": "Manufacturing", "order": 40, "_module": "celerp-manufacturing"}},
     # --- projection_handler slots ---
     {

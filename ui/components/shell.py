@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from fasthtml.common import *
 
@@ -370,7 +371,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Head(*head_items),
         Body(
             Div(
-                _sidebar(nav_active, lang=lang, role=role),
+                _sidebar(nav_active, lang=lang, role=role, request=request),
                 Div(
                     _topbar(companies or [], lang=lang),
                     _HEALTH_BANNER_HTML,
@@ -497,7 +498,49 @@ _SIDEBAR_JS = """
 """
 
 
-def _sidebar(active: str, lang: str = "en", role: str = "owner") -> FT:
+def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) -> str:
+    """Resolve the exact active sidebar key from the current URL.
+
+    Falls back to the route-provided `active` key when the current request does not
+    match a more specific nav item. This keeps route code DRY while allowing query-
+    and path-sensitive sidebar entries like sold/archived inventory and reconcile.
+    """
+    if request is None:
+        return active
+
+    current_path = request.url.path.rstrip("/") or "/"
+    current_query = request.url.query
+    current_params = parse_qs(current_query, keep_blank_values=True)
+
+    def _matches(item: dict) -> bool:
+        href = str(item.get("href") or "").strip()
+        if not href.startswith("/"):
+            return False
+        parsed = urlparse(href)
+        item_path = parsed.path.rstrip("/") or "/"
+        if current_path != item_path:
+            return False
+        item_params = parse_qs(parsed.query, keep_blank_values=True)
+        for key, values in item_params.items():
+            if current_params.get(key) != values:
+                return False
+        return True
+
+    best_match = None
+    best_score = (-1, -1)
+    for item in all_items:
+        if not _matches(item):
+            continue
+        parsed = urlparse(str(item.get("href") or ""))
+        score = (len(parse_qs(parsed.query, keep_blank_values=True)), len(parsed.path))
+        if score > best_score:
+            best_match = item
+            best_score = score
+
+    return str(best_match.get("key") or active) if best_match else active
+
+
+def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
 
@@ -528,6 +571,7 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner") -> FT:
 
     # Filter by role
     all_items = [item for item in all_items if _allowed(item)]
+    active = _resolve_active_nav_key(active, all_items, request=request)
 
     # Separate top-level (group=None) from grouped items
     top_level = [item for item in all_items if not item.get("group")]

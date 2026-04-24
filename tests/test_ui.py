@@ -2329,6 +2329,50 @@ class TestCollapsibleSidebar:
         active_links += re.findall(r'nav-link--active[^>]*href="([^"]+)"', html)
         assert "/settings/general" not in active_links
 
+    @pytest.mark.asyncio
+    async def test_sidebar_highlights_sold_inventory_entry(self, ui_client):
+        with patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"category_counts": {}, "count_by_status": {"sold": 1}, "item_count": 1})), \
+             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
+             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
+            r = await ui_client.get("/inventory?status=sold", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        assert 'href="/inventory?status=sold"' in html
+        assert 'href="/inventory?status=sold" class="nav-link nav-link--active"' in html
+        assert 'href="/inventory" class="nav-link nav-link--active"' not in html
+
+    @pytest.mark.asyncio
+    async def test_sidebar_highlights_archived_inventory_entry(self, ui_client):
+        with patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"category_counts": {}, "count_by_status": {"archived": 1}, "item_count": 1})), \
+             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
+             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
+             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
+             patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
+            r = await ui_client.get("/inventory?status=archived", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        assert 'href="/inventory?status=archived"' in html
+        assert 'href="/inventory?status=archived" class="nav-link nav-link--active"' in html
+        assert 'href="/inventory" class="nav-link nav-link--active"' not in html
+
+    @pytest.mark.asyncio
+    async def test_sidebar_highlights_reconcile_entry(self, ui_client):
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.get_bank_accounts", new=AsyncMock(return_value={"items": [{"id": "b1", "bank_name": "Kasikorn", "account_number": "1234", "is_active": True}]})),
+        ):
+            r = await ui_client.get("/accounting/reconcile/start", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        assert 'href="/accounting/reconcile/start" class="nav-link nav-link--active"' in html
+        assert 'href="/accounting" class="nav-link nav-link--active"' not in html
+
 
 # ── T3: Date range filters on reports ────────────────────────────────────────
 
