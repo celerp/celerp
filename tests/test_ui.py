@@ -9808,10 +9808,12 @@ class TestBuildWorkflowVersioning:
         assert "data['version'] = os.environ['VERSION']" in workflow
         assert 'Install Node deps' in workflow
 
-    def test_build_workflow_keeps_versioned_mac_artifact_name(self):
+    def test_build_workflow_keeps_static_artifact_names(self):
         workflow = Path('.github/workflows/build.yml').read_text()
-        assert 'Celerp-${VERSION}-arm64.dmg' in workflow
-        assert 'Celerp-mac.dmg' not in workflow
+        assert 'Celerp-mac.dmg' in workflow
+        assert 'Celerp-Setup.exe' in workflow
+        assert 'Celerp.AppImage' in workflow
+        assert 'Celerp-${VERSION}-arm64.dmg' not in workflow
 
 
 class TestInventoryUXFixes:
