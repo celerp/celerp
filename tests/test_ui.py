@@ -3461,6 +3461,21 @@ class TestSprint5ItemActions:
     # ── Merge ─────────────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
+    async def test_split_blocked_by_allow_splitting_false(self, ui_client):
+        """UI split route must surface allow_splitting=No backend error to user."""
+        from ui.api_client import APIError
+        err_detail = "Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting."
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "NS-001", "quantity": 10, "allow_splitting": False})),
+            patch("ui.api_client.split_item", new=AsyncMock(side_effect=APIError(422, err_detail))),
+        ):
+            r = await ui_client.post("/api/items/gc:999/split", data={
+                "parts": "3",
+            }, cookies=_authed())
+        assert r.status_code == 200
+        assert b"Allow Splitting" in r.content
+
+    @pytest.mark.asyncio
     async def test_item_detail_has_merge_section(self, ui_client):
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),

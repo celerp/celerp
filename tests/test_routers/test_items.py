@@ -519,3 +519,34 @@ async def test_patch_sku_to_existing_rejected(client):
     item_b_id = r.json()["id"]
     r = await client.patch(f"/items/{item_b_id}", json={"fields_changed": {"sku": {"new": "ORIG-A"}}}, headers=h)
     assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_split_blocked_when_allow_splitting_false(client):
+    """Split must be rejected (422) when allow_splitting is False."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "NO-SPLIT", "name": "No-Split Item", "quantity": 10, "sell_by": "piece", "allow_splitting": False}, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "NO-SPLIT-1", "quantity": 3}]
+    }, headers=h)
+    assert r.status_code == 422
+    assert "Allow Splitting" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_split_allowed_when_allow_splitting_true(client):
+    """Split must succeed when allow_splitting is explicitly True."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "YES-SPLIT", "name": "Yes-Split Item", "quantity": 10, "sell_by": "piece", "allow_splitting": True}, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "YES-SPLIT-1", "quantity": 3}]
+    }, headers=h)
+    assert r.status_code == 200

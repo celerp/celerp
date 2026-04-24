@@ -553,3 +553,41 @@ async def test_pick_event_schemas_registered():
     ]
     for event_type in expected:
         assert event_type in EVENT_SCHEMA_MAP, f"{event_type} not in EVENT_SCHEMA_MAP"
+
+
+class TestPickAllowSplitting:
+    def test_no_split_when_allow_splitting_false(self):
+        """Items with allow_splitting=False must not be split during picking; mark as unfulfilled if no full item available."""
+        line_items = [{"sku": "NS-A", "quantity": 3}]
+        inventory = [{"entity_id": "e1", "sku": "NS-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 5.0, "allow_splitting": False}]
+        result = compute_pick_plan(line_items, inventory)
+        # The item has qty 10 > 3 needed; cannot split -> unfulfilled
+        assert result.picks == []
+        assert len(result.unfulfilled) == 1
+        assert result.unfulfilled[0]["sku"] == "NS-A"
+
+    def test_full_pick_still_works_when_allow_splitting_false(self):
+        """Full pick (no split needed) must still succeed when allow_splitting=False."""
+        line_items = [{"sku": "NS-B", "quantity": 10}]
+        inventory = [{"entity_id": "e2", "sku": "NS-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 2.0, "allow_splitting": False}]
+        result = compute_pick_plan(line_items, inventory)
+        assert len(result.picks) == 1
+        assert result.picks[0].action == "full"
+        assert result.unfulfilled == []
+
+    def test_split_when_allow_splitting_true(self):
+        """Items with allow_splitting=True must be split as usual."""
+        line_items = [{"sku": "SP-A", "quantity": 3}]
+        inventory = [{"entity_id": "e3", "sku": "SP-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 1.0, "allow_splitting": True}]
+        result = compute_pick_plan(line_items, inventory)
+        assert len(result.picks) == 1
+        assert result.picks[0].action == "split"
+        assert result.unfulfilled == []
+
+    def test_split_when_allow_splitting_missing_defaults_to_allowed(self):
+        """Items without allow_splitting key default to splittable (backward compat for existing data)."""
+        line_items = [{"sku": "SP-B", "quantity": 3}]
+        inventory = [{"entity_id": "e4", "sku": "SP-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 1.0}]
+        result = compute_pick_plan(line_items, inventory)
+        assert len(result.picks) == 1
+        assert result.picks[0].action == "split"
