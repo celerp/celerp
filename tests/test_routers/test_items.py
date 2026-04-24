@@ -97,21 +97,20 @@ async def test_items_happy_path(client):
 
 
 @pytest.mark.asyncio
-async def test_items_split_rejects_mismatch_lengths(client):
-    """Split with only 1 child should return 422."""
+async def test_items_split_accepts_single_child(client):
+    """Split with 1 child should succeed; parent keeps the remainder."""
     token = await _token(client)
     headers = {"Authorization": f"Bearer {token}"}
 
     r = await client.post("/items", json={"sku": "SKU1", "name": "Thing", "quantity": 2, "sell_by": "piece"}, headers=headers)
     id = r.json()["id"]
 
-    # Only 1 child — requires at least 2
     r = await client.post(
         f"/items/{id}/split",
         json={"children": [{"sku": "CHILD-1", "quantity": 1.0}]},
         headers=headers,
     )
-    assert r.status_code == 422
+    assert r.status_code == 200
 
 
 @pytest.mark.asyncio
