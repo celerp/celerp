@@ -862,9 +862,9 @@ function celerpPrintLabel(entityId, templateId) {
 """
         items = [
             A(
-                t.get("name", "Template"),
+                tpl.get("name", "Template"),
                 href="#",
-                onclick=f"celerpPrintLabel('{entity_id}','{t['id']}');this.closest('.print-label-dropdown').classList.remove('open');return false;",
+                onclick=f"celerpPrintLabel('{entity_id}','{tpl['id']}');this.closest('.print-label-dropdown').classList.remove('open');return false;",
                 cls="dropdown-item",
             )
             for tpl in templates

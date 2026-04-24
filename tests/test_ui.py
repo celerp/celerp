@@ -7789,6 +7789,41 @@ _LOCATIONS = [
 
 class TestInventoryItemDetailFixes:
 
+    def test_base_shell_includes_global_htmx_error_surface(self):
+        """Global shell should include a visible surface for HTMX response/send errors."""
+        from fasthtml.common import to_xml, Div
+        from ui.components.shell import base_shell
+        html = to_xml(base_shell(Div("x"), request=None))
+        assert 'id="global-ui-error"' in html
+        assert 'htmx:responseError' in html
+        assert 'htmx:sendError' in html
+
+    @pytest.mark.asyncio
+    async def test_item_detail_renders_print_label_loader_without_crashing(self, ui_client):
+        """GET /inventory/{id} should render print-label dropdown loader without crashing."""
+        item = {**_ITEM_WITH_LOCATION, "sku": "SKU-PRINT-1"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/inventory/item:abc1", cookies=_authed())
+        assert r.status_code == 200
+        assert b'/api/items/item:abc1/label-templates' in r.content
+
+    @pytest.mark.asyncio
+    async def test_item_label_templates_route_source_uses_tpl_not_translation_function(self, ui_client):
+        """Label-template route source must dereference tpl entries, not the translation function t."""
+        src = Path("/mnt/storage/agent_storage/celerp/ui/routes/inventory.py").read_text()
+        assert 'tpl.get("name", "Template")' in src
+        assert "celerpPrintLabel('{entity_id}','{tpl['id']}')" in src
+        assert 't.get("name", "Template")' not in src
+
     @pytest.mark.asyncio
     async def test_location_field_editable_on_item_detail(self, ui_client):
         """GET /inventory/{id}: location_name field rendered as editable (click-to-edit).

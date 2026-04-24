@@ -46,6 +46,16 @@ _LOCALES = _available_locales()
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 _CLIENT_JS = """
+function showGlobalUiError(message) {
+  var box = document.getElementById('global-ui-error');
+  if (!box) {
+    alert(message);
+    return;
+  }
+  box.textContent = message;
+  box.style.display = 'block';
+}
+
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
     /* If any edit cell is open, reload to cancel */
@@ -178,6 +188,17 @@ document.addEventListener('htmx:afterSettle', function(e) {
   root.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
 
+document.body.addEventListener('htmx:responseError', function(e) {
+  var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
+  var status = (e.detail && e.detail.xhr && e.detail.xhr.status) || 'error';
+  showGlobalUiError('Request failed (' + status + '): ' + path);
+});
+
+document.body.addEventListener('htmx:sendError', function(e) {
+  var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
+  showGlobalUiError('Network error while loading: ' + path);
+});
+
 /* ── Image cell drag-and-drop ─────────────────────────────────────────── */
 function initImageDropZones(root) {
   root.querySelectorAll('.cell--droppable').forEach(function(cell) {
@@ -249,6 +270,13 @@ _HEALTH_BANNER_HTML = Div(
     id="sys-health-banner",
     cls="sys-health-banner",
     style="display:none;align-items:center;justify-content:space-between;padding:0.5rem 1rem;font-weight:500;",
+)
+
+_GLOBAL_UI_ERROR_HTML = Div(
+    "",
+    id="global-ui-error",
+    cls="flash flash--error",
+    style="display:none;margin:12px 0;",
 )
 
 _NOTIFICATION_JS = """
@@ -375,6 +403,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
                 Div(
                     _topbar(companies or [], lang=lang),
                     _HEALTH_BANNER_HTML,
+                    _GLOBAL_UI_ERROR_HTML,
                     Main(*content, id="main-content", cls="main-content"),
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
