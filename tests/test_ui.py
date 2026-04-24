@@ -1410,8 +1410,10 @@ class TestInventoryCategoryTabs:
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
         assert b"inventory-content" in r.content
-        # Category tab links must NOT use the stale #data-table target
-        assert b"#data-table" not in r.content
+        # Category tab links must NOT use the stale #data-table as an hx-target
+        # (the string 'data-table' may appear in JS as a DOM id reference, so
+        # we check specifically for the HTMX attribute form)
+        assert b'hx-target="#data-table"' not in r.content
         # Must use /inventory/content as the HTMX endpoint
         assert b"/inventory/content" in r.content
 
