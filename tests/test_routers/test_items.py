@@ -557,10 +557,10 @@ async def test_split_allowed_when_allow_splitting_true(client):
 
 
 @pytest.mark.asyncio
-async def test_flatten_item_defaults_allow_splitting_true_for_legacy_items(client):
-    """GET /items/{id} must return allow_splitting=True for items whose state has no allow_splitting key.
+async def test_item_create_default_allow_splitting_is_true(client):
+    """GET /items/{id} must return allow_splitting=True when not explicitly set on creation.
 
-    Legacy items pre-dating the field must not falsely show as non-splittable.
+    ItemCreate defaults allow_splitting=True, so new items are always splittable by default.
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}

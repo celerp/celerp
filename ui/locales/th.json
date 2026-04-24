@@ -425,7 +425,7 @@
   "inv.u21a9_return_to_vendor": "\\u21a9 กลับไปยังผู้ขาย",
   "inv.u23f3_expire": "\\u23f3 หมดอายุ",
   "inv.u2702_split": "\\u2702 แยก",
-  "inv.splitting_disabled_hint": "Splitting is disabled for this item. Enable it in Allow Splitting above.",
+  "inv.splitting_disabled_hint": "การแยกสินค้าถูกปิดใช้งาน เปิดใช้งานได้ที่ อนุญาตการแยก ด้านบน",
   "inv.unknown_document_type": "ประเภทเอกสารที่ไม่รู้จัก",
   "label._add_item": "+ เพิ่มรายการ",
   "label._add_new": "+ เพิ่มใหม่",

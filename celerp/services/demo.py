@@ -1260,6 +1260,7 @@ async def seed_demo_items(
             "weight_unit": data.get("weight_unit"),
             "description": data.get("description", ""),
             "barcode": data.get("barcode"),
+            "allow_splitting": data.get("allow_splitting", True),
             "attributes": item_attrs,
         }
         # Strip None values to keep event data clean
