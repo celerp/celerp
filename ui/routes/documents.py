@@ -3560,7 +3560,41 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             cls="csv-import-hidden",
         )
 
+        # AI dropzone — only on draft bills/expenses when celerp-ai is loaded
+        from celerp.modules.slots import get as _get_slots_ai
+        _ai_loaded = any(c.get("key") == "ai" for c in _get_slots_ai("nav"))
+        _ai_dropzone: list = []
+        if doc_type in ("bill", "expense") and _ai_loaded:
+            _ai_dropzone = [
+                Div(
+                    Div("✨", cls="ai-dropzone__icon"),
+                    Div("Drop PDF or receipt image here to auto-fill this bill", cls="ai-dropzone__text"),
+                    Div(t("doc.powered_by_celerp_ai_operator"), cls="ai-dropzone__sub"),
+                    cls="ai-dropzone",
+                    data_ai_dropzone="1",
+                    onclick="celerpAiDropzoneClick()",
+                    title="Auto-fill line items from receipts or invoices",
+                ),
+                Script("""
+(function() {
+  window.celerpAiDropzoneClick = function() {
+    var el = document.querySelector('[data-ai-dropzone]');
+    if (el) {
+      el.innerHTML = '✨ <a href="/ai" style="color:inherit;font-weight:600;">Unlock AI auto-fill</a> — Requires Celerp Cloud ($29/mo)';
+      el.style.cursor = 'default'; el.onclick = null;
+    }
+  };
+  var dz = document.querySelector('[data-ai-dropzone]');
+  if (!dz) return;
+  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('ai-dropzone--over'); });
+  dz.addEventListener('dragleave', function() { dz.classList.remove('ai-dropzone--over'); });
+  dz.addEventListener('drop', function(e) { e.preventDefault(); dz.classList.remove('ai-dropzone--over'); celerpAiDropzoneClick(); });
+})();
+"""),
+            ]
+
         lines_section = Div(
+            *_ai_dropzone,
             _csv_import_el,
             Template(_li_empty_row(), id="line-row-tpl"),
             Div(

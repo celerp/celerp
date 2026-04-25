@@ -69,7 +69,7 @@ def _infer_namespace(filepath: str) -> str:
     if "manufacturing" in p: return "mfg"
     if "inventory" in p or "scanning" in p: return "inv"
     if "report" in p: return "rpt"
-    if "document" in p or "docs" in p or "_ui_doc" in p: return "doc"
+    if "document" in p or "docs" in p: return "doc"
     if "contact" in p or "crm" in p: return "label"
     if "subscription" in p: return "label"
     if "csv_import" in p or "import" in p: return "msg"

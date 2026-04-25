@@ -10305,7 +10305,7 @@ class TestAIPage:
         from celerp.modules import slots
         slots.register("nav", {"key": "ai", "href": "/ai", "_module": "celerp-ai"})
         try:
-            from celerp_docs._ui_documents import _doc_detail
+            from ui.routes.documents import _doc_detail
             from fasthtml.common import to_xml
 
             draft_bill = {"entity_id": "doc:1", "doc_type": "bill", "status": "draft",
@@ -10335,7 +10335,7 @@ class TestAIPage:
         from celerp.modules import slots
         slots.clear()
         try:
-            from celerp_docs._ui_documents import _doc_detail
+            from ui.routes.documents import _doc_detail
             from fasthtml.common import to_xml
             draft_bill = {"entity_id": "doc:1", "doc_type": "bill", "status": "draft",
                           "line_items": [], "contact_id": "c:1"}
