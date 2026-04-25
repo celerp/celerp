@@ -9537,16 +9537,20 @@ class TestProFormaLabel:
             status_label = "Pro Forma" if dt == "invoice" and "draft" == "draft" else "draft".replace("_", " ").title()
             assert status_label == "Draft", f"{dt} should show Draft"
 
-    def test_invoice_status_cards_exclude_proforma(self):
-        """Invoice status cards show All Issued, Awaiting Payment, Overdue, Paid, Void - no Draft/Pro Forma card."""
+    def test_invoice_status_cards_include_proforma(self):
+        """Invoice status cards show Pro Forma, All Issued, Awaiting Payment, Overdue, Paid, Void.
+
+        Pro Forma card is shown alongside All Issued so users can see the draft count at a glance.
+        The Drafts tab also shows Pro Forma for navigation; both coexist intentionally.
+        """
         from ui.routes.documents import _doc_status_cards
         from fasthtml.common import to_xml
         html = to_xml(_doc_status_cards([], "", doc_type="invoice"))
+        assert "Pro Forma" in html  # draft count visible in card bar
         assert "All Issued" in html
         assert "Awaiting Payment" in html
         assert "Overdue" in html
-        assert ">Draft<" not in html
-        assert "Pro Forma" not in html  # draft invoices live in the drafts tab, not status cards
+        assert ">Draft<" not in html  # raw "Draft" label not shown (it's "Pro Forma")
 
     def test_drafts_tab_label_for_invoice(self):
         """Drafts tab shows 'Pro Forma' for invoice doc type."""
