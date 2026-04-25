@@ -1143,5 +1143,6 @@
   "settings.passwords_do_not_match": "Mật khẩu không khớp",
   "settings.password_min_length": "Mật khẩu phải có ít nhất 8 ký tự",
   "settings.password_changed": "Đổi mật khẩu thành công",
-  "btn.change_password": "Đổi mật khẩu"
+  "btn.change_password": "Đổi mật khẩu",
+  "status.all_issued": "Tất cả đã phát hành"
 }

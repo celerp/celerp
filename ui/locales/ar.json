@@ -1143,5 +1143,6 @@
   "settings.passwords_do_not_match": "كلمتا المرور غير متطابقتين",
   "settings.password_min_length": "يجب أن تتكون كلمة المرور من 8 أحرف على الأقل",
   "settings.password_changed": "تم تغيير كلمة المرور بنجاح",
-  "btn.change_password": "تغيير كلمة المرور"
+  "btn.change_password": "تغيير كلمة المرور",
+  "status.all_issued": "جميع الفواتير الصادرة"
 }

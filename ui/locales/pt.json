@@ -1143,5 +1143,6 @@
   "settings.passwords_do_not_match": "As senhas não coincidem",
   "settings.password_min_length": "A senha deve ter pelo menos 8 caracteres",
   "settings.password_changed": "Senha alterada com sucesso",
-  "btn.change_password": "Alterar senha"
+  "btn.change_password": "Alterar senha",
+  "status.all_issued": "Todas emitidas"
 }

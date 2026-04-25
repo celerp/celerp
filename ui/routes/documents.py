@@ -295,6 +295,8 @@ def setup_routes(app):
         q = request.query_params.get("q", "")
         doc_type = request.query_params.get("type", "") or request.query_params.get("doc_type", "")
         status = request.query_params.get("status", "")
+        status_in = request.query_params.get("status_in", "")
+        overdue_only = request.query_params.get("overdue_only", "") in ("1", "true")
         view = request.query_params.get("view", "")  # "drafts" = drafts-only mode
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "date")
@@ -332,7 +334,7 @@ def setup_routes(app):
         effective_status = status
         if is_drafts_view:
             effective_status = "draft"
-        elif not status:
+        elif not status and not status_in:
             effective_status = "exclude_draft"  # backend must support this param
 
         try:
@@ -341,7 +343,13 @@ def setup_routes(app):
                 params["q"] = q
             if doc_type:
                 params["doc_type"] = doc_type
-            if effective_status == "exclude_draft":
+            if is_drafts_view:
+                params["status"] = "draft"
+            elif status_in:
+                params["status_in"] = status_in
+                if overdue_only:
+                    params["overdue_only"] = "1"
+            elif effective_status == "exclude_draft":
                 params["exclude_status"] = "draft"
             elif effective_status:
                 params["status"] = effective_status
@@ -392,7 +400,7 @@ def setup_routes(app):
                 _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
             ]),
             _summary_bar(summary, doc_type, currency, lang),
-            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang),
+            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only),
             _doc_table(
                 docs,
                 sort=sort,
@@ -4439,22 +4447,65 @@ def _doc_history_section(ledger: list[dict]) -> FT:
     )
 
 
-def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en") -> FT:
+def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False) -> FT:
     """Aggregate counts/totals per status and render status_cards.
 
     Card definitions are doc-type-aware: only statuses valid for the
     document lifecycle are shown.
+
+    Invoice counters use virtual statuses backed by composite DB status sets:
+      - all_issued   = every non-draft, non-void invoice
+      - awaiting_payment = final + sent + awaiting_payment (not yet fully paid)
+      - overdue      = awaiting_payment + due_date < today
+      - paid         = paid + partial
+    These are resolved by the summary endpoint and rendered with the correct
+    filter URLs (?status_in=... or ?overdue_only=1).
     """
-    # Per-doc-type card definitions: (status_key, label, color)
+    _sm = summary or {}
+    base_url = f"/docs?type={doc_type}" if doc_type else "/docs"
+
+    # Determine which virtual card key is currently active for invoice cards
+    _ALL_ISSUED_STATUSES = "final,sent,awaiting_payment,paid,partial,overdue"
+    _AWAITING_STATUSES   = "final,sent,awaiting_payment"
+    _PAID_STATUSES       = "paid,partial"
+    _active_key: str
+    if status_in == _ALL_ISSUED_STATUSES:
+        _active_key = "all_issued"
+    elif status_in == _AWAITING_STATUSES and overdue_only:
+        _active_key = "overdue"
+    elif status_in == _AWAITING_STATUSES:
+        _active_key = "awaiting_payment"
+    elif status_in == _PAID_STATUSES:
+        _active_key = "paid"
+    else:
+        _active_key = active_status or ""  # fallback: exact status match (sent, void, etc.)
+
+    # ------------------------------------------------------------------
+    # Invoice: custom card set using virtual/aggregate counts from summary
+    # ------------------------------------------------------------------
+    if doc_type == "invoice":
+        _cbs = _sm.get("count_by_status") or {}
+        all_issued = _sm.get("all_issued_count", _sm.get("non_void_count", 0))
+        awaiting   = _sm.get("awaiting_payment_count", 0)
+        overdue    = _sm.get("overdue_count", 0)
+        paid_cnt   = _cbs.get("paid", 0) + _cbs.get("partial", 0)
+        sent_cnt   = _cbs.get("sent", 0)
+        void_cnt   = _cbs.get("void", 0)
+
+        invoice_cards = [
+            {"label": t("status.all_issued", lang),       "count": all_issued, "total": 0.0, "status": "all_issued",       "color": "blue",   "_url": f"{base_url}&status_in={_ALL_ISSUED_STATUSES}", "_active_key": "all_issued"},
+            {"label": t("doc.sent", lang),                "count": sent_cnt,   "total": 0.0, "status": "sent",              "color": "blue"},
+            {"label": t("status.awaiting_payment", lang), "count": awaiting,   "total": 0.0, "status": "awaiting_payment",  "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES}",   "_active_key": "awaiting_payment"},
+            {"label": t("status.overdue", lang),          "count": overdue,    "total": 0.0, "status": "overdue",           "color": "red",    "_url": f"{base_url}&status_in={_AWAITING_STATUSES}&overdue_only=1", "_active_key": "overdue"},
+            {"label": t("label.paid", lang),              "count": paid_cnt,   "total": 0.0, "status": "paid",              "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",        "_active_key": "paid"},
+            {"label": t("btn.void", lang),                "count": void_cnt,   "total": 0.0, "status": "void",              "color": "gray"},
+        ]
+        return status_cards(invoice_cards, base_url, _active_key or None, currency=currency)
+
+    # ------------------------------------------------------------------
+    # All other doc types: simple per-status cards
+    # ------------------------------------------------------------------
     _CARDS_BY_TYPE: dict[str, list[tuple[str, str, str]]] = {
-        "invoice": [
-            ("draft", t("status.pro_forma", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
-            ("paid", t("label.paid", lang), "green"),
-            ("overdue", t("status.overdue", lang), "red"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
         "purchase_order": [
             ("draft", t("status.purchase_order", lang), "gray"),
             ("sent", t("doc.sent", lang), "blue"),
@@ -4505,7 +4556,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
     card_defs = _CARDS_BY_TYPE.get(doc_type, _DEFAULT_CARDS)
 
     # Use API-level counts from summary when available (full dataset, not just current page)
-    api_counts = (summary or {}).get("count_by_status", {})
+    api_counts = (_sm).get("count_by_status", {})
     counts: dict[str, int] = {s: api_counts.get(s, 0) for s, _, _ in card_defs}
     totals: dict[str, float] = {s: 0.0 for s, _, _ in card_defs}
     for d in docs:
@@ -4522,7 +4573,6 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         {"label": label, "count": counts[s], "total": totals[s], "status": s, "color": color}
         for s, label, color in card_defs
     ]
-    base_url = f"/docs?type={doc_type}" if doc_type else "/docs"
     return status_cards(cards, base_url, active_status or None, currency=currency)
 
 
