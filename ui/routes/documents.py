@@ -85,7 +85,7 @@ def _doc_section_label(doc_type: str) -> str:
 
 def _render_fulfill_section(doc: dict):
     """Fulfill button - shown when celerp-inventory is installed and doc is fulfillable."""
-    from celerp.modules.loaded_modules import loaded_modules
+    from celerp.modules.loader import loaded_modules
     from celerp_docs.doc_constants import FULFILLABLE_STATUSES
     if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
         return ""
