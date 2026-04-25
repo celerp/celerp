@@ -494,3 +494,61 @@ async def test_list_docs_overdue_only_filter(client, session):
     today = date.today().isoformat()
     for item in r.json().get("items", []):
         assert item.get("due_date", "9999") < today, f"Overdue filter returned non-overdue doc: {item}"
+
+
+@pytest.mark.anyio
+async def test_amount_outstanding_recalculated_after_line_items_added(client, session):
+    """Regression: adding line items after creation must update amount_outstanding.
+
+    Previously, a new doc with no line items got amount_outstanding=0 (total=0).
+    After adding line items the total increased but outstanding stayed 0, causing
+    the payment section to show 'Paid in Full' for an unpaid invoice.
+    """
+    token = await _register(client)
+    # Create invoice with a single line item so we can inspect state
+    doc_id = await _create_invoice(client, token, subtotal=500, tax=0, total=500)
+    r = await client.get(f"/docs/{doc_id}", headers=_h(token))
+    assert r.status_code == 200
+    state = r.json()
+    # outstanding must equal total when no payment has been made
+    assert float(state["amount_outstanding"]) == pytest.approx(float(state["total"]), abs=0.01), (
+        f"amount_outstanding {state['amount_outstanding']} != total {state['total']} on fresh invoice"
+    )
+    assert float(state["amount_outstanding"]) > 0, "outstanding must be > 0 for an unpaid invoice"
+
+
+@pytest.mark.anyio
+async def test_amount_outstanding_after_patch_line_items(client, session):
+    """Regression: patching line_items (or total) must keep amount_outstanding in sync."""
+    token = await _register(client)
+    doc_id = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
+
+    # Patch total upward (simulates adding a line item via the standard fields_changed format)
+    r = await client.patch(
+        f"/docs/{doc_id}",
+        headers=_h(token),
+        json={"fields_changed": {"total": {"old": 100, "new": 300}, "subtotal": {"old": 100, "new": 300}}},
+    )
+    assert r.status_code == 200
+
+    r = await client.get(f"/docs/{doc_id}", headers=_h(token))
+    state = r.json()
+    # outstanding must track the new total (no payment made)
+    assert float(state["amount_outstanding"]) == pytest.approx(300.0, abs=0.01), (
+        f"outstanding {state['amount_outstanding']} should be 300 after total patched to 300"
+    )
+
+
+@pytest.mark.anyio
+async def test_invoice_status_cards_include_proforma(client, session):
+    """Regression: Pro-forma card must appear in invoice status card set alongside All Issued."""
+    from ui.routes.documents import _doc_status_cards
+    summary = {
+        "count_by_status": {"draft": 3, "final": 5, "sent": 2, "paid": 1, "void": 1},
+        "all_issued_count": 8,
+        "awaiting_payment_count": 7,
+        "overdue_count": 0,
+    }
+    html = str(_doc_status_cards([], "", summary, "USD", doc_type="invoice", lang="en"))
+    assert "Pro" in html or "pro" in html.lower(), "Pro-forma card missing from invoice status cards"
+    assert "All Issued" in html or "all_issued" in html.lower(), "All Issued card missing from invoice status cards"
