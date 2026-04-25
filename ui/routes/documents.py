@@ -4485,6 +4485,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
     # ------------------------------------------------------------------
     if doc_type == "invoice":
         _cbs = _sm.get("count_by_status") or {}
+        draft_cnt  = _cbs.get("draft", 0)
         all_issued = _sm.get("all_issued_count", _sm.get("non_void_count", 0))
         awaiting   = _sm.get("awaiting_payment_count", 0)
         overdue    = _sm.get("overdue_count", 0)
@@ -4492,8 +4493,14 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         sent_cnt   = _cbs.get("sent", 0)
         void_cnt   = _cbs.get("void", 0)
 
+        # Active key for "pro_forma" card: the main drafts-tab handles navigation but
+        # we also need a card so users can see the draft count at a glance.
+        if active_status == "draft":
+            _active_key = "draft"
+
         invoice_cards = [
-            {"label": t("status.all_issued", lang),       "count": all_issued, "total": 0.0, "status": "all_issued",       "color": "blue",   "_url": f"{base_url}&status_in={_ALL_ISSUED_STATUSES}", "_active_key": "all_issued"},
+            {"label": t("status.pro_forma", lang),        "count": draft_cnt,  "total": 0.0, "status": "draft",             "color": "gray"},
+            {"label": t("status.all_issued", lang),       "count": all_issued, "total": 0.0, "status": "all_issued",        "color": "blue",   "_url": f"{base_url}&status_in={_ALL_ISSUED_STATUSES}", "_active_key": "all_issued"},
             {"label": t("doc.sent", lang),                "count": sent_cnt,   "total": 0.0, "status": "sent",              "color": "blue"},
             {"label": t("status.awaiting_payment", lang), "count": awaiting,   "total": 0.0, "status": "awaiting_payment",  "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES}",   "_active_key": "awaiting_payment"},
             {"label": t("status.overdue", lang),          "count": overdue,    "total": 0.0, "status": "overdue",           "color": "red",    "_url": f"{base_url}&status_in={_AWAITING_STATUSES}&overdue_only=1", "_active_key": "overdue"},

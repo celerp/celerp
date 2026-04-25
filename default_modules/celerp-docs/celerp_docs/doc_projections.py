@@ -37,6 +37,12 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "doc.updated":
         for field, change in data["fields_changed"].items():
             current[field] = change.get("new")
+        # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
+        # based on how much has already been paid - never let outstanding go negative.
+        if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):
+            paid = float(current.get("amount_paid", 0) or 0)
+            total = float(current.get("total", 0) or 0)
+            current["amount_outstanding"] = max(0.0, total - paid)
     elif event_type == "doc.linked":
         current.setdefault("linked", [])
         current["linked"].append({"entity_id": data["entity_id"], "entity_type": data["entity_type"]})
