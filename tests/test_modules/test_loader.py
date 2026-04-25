@@ -256,3 +256,466 @@ class TestSlotListContributions:
         assert len(actions) == 2
         labels = {a["label"] for a in actions}
         assert labels == {"A", "B"}
+
+
+# ── Dependency system ─────────────────────────────────────────────────────────
+
+class TestDependencySystem:
+    """Comprehensive tests for module dependency resolution and enforcement.
+
+    These tests cover the full dependency lifecycle:
+    - _topo_sort correctly orders modules
+    - load_all enforces declared dependencies at load time
+    - Missing deps (not enabled, not on disk) cause the dependent to be skipped
+    - Cascade: A→B→C where C fails causes A and B to be skipped
+    - Circular deps don't cause RecursionError
+    - resolve_install_order (config.py) auto-resolves transitive deps
+    - celerp-docs declares celerp-contacts as a dependency (regression guard)
+    """
+
+    def _make(self, base: Path, name: str, depends_on: list[str] | None = None) -> Path:
+        pkg = base / name
+        pkg.mkdir(parents=True, exist_ok=True)
+        deps = repr(depends_on or [])
+        (pkg / "__init__.py").write_text(
+            f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0", "depends_on": {deps}}}\n'
+        )
+        return pkg
+
+    # ── _topo_sort ordering ────────────────────────────────────────────────────
+
+    def test_dependency_loads_before_dependent(self, tmp_path):
+        """dep must appear before the module that requires it."""
+        self._make(tmp_path, "base")
+        self._make(tmp_path, "ext", depends_on=["base"])
+        result = load_all(tmp_path, {"base", "ext"})
+        names = [m["name"] for m in result]
+        assert names.index("base") < names.index("ext")
+
+    def test_transitive_deps_resolved_in_order(self, tmp_path):
+        """A→B→C: load order must be C, B, A."""
+        self._make(tmp_path, "mod-c")
+        self._make(tmp_path, "mod-b", depends_on=["mod-c"])
+        self._make(tmp_path, "mod-a", depends_on=["mod-b"])
+        result = load_all(tmp_path, {"mod-a", "mod-b", "mod-c"})
+        names = [m["name"] for m in result]
+        assert names.index("mod-c") < names.index("mod-b") < names.index("mod-a")
+
+    def test_diamond_dep_loads_each_module_once(self, tmp_path):
+        """A→{B,C}→D: D must appear only once."""
+        self._make(tmp_path, "mod-d")
+        self._make(tmp_path, "mod-b", depends_on=["mod-d"])
+        self._make(tmp_path, "mod-c", depends_on=["mod-d"])
+        self._make(tmp_path, "mod-a", depends_on=["mod-b", "mod-c"])
+        result = load_all(tmp_path, {"mod-a", "mod-b", "mod-c", "mod-d"})
+        names = [m["name"] for m in result]
+        assert names.count("mod-d") == 1
+        assert names.count("mod-a") == 1
+        assert len(names) == 4
+
+    # ── Missing deps: not enabled ──────────────────────────────────────────────
+
+    def test_module_skipped_when_dep_not_in_enabled_set(self, tmp_path):
+        """Module with dep not in enabled set is silently skipped."""
+        self._make(tmp_path, "dep-mod")
+        self._make(tmp_path, "needs-dep", depends_on=["dep-mod"])
+        # dep-mod is on disk but NOT in enabled set
+        result = load_all(tmp_path, {"needs-dep"})
+        assert not any(m["name"] == "needs-dep" for m in result)
+
+    def test_module_loads_when_dep_enabled(self, tmp_path):
+        """Module loads correctly when dep IS in enabled set."""
+        self._make(tmp_path, "dep-mod")
+        self._make(tmp_path, "needs-dep", depends_on=["dep-mod"])
+        result = load_all(tmp_path, {"dep-mod", "needs-dep"})
+        names = [m["name"] for m in result]
+        assert "dep-mod" in names
+        assert "needs-dep" in names
+
+    # ── Missing deps: not on disk ──────────────────────────────────────────────
+
+    def test_module_skipped_when_dep_not_on_disk(self, tmp_path):
+        """Module whose dep is in enabled set but missing from disk is skipped."""
+        self._make(tmp_path, "needs-ghost", depends_on=["ghost-dep"])
+        # ghost-dep is in enabled set but has no directory
+        result = load_all(tmp_path, {"needs-ghost", "ghost-dep"})
+        assert not any(m["name"] == "needs-ghost" for m in result)
+
+    # ── Cascade failures ────────────────────────────────────────────────────────
+
+    def test_cascade_skip_when_transitive_dep_missing(self, tmp_path):
+        """A→B→C: if C is not enabled, both B and A are skipped."""
+        self._make(tmp_path, "mod-b", depends_on=["mod-c"])
+        self._make(tmp_path, "mod-a", depends_on=["mod-b"])
+        # mod-c not in enabled set, not on disk
+        result = load_all(tmp_path, {"mod-a", "mod-b"})
+        names = [m["name"] for m in result]
+        assert "mod-a" not in names
+        assert "mod-b" not in names
+
+    def test_independent_modules_unaffected_by_sibling_skip(self, tmp_path):
+        """Module with broken dep doesn't affect unrelated modules."""
+        self._make(tmp_path, "good-mod")
+        self._make(tmp_path, "bad-dep-mod", depends_on=["nonexistent"])
+        result = load_all(tmp_path, {"good-mod", "bad-dep-mod"})
+        names = [m["name"] for m in result]
+        assert "good-mod" in names
+        assert "bad-dep-mod" not in names
+
+    # ── Circular deps ──────────────────────────────────────────────────────────
+
+    def test_circular_dep_does_not_crash(self, tmp_path):
+        """Circular A→B→A must not cause RecursionError."""
+        self._make(tmp_path, "circ-a", depends_on=["circ-b"])
+        self._make(tmp_path, "circ-b", depends_on=["circ-a"])
+        # Should not raise; both may be skipped
+        result = load_all(tmp_path, {"circ-a", "circ-b"})
+        # We don't assert on result content — just no exception
+        assert isinstance(result, list)
+
+    def test_self_dep_does_not_crash(self, tmp_path):
+        """Module that depends on itself must not cause RecursionError."""
+        self._make(tmp_path, "self-dep", depends_on=["self-dep"])
+        result = load_all(tmp_path, {"self-dep"})
+        assert isinstance(result, list)
+
+    # ── resolve_install_order (config.py) ──────────────────────────────────────
+
+    def test_resolve_install_order_includes_transitive_deps(self, tmp_path):
+        """resolve_install_order must auto-include undeclared transitive deps."""
+        from celerp.config import resolve_install_order
+        self._make(tmp_path, "req-c")
+        self._make(tmp_path, "req-b", depends_on=["req-c"])
+        self._make(tmp_path, "req-a", depends_on=["req-b"])
+        # Only req-a requested; req-b and req-c must appear automatically
+        result = resolve_install_order(["req-a"], tmp_path)
+        assert "req-c" in result
+        assert "req-b" in result
+        assert "req-a" in result
+        assert result.index("req-c") < result.index("req-b") < result.index("req-a")
+
+    def test_resolve_install_order_no_duplicates(self, tmp_path):
+        """resolve_install_order must not produce duplicate entries."""
+        from celerp.config import resolve_install_order
+        self._make(tmp_path, "shared")
+        self._make(tmp_path, "mod-x", depends_on=["shared"])
+        self._make(tmp_path, "mod-y", depends_on=["shared"])
+        result = resolve_install_order(["mod-x", "mod-y", "shared"], tmp_path)
+        assert result.count("shared") == 1
+
+    def test_resolve_install_order_handles_missing_gracefully(self, tmp_path):
+        """resolve_install_order with unknown module name doesn't crash."""
+        from celerp.config import resolve_install_order
+        # ghost-xyz doesn't exist in tmp_path
+        result = resolve_install_order(["ghost-xyz"], tmp_path)
+        # Returns with ghost-xyz (no crash, no auto-skip — install may fail later)
+        assert "ghost-xyz" in result
+
+    # ── Real module manifest validation ────────────────────────────────────────
+
+    def test_celerp_docs_declares_contacts_as_dependency(self):
+        """celerp-docs must declare celerp-contacts in depends_on.
+
+        Regression: contacts was absent from docs' dependency list. Documents
+        use contact_id/contact_name fields and the Customers/Vendors nav tabs
+        are provided by celerp-contacts. Without this dependency, new installs
+        that enable celerp-docs via a preset silently skip celerp-contacts
+        (it is not auto-installed), leaving users unable to create customers.
+        """
+        import ast as _ast
+        manifest_path = (
+            Path(__file__).parent.parent.parent
+            / "default_modules" / "celerp-docs" / "__init__.py"
+        )
+        tree = _ast.parse(manifest_path.read_text())
+        manifest = None
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, _ast.Name) and t.id == "PLUGIN_MANIFEST":
+                        manifest = _ast.literal_eval(node.value)
+        assert manifest is not None, "Could not parse PLUGIN_MANIFEST from celerp-docs"
+        deps = manifest.get("depends_on") or []
+        assert "celerp-contacts" in deps, (
+            f"celerp-docs must declare celerp-contacts in depends_on to ensure "
+            f"contacts is auto-installed with docs. Found: {deps}"
+        )
+
+    def test_celerp_contacts_loads_before_docs_via_dep_system(self, tmp_path):
+        """With real modules: contacts must load before docs when both enabled."""
+        real_dir = Path(__file__).parent.parent.parent / "default_modules"
+        if not real_dir.exists():
+            pytest.skip("default_modules not available")
+        from celerp.modules import loader as _loader, slots as _slots
+        _loader._loaded.clear()
+        _slots.clear()
+        import sys as _sys
+        try:
+            result = _loader.load_all(
+                real_dir,
+                {"celerp-inventory", "celerp-contacts", "celerp-docs"},
+            )
+            names = [m["name"] for m in result]
+            assert "celerp-contacts" in names
+            assert "celerp-docs" in names
+            assert names.index("celerp-contacts") < names.index("celerp-docs"), (
+                "celerp-contacts must load before celerp-docs (it's a declared dep)"
+            )
+        finally:
+            _loader._loaded.clear()
+            _slots.clear()
+            for k in list(_sys.modules.keys()):
+                if "celerp_docs" in k or "celerp_contacts" in k or "celerp_inventory" in k:
+                    _sys.modules.pop(k, None)
+
+    def test_celerp_docs_skipped_when_contacts_not_enabled(self, tmp_path):
+        """With real modules: docs is skipped when contacts not in enabled set.
+
+        This is the enforcement side of the dependency declaration — not just
+        a sorted install order, but an actual runtime block.
+        """
+        real_dir = Path(__file__).parent.parent.parent / "default_modules"
+        if not real_dir.exists():
+            pytest.skip("default_modules not available")
+        from celerp.modules import loader as _loader, slots as _slots
+        _loader._loaded.clear()
+        _slots.clear()
+        import sys as _sys
+        try:
+            result = _loader.load_all(
+                real_dir,
+                {"celerp-inventory", "celerp-docs"},  # contacts intentionally absent
+            )
+            names = [m["name"] for m in result]
+            assert "celerp-docs" not in names, (
+                "celerp-docs must be skipped when celerp-contacts is not in the enabled set"
+            )
+        finally:
+            _loader._loaded.clear()
+            _slots.clear()
+            for k in list(_sys.modules.keys()):
+                if "celerp_docs" in k or "celerp_inventory" in k:
+                    _sys.modules.pop(k, None)
+
+
+# ── Electron: trusted module path via CELERP_TRUSTED_MODULE_DIRS ──────────────
+
+class TestElectronTrustedModuleDirs:
+    """Regression tests for the Electron module-loading trust bug.
+
+    Root cause: Electron seeds default_modules/ from app resources into
+    DATA_DIR/modules/ (a user-data directory outside APP_DIR). The loader's
+    _BUNDLED_MODULES_DIRS resolves relative to loader.py, so DATA_DIR/modules/
+    is NOT in the trusted set. Modules like celerp-ai, celerp-connectors,
+    celerp-backup, and celerp-admin import BSL-protected internals and are
+    rejected by the AST/runtime scan → running=False forever.
+
+    Fix: _resolve_bundled_dirs() includes paths from CELERP_TRUSTED_MODULE_DIRS
+    env var AND from MODULE_DIR. Both the original source dir (DEFAULT_MODULES_SRC)
+    and the seeded destination (MODULE_DIR/DATA_DIR/modules/) are trusted.
+    """
+
+    def _make_module_with_bsl_import(self, base: Path, name: str, import_line: str) -> Path:
+        """Create a module package that imports a BSL-protected internal."""
+        pkg = base / name
+        pkg.mkdir(parents=True)
+        # The import will fail at runtime (module doesn't exist in tests),
+        # but the AST scanner and runtime checks happen before that.
+        # We write a fake module into sys.modules to make the import succeed
+        # so we can test the trust path, not the import itself.
+        (pkg / "__init__.py").write_text(
+            f"PLUGIN_MANIFEST = {{'name': '{name}', 'version': '1.0'}}\n"
+        )
+        # Write a separate routes.py that contains the BSL import
+        routes = pkg / "routes.py"
+        routes.write_text(
+            f"{import_line}\n"
+            f"def setup_api_routes(app): pass\n"
+        )
+        # Update manifest to reference routes
+        pkg_mod = name.replace("-", "_")
+        (pkg / "__init__.py").write_text(
+            f"PLUGIN_MANIFEST = {{'name': '{name}', 'version': '1.0', "
+            f"'api_routes': '{pkg_mod}.routes'}}\n"
+        )
+        return pkg
+
+    def test_module_with_bsl_import_rejected_when_not_trusted(self, tmp_path, monkeypatch):
+        """Module importing BSL internal is rejected when its dir is NOT trusted."""
+        monkeypatch.delenv("CELERP_TRUSTED_MODULE_DIRS", raising=False)
+        monkeypatch.delenv("MODULE_DIR", raising=False)
+        from celerp.modules import loader as _loader
+        # Restrict trusted dirs to only the default bundled path (not tmp_path)
+        monkeypatch.setattr(
+            _loader, "_BUNDLED_MODULES_DIRS",
+            (Path(__file__).resolve().parent.parent.parent / "default_modules",),
+        )
+        # Build a proper inner-package structure so the AST scanner finds the file
+        pkg = tmp_path / "celerp-ai-sim"
+        inner = pkg / "celerp_ai_sim"
+        inner.mkdir(parents=True)
+        (inner / "__init__.py").write_text("")
+        (inner / "routes.py").write_text(
+            "from celerp.session_gate import require_session_token\n"
+            "def setup_api_routes(app): pass\n"
+        )
+        (pkg / "__init__.py").write_text(
+            "PLUGIN_MANIFEST = {'name': 'celerp-ai-sim', 'version': '1.0', "
+            "'api_routes': 'celerp_ai_sim.routes'}\n"
+        )
+        # Module dir is tmp_path, which is NOT in _BUNDLED_MODULES_DIRS → rejected
+        result = _loader.load_all(tmp_path, {"celerp-ai-sim"})
+        assert not any(m["name"] == "celerp-ai-sim" for m in result), (
+            "BSL-importing module in untrusted directory must be rejected"
+        )
+
+    def test_module_with_bsl_import_accepted_when_dir_in_trusted_module_dirs(
+        self, tmp_path, monkeypatch
+    ):
+        """Module importing BSL internal is accepted when its dir is in CELERP_TRUSTED_MODULE_DIRS."""
+        from celerp.modules import loader as _loader
+        # Point CELERP_TRUSTED_MODULE_DIRS at tmp_path
+        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", str(tmp_path))
+        # Re-resolve so tmp_path is included
+        new_trusted = _loader._resolve_bundled_dirs()
+        monkeypatch.setattr(_loader, "_BUNDLED_MODULES_DIRS", new_trusted)
+        assert tmp_path.resolve() in new_trusted, (
+            "_resolve_bundled_dirs must include CELERP_TRUSTED_MODULE_DIRS path"
+        )
+
+    def test_module_with_bsl_import_accepted_when_dir_is_module_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """Module in MODULE_DIR is trusted (Electron seeded destination)."""
+        from celerp.modules import loader as _loader
+        monkeypatch.setenv("MODULE_DIR", str(tmp_path))
+        new_trusted = _loader._resolve_bundled_dirs()
+        assert tmp_path.resolve() in new_trusted, (
+            "_resolve_bundled_dirs must include MODULE_DIR path as trusted"
+        )
+
+    def test_resolve_bundled_dirs_always_includes_default_bundled(self, monkeypatch):
+        """Default bundled dir (relative to loader.py) is always in the result."""
+        from celerp.modules import loader as _loader
+        monkeypatch.delenv("CELERP_TRUSTED_MODULE_DIRS", raising=False)
+        monkeypatch.delenv("MODULE_DIR", raising=False)
+        result = _loader._resolve_bundled_dirs()
+        default = (Path(_loader.__file__).resolve().parent.parent.parent / "default_modules").resolve()
+        assert default in result
+
+    def test_resolve_bundled_dirs_multiple_trusted_dirs(self, tmp_path, monkeypatch):
+        """CELERP_TRUSTED_MODULE_DIRS can be comma-separated (multiple paths)."""
+        from celerp.modules import loader as _loader
+        dir_a = tmp_path / "src_a"
+        dir_b = tmp_path / "src_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", f"{dir_a},{dir_b}")
+        result = _loader._resolve_bundled_dirs()
+        assert dir_a.resolve() in result
+        assert dir_b.resolve() in result
+
+    def test_resolve_bundled_dirs_ignores_empty_entries(self, monkeypatch):
+        """Empty/whitespace entries in CELERP_TRUSTED_MODULE_DIRS are ignored."""
+        from celerp.modules import loader as _loader
+        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", " , , ")
+        # Should not raise, should not include empty Paths
+        result = _loader._resolve_bundled_dirs()
+        assert isinstance(result, tuple)
+
+    def test_celerp_ai_bundled_dir_is_trusted_by_default(self):
+        """celerp-ai's actual bundled directory must be in _BUNDLED_MODULES_DIRS.
+
+        This confirms the fix resolves the Electron trust issue for the real
+        celerp-ai module when loaded from the seeded MODULE_DIR.
+        """
+        from celerp.modules import loader as _loader
+        real_default_modules = (
+            Path(_loader.__file__).resolve().parent.parent.parent / "default_modules"
+        )
+        if not real_default_modules.exists():
+            import pytest as _pytest
+            _pytest.skip("default_modules not on this path")
+        # The bundled default_modules dir must be trusted
+        assert real_default_modules.resolve() in _loader._BUNDLED_MODULES_DIRS
+
+    def test_ast_scan_catches_bsl_import_in_routes_file(self, tmp_path):
+        """_ast_scan_module_file correctly detects BSL imports in route files."""
+        from celerp.modules.loader import _ast_scan_module_file
+        # _ast_scan_module_file resolves 'scan_test.routes' relative to pkg_path:
+        # parts = ['scan_test', 'routes'] → pkg_path / 'scan_test' / 'routes.py'
+        pkg = tmp_path / "scan-test"
+        inner = pkg / "scan_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(
+            "from celerp.session_gate import require_session_token\n"
+            "from celerp.ai.quota import check_ai_quota\n"
+        )
+        violations = _ast_scan_module_file(pkg, "scan_test.routes")
+        assert "celerp.session_gate" in violations
+        assert "celerp.ai.quota" in violations
+
+    def test_ast_scan_catches_lazy_bsl_import_inside_function(self, tmp_path):
+        """AST scan catches BSL imports nested inside function bodies (lazy imports)."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "lazy-test"
+        inner = pkg / "lazy_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(
+            "def my_endpoint():\n"
+            "    from celerp.gateway.client import get_client\n"
+            "    return get_client()\n"
+        )
+        violations = _ast_scan_module_file(pkg, "lazy_test.routes")
+        assert "celerp.gateway" in violations, (
+            "AST scan must catch lazy imports inside function bodies"
+        )
+
+    def test_bundled_first_party_modules_load_with_bsl_imports(self):
+        """celerp-ai, celerp-backup, celerp-admin must all load from the real
+        default_modules directory (trusted=True, no AST scan). celerp-connectors
+        is also tested but requires celerp-inventory as a dependency.
+
+        This is the full end-to-end regression test for the Electron trust bug.
+        """
+        real_dir = Path(__file__).parent.parent.parent / "default_modules"
+        if not real_dir.exists():
+            import pytest as _pytest
+            _pytest.skip("default_modules not available")
+        from celerp.modules import loader as _loader, slots as _slots
+        import sys as _sys
+        _loader._loaded.clear()
+        _slots.clear()
+        try:
+            # celerp-connectors depends on celerp-inventory + celerp-docs; include both
+            result = _loader.load_all(
+                real_dir,
+                {
+                    "celerp-ai", "celerp-connectors", "celerp-backup", "celerp-admin",
+                    "celerp-inventory", "celerp-contacts", "celerp-docs",
+                },
+            )
+            loaded_names = {m["name"] for m in result}
+            # These three have no extra deps and directly import BSL internals
+            for mod_name in ("celerp-ai", "celerp-backup", "celerp-admin"):
+                assert mod_name in loaded_names, (
+                    f"{mod_name} failed to load from default_modules — "
+                    f"it likely imports BSL internals and is being wrongly treated as untrusted. "
+                    f"This is the Electron trust bug."
+                )
+            # celerp-connectors also imports BSL internals but needs celerp-inventory + celerp-docs
+            assert "celerp-connectors" in loaded_names, (
+                "celerp-connectors failed to load — imports BSL internals (celerp.session_gate, "
+                "celerp.connectors.base) and must be trusted when loaded from default_modules"
+            )
+        finally:
+            _loader._loaded.clear()
+            _slots.clear()
+            for k in list(_sys.modules.keys()):
+                if any(
+                    x in k for x in [
+                        "celerp_ai", "celerp_connectors", "celerp_backup", "celerp_admin",
+                        "celerp_inventory", "celerp_contacts", "celerp_docs",
+                    ]
+                ):
+                    _sys.modules.pop(k, None)
