@@ -11,7 +11,7 @@ PLUGIN_MANIFEST = {
     "author": "Celerp",
     "api_routes": "celerp_docs.api_setup",
     "ui_routes": "celerp_docs.ui_routes",
-    "depends_on": ["celerp-inventory"],
+    "depends_on": ["celerp-inventory", "celerp-contacts"],
     "slots": {
         "nav": [
             {"group": "Sales Documents", "key": "invoices", "href": "/docs?type=invoice", "label": "Invoices", "label_key": "nav.invoices", "order": 20, "settings_href": "/settings/sales", "min_role": "operator"},

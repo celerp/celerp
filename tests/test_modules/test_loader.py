@@ -256,3 +256,243 @@ class TestSlotListContributions:
         assert len(actions) == 2
         labels = {a["label"] for a in actions}
         assert labels == {"A", "B"}
+
+
+# ── Dependency system ─────────────────────────────────────────────────────────
+
+class TestDependencySystem:
+    """Comprehensive tests for module dependency resolution and enforcement.
+
+    These tests cover the full dependency lifecycle:
+    - _topo_sort correctly orders modules
+    - load_all enforces declared dependencies at load time
+    - Missing deps (not enabled, not on disk) cause the dependent to be skipped
+    - Cascade: A→B→C where C fails causes A and B to be skipped
+    - Circular deps don't cause RecursionError
+    - resolve_install_order (config.py) auto-resolves transitive deps
+    - celerp-docs declares celerp-contacts as a dependency (regression guard)
+    """
+
+    def _make(self, base: Path, name: str, depends_on: list[str] | None = None) -> Path:
+        pkg = base / name
+        pkg.mkdir(parents=True, exist_ok=True)
+        deps = repr(depends_on or [])
+        (pkg / "__init__.py").write_text(
+            f'PLUGIN_MANIFEST = {{"name": "{name}", "version": "1.0", "depends_on": {deps}}}\n'
+        )
+        return pkg
+
+    # ── _topo_sort ordering ────────────────────────────────────────────────────
+
+    def test_dependency_loads_before_dependent(self, tmp_path):
+        """dep must appear before the module that requires it."""
+        self._make(tmp_path, "base")
+        self._make(tmp_path, "ext", depends_on=["base"])
+        result = load_all(tmp_path, {"base", "ext"})
+        names = [m["name"] for m in result]
+        assert names.index("base") < names.index("ext")
+
+    def test_transitive_deps_resolved_in_order(self, tmp_path):
+        """A→B→C: load order must be C, B, A."""
+        self._make(tmp_path, "mod-c")
+        self._make(tmp_path, "mod-b", depends_on=["mod-c"])
+        self._make(tmp_path, "mod-a", depends_on=["mod-b"])
+        result = load_all(tmp_path, {"mod-a", "mod-b", "mod-c"})
+        names = [m["name"] for m in result]
+        assert names.index("mod-c") < names.index("mod-b") < names.index("mod-a")
+
+    def test_diamond_dep_loads_each_module_once(self, tmp_path):
+        """A→{B,C}→D: D must appear only once."""
+        self._make(tmp_path, "mod-d")
+        self._make(tmp_path, "mod-b", depends_on=["mod-d"])
+        self._make(tmp_path, "mod-c", depends_on=["mod-d"])
+        self._make(tmp_path, "mod-a", depends_on=["mod-b", "mod-c"])
+        result = load_all(tmp_path, {"mod-a", "mod-b", "mod-c", "mod-d"})
+        names = [m["name"] for m in result]
+        assert names.count("mod-d") == 1
+        assert names.count("mod-a") == 1
+        assert len(names) == 4
+
+    # ── Missing deps: not enabled ──────────────────────────────────────────────
+
+    def test_module_skipped_when_dep_not_in_enabled_set(self, tmp_path):
+        """Module with dep not in enabled set is silently skipped."""
+        self._make(tmp_path, "dep-mod")
+        self._make(tmp_path, "needs-dep", depends_on=["dep-mod"])
+        # dep-mod is on disk but NOT in enabled set
+        result = load_all(tmp_path, {"needs-dep"})
+        assert not any(m["name"] == "needs-dep" for m in result)
+
+    def test_module_loads_when_dep_enabled(self, tmp_path):
+        """Module loads correctly when dep IS in enabled set."""
+        self._make(tmp_path, "dep-mod")
+        self._make(tmp_path, "needs-dep", depends_on=["dep-mod"])
+        result = load_all(tmp_path, {"dep-mod", "needs-dep"})
+        names = [m["name"] for m in result]
+        assert "dep-mod" in names
+        assert "needs-dep" in names
+
+    # ── Missing deps: not on disk ──────────────────────────────────────────────
+
+    def test_module_skipped_when_dep_not_on_disk(self, tmp_path):
+        """Module whose dep is in enabled set but missing from disk is skipped."""
+        self._make(tmp_path, "needs-ghost", depends_on=["ghost-dep"])
+        # ghost-dep is in enabled set but has no directory
+        result = load_all(tmp_path, {"needs-ghost", "ghost-dep"})
+        assert not any(m["name"] == "needs-ghost" for m in result)
+
+    # ── Cascade failures ────────────────────────────────────────────────────────
+
+    def test_cascade_skip_when_transitive_dep_missing(self, tmp_path):
+        """A→B→C: if C is not enabled, both B and A are skipped."""
+        self._make(tmp_path, "mod-b", depends_on=["mod-c"])
+        self._make(tmp_path, "mod-a", depends_on=["mod-b"])
+        # mod-c not in enabled set, not on disk
+        result = load_all(tmp_path, {"mod-a", "mod-b"})
+        names = [m["name"] for m in result]
+        assert "mod-a" not in names
+        assert "mod-b" not in names
+
+    def test_independent_modules_unaffected_by_sibling_skip(self, tmp_path):
+        """Module with broken dep doesn't affect unrelated modules."""
+        self._make(tmp_path, "good-mod")
+        self._make(tmp_path, "bad-dep-mod", depends_on=["nonexistent"])
+        result = load_all(tmp_path, {"good-mod", "bad-dep-mod"})
+        names = [m["name"] for m in result]
+        assert "good-mod" in names
+        assert "bad-dep-mod" not in names
+
+    # ── Circular deps ──────────────────────────────────────────────────────────
+
+    def test_circular_dep_does_not_crash(self, tmp_path):
+        """Circular A→B→A must not cause RecursionError."""
+        self._make(tmp_path, "circ-a", depends_on=["circ-b"])
+        self._make(tmp_path, "circ-b", depends_on=["circ-a"])
+        # Should not raise; both may be skipped
+        result = load_all(tmp_path, {"circ-a", "circ-b"})
+        # We don't assert on result content — just no exception
+        assert isinstance(result, list)
+
+    def test_self_dep_does_not_crash(self, tmp_path):
+        """Module that depends on itself must not cause RecursionError."""
+        self._make(tmp_path, "self-dep", depends_on=["self-dep"])
+        result = load_all(tmp_path, {"self-dep"})
+        assert isinstance(result, list)
+
+    # ── resolve_install_order (config.py) ──────────────────────────────────────
+
+    def test_resolve_install_order_includes_transitive_deps(self, tmp_path):
+        """resolve_install_order must auto-include undeclared transitive deps."""
+        from celerp.config import resolve_install_order
+        self._make(tmp_path, "req-c")
+        self._make(tmp_path, "req-b", depends_on=["req-c"])
+        self._make(tmp_path, "req-a", depends_on=["req-b"])
+        # Only req-a requested; req-b and req-c must appear automatically
+        result = resolve_install_order(["req-a"], tmp_path)
+        assert "req-c" in result
+        assert "req-b" in result
+        assert "req-a" in result
+        assert result.index("req-c") < result.index("req-b") < result.index("req-a")
+
+    def test_resolve_install_order_no_duplicates(self, tmp_path):
+        """resolve_install_order must not produce duplicate entries."""
+        from celerp.config import resolve_install_order
+        self._make(tmp_path, "shared")
+        self._make(tmp_path, "mod-x", depends_on=["shared"])
+        self._make(tmp_path, "mod-y", depends_on=["shared"])
+        result = resolve_install_order(["mod-x", "mod-y", "shared"], tmp_path)
+        assert result.count("shared") == 1
+
+    def test_resolve_install_order_handles_missing_gracefully(self, tmp_path):
+        """resolve_install_order with unknown module name doesn't crash."""
+        from celerp.config import resolve_install_order
+        # ghost-xyz doesn't exist in tmp_path
+        result = resolve_install_order(["ghost-xyz"], tmp_path)
+        # Returns with ghost-xyz (no crash, no auto-skip — install may fail later)
+        assert "ghost-xyz" in result
+
+    # ── Real module manifest validation ────────────────────────────────────────
+
+    def test_celerp_docs_declares_contacts_as_dependency(self):
+        """celerp-docs must declare celerp-contacts in depends_on.
+
+        Regression: contacts was absent from docs' dependency list. Documents
+        use contact_id/contact_name fields and the Customers/Vendors nav tabs
+        are provided by celerp-contacts. Without this dependency, new installs
+        that enable celerp-docs via a preset silently skip celerp-contacts
+        (it is not auto-installed), leaving users unable to create customers.
+        """
+        import ast as _ast
+        manifest_path = (
+            Path(__file__).parent.parent.parent
+            / "default_modules" / "celerp-docs" / "__init__.py"
+        )
+        tree = _ast.parse(manifest_path.read_text())
+        manifest = None
+        for node in _ast.walk(tree):
+            if isinstance(node, _ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, _ast.Name) and t.id == "PLUGIN_MANIFEST":
+                        manifest = _ast.literal_eval(node.value)
+        assert manifest is not None, "Could not parse PLUGIN_MANIFEST from celerp-docs"
+        deps = manifest.get("depends_on") or []
+        assert "celerp-contacts" in deps, (
+            f"celerp-docs must declare celerp-contacts in depends_on to ensure "
+            f"contacts is auto-installed with docs. Found: {deps}"
+        )
+
+    def test_celerp_contacts_loads_before_docs_via_dep_system(self, tmp_path):
+        """With real modules: contacts must load before docs when both enabled."""
+        real_dir = Path(__file__).parent.parent.parent / "default_modules"
+        if not real_dir.exists():
+            pytest.skip("default_modules not available")
+        from celerp.modules import loader as _loader, slots as _slots
+        _loader._loaded.clear()
+        _slots.clear()
+        import sys as _sys
+        try:
+            result = _loader.load_all(
+                real_dir,
+                {"celerp-inventory", "celerp-contacts", "celerp-docs"},
+            )
+            names = [m["name"] for m in result]
+            assert "celerp-contacts" in names
+            assert "celerp-docs" in names
+            assert names.index("celerp-contacts") < names.index("celerp-docs"), (
+                "celerp-contacts must load before celerp-docs (it's a declared dep)"
+            )
+        finally:
+            _loader._loaded.clear()
+            _slots.clear()
+            for k in list(_sys.modules.keys()):
+                if "celerp_docs" in k or "celerp_contacts" in k or "celerp_inventory" in k:
+                    _sys.modules.pop(k, None)
+
+    def test_celerp_docs_skipped_when_contacts_not_enabled(self, tmp_path):
+        """With real modules: docs is skipped when contacts not in enabled set.
+
+        This is the enforcement side of the dependency declaration — not just
+        a sorted install order, but an actual runtime block.
+        """
+        real_dir = Path(__file__).parent.parent.parent / "default_modules"
+        if not real_dir.exists():
+            pytest.skip("default_modules not available")
+        from celerp.modules import loader as _loader, slots as _slots
+        _loader._loaded.clear()
+        _slots.clear()
+        import sys as _sys
+        try:
+            result = _loader.load_all(
+                real_dir,
+                {"celerp-inventory", "celerp-docs"},  # contacts intentionally absent
+            )
+            names = [m["name"] for m in result]
+            assert "celerp-docs" not in names, (
+                "celerp-docs must be skipped when celerp-contacts is not in the enabled set"
+            )
+        finally:
+            _loader._loaded.clear()
+            _slots.clear()
+            for k in list(_sys.modules.keys()):
+                if "celerp_docs" in k or "celerp_inventory" in k:
+                    _sys.modules.pop(k, None)
