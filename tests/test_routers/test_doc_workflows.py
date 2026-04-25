@@ -294,7 +294,7 @@ async def test_edit_ref_id_blocked_on_non_draft(client, session):
         json={"fields_changed": {"ref_id": {"old": None, "new": "NOPE"}}},
     )
     assert r.status_code == 409
-    assert "non-draft" in r.json()["detail"].lower()
+    assert "draft" in r.json()["detail"].lower()
 
 
 @pytest.mark.anyio
@@ -362,3 +362,72 @@ async def test_new_doc_uses_configured_pattern(client, session):
     assert r.status_code == 200
     doc = await client.get(f"/docs/{r.json()['id']}", headers=_h(token))
     assert doc.json()["ref_id"] == "PF-0001"
+
+
+# ---------------------------------------------------------------------------
+# issue_date defaults + editability
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_new_doc_gets_issue_date_today(client, session):
+    """Creating a new doc sets issue_date to today (ISO format)."""
+    from datetime import date
+    token = await _register(client)
+    r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice"})
+    assert r.status_code == 200
+    doc_id = r.json()["id"]
+    doc = await client.get(f"/docs/{doc_id}", headers=_h(token))
+    assert doc.status_code == 200
+    assert doc.json().get("issue_date") == date.today().isoformat(), (
+        f"Expected issue_date={date.today().isoformat()!r}, got {doc.json().get('issue_date')!r}"
+    )
+
+
+@pytest.mark.anyio
+async def test_finalized_doc_rejects_all_edits_with_clear_message(client, session):
+    """Patching any field on a finalized doc returns 409 with a message explaining how to proceed."""
+    from datetime import date, timedelta
+    token = await _register(client)
+    doc_id = await _create_invoice(client, token)
+    # Finalize it
+    r = await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
+    assert r.status_code == 200
+    # Any PATCH - including date fields - must return 409 with actionable message
+    new_date = (date.today() + timedelta(days=1)).isoformat()
+    r = await client.patch(f"/docs/{doc_id}", headers=_h(token),
+                           json={"fields_changed": {"issue_date": {"old": date.today().isoformat(), "new": new_date}}})
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert "draft" in detail.lower(), f"Error must mention 'Draft': {detail!r}"
+    assert "revert" in detail.lower(), f"Error must tell user to revert: {detail!r}"
+
+
+@pytest.mark.anyio
+async def test_non_editable_field_rejected_on_issued_doc(client, session):
+    """Patching any field on an issued doc returns 409 with an actionable message."""
+    token = await _register(client)
+    doc_id = await _create_invoice(client, token)
+    # Finalize (issue) it
+    r = await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
+    assert r.status_code == 200
+    # Attempt to change subtotal
+    r = await client.patch(f"/docs/{doc_id}", headers=_h(token),
+                           json={"fields_changed": {"subtotal": {"old": 100, "new": 999}}})
+    assert r.status_code == 409
+    assert "draft" in r.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_list_docs_date_filter_uses_issue_date(client, session):
+    """list_docs date filter includes docs whose issue_date falls in range."""
+    from datetime import date
+    token = await _register(client)
+    # Create a doc (issue_date = today)
+    r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice"})
+    assert r.status_code == 200
+    today = date.today().isoformat()
+    # List with date_from=today - doc must appear
+    r = await client.get(f"/docs?doc_type=invoice&date_from={today}", headers=_h(token))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] >= 1, f"Expected at least 1 doc with date_from={today}, got 0"
