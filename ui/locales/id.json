@@ -1143,5 +1143,6 @@
   "settings.passwords_do_not_match": "Kata sandi tidak cocok",
   "settings.password_min_length": "Kata sandi minimal 8 karakter",
   "settings.password_changed": "Kata sandi berhasil diubah",
-  "btn.change_password": "Ganti Kata Sandi"
+  "btn.change_password": "Ganti Kata Sandi",
+  "status.all_issued": "Semua Diterbitkan"
 }

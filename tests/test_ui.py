@@ -9537,13 +9537,16 @@ class TestProFormaLabel:
             status_label = "Pro Forma" if dt == "invoice" and "draft" == "draft" else "draft".replace("_", " ").title()
             assert status_label == "Draft", f"{dt} should show Draft"
 
-    def test_invoice_status_card_shows_proforma(self):
-        """Invoice status cards use 'Pro Forma' label for draft."""
+    def test_invoice_status_cards_exclude_proforma(self):
+        """Invoice status cards show All Issued, Awaiting Payment, Overdue, Paid, Void - no Draft/Pro Forma card."""
         from ui.routes.documents import _doc_status_cards
         from fasthtml.common import to_xml
         html = to_xml(_doc_status_cards([], "", doc_type="invoice"))
-        assert "Pro Forma" in html
-        assert ">Draft<" not in html  # invoice cards should NOT say Draft
+        assert "All Issued" in html
+        assert "Awaiting Payment" in html
+        assert "Overdue" in html
+        assert ">Draft<" not in html
+        assert "Pro Forma" not in html  # draft invoices live in the drafts tab, not status cards
 
     def test_drafts_tab_label_for_invoice(self):
         """Drafts tab shows 'Pro Forma' for invoice doc type."""

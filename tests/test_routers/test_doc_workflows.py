@@ -431,3 +431,66 @@ async def test_list_docs_date_filter_uses_issue_date(client, session):
     assert r.status_code == 200
     data = r.json()
     assert data["total"] >= 1, f"Expected at least 1 doc with date_from={today}, got 0"
+
+
+# ---------------------------------------------------------------------------
+# Invoice counter / status card correctness
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_summary_awaiting_payment_counts_finalized(client, session):
+    """Summary awaiting_payment_count includes finalized (non-draft, non-paid) invoices."""
+    token = await _register(client)
+    # Create and finalize an invoice
+    doc_id = await _create_invoice(client, token)
+    await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
+    r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["awaiting_payment_count"] >= 1, f"Expected awaiting_payment_count>=1, got {data}"
+    assert data["all_issued_count"] >= 1
+
+
+@pytest.mark.anyio
+async def test_summary_excludes_draft_from_all_issued(client, session):
+    """Summary all_issued_count does not count draft invoices."""
+    token = await _register(client)
+    # Create but do NOT finalize
+    await client.post("/docs", headers=_h(token), json={"doc_type": "invoice"})
+    r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["all_issued_count"] == 0, f"Draft must not count as issued, got {data}"
+    assert data["awaiting_payment_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_list_docs_status_in_filter(client, session):
+    """status_in param returns docs matching any of the listed statuses."""
+    token = await _register(client)
+    doc_id = await _create_invoice(client, token)
+    # Finalize -> status becomes 'final'
+    await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
+    r = await client.get("/docs?doc_type=invoice&status_in=final,sent,awaiting_payment", headers=_h(token))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["total"] >= 1
+    for item in data["items"]:
+        assert item.get("status") in ("final", "sent", "awaiting_payment"), f"Unexpected status: {item.get('status')}"
+
+
+@pytest.mark.anyio
+async def test_list_docs_overdue_only_filter(client, session):
+    """overdue_only=1 returns only docs with due_date before today."""
+    from datetime import date, timedelta
+    token = await _register(client)
+    doc_id = await _create_invoice(client, token)
+    # Finalize
+    await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
+    # No overdue docs yet (no due_date)
+    r = await client.get("/docs?doc_type=invoice&status_in=final,sent,awaiting_payment&overdue_only=1", headers=_h(token))
+    assert r.status_code == 200
+    # All results must have due_date < today
+    today = date.today().isoformat()
+    for item in r.json().get("items", []):
+        assert item.get("due_date", "9999") < today, f"Overdue filter returned non-overdue doc: {item}"

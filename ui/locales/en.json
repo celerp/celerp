@@ -976,6 +976,7 @@
   "status.final": "Final",
   "status.issued": "Issued",
   "status.overdue": "Overdue",
+  "status.all_issued": "All Issued",
   "status.pro_forma": "Pro Forma",
   "status.purchase_order": "Purchase Order",
   "th.account": "Account",

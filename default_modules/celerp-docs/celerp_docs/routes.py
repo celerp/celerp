@@ -163,6 +163,7 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str) -> Project
 async def list_docs(
     doc_type: str | None = None,
     status: str | None = None,
+    status_in: str | None = None,
     exclude_status: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
@@ -170,15 +171,24 @@ async def list_docs(
     contact_id: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    overdue_only: bool = False,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from datetime import date as _date_cls
+    today = _date_cls.today().isoformat()
     rows = (await session.execute(select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
     out = [r.state | {"id": r.entity_id} for r in rows]
     if doc_type:
         out = [x for x in out if x.get("doc_type") == doc_type]
     if status:
         out = [x for x in out if x.get("status") == status]
+    if status_in:
+        _allowed = set(status_in.split(","))
+        out = [x for x in out if x.get("status") in _allowed]
+    if overdue_only:
+        # Overdue = awaiting payment + due_date before today
+        out = [x for x in out if x.get("due_date") and x["due_date"] < today]
     if exclude_status:
         out = [x for x in out if x.get("status") != exclude_status]
     if date_from:
@@ -206,10 +216,14 @@ async def get_doc_summary(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from datetime import date as _date_cls
+    today = _date_cls.today().isoformat()
     rows = (await session.execute(select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
     ar_gross = ar_paid = ar_outstanding = 0.0
     count_by_status: dict[str, int] = {}
     invoice_count = 0
+    awaiting_payment_count = 0  # final + sent + awaiting_payment (unpaid invoices)
+    overdue_count = 0           # awaiting_payment + due_date < today
     for row in rows:
         state = row.state
         # Filter by doc_type if specified
@@ -224,13 +238,23 @@ async def get_doc_summary(
             ar_gross += float(state.get("total", 0) or 0)
             ar_paid += float(state.get("amount_paid", 0) or 0)
             ar_outstanding += float(state.get("amount_outstanding", 0) or 0)
+            # Awaiting payment = finalized but not yet fully paid
+            if st in ("final", "sent", "awaiting_payment"):
+                awaiting_payment_count += 1
+                due = state.get("due_date") or ""
+                if due and due < today:
+                    overdue_count += 1
     draft_count = count_by_status.get("draft", 0)
     total_rows = sum(count_by_status.values())
     live_count = total_rows - draft_count
+    all_issued_count = live_count - count_by_status.get("void", 0)
     return {
         "total_count": live_count,
         "draft_count": draft_count,
         "non_void_count": sum(v for k, v in count_by_status.items() if k not in ("void", "draft")),
+        "all_issued_count": all_issued_count,
+        "awaiting_payment_count": awaiting_payment_count,
+        "overdue_count": overdue_count,
         "ar_total": ar_gross,
         "ar_paid": ar_paid,
         "ar_outstanding": ar_outstanding,

@@ -82,14 +82,22 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
 
     cards: [{"label": "Paid", "count": 489, "total": 2990000.0, "status": "paid", "color": "green"}, ...]
     Clicking a card navigates to base_url?status=<status>.
+    Cards may include a "_url" key to override the generated href entirely.
+    Cards may include "_active_key" to override which value is compared against active_status.
     "All" card (status=None/"") is always first and clears the filter.
     total_override: if provided, the "All" card shows this count instead of summing cards.
     """
-    def _card(label: str, count: int, total: float | None, status: str | None, color: str) -> FT:
-        is_active = (active_status or "") == (status or "")
+    def _card(label: str, count: int, total: float | None, status: str | None, color: str, href_override: str | None = None, active_key: str | None = None) -> FT:
+        _cmp = active_key if active_key is not None else (status or "")
+        is_active = (active_status or "") == _cmp
         color_cls = color if color in _STATUS_CARD_COLORS else "gray"
         cls = f"status-card status-card--{color_cls}" + (" status-card--active" if is_active else "")
-        href = base_url if not status else f"{base_url}{'&' if '?' in base_url else '?'}status={status}"
+        if href_override:
+            href = href_override
+        elif not status:
+            href = base_url
+        else:
+            href = f"{base_url}{'&' if '?' in base_url else '?'}status={status}"
         inner = [
             Span(label, cls="status-card-label"),
             Span(str(count), cls="status-card-count"),
@@ -108,6 +116,8 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
             c.get("total"),
             c.get("status"),
             c.get("color", "gray"),
+            href_override=c.get("_url"),
+            active_key=c.get("_active_key"),
         ))
     return Div(*els, cls="status-cards")
 
