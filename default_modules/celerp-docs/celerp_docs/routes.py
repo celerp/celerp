@@ -7,7 +7,7 @@ import asyncio
 import csv
 import io
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, date as _date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -182,16 +182,16 @@ async def list_docs(
     if exclude_status:
         out = [x for x in out if x.get("status") != exclude_status]
     if date_from:
-        out = [x for x in out if (x.get("created_at") or x.get("date") or "")[:10] >= date_from]
+        out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] >= date_from]
     if date_to:
-        out = [x for x in out if (x.get("created_at") or x.get("date") or "")[:10] <= date_to]
+        out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] <= date_to]
     if contact_id:
         out = [x for x in out if x.get("contact_id") == contact_id]
     if q:
         ql = q.lower()
         out = [x for x in out if ql in str(x.get("doc_number") or x.get("ref") or "").lower()
                or ql in str(x.get("contact_name") or x.get("contact_id") or "").lower()]
-    out.sort(key=lambda x: x.get("created_at") or x.get("date") or "", reverse=True)
+    out.sort(key=lambda x: x.get("issue_date") or x.get("created_at") or x.get("date") or "", reverse=True)
     total = len(out)
     if offset:
         out = out[offset:]
@@ -333,6 +333,8 @@ async def create_doc(
     data = payload.model_dump(exclude_none=True)
     data["ref_id"] = ref_id
     data.setdefault("currency", company.settings.get("currency", "USD"))
+    # Default issue_date to today so date filters and sorting work correctly on new docs
+    data.setdefault("issue_date", _date.today().isoformat())
 
     # Auto-compute total from line items if not explicitly provided (or zero)
     if not payload.total and payload.line_items:
@@ -411,8 +413,13 @@ async def create_doc(
 @router.patch("/{entity_id}")
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    if row.state.get("status") != "draft":
-        raise HTTPException(status_code=409, detail="Cannot edit non-draft document")
+    is_draft = row.state.get("status") == "draft"
+    # Fields that are always editable regardless of document status
+    _ALWAYS_EDITABLE = frozenset({"issue_date", "due_date"})
+    if not is_draft:
+        non_editable = {f for f in payload.fields_changed if f not in _ALWAYS_EDITABLE}
+        if non_editable:
+            raise HTTPException(status_code=409, detail="Cannot edit non-draft document")
     # Uniqueness check when ref_id is being changed
     new_ref = (payload.fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
@@ -1529,14 +1536,14 @@ async def list_lists(
     if exclude_status:
         out = [x for x in out if x.get("status") != exclude_status]
     if date_from:
-        out = [x for x in out if (x.get("created_at") or x.get("date") or "")[:10] >= date_from]
+        out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] >= date_from]
     if date_to:
-        out = [x for x in out if (x.get("created_at") or x.get("date") or "")[:10] <= date_to]
+        out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] <= date_to]
     if q:
         ql = q.lower()
         out = [x for x in out if ql in str(x.get("ref_id") or "").lower()
                or ql in str(x.get("customer_name") or x.get("customer_id") or "").lower()]
-    out.sort(key=lambda x: x.get("created_at") or x.get("date") or "", reverse=True)
+    out.sort(key=lambda x: x.get("issue_date") or x.get("created_at") or x.get("date") or "", reverse=True)
     total = len(out)
     if offset:
         out = out[offset:]
