@@ -2795,7 +2795,7 @@ def _tc_dropdown(entity_id: str, doc: dict, tc_templates: list[dict], doc_type: 
     ]
 
 
-def _payment_section(doc: dict, bank_accounts: list[dict] | None = None) -> FT:
+def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_manager: bool = True) -> FT:
     """Shared payment/credit section for invoices, bills, and credit notes.
 
     DRY: one function, different labels based on doc_type.
@@ -2854,7 +2854,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None) -> FT:
         if voided:
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
-        elif not voided and _is_manager:
+        elif not voided and is_manager:
             void_cell = Td(
                 Details(
                     Summary("🗑", cls="btn btn--ghost btn--xs", title="Void this payment"),
@@ -4286,7 +4286,7 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-section doc-section--totals",
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
-        _payment_section(doc, bank_accounts=bank_accounts),
+        _payment_section(doc, bank_accounts=bank_accounts, is_manager=_is_manager),
         # Term & Conditions + Note to customer (2 columns)
         Div(
             Div(
