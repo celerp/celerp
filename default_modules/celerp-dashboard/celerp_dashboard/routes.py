@@ -30,16 +30,34 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
     now = datetime.now(UTC).date().isoformat()
     ar_outstanding = sum(float(d.state.get("amount_outstanding", 0) or 0) for d in docs if d.state.get("doc_type") == "invoice")
     ap_outstanding = sum(float(d.state.get("amount_outstanding", d.state.get("total", 0)) or 0) for d in docs if d.state.get("doc_type") == "purchase_order")
+    _CONSIGNMENT_IN = "in"
+    total_value_cost = 0.0
+    total_value_retail = 0.0
+    active_items = []
+    for i in items:
+        s = i.state
+        if s.get("consignment_flag") == _CONSIGNMENT_IN or i.consignment_flag == _CONSIGNMENT_IN:
+            continue
+        status = str(s.get("status") or "").lower()
+        if status in {"archived", "deleted", "void"}:
+            continue
+        active_items.append(i)
+        qty = float(s.get("quantity") or 0)
+        cost = float(s.get("cost_price") or 0)
+        retail = float(s.get("retail_price") or 0)
+        total_value_cost += qty * cost
+        total_value_retail += qty * retail
+
     return {
         "inventory": {
-            "total_items": len(items),
-            "total_value_cost": sum(float(i.state.get("total_cost", 0) or 0) for i in items),
-            "total_value_retail": sum(float(i.state.get("retail_price", 0) or 0) for i in items),
+            "total_items": len(active_items),
+            "total_value_cost": total_value_cost,
+            "total_value_retail": total_value_retail,
             "items_expiring_30d": 0,
-            "items_on_memo": sum(1 for i in items if i.state.get("is_on_memo")),
-            "items_reserved": sum(1 for i in items if float(i.state.get("reserved_quantity", 0) or 0) > 0),
-            "items_in_production": sum(1 for i in items if i.state.get("is_in_production")),
-            "low_stock_items": sum(1 for i in items if float(i.state.get("quantity", 0) or 0) <= 0),
+            "items_on_memo": sum(1 for i in active_items if i.state.get("is_on_memo")),
+            "items_reserved": sum(1 for i in active_items if float(i.state.get("reserved_quantity", 0) or 0) > 0),
+            "items_in_production": sum(1 for i in active_items if i.state.get("is_in_production")),
+            "low_stock_items": sum(1 for i in active_items if float(i.state.get("quantity", 0) or 0) <= 0),
         },
         "sales": {
             "revenue_mtd": sum(float(d.state.get("total", 0) or 0) for d in docs if d.state.get("doc_type") == "invoice" and d.state.get("status") in {"paid", "partial", "final"}),
