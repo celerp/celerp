@@ -953,6 +953,25 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
+    def _bulk_destructive_success(message: str, redirect_qs: str = "") -> Response:
+        """Return a bulk-action success response that clears the client-side selection.
+
+        Sends HX-Trigger: celerpSelectionClear so the JS handler resets CelerpSelection
+        and the toolbar before the table reloads.  Used for all destructive bulk actions
+        (merge, delete, archive, expire) where source items leave the visible table.
+        """
+        from starlette.responses import HTMLResponse
+        content = Div(
+            P(message, cls="flash flash--success"),
+            id="bulk-action-result",
+            hx_trigger="load delay:1s",
+            hx_get=f"/inventory/content{redirect_qs}",
+            hx_target="#inventory-content",
+            hx_swap="outerHTML",
+            **({"hx_push_url": f"/inventory{redirect_qs}"} if redirect_qs else {}),
+        )
+        return HTMLResponse(to_xml(content), headers={"HX-Trigger": "celerpSelectionClear"})
+
     @app.post("/api/items/bulk/status")
     async def bulk_item_status(request: Request):
         token = _token(request)
@@ -970,14 +989,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return Div(
-            P(f"{updated} item(s) updated to '{status}'.", cls="flash flash--success"),
-            id="bulk-action-result",
-            hx_trigger="load delay:1s",
-            hx_get="/inventory/content",
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-        )
+        return _bulk_destructive_success(f"{updated} item(s) updated to '{status}'.")
 
     @app.post("/api/items/bulk/transfer")
     async def bulk_item_transfer(request: Request):
@@ -996,14 +1008,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         updated = result.get("updated", len(entity_ids))
-        return Div(
-            P(f"{updated} item(s) transferred.", cls="flash flash--success"),
-            id="bulk-action-result",
-            hx_trigger="load delay:1s",
-            hx_get="/inventory/content",
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-        )
+        return _bulk_destructive_success(f"{updated} item(s) transferred.")
 
     @app.post("/api/items/bulk/delete")
     async def bulk_item_delete(request: Request):
@@ -1019,14 +1024,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         deleted = result.get("deleted", len(entity_ids))
-        return Div(
-            P(f"{deleted} item(s) deleted.", cls="flash flash--success"),
-            id="bulk-action-result",
-            hx_trigger="load delay:1s",
-            hx_get="/inventory/content",
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-        )
+        return _bulk_destructive_success(f"{deleted} item(s) deleted.")
 
     # ── Bulk expire ──────────────────────────────────────────────────────
 
@@ -1044,14 +1042,7 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         expired = result.get("expired", len(entity_ids))
-        return Div(
-            P(f"{expired} item(s) expired.", cls="flash flash--success"),
-            id="bulk-action-result",
-            hx_trigger="load delay:1s",
-            hx_get="/inventory/content",
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-        )
+        return _bulk_destructive_success(f"{expired} item(s) expired.")
 
     # ── Bulk merge (direct — no preview modal) ───────────────────────────
 
@@ -1104,15 +1095,7 @@ function celerpPrintLabel(entityId, templateId) {
         target_item = next((it for it in items if it.get("entity_id") == target_sku_from or it.get("id") == target_sku_from), None)
         target_sku = target_item.get("sku", "") if target_item else ""
         redirect_qs = f"?q={target_sku}" if target_sku else ""
-        return Div(
-            P(t("inv.items_merged_successfully"), cls="flash flash--success"),
-            id="bulk-action-result",
-            hx_trigger="load delay:1s",
-            hx_get=f"/inventory/content{redirect_qs}",
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-            hx_push_url=f"/inventory{redirect_qs}",
-        )
+        return _bulk_destructive_success(t("inv.items_merged_successfully"), redirect_qs)
 
     # ── Bulk split (simplified single-qty) ───────────────────────────────
 
@@ -1175,13 +1158,9 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         from urllib.parse import quote
         remaining_qty = current_qty - split_qty
-        return Div(
-            P(f"Split: {orig_sku} ({remaining_qty}) + {new_sku} ({split_qty}).", cls="flash flash--success"),
-            id="bulk-action-result",
-            hx_trigger="load delay:1s",
-            hx_get=f"/inventory/content?q={quote(orig_sku)}",
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
+        return _bulk_destructive_success(
+            f"Split: {orig_sku} ({remaining_qty}) + {new_sku} ({split_qty}).",
+            f"?q={quote(orig_sku)}",
         )
 
     # ── Send-to search (HTMX dropdown) ───────────────────────────────────

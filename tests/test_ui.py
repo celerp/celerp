@@ -1410,8 +1410,10 @@ class TestInventoryCategoryTabs:
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
         assert b"inventory-content" in r.content
-        # Category tab links must NOT use the stale #data-table target
-        assert b"#data-table" not in r.content
+        # Category tab links must NOT use the stale #data-table as an hx-target
+        # (the string 'data-table' may appear in JS as a DOM id reference, so
+        # we check specifically for the HTMX attribute form)
+        assert b'hx-target="#data-table"' not in r.content
         # Must use /inventory/content as the HTMX endpoint
         assert b"/inventory/content" in r.content
 
@@ -4806,6 +4808,111 @@ class TestBulkActionsPhase1to5:
         )
         assert r.status_code == 200
         assert b"No items selected" in r.content
+
+
+class TestBulkSelectionClear:
+    """Regression: after destructive bulk actions (merge/delete/expire/archive/transfer),
+    the server must send HX-Trigger: celerpSelectionClear so the client resets
+    CelerpSelection. Without this, sessionStorage retains stale IDs and the toolbar
+    shows phantom 'N selected' after a merge deactivates source items.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bulk_merge_success_sends_selection_clear_trigger(self, ui_client):
+        """Merge success response must include HX-Trigger: celerpSelectionClear."""
+        merge_result = {"id": "item:merged-1"}
+        items_data = [
+            {"entity_id": "item:a", "sku": "A", "quantity": 5, "attributes": {}},
+            {"entity_id": "item:b", "sku": "B", "quantity": 3, "attributes": {}},
+        ]
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(side_effect=items_data)),
+            patch("ui.api_client.merge_items", new=AsyncMock(return_value=merge_result)),
+        ):
+            r = await ui_client.post(
+                "/api/items/bulk/merge",
+                content=b"selected=item%3Aa&selected=item%3Ab&target_sku_from=item%3Aa",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        trigger = r.headers.get("hx-trigger", "")
+        assert "celerpSelectionClear" in trigger, (
+            f"Merge success must send HX-Trigger: celerpSelectionClear; got: {trigger!r}"
+        )
+        assert b"merged successfully" in r.content.lower() or b"merged" in r.content.lower()
+
+    @pytest.mark.asyncio
+    async def test_bulk_delete_success_sends_selection_clear_trigger(self, ui_client):
+        """Delete success response must include HX-Trigger: celerpSelectionClear."""
+        with patch("ui.api_client.bulk_delete", new=AsyncMock(return_value={"deleted": 2})):
+            r = await ui_client.post(
+                "/api/items/bulk/delete",
+                content=b"selected=item%3Aa&selected=item%3Ab",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        trigger = r.headers.get("hx-trigger", "")
+        assert "celerpSelectionClear" in trigger, (
+            f"Delete success must send HX-Trigger: celerpSelectionClear; got: {trigger!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_expire_success_sends_selection_clear_trigger(self, ui_client):
+        """Expire success response must include HX-Trigger: celerpSelectionClear."""
+        with patch("ui.api_client.bulk_expire", new=AsyncMock(return_value={"expired": 1})):
+            r = await ui_client.post(
+                "/api/items/bulk/expire",
+                content=b"selected=item%3Aa",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        trigger = r.headers.get("hx-trigger", "")
+        assert "celerpSelectionClear" in trigger, (
+            f"Expire success must send HX-Trigger: celerpSelectionClear; got: {trigger!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_archive_success_sends_selection_clear_trigger(self, ui_client):
+        """Archive (status) success response must include HX-Trigger: celerpSelectionClear."""
+        with patch("ui.api_client.bulk_set_status", new=AsyncMock(return_value={"updated": 2})):
+            r = await ui_client.post(
+                "/api/items/bulk/status",
+                content=b"selected=item%3Aa&selected=item%3Ab&bulk_status=archived",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        trigger = r.headers.get("hx-trigger", "")
+        assert "celerpSelectionClear" in trigger, (
+            f"Archive success must send HX-Trigger: celerpSelectionClear; got: {trigger!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_transfer_success_sends_selection_clear_trigger(self, ui_client):
+        """Transfer success response must include HX-Trigger: celerpSelectionClear."""
+        with patch("ui.api_client.bulk_transfer", new=AsyncMock(return_value={"updated": 1})):
+            r = await ui_client.post(
+                "/api/items/bulk/transfer",
+                content=b"selected=item%3Aa&bulk_location_id=loc%3A1",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        trigger = r.headers.get("hx-trigger", "")
+        assert "celerpSelectionClear" in trigger, (
+            f"Transfer success must send HX-Trigger: celerpSelectionClear; got: {trigger!r}"
+        )
+
+    def test_bulk_js_listens_for_selection_clear_event(self):
+        """JS source must register a celerpSelectionClear event listener."""
+        src = (Path(__file__).parent.parent / "ui" / "components" / "table.py").read_text()
+        assert "celerpSelectionClear" in src, (
+            "table.py JS must listen for celerpSelectionClear to reset selection after destructive bulk actions"
+        )
+        assert "CelerpSelection.clear()" in src
 
 
 class TestSprint5ContactCreation:
