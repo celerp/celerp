@@ -61,9 +61,22 @@ _MODULE_AI_API_URL = "https://celerp.com/docs/modules/ai-api"
 # Path(__file__) is celerp/modules/loader.py — go up two levels to the package root.
 # This resolves correctly in both dev (repo root) and installed (site-packages/celerp/…)
 # layouts because default_modules/ is installed alongside the celerp package.
-_BUNDLED_MODULES_DIRS: tuple[Path, ...] = (
-    Path(__file__).resolve().parent.parent.parent / "default_modules",
-)
+#
+# Electron installs seed default_modules/ into DATA_DIR/modules/ (outside APP_DIR).
+# The Electron main process sets CELERP_TRUSTED_MODULE_DIRS to the original source
+# directory so the loader can recognise seeded copies as first-party trusted modules.
+def _resolve_bundled_dirs() -> tuple[Path, ...]:
+    base = Path(__file__).resolve().parent.parent.parent / "default_modules"
+    extra_raw = os.environ.get("CELERP_TRUSTED_MODULE_DIRS", "")
+    extras = [Path(p.strip()).resolve() for p in extra_raw.split(",") if p.strip()]
+    # Include the seeded destination too: when Electron points MODULE_DIR at DATA_DIR/modules,
+    # those seeded copies must also be trusted.
+    module_dir_raw = os.environ.get("MODULE_DIR", "")
+    module_dirs = [Path(p.strip()).resolve() for p in module_dir_raw.split(",") if p.strip()]
+    return tuple({base.resolve(), *extras, *module_dirs})
+
+
+_BUNDLED_MODULES_DIRS: tuple[Path, ...] = _resolve_bundled_dirs()
 
 # Loaded manifests — populated by load_all()
 _loaded: list[dict] = []

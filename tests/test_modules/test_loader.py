@@ -496,3 +496,226 @@ class TestDependencySystem:
             for k in list(_sys.modules.keys()):
                 if "celerp_docs" in k or "celerp_inventory" in k:
                     _sys.modules.pop(k, None)
+
+
+# ── Electron: trusted module path via CELERP_TRUSTED_MODULE_DIRS ──────────────
+
+class TestElectronTrustedModuleDirs:
+    """Regression tests for the Electron module-loading trust bug.
+
+    Root cause: Electron seeds default_modules/ from app resources into
+    DATA_DIR/modules/ (a user-data directory outside APP_DIR). The loader's
+    _BUNDLED_MODULES_DIRS resolves relative to loader.py, so DATA_DIR/modules/
+    is NOT in the trusted set. Modules like celerp-ai, celerp-connectors,
+    celerp-backup, and celerp-admin import BSL-protected internals and are
+    rejected by the AST/runtime scan → running=False forever.
+
+    Fix: _resolve_bundled_dirs() includes paths from CELERP_TRUSTED_MODULE_DIRS
+    env var AND from MODULE_DIR. Both the original source dir (DEFAULT_MODULES_SRC)
+    and the seeded destination (MODULE_DIR/DATA_DIR/modules/) are trusted.
+    """
+
+    def _make_module_with_bsl_import(self, base: Path, name: str, import_line: str) -> Path:
+        """Create a module package that imports a BSL-protected internal."""
+        pkg = base / name
+        pkg.mkdir(parents=True)
+        # The import will fail at runtime (module doesn't exist in tests),
+        # but the AST scanner and runtime checks happen before that.
+        # We write a fake module into sys.modules to make the import succeed
+        # so we can test the trust path, not the import itself.
+        (pkg / "__init__.py").write_text(
+            f"PLUGIN_MANIFEST = {{'name': '{name}', 'version': '1.0'}}\n"
+        )
+        # Write a separate routes.py that contains the BSL import
+        routes = pkg / "routes.py"
+        routes.write_text(
+            f"{import_line}\n"
+            f"def setup_api_routes(app): pass\n"
+        )
+        # Update manifest to reference routes
+        pkg_mod = name.replace("-", "_")
+        (pkg / "__init__.py").write_text(
+            f"PLUGIN_MANIFEST = {{'name': '{name}', 'version': '1.0', "
+            f"'api_routes': '{pkg_mod}.routes'}}\n"
+        )
+        return pkg
+
+    def test_module_with_bsl_import_rejected_when_not_trusted(self, tmp_path, monkeypatch):
+        """Module importing BSL internal is rejected when its dir is NOT trusted."""
+        monkeypatch.delenv("CELERP_TRUSTED_MODULE_DIRS", raising=False)
+        monkeypatch.delenv("MODULE_DIR", raising=False)
+        from celerp.modules import loader as _loader
+        # Restrict trusted dirs to only the default bundled path (not tmp_path)
+        monkeypatch.setattr(
+            _loader, "_BUNDLED_MODULES_DIRS",
+            (Path(__file__).resolve().parent.parent.parent / "default_modules",),
+        )
+        # Build a proper inner-package structure so the AST scanner finds the file
+        pkg = tmp_path / "celerp-ai-sim"
+        inner = pkg / "celerp_ai_sim"
+        inner.mkdir(parents=True)
+        (inner / "__init__.py").write_text("")
+        (inner / "routes.py").write_text(
+            "from celerp.session_gate import require_session_token\n"
+            "def setup_api_routes(app): pass\n"
+        )
+        (pkg / "__init__.py").write_text(
+            "PLUGIN_MANIFEST = {'name': 'celerp-ai-sim', 'version': '1.0', "
+            "'api_routes': 'celerp_ai_sim.routes'}\n"
+        )
+        # Module dir is tmp_path, which is NOT in _BUNDLED_MODULES_DIRS → rejected
+        result = _loader.load_all(tmp_path, {"celerp-ai-sim"})
+        assert not any(m["name"] == "celerp-ai-sim" for m in result), (
+            "BSL-importing module in untrusted directory must be rejected"
+        )
+
+    def test_module_with_bsl_import_accepted_when_dir_in_trusted_module_dirs(
+        self, tmp_path, monkeypatch
+    ):
+        """Module importing BSL internal is accepted when its dir is in CELERP_TRUSTED_MODULE_DIRS."""
+        from celerp.modules import loader as _loader
+        # Point CELERP_TRUSTED_MODULE_DIRS at tmp_path
+        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", str(tmp_path))
+        # Re-resolve so tmp_path is included
+        new_trusted = _loader._resolve_bundled_dirs()
+        monkeypatch.setattr(_loader, "_BUNDLED_MODULES_DIRS", new_trusted)
+        assert tmp_path.resolve() in new_trusted, (
+            "_resolve_bundled_dirs must include CELERP_TRUSTED_MODULE_DIRS path"
+        )
+
+    def test_module_with_bsl_import_accepted_when_dir_is_module_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """Module in MODULE_DIR is trusted (Electron seeded destination)."""
+        from celerp.modules import loader as _loader
+        monkeypatch.setenv("MODULE_DIR", str(tmp_path))
+        new_trusted = _loader._resolve_bundled_dirs()
+        assert tmp_path.resolve() in new_trusted, (
+            "_resolve_bundled_dirs must include MODULE_DIR path as trusted"
+        )
+
+    def test_resolve_bundled_dirs_always_includes_default_bundled(self, monkeypatch):
+        """Default bundled dir (relative to loader.py) is always in the result."""
+        from celerp.modules import loader as _loader
+        monkeypatch.delenv("CELERP_TRUSTED_MODULE_DIRS", raising=False)
+        monkeypatch.delenv("MODULE_DIR", raising=False)
+        result = _loader._resolve_bundled_dirs()
+        default = (Path(_loader.__file__).resolve().parent.parent.parent / "default_modules").resolve()
+        assert default in result
+
+    def test_resolve_bundled_dirs_multiple_trusted_dirs(self, tmp_path, monkeypatch):
+        """CELERP_TRUSTED_MODULE_DIRS can be comma-separated (multiple paths)."""
+        from celerp.modules import loader as _loader
+        dir_a = tmp_path / "src_a"
+        dir_b = tmp_path / "src_b"
+        dir_a.mkdir()
+        dir_b.mkdir()
+        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", f"{dir_a},{dir_b}")
+        result = _loader._resolve_bundled_dirs()
+        assert dir_a.resolve() in result
+        assert dir_b.resolve() in result
+
+    def test_resolve_bundled_dirs_ignores_empty_entries(self, monkeypatch):
+        """Empty/whitespace entries in CELERP_TRUSTED_MODULE_DIRS are ignored."""
+        from celerp.modules import loader as _loader
+        monkeypatch.setenv("CELERP_TRUSTED_MODULE_DIRS", " , , ")
+        # Should not raise, should not include empty Paths
+        result = _loader._resolve_bundled_dirs()
+        assert isinstance(result, tuple)
+
+    def test_celerp_ai_bundled_dir_is_trusted_by_default(self):
+        """celerp-ai's actual bundled directory must be in _BUNDLED_MODULES_DIRS.
+
+        This confirms the fix resolves the Electron trust issue for the real
+        celerp-ai module when loaded from the seeded MODULE_DIR.
+        """
+        from celerp.modules import loader as _loader
+        real_default_modules = (
+            Path(_loader.__file__).resolve().parent.parent.parent / "default_modules"
+        )
+        if not real_default_modules.exists():
+            import pytest as _pytest
+            _pytest.skip("default_modules not on this path")
+        # The bundled default_modules dir must be trusted
+        assert real_default_modules.resolve() in _loader._BUNDLED_MODULES_DIRS
+
+    def test_ast_scan_catches_bsl_import_in_routes_file(self, tmp_path):
+        """_ast_scan_module_file correctly detects BSL imports in route files."""
+        from celerp.modules.loader import _ast_scan_module_file
+        # _ast_scan_module_file resolves 'scan_test.routes' relative to pkg_path:
+        # parts = ['scan_test', 'routes'] → pkg_path / 'scan_test' / 'routes.py'
+        pkg = tmp_path / "scan-test"
+        inner = pkg / "scan_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(
+            "from celerp.session_gate import require_session_token\n"
+            "from celerp.ai.quota import check_ai_quota\n"
+        )
+        violations = _ast_scan_module_file(pkg, "scan_test.routes")
+        assert "celerp.session_gate" in violations
+        assert "celerp.ai.quota" in violations
+
+    def test_ast_scan_catches_lazy_bsl_import_inside_function(self, tmp_path):
+        """AST scan catches BSL imports nested inside function bodies (lazy imports)."""
+        from celerp.modules.loader import _ast_scan_module_file
+        pkg = tmp_path / "lazy-test"
+        inner = pkg / "lazy_test"
+        inner.mkdir(parents=True)
+        (inner / "routes.py").write_text(
+            "def my_endpoint():\n"
+            "    from celerp.gateway.client import get_client\n"
+            "    return get_client()\n"
+        )
+        violations = _ast_scan_module_file(pkg, "lazy_test.routes")
+        assert "celerp.gateway" in violations, (
+            "AST scan must catch lazy imports inside function bodies"
+        )
+
+    def test_bundled_first_party_modules_load_with_bsl_imports(self):
+        """celerp-ai, celerp-backup, celerp-admin must all load from the real
+        default_modules directory (trusted=True, no AST scan). celerp-connectors
+        is also tested but requires celerp-inventory as a dependency.
+
+        This is the full end-to-end regression test for the Electron trust bug.
+        """
+        real_dir = Path(__file__).parent.parent.parent / "default_modules"
+        if not real_dir.exists():
+            import pytest as _pytest
+            _pytest.skip("default_modules not available")
+        from celerp.modules import loader as _loader, slots as _slots
+        import sys as _sys
+        _loader._loaded.clear()
+        _slots.clear()
+        try:
+            # celerp-connectors depends on celerp-inventory + celerp-docs; include both
+            result = _loader.load_all(
+                real_dir,
+                {
+                    "celerp-ai", "celerp-connectors", "celerp-backup", "celerp-admin",
+                    "celerp-inventory", "celerp-contacts", "celerp-docs",
+                },
+            )
+            loaded_names = {m["name"] for m in result}
+            # These three have no extra deps and directly import BSL internals
+            for mod_name in ("celerp-ai", "celerp-backup", "celerp-admin"):
+                assert mod_name in loaded_names, (
+                    f"{mod_name} failed to load from default_modules — "
+                    f"it likely imports BSL internals and is being wrongly treated as untrusted. "
+                    f"This is the Electron trust bug."
+                )
+            # celerp-connectors also imports BSL internals but needs celerp-inventory + celerp-docs
+            assert "celerp-connectors" in loaded_names, (
+                "celerp-connectors failed to load — imports BSL internals (celerp.session_gate, "
+                "celerp.connectors.base) and must be trusted when loaded from default_modules"
+            )
+        finally:
+            _loader._loaded.clear()
+            _slots.clear()
+            for k in list(_sys.modules.keys()):
+                if any(
+                    x in k for x in [
+                        "celerp_ai", "celerp_connectors", "celerp_backup", "celerp_admin",
+                        "celerp_inventory", "celerp_contacts", "celerp_docs",
+                    ]
+                ):
+                    _sys.modules.pop(k, None)

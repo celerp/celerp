@@ -277,6 +277,10 @@ function startApi(dbUrl, cfg) {
       JWT_SECRET: getOrCreateJwtSecret(),
       PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
       MODULE_DIR: MODULE_DIR,
+      // Tell the Python module loader that DEFAULT_MODULES_SRC is first-party trusted.
+      // Seeded copies in MODULE_DIR inherit trust; without this the loader's BSL AST
+      // scan rejects celerp-ai, celerp-connectors, celerp-backup, and celerp-admin.
+      CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
       CELERP_DATA_DIR: DATA_DIR,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
       ...resolveStorageEnv(cfg),
@@ -301,6 +305,7 @@ function startUi(dbUrl, cfg) {
       JWT_SECRET: getOrCreateJwtSecret(),
       PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
       MODULE_DIR: MODULE_DIR,
+      CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
       ...resolveStorageEnv(cfg),
     };
