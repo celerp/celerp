@@ -2047,6 +2047,8 @@ async def fulfill_doc(
                 })
 
     pick_result = compute_pick_plan(state.get("line_items", []), available_inv)
+    from celerp.modules.slots import fire_lifecycle_strict
+    await fire_lifecycle_strict("pre_fulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
     result = await execute_fulfill(
         session,
         doc_entity_id=entity_id,

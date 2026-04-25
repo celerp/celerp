@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Tests for the celerp-warehousing: fulfillment UI renderers and API endpoints."""
+"""Tests for warehousing: pick instruction badges and API endpoints."""
 
 from __future__ import annotations
 
@@ -23,111 +23,45 @@ from celerp.services.auth import create_access_token
 
 
 def test_manifest_loads():
-    import importlib.util, sys, os
-    pkg_path = os.path.join(os.path.dirname(__file__), "..", "premium_modules", "celerp-warehousing")
-    spec = importlib.util.spec_from_file_location(
-        "celerp-warehousing",
-        os.path.join(pkg_path, "__init__.py"),
-        submodule_search_locations=[pkg_path],
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    import importlib
+    import sys
+    mod = importlib.import_module("celerp_warehousing")
     m = mod.PLUGIN_MANIFEST
     assert m["name"] == "celerp-warehousing"
     assert m["default_enabled"] is True
-    assert "doc_detail_actions" in m["slots"]
-    assert "doc_detail_badges" in m["slots"]
+    assert "pre_fulfill_hook" in m["slots"]
     assert m["depends_on"] == ["celerp-docs", "celerp-inventory"]
 
 
 # ---------------------------------------------------------------------------
-# UI renderers
+# UI renderers (kept: pick/stock badges)
 # ---------------------------------------------------------------------------
 
-class TestRenderFulfillToggle:
-    def test_none_for_draft(self):
-        from celerp_warehousing.ui import render_fulfill_toggle
-        assert render_fulfill_toggle({"status": "draft", "entity_id": "d1"}) is None
+class TestRenderPickInstructionBadge:
+    def test_none_when_no_pick(self):
+        from celerp_warehousing.ui import render_pick_instruction_badge
+        assert render_pick_instruction_badge({}) is None
 
-    def test_none_for_void(self):
-        from celerp_warehousing.ui import render_fulfill_toggle
-        assert render_fulfill_toggle({"status": "void", "entity_id": "d1"}) is None
-
-    def test_none_for_service_only(self):
-        from celerp_warehousing.ui import render_fulfill_toggle
-        doc = {
-            "status": "final", "entity_id": "d1",
-            "line_items": [{"sku": "SVC", "quantity": 1, "sell_by": "service"}],
-        }
-        assert render_fulfill_toggle(doc) is None
-
-    def test_returns_button_for_final(self):
-        from celerp_warehousing.ui import render_fulfill_toggle
-        doc = {
-            "status": "final", "entity_id": "d1",
-            "line_items": [{"sku": "PHY", "quantity": 1, "sell_by": "piece"}],
-        }
-        el = render_fulfill_toggle(doc)
-        assert el is not None
-
-    def test_returns_button_for_sent(self):
-        from celerp_warehousing.ui import render_fulfill_toggle
-        doc = {
-            "status": "sent", "entity_id": "d1",
-            "line_items": [{"sku": "PHY", "quantity": 1}],
-        }
-        el = render_fulfill_toggle(doc)
-        assert el is not None
-
-    def test_fulfilled_shows_unfulfill(self):
-        from celerp_warehousing.ui import render_fulfill_toggle
+    def test_returns_link_when_pick_present(self):
+        from celerp_warehousing.ui import render_pick_instruction_badge
         from fasthtml.common import to_xml
-        doc = {
-            "status": "final", "entity_id": "d1",
-            "line_items": [{"sku": "PHY", "quantity": 1}],
-            "fulfillment_status": "fulfilled",
-        }
-        el = render_fulfill_toggle(doc)
-        html = to_xml(el)
-        assert "Fulfilled ✓" in html
-        assert "unfulfill" in html
-
-    def test_partial_shows_complete(self):
-        from celerp_warehousing.ui import render_fulfill_toggle
-        from fasthtml.common import to_xml
-        doc = {
-            "status": "final", "entity_id": "d1",
-            "line_items": [{"sku": "PHY", "quantity": 1}],
-            "fulfillment_status": "partial",
-        }
-        el = render_fulfill_toggle(doc)
-        html = to_xml(el)
-        assert "Partially Fulfilled" in html
-        assert "Complete Fulfillment" in html
-
-
-class TestRenderFulfillmentBadge:
-    def test_none_for_unfulfilled(self):
-        from celerp_warehousing.ui import render_fulfillment_badge
-        assert render_fulfillment_badge({"status": "final"}) is None
-
-    def test_green_badge_for_fulfilled(self):
-        from celerp_warehousing.ui import render_fulfillment_badge
-        from fasthtml.common import to_xml
-        el = render_fulfillment_badge({"fulfillment_status": "fulfilled"})
+        el = render_pick_instruction_badge({"pick_instruction_id": "list:PICK-123"})
         assert el is not None
         html = to_xml(el)
-        assert "badge--green" in html
-        assert "Fulfilled" in html
+        assert "Pick Instruction" in html
 
-    def test_amber_badge_for_partial(self):
-        from celerp_warehousing.ui import render_fulfillment_badge
+class TestRenderStockReceiptBadge:
+    def test_none_when_no_receipt(self):
+        from celerp_warehousing.ui import render_stock_receipt_badge
+        assert render_stock_receipt_badge({}) is None
+
+    def test_returns_link_when_receipt_present(self):
+        from celerp_warehousing.ui import render_stock_receipt_badge
         from fasthtml.common import to_xml
-        el = render_fulfillment_badge({"fulfillment_status": "partial"})
+        el = render_stock_receipt_badge({"stock_receipt_id": "list:RCPT-456"})
         assert el is not None
         html = to_xml(el)
-        assert "badge--amber" in html
-        assert "Partially Fulfilled" in html
+        assert "Stock Receipt" in html
 
 
 # ---------------------------------------------------------------------------

@@ -81,3 +81,29 @@ async def fire_lifecycle(slot: str, **kwargs) -> None:
                 "Lifecycle hook %s from %s failed: %s",
                 slot, contrib.get("_module", "?"), exc,
             )
+
+
+async def fire_lifecycle_strict(slot_name: str, **kwargs) -> None:
+    """Like fire_lifecycle but propagates HTTPException from handlers.
+
+    Use for slots where a handler must be able to block the action.
+    """
+    import importlib
+    import logging
+    from fastapi import HTTPException
+
+    _log = logging.getLogger(__name__)
+
+    for contrib in get(slot_name):
+        handler_path = contrib.get("handler")
+        if not handler_path:
+            continue
+        try:
+            mod_path, func_name = handler_path.rsplit(":", 1)
+            mod = importlib.import_module(mod_path)
+            func = getattr(mod, func_name)
+            await func(**kwargs)
+        except HTTPException:
+            raise
+        except Exception as e:
+            _log.warning("Slot handler %s raised: %s", handler_path, e)

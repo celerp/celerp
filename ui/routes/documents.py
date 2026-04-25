@@ -79,6 +79,49 @@ def _doc_section_label(doc_type: str) -> str:
     return _DOC_TYPE_PAGE_LABELS.get(doc_type, "Documents")
 
 
+# ---------------------------------------------------------------------------
+# Inline fulfillment helpers (no celerp-fulfillment module needed)
+# ---------------------------------------------------------------------------
+
+def _render_fulfill_section(doc: dict):
+    """Fulfill button - shown when celerp-inventory is installed and doc is fulfillable."""
+    from celerp.modules.loaded_modules import loaded_modules
+    from celerp_docs.doc_constants import FULFILLABLE_STATUSES
+    if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
+        return ""
+    if doc.get("status") not in FULFILLABLE_STATUSES:
+        return ""
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    cid = f"fulfill-toggle-{entity_id}"
+    fs = doc.get("fulfillment_status") or "unfulfilled"
+    if fs == "fulfilled":
+        return Div(
+            Span("Fulfilled ✓", cls="badge badge--green"),
+            id=cid,
+        )
+    return Div(
+        Button(
+            "Fulfill / Deduct Inventory",
+            hx_post=f"/docs/{entity_id}/fulfill",
+            hx_confirm="Mark this document as fulfilled?",
+            hx_target=f"#{cid}",
+            hx_swap="outerHTML",
+            cls="btn btn--primary btn--sm",
+        ),
+        id=cid,
+    )
+
+
+def _render_fulfillment_badge(doc: dict):
+    """Fulfillment badge - shown when doc is fulfilled."""
+    fs = doc.get("fulfillment_status") or ""
+    if fs == "fulfilled":
+        return Span("Fulfilled", cls="badge badge--green")
+    if fs == "partial":
+        return Span("Partially Fulfilled", cls="badge badge--amber")
+    return None
+
+
 def _doc_section_url(doc_type: str) -> str:
     """URL for the doc type's listing page."""
     if doc_type == "list":
@@ -2141,11 +2184,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except Exception:
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        from celerp_fulfillment.ui import render_fulfill_toggle
-        el = render_fulfill_toggle(doc)
-        if el is None:
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        return el
+        return _render_fulfill_section(doc)
 
     @app.post("/docs/{entity_id}/unfulfill")
     async def doc_unfulfill(request: Request, entity_id: str):
@@ -2162,16 +2201,12 @@ celerpUpdateBulkAlloc();
                 Span(str(e.detail), cls="flash flash--error"),
                 hx_swap_oob="true", id="action-error",
             )
-        # Re-fetch doc and return updated toggle
+        # Re-fetch doc and return updated section
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        from celerp_fulfillment.ui import render_fulfill_toggle
-        el = render_fulfill_toggle(doc)
-        if el is None:
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        return el
+        return _render_fulfill_section(doc)
 
     # -----------------------------------------------------------------------
     # List routes — folded here so lists.py is a thin shim
@@ -3301,6 +3336,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     # --- Slot: doc_detail_actions (module-contributed action buttons) ---
     from celerp.modules.slots import get as _get_slot
+    _fulfill_el = _render_fulfill_section(doc)
+    if _fulfill_el:
+        action_btns.append(_fulfill_el)
     for _contrib in _get_slot("doc_detail_actions"):
         _render_path = _contrib.get("render", "")
         if _render_path:
@@ -3316,6 +3354,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     # --- Slot: doc_detail_badges (module-contributed status badges) ---
     _slot_badges = []
+    _fulfill_badge = _render_fulfillment_badge(doc)
+    if _fulfill_badge is not None:
+        _slot_badges.append(_fulfill_badge)
     for _contrib in _get_slot("doc_detail_badges"):
         _render_path = _contrib.get("render", "")
         if _render_path:
