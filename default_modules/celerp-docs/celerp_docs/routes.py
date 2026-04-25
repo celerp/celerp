@@ -222,8 +222,13 @@ async def get_doc_summary(
     ar_gross = ar_paid = ar_outstanding = 0.0
     count_by_status: dict[str, int] = {}
     invoice_count = 0
-    awaiting_payment_count = 0  # final + sent + awaiting_payment (unpaid invoices)
-    overdue_count = 0           # awaiting_payment + due_date < today
+    # Awaiting payment = all finalized invoices not yet fully paid
+    # (final, sent, awaiting_payment, partial - i.e. every issued status except paid/void)
+    _AWAITING_STATUSES = {"final", "sent", "awaiting_payment", "partial"}
+    awaiting_payment_count = 0
+    awaiting_payment_total = 0.0  # sum of outstanding balances
+    overdue_count = 0
+    paid_total = 0.0              # total for fully-paid invoices
     for row in rows:
         state = row.state
         # Filter by doc_type if specified
@@ -235,15 +240,20 @@ async def get_doc_summary(
             continue
         if state.get("doc_type") == "invoice":
             invoice_count += 1
-            ar_gross += float(state.get("total", 0) or 0)
-            ar_paid += float(state.get("amount_paid", 0) or 0)
-            ar_outstanding += float(state.get("amount_outstanding", 0) or 0)
-            # Awaiting payment = finalized but not yet fully paid
-            if st in ("final", "sent", "awaiting_payment"):
+            total_ = float(state.get("total", 0) or 0)
+            paid_ = float(state.get("amount_paid", 0) or 0)
+            outstanding_ = float(state.get("amount_outstanding", 0) or 0)
+            ar_gross += total_
+            ar_paid += paid_
+            ar_outstanding += outstanding_
+            if st in _AWAITING_STATUSES:
                 awaiting_payment_count += 1
+                awaiting_payment_total += outstanding_
                 due = state.get("due_date") or ""
                 if due and due < today:
                     overdue_count += 1
+            elif st == "paid":
+                paid_total += total_
     draft_count = count_by_status.get("draft", 0)
     total_rows = sum(count_by_status.values())
     live_count = total_rows - draft_count
@@ -254,7 +264,9 @@ async def get_doc_summary(
         "non_void_count": sum(v for k, v in count_by_status.items() if k not in ("void", "draft")),
         "all_issued_count": all_issued_count,
         "awaiting_payment_count": awaiting_payment_count,
+        "awaiting_payment_total": awaiting_payment_total,
         "overdue_count": overdue_count,
+        "paid_total": paid_total,
         "ar_total": ar_gross,
         "ar_paid": ar_paid,
         "ar_outstanding": ar_outstanding,

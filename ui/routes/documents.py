@@ -4488,26 +4488,45 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         draft_cnt  = _cbs.get("draft", 0)
         all_issued = _sm.get("all_issued_count", _sm.get("non_void_count", 0))
         awaiting   = _sm.get("awaiting_payment_count", 0)
+        awaiting_total = _sm.get("awaiting_payment_total")   # outstanding balance; None suppresses display
         overdue    = _sm.get("overdue_count", 0)
-        paid_cnt   = _cbs.get("paid", 0) + _cbs.get("partial", 0)
+        # "Paid" = fully paid only; partial still has outstanding balance -> Awaiting Payment
+        paid_cnt   = _cbs.get("paid", 0)
+        paid_total = _sm.get("paid_total")                   # total invoice value; None suppresses display
         sent_cnt   = _cbs.get("sent", 0)
         void_cnt   = _cbs.get("void", 0)
 
-        # Active key for "pro_forma" card: the main drafts-tab handles navigation but
-        # we also need a card so users can see the draft count at a glance.
+        # Awaiting Payment covers every issued-but-not-fully-paid status
+        _AWAITING_STATUSES = "final,sent,awaiting_payment,partial"
+        _PAID_STATUSES     = "paid"
+
+        # Resolve which virtual card is active
         if active_status == "draft":
             _active_key = "draft"
+        elif status_in == _ALL_ISSUED_STATUSES:
+            _active_key = "all_issued"
+        elif status_in == _AWAITING_STATUSES and overdue_only:
+            _active_key = "overdue"
+        elif status_in == _AWAITING_STATUSES:
+            _active_key = "awaiting_payment"
+        elif status_in == _PAID_STATUSES or active_status == "paid":
+            _active_key = "paid"
+        else:
+            _active_key = active_status or ""
 
         invoice_cards = [
-            {"label": t("status.pro_forma", lang),        "count": draft_cnt,  "total": 0.0, "status": "draft",             "color": "gray"},
-            {"label": t("status.all_issued", lang),       "count": all_issued, "total": 0.0, "status": "all_issued",        "color": "blue",   "_url": f"{base_url}&status_in={_ALL_ISSUED_STATUSES}", "_active_key": "all_issued"},
-            {"label": t("doc.sent", lang),                "count": sent_cnt,   "total": 0.0, "status": "sent",              "color": "blue"},
-            {"label": t("status.awaiting_payment", lang), "count": awaiting,   "total": 0.0, "status": "awaiting_payment",  "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES}",   "_active_key": "awaiting_payment"},
-            {"label": t("status.overdue", lang),          "count": overdue,    "total": 0.0, "status": "overdue",           "color": "red",    "_url": f"{base_url}&status_in={_AWAITING_STATUSES}&overdue_only=1", "_active_key": "overdue"},
-            {"label": t("label.paid", lang),              "count": paid_cnt,   "total": 0.0, "status": "paid",              "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",        "_active_key": "paid"},
-            {"label": t("btn.void", lang),                "count": void_cnt,   "total": 0.0, "status": "void",              "color": "gray"},
+            {"label": t("status.pro_forma", lang),        "count": draft_cnt,  "total": None,          "status": "draft",            "color": "gray"},
+            {"label": t("status.all_issued", lang),       "count": all_issued, "total": None,          "status": "all_issued",       "color": "blue",   "_url": f"{base_url}&status_in={_ALL_ISSUED_STATUSES}", "_active_key": "all_issued"},
+            {"label": t("doc.sent", lang),                "count": sent_cnt,   "total": None,          "status": "sent",             "color": "blue"},
+            {"label": t("status.awaiting_payment", lang), "count": awaiting,   "total": awaiting_total, "status": "awaiting_payment", "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES}",                        "_active_key": "awaiting_payment"},
+            {"label": t("status.overdue", lang),          "count": overdue,    "total": None,          "status": "overdue",          "color": "red",    "_url": f"{base_url}&status_in={_AWAITING_STATUSES}&overdue_only=1",          "_active_key": "overdue"},
+            {"label": t("label.paid", lang),              "count": paid_cnt,   "total": paid_total,    "status": "paid",             "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",                            "_active_key": "paid"},
+            {"label": t("btn.void", lang),                "count": void_cnt,   "total": None,          "status": "void",             "color": "gray"},
         ]
-        return status_cards(invoice_cards, base_url, _active_key or None, currency=currency)
+        # total_override=all_issued prevents the "All" card from summing sub-cards.
+        # Sub-cards overlap (e.g. a paid invoice is counted in both All Issued and Paid),
+        # so summing them would produce a number larger than the real invoice count.
+        return status_cards(invoice_cards, base_url, _active_key or None, total_override=all_issued, currency=currency)
 
     # ------------------------------------------------------------------
     # All other doc types: simple per-status cards

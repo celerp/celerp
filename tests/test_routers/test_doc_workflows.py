@@ -552,3 +552,65 @@ async def test_invoice_status_cards_include_proforma(client, session):
     html = str(_doc_status_cards([], "", summary, "USD", doc_type="invoice", lang="en"))
     assert "Pro" in html or "pro" in html.lower(), "Pro-forma card missing from invoice status cards"
     assert "All Issued" in html or "all_issued" in html.lower(), "All Issued card missing from invoice status cards"
+
+
+@pytest.mark.anyio
+async def test_summary_partial_invoice_in_awaiting_not_paid(client, session):
+    """Regression: partial-paid invoices must appear in awaiting_payment_count, not paid.
+
+    A partially paid invoice still has outstanding balance and should never
+    appear in the 'Paid' bucket.
+    """
+    token = await _register(client)
+    doc_id = await _create_invoice(client, token, subtotal=1000, tax=0, total=1000)
+    await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
+    # Record a partial payment (500 out of 1000)
+    await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
+                      json={"amount": 500, "method": "transfer", "reference": "PART-1",
+                            "payment_date": "2026-04-25", "bank_account": "1110"})
+    r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
+    assert r.status_code == 200
+    data = r.json()
+    cbs = data.get("count_by_status", {})
+    assert cbs.get("partial", 0) >= 1, "partial-paid invoice should have status 'partial'"
+    assert cbs.get("paid", 0) == 0, "partial-paid invoice must NOT be counted as 'paid'"
+    assert data.get("awaiting_payment_count", 0) >= 1, "partial-paid invoice must be in awaiting_payment_count"
+
+
+@pytest.mark.anyio
+async def test_summary_all_count_not_doubled(client, session):
+    """Regression: all_issued_count must not double-count invoices.
+
+    One fully-paid invoice should give all_issued_count=1, not 2.
+    """
+    token = await _register(client)
+    doc_id = await _create_invoice(client, token, subtotal=200, tax=0, total=200)
+    await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
+    # Pay in full
+    await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
+                      json={"amount": 200, "method": "cash", "reference": "FULL-1",
+                            "payment_date": "2026-04-25", "bank_account": "1110"})
+    r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
+    assert r.status_code == 200
+    data = r.json()
+    assert data["all_issued_count"] == 1, (
+        f"Expected all_issued_count=1, got {data['all_issued_count']}"
+    )
+
+
+@pytest.mark.anyio
+async def test_summary_awaiting_payment_total_is_outstanding(client, session):
+    """awaiting_payment_total must equal the outstanding balance, not the invoice face value."""
+    token = await _register(client)
+    doc_id = await _create_invoice(client, token, subtotal=800, tax=0, total=800)
+    await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
+    # Partial payment of 300 -> outstanding = 500
+    await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
+                      json={"amount": 300, "method": "cash", "reference": "P1",
+                            "payment_date": "2026-04-25", "bank_account": "1110"})
+    r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
+    assert r.status_code == 200
+    data = r.json()
+    assert abs(data.get("awaiting_payment_total", -1) - 500.0) < 0.01, (
+        f"awaiting_payment_total should be 500, got {data.get('awaiting_payment_total')}"
+    )
