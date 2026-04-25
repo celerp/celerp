@@ -414,12 +414,12 @@ async def create_doc(
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     is_draft = row.state.get("status") == "draft"
-    # Fields that are always editable regardless of document status
-    _ALWAYS_EDITABLE = frozenset({"issue_date", "due_date"})
     if not is_draft:
-        non_editable = {f for f in payload.fields_changed if f not in _ALWAYS_EDITABLE}
-        if non_editable:
-            raise HTTPException(status_code=409, detail="Cannot edit non-draft document")
+        status_label = (row.state.get("status") or "finalized").replace("_", " ").title()
+        raise HTTPException(
+            status_code=409,
+            detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
+        )
     # Uniqueness check when ref_id is being changed
     new_ref = (payload.fields_changed.get("ref_id") or {}).get("new")
     if new_ref:

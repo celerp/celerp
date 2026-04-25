@@ -294,7 +294,7 @@ async def test_edit_ref_id_blocked_on_non_draft(client, session):
         json={"fields_changed": {"ref_id": {"old": None, "new": "NOPE"}}},
     )
     assert r.status_code == 409
-    assert "non-draft" in r.json()["detail"].lower()
+    assert "draft" in r.json()["detail"].lower()
 
 
 @pytest.mark.anyio
@@ -384,35 +384,37 @@ async def test_new_doc_gets_issue_date_today(client, session):
 
 
 @pytest.mark.anyio
-async def test_issue_date_editable_on_non_draft(client, session):
-    """issue_date and due_date can be patched even after a doc is issued."""
+async def test_finalized_doc_rejects_all_edits_with_clear_message(client, session):
+    """Patching any field on a finalized doc returns 409 with a message explaining how to proceed."""
     from datetime import date, timedelta
     token = await _register(client)
     doc_id = await _create_invoice(client, token)
-    # Finalize (issue) it
+    # Finalize it
     r = await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
     assert r.status_code == 200
-    # Patch issue_date on non-draft - must succeed
+    # Any PATCH - including date fields - must return 409 with actionable message
     new_date = (date.today() + timedelta(days=1)).isoformat()
     r = await client.patch(f"/docs/{doc_id}", headers=_h(token),
                            json={"fields_changed": {"issue_date": {"old": date.today().isoformat(), "new": new_date}}})
-    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
-    doc = await client.get(f"/docs/{doc_id}", headers=_h(token))
-    assert doc.json()["issue_date"] == new_date
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert "draft" in detail.lower(), f"Error must mention 'Draft': {detail!r}"
+    assert "revert" in detail.lower(), f"Error must tell user to revert: {detail!r}"
 
 
 @pytest.mark.anyio
 async def test_non_editable_field_rejected_on_issued_doc(client, session):
-    """Patching a non-always-editable field on an issued doc returns 409."""
+    """Patching any field on an issued doc returns 409 with an actionable message."""
     token = await _register(client)
     doc_id = await _create_invoice(client, token)
     # Finalize (issue) it
     r = await client.post(f"/docs/{doc_id}/finalize", headers=_h(token), json={})
     assert r.status_code == 200
-    # Attempt to change subtotal (not always-editable)
+    # Attempt to change subtotal
     r = await client.patch(f"/docs/{doc_id}", headers=_h(token),
                            json={"fields_changed": {"subtotal": {"old": 100, "new": 999}}})
     assert r.status_code == 409
+    assert "draft" in r.json()["detail"].lower()
 
 
 @pytest.mark.anyio
