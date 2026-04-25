@@ -3035,6 +3035,37 @@ class TestSprint4Payment:
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         assert b"Record Payment" not in r.content
 
+    @pytest.mark.asyncio
+    async def test_invoice_page_renders_after_payment_recorded(self, ui_client):
+        """Regression: invoice page must not crash after a payment is recorded.
+
+        Bug: _payment_section referenced _is_manager from the outer _doc_detail
+        scope, causing NameError when the payment history loop tried to render
+        the void button for an active payment.
+        """
+        doc_with_payment = {
+            **_SENT_DOC,
+            "status": "partial",
+            "amount_paid": 1000,
+            "amount_outstanding": 9000,
+            "payments": [
+                {
+                    "index": 0,
+                    "amount": 1000,
+                    "currency": "USD",
+                    "method": "transfer",
+                    "reference": "TXN-1",
+                    "payment_date": "2026-04-25",
+                    "bank_account": "1110",
+                    "status": "active",
+                }
+            ],
+        }
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc_with_payment)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        assert r.status_code == 200, f"Invoice page crashed after payment: {r.status_code}"
+        assert b"1,000" in r.content or b"payment" in r.content.lower()
+
 
 class TestSprint4Polish:
     """T6: doc detail polish."""
