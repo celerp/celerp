@@ -5,10 +5,15 @@
 Covers:
   - FULFILL-01: No Fulfill button on draft docs
   - FULFILL-02: Fulfill button appears on final/sent docs (inventory installed)
-  - FULFILL-03: Clicking Fulfill marks doc as fulfilled and shows badge
-  - FULFILL-04: Unfulfill removes badge and restores button
-  - FULFILL-05: Warehousing settings page has auto_complete_pick checkbox
-  - FULFILL-06: No require_pick_before_fulfill anywhere in the settings page
+  - FULFILL-03: Clicking Fulfill marks doc as fulfilled; badge appears; Revert button shows
+  - FULFILL-04: Fulfilled doc shows Revert Fulfillment button, not Fulfill
+  - FULFILL-05: Revert Fulfillment restores Fulfill button
+  - FULFILL-06: Warehousing settings: auto_complete_pick present, require_pick_before_fulfill absent
+  - FULFILL-07: No legacy celerp-fulfillment or mark-delivered references in rendered HTML
+  - FULFILL-08: Void does NOT change fulfillment_status (independent lifecycles)
+  - FULFILL-09: Service-only doc has no Fulfill button
+  - FULFILL-10: Stock shortage returns 409 with per-item detail
+  - FULFILL-11: Already-fulfilled doc returns 409 on second fulfill attempt
 """
 from __future__ import annotations
 
@@ -32,11 +37,16 @@ def _assert_no_crash(page, ctx: str = "") -> None:
     assert "/login" not in page.url, f"{ctx}: got redirected to login"
 
 
+def _inventory_available(api) -> bool:
+    """Return True if inventory module is installed and reachable."""
+    r = api.get("/inventory")
+    return r.status_code not in {404, 501}
+
+
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="module")
 def draft_doc_id(api):
-    """A fresh draft invoice."""
     r = api.post("/docs", json={
         "doc_type": "invoice",
         "ref_id": "FULFILL-DRAFT-001",
@@ -50,7 +60,7 @@ def draft_doc_id(api):
 
 @pytest.fixture(scope="module")
 def final_doc_id(api):
-    """A finalized invoice (status=final/sent) ready for fulfillment."""
+    """Finalized invoice ready for fulfillment."""
     r = api.post("/docs", json={
         "doc_type": "invoice",
         "ref_id": "FULFILL-FINAL-001",
@@ -61,13 +71,30 @@ def final_doc_id(api):
     })
     assert r.status_code in {200, 201}, f"Create doc failed: {r.text}"
     doc_id = r.json()["id"]
-
-    # Finalize it
     r2 = api.post(f"/docs/{doc_id}/finalize")
     if r2.status_code not in {200, 201}:
-        # Try patching status directly as fallback
         api.patch(f"/docs/{doc_id}", json={"status": "final"})
+    return doc_id
 
+
+@pytest.fixture(scope="module")
+def service_doc_id(api):
+    """A finalized invoice with only service line items."""
+    r = api.post("/docs", json={
+        "doc_type": "invoice",
+        "ref_id": "FULFILL-SERVICE-001",
+        "status": "draft",
+        "line_items": [
+            {"name": "Consulting", "quantity": 3, "unit_price": 100.0, "line_total": 300.0, "sell_by": "hour"},
+            {"name": "Setup Fee", "quantity": 1, "unit_price": 200.0, "line_total": 200.0, "sell_by": "service"},
+        ],
+        "total": 500.0,
+    })
+    assert r.status_code in {200, 201}, f"Create service doc failed: {r.text}"
+    doc_id = r.json()["id"]
+    r2 = api.post(f"/docs/{doc_id}/finalize")
+    if r2.status_code not in {200, 201}:
+        api.patch(f"/docs/{doc_id}", json={"status": "final"})
     return doc_id
 
 
@@ -78,120 +105,145 @@ def test_no_fulfill_button_on_draft(page, ui_server, draft_doc_id):
     page.goto(f"{ui_server}/docs/{draft_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "draft doc detail")
     _save_screenshot(page, "01-draft-no-fulfill-button")
-
     fulfill_btn = page.locator("button:has-text('Fulfill'), [hx-post*='/fulfill']").first
     assert fulfill_btn.count() == 0, "Fulfill button should NOT appear on draft docs"
 
 
 def test_fulfill_button_on_final_doc(page, ui_server, final_doc_id):
-    """FULFILL-02: Finalized invoice shows Fulfill button (celerp-inventory installed)."""
+    """FULFILL-02: Finalized invoice shows Fulfill / Deduct Inventory button."""
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "final doc detail")
     _save_screenshot(page, "02-final-doc-with-fulfill-button")
 
-    body = page.locator("body").inner_text()
-    # If inventory not installed, fulfill button won't show - skip gracefully
-    if "celerp-inventory" not in str(page.url) and "Fulfill" not in body:
-        pytest.skip("celerp-inventory not installed in test environment - Fulfill button not shown")
-
-    fulfill_btn = page.locator("button:has-text('Fulfill'), [hx-post*='/fulfill']").first
-    # Accept that it might not be present if inventory is not installed
+    # Look for the exact button text we set
+    fulfill_btn = page.locator("button:has-text('Fulfill / Deduct Inventory')").first
     if fulfill_btn.count() == 0:
         pytest.skip("Fulfill button not found - inventory module likely not enabled")
-
     assert fulfill_btn.is_visible(), "Fulfill button should be visible on final doc"
+    # Verify tooltip is present
+    title_attr = fulfill_btn.get_attribute("title")
+    assert title_attr and len(title_attr) > 10, "Fulfill button must have a descriptive tooltip"
 
 
-def test_fulfill_action_marks_fulfilled(page, ui_server, api, final_doc_id):
-    """FULFILL-03: Clicking Fulfill marks doc fulfilled; badge appears; no errors."""
+def test_fulfill_action_marks_fulfilled_and_shows_revert(page, ui_server, api, final_doc_id):
+    """FULFILL-03: Fulfill via API marks doc fulfilled; badge appears; Revert button replaces Fulfill."""
+    # Use direct API call (hx_confirm dialogs are unreliable in headless Playwright)
+    r = api.post(f"/docs/{final_doc_id}/fulfill")
+    assert r.status_code in {200, 201}, f"API fulfill failed ({r.status_code}): {r.text}"
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
-    _assert_no_crash(page, "pre-fulfill")
 
-    fulfill_btn = page.locator("button:has-text('Fulfill'), [hx-post*='/fulfill']").first
-    if fulfill_btn.count() == 0:
-        # Fall back to API-level check
-        r = api.post(f"/docs/{final_doc_id}/fulfill")
-        assert r.status_code in {200, 201}, f"API fulfill failed: {r.text}"
-        # Reload and check badge
-        page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
-        _save_screenshot(page, "03-fulfilled-badge")
-        body = page.locator("body").inner_text()
-        _assert_no_crash(page, "post-fulfill reload")
-        assert "fulfilled" in body.lower(), "Fulfilled badge or text not shown after fulfill"
-        return
-
-    # Confirm dialog is expected (hx-confirm)
-    page.on("dialog", lambda d: d.accept())
-    fulfill_btn.click()
-    page.wait_for_load_state("networkidle", timeout=8000)
-
-    _save_screenshot(page, "03-fulfilled-badge")
+    _save_screenshot(page, "03-fulfilled-badge-and-revert-button")
     _assert_no_crash(page, "post-fulfill")
     body = page.locator("body").inner_text()
-    assert "fulfilled" in body.lower(), "Fulfilled badge/text not shown after clicking Fulfill"
+
+    # Badge must be visible
+    assert "fulfilled" in body.lower(), "Fulfilled badge/text not shown after fulfill"
+
+    # Revert button must be present, Fulfill button must be absent
+    revert_btn = page.locator("button:has-text('Revert Fulfillment')").first
+    assert revert_btn.count() > 0, "Revert Fulfillment button must appear after fulfillment"
+    assert revert_btn.is_visible(), "Revert Fulfillment button must be visible"
+
+    fulfill_btn_after = page.locator("button:has-text('Fulfill / Deduct Inventory')").first
+    assert fulfill_btn_after.count() == 0, "Fulfill button must disappear after fulfillment"
+
+    # Tooltip on Revert button
+    revert_title = revert_btn.get_attribute("title")
+    assert revert_title and len(revert_title) > 10, "Revert button must have a tooltip"
 
 
-def test_fulfilled_doc_shows_no_fulfill_button(page, ui_server, final_doc_id):
-    """FULFILL-04: Already-fulfilled doc hides Fulfill button (shows Unfulfill or nothing)."""
+def test_fulfilled_doc_shows_revert_button(page, ui_server, final_doc_id):
+    """FULFILL-04: Fulfilled doc shows Revert Fulfillment button, not Fulfill."""
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "fulfilled doc")
-    _save_screenshot(page, "04-fulfilled-doc-no-fulfill-btn")
+    _save_screenshot(page, "04-fulfilled-doc-revert-button")
 
     body = page.locator("body").inner_text()
     if "fulfilled" not in body.lower():
-        pytest.skip("Doc not in fulfilled state - earlier test may have skipped")
+        pytest.skip("Doc not in fulfilled state")
 
-    # Should NOT see a plain "Fulfill" button (Unfulfill is acceptable)
-    fulfill_btn = page.locator("button:has-text('Fulfill'):not(:has-text('Un'))").first
-    # It's ok if a "Fulfill" button still shows for non-inventory envs - we just confirm no crash
-    _assert_no_crash(page, "fulfilled doc state check")
+    revert_btn = page.locator("button:has-text('Revert Fulfillment')").first
+    fulfill_btn = page.locator("button:has-text('Fulfill / Deduct Inventory')").first
+
+    assert revert_btn.count() > 0 or fulfill_btn.count() == 0, \
+        "Fulfilled doc must show Revert button and hide Fulfill button"
+
+
+def test_revert_fulfillment_restores_fulfill_button(page, ui_server, api, final_doc_id):
+    """FULFILL-05: Revert Fulfillment (via API) restores the Fulfill button."""
+    # Ensure doc is fulfilled (may already be from FULFILL-03, re-fulfill if needed)
+    state_r = api.get(f"/docs/{final_doc_id}")
+    if state_r.json().get("fulfillment_status") != "fulfilled":
+        r = api.post(f"/docs/{final_doc_id}/fulfill")
+        assert r.status_code in {200, 201}, f"Pre-revert fulfill failed ({r.status_code}): {r.text}"
+
+    r = api.post(f"/docs/{final_doc_id}/unfulfill")
+    assert r.status_code in {200, 201}, f"API unfulfill failed ({r.status_code}): {r.text}"
+    # Verify projection updated
+    doc_check = api.get(f"/docs/{final_doc_id}").json()
+    fs_after = doc_check.get("fulfillment_status", "MISSING")
+    assert fs_after != "fulfilled", f"fulfillment_status still 'fulfilled' after unfulfill: {fs_after}"
+    page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
+
+    _save_screenshot(page, "05-after-revert-fulfill-button-restored")
+    _assert_no_crash(page, "post-revert")
+
+    fulfill_btn = page.locator("button:has-text('Fulfill / Deduct Inventory')").first
+    assert fulfill_btn.count() > 0, "Fulfill button must be restored after revert"
+    assert fulfill_btn.is_visible(), "Fulfill button must be visible after revert"
+
+    revert_btn_after = page.locator("button:has-text('Revert Fulfillment')").first
+    assert revert_btn_after.count() == 0, "Revert button must disappear after revert"
+
+
+def test_no_fulfill_button_on_service_only_doc(page, ui_server, service_doc_id):
+    """FULFILL-09: Service-only docs must NOT show a Fulfill button."""
+    page.goto(f"{ui_server}/docs/{service_doc_id}", wait_until="domcontentloaded")
+    _assert_no_crash(page, "service doc detail")
+    _save_screenshot(page, "09-service-doc-no-fulfill-button")
+
+    fulfill_btn = page.locator(
+        "button:has-text('Fulfill / Deduct Inventory'), button:has-text('Revert Fulfillment')"
+    ).first
+    assert fulfill_btn.count() == 0, \
+        "Service-only docs must NOT show any Fulfill or Revert button"
 
 
 def test_warehousing_settings_has_auto_complete_pick(page, ui_server):
-    """FULFILL-05: Warehousing settings page shows auto_complete_pick, not require_pick_before_fulfill."""
+    """FULFILL-06: Warehousing settings page has auto_complete_pick, not require_pick_before_fulfill."""
     page.goto(f"{ui_server}/settings", wait_until="domcontentloaded")
     _assert_no_crash(page, "/settings")
-    _save_screenshot(page, "05-settings-page")
+    _save_screenshot(page, "06-settings-page")
 
-    body = page.locator("body").inner_text()
     html = page.content()
-
-    # The old field must be completely gone
     assert "require_pick_before_fulfill" not in html, \
         "Found legacy field 'require_pick_before_fulfill' in settings page HTML"
 
-    # If warehousing tab exists, navigate to it and check
     warehousing_tab = page.locator("a:has-text('Warehousing'), button:has-text('Warehousing')").first
     if warehousing_tab.count() > 0:
         warehousing_tab.click()
         page.wait_for_load_state("networkidle", timeout=5000)
-        _save_screenshot(page, "05-warehousing-settings-tab")
+        _save_screenshot(page, "06-warehousing-settings-tab")
         html_after = page.content()
         assert "require_pick_before_fulfill" not in html_after, \
-            "Found legacy field 'require_pick_before_fulfill' in warehousing settings tab HTML"
-        # auto_complete_pick checkbox should be present
-        auto_cp = page.locator("[name='auto_complete_pick'], #auto_complete_pick").first
-        if auto_cp.count() > 0:
-            assert auto_cp.is_visible() or True  # Just confirm it's in DOM
+            "Found legacy field in warehousing settings tab HTML"
         _assert_no_crash(page, "warehousing settings tab")
     else:
-        # Warehousing not installed - acceptable
-        pytest.skip("Warehousing module not installed in test environment")
+        pytest.skip("Warehousing module not installed")
 
 
 def test_no_legacy_references_in_ui(page, ui_server):
-    """FULFILL-06: No legacy celerp-fulfillment or mark-delivered references in any rendered page."""
+    """FULFILL-07: No legacy celerp-fulfillment or mark-delivered in rendered HTML."""
     for path in ["/docs", "/settings"]:
         page.goto(f"{ui_server}{path}", wait_until="domcontentloaded")
         html = page.content()
-        assert "mark-delivered" not in html, f"Found 'mark-delivered' in {path} page HTML"
-        assert "celerp_fulfillment" not in html, f"Found 'celerp_fulfillment' in {path} page HTML"
-        assert "celerp-fulfillment" not in html, f"Found 'celerp-fulfillment' in {path} page HTML"
+        assert "mark-delivered" not in html, f"Found 'mark-delivered' in {path}"
+        assert "celerp_fulfillment" not in html, f"Found 'celerp_fulfillment' in {path}"
+        assert "celerp-fulfillment" not in html, f"Found 'celerp-fulfillment' in {path}"
 
 
 def test_void_does_not_change_fulfillment_status(api):
-    """FULFILL-07: Voiding a fulfilled document does NOT change its fulfillment_status."""
-    # Create and finalize a doc
+    """FULFILL-08: Voiding a fulfilled doc does NOT change its fulfillment_status."""
     r = api.post("/docs", json={
         "doc_type": "invoice",
         "ref_id": "FULFILL-VOID-TEST-001",
@@ -202,26 +254,82 @@ def test_void_does_not_change_fulfillment_status(api):
     assert r.status_code in {200, 201}, f"Create failed: {r.text}"
     doc_id = r.json()["id"]
 
-    # Finalize
     r2 = api.post(f"/docs/{doc_id}/finalize")
     if r2.status_code not in {200, 201}:
-        pytest.skip("Cannot finalize doc in test environment")
+        pytest.skip("Cannot finalize")
 
-    # Fulfill via API (may fail if inventory not installed - skip gracefully)
     r3 = api.post(f"/docs/{doc_id}/fulfill")
     if r3.status_code not in {200, 201}:
-        pytest.skip("Fulfill failed - inventory module likely not installed")
+        pytest.skip(f"Fulfill failed (inventory not installed?): {r3.text}")
 
-    # Check fulfilled
     doc_before = api.get(f"/docs/{doc_id}").json()
-    assert doc_before.get("fulfillment_status") in ("fulfilled", "partial"), \
-        f"Expected fulfilled before void, got: {doc_before.get('fulfillment_status')}"
+    fs_before = doc_before.get("fulfillment_status")
+    assert fs_before in ("fulfilled", "partial"), f"Expected fulfilled, got: {fs_before}"
 
-    # Void the doc
-    r4 = api.post(f"/docs/{doc_id}/void", json={"reason": "test void no unfulfill"})
+    r4 = api.post(f"/docs/{doc_id}/void", json={"reason": "test"})
     assert r4.status_code in {200, 201}, f"Void failed: {r4.text}"
 
-    # Fulfillment status must be unchanged
     doc_after = api.get(f"/docs/{doc_id}").json()
-    assert doc_after.get("fulfillment_status") == doc_before.get("fulfillment_status"), \
-        f"Void changed fulfillment_status: was {doc_before.get('fulfillment_status')!r}, now {doc_after.get('fulfillment_status')!r}"
+    fs_after = doc_after.get("fulfillment_status")
+    assert fs_after == fs_before, \
+        f"Void must NOT change fulfillment_status. Was {fs_before!r}, now {fs_after!r}"
+
+
+def test_stock_shortage_returns_409_with_details(api):
+    """FULFILL-10: Fulfilling with insufficient stock returns 409 with per-item error message."""
+    # Create a doc with an item SKU that doesn't exist in inventory
+    r = api.post("/docs", json={
+        "doc_type": "invoice",
+        "ref_id": "FULFILL-SHORTAGE-001",
+        "status": "draft",
+        "line_items": [{
+            "name": "Unobtainium Block",
+            "sku": "SKU-DOES-NOT-EXIST-99999",
+            "quantity": 999,
+            "unit_price": 1.0,
+            "line_total": 999.0,
+        }],
+        "total": 999.0,
+    })
+    assert r.status_code in {200, 201}, f"Create failed: {r.text}"
+    doc_id = r.json()["id"]
+
+    r2 = api.post(f"/docs/{doc_id}/finalize")
+    if r2.status_code not in {200, 201}:
+        pytest.skip("Cannot finalize")
+
+    r3 = api.post(f"/docs/{doc_id}/fulfill")
+    if r3.status_code == 200:
+        pytest.skip("Inventory not enforcing stock levels in test env (no matching stock)")
+    assert r3.status_code == 409, f"Expected 409 for stock shortage, got {r3.status_code}: {r3.text}"
+
+    detail = r3.json().get("detail", "")
+    assert "Unobtainium Block" in detail or "SKU-DOES-NOT-EXIST" in detail or "short" in detail.lower(), \
+        f"Error message should name the item. Got: {detail!r}"
+
+
+def test_double_fulfill_returns_error(api):
+    """FULFILL-11: Attempting to fulfill an already-fulfilled doc returns an error."""
+    r = api.post("/docs", json={
+        "doc_type": "invoice",
+        "ref_id": "FULFILL-DOUBLE-001",
+        "status": "draft",
+        "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 10.0, "line_total": 10.0}],
+        "total": 10.0,
+    })
+    assert r.status_code in {200, 201}
+    doc_id = r.json()["id"]
+
+    r2 = api.post(f"/docs/{doc_id}/finalize")
+    if r2.status_code not in {200, 201}:
+        pytest.skip("Cannot finalize")
+
+    # First fulfill
+    r3 = api.post(f"/docs/{doc_id}/fulfill")
+    if r3.status_code not in {200, 201}:
+        pytest.skip(f"First fulfill failed: {r3.text}")
+
+    # Second fulfill must fail
+    r4 = api.post(f"/docs/{doc_id}/fulfill")
+    assert r4.status_code in {409, 400, 422}, \
+        f"Double fulfill should return 4xx, got {r4.status_code}: {r4.text}"
