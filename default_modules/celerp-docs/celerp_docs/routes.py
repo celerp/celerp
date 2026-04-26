@@ -1993,6 +1993,18 @@ async def fulfill_doc(
     if state.get("fulfillment_status") == "fulfilled":
         raise HTTPException(status_code=409, detail="Document is already fully fulfilled")
 
+    # Check that doc has at least one stocked (non-service) line item
+    line_items_all = state.get("line_items", [])
+    has_stocked = any(
+        (li.get("sku") or "") and (li.get("sell_by") or "") not in ("service", "hour")
+        for li in line_items_all
+    )
+    if not has_stocked:
+        raise HTTPException(
+            status_code=422,
+            detail="This document contains no stocked goods. Only service or non-SKU items are present - there is nothing to fulfill from inventory.",
+        )
+
     # Gather available inventory for SKUs in line items
     skus: set[str] = set()
     for li in state.get("line_items", []):
