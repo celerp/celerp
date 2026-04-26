@@ -1081,3 +1081,37 @@ async def test_undo_receive_return_blocked_if_item_resold(client, session):
     assert "sold" in detail.lower() or "RR-002" in detail, (
         f"Error message must name the blocked item or status. Got: {detail}"
     )
+
+
+@pytest.mark.anyio
+async def test_bill_receive_goods_without_po_line_index(client, session):
+    """Regression: one-click 'Receive Goods' on bills must succeed without po_line_index.
+
+    The per-line PO receive form sends po_line_index; the bill one-click endpoint does not.
+    po_line_index must be optional (defaults to -1) so both flows work.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create and finalize a bill
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Widget A", "sku": "W-A", "quantity": 5, "unit_price": 20.0, "sell_by": "piece"},
+            {"name": "Widget B", "sku": "W-B", "quantity": 3, "unit_price": 10.0, "sell_by": "piece"},
+        ],
+        "subtotal": 130, "tax": 0, "total": 130,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    # POST to /receive without po_line_index - must not 422
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {"sku": "W-A", "name": "Widget A", "quantity_received": 5.0, "cost_price": 20.0},
+            {"sku": "W-B", "name": "Widget B", "quantity_received": 3.0, "cost_price": 10.0},
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, f"Expected 200, got {receive_r.status_code}: {receive_r.text}"

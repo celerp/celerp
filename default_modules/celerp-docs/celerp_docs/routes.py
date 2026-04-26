@@ -116,7 +116,7 @@ class DocPaymentBody(BaseModel):
 
 
 class ReceivedItem(BaseModel):
-    po_line_index: int
+    po_line_index: int = -1  # optional; -1 means not specified (e.g. one-click bill receive)
     item_id: str | None = None
     quantity_received: float
     condition: str = "good"
