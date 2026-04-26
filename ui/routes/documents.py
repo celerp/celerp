@@ -4889,13 +4889,13 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             _active_key = "void"
 
         cards = [
-            {"label": t("status.draft", lang),            "count": draft_cnt,      "total": None, "status": "draft",      "color": "gray"},
-            {"label": t("status.all_issued", lang),       "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",                       "_active_key": "all_issued"},
-            {"label": t("status.overdue", lang),          "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1",                     "_active_key": "overdue"},
-            {"label": t("status.converted_to_invoice", lang), "count": converted_cnt, "total": None, "status": "converted", "color": "green"},
-            {"label": t("btn.void", lang),                "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+            {"label": t("status.draft", lang),       "count": draft_cnt,      "total": None, "status": "draft",      "color": "gray"},
+            {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
+            {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
+            {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
+            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
         ]
-        return status_cards(cards, base_url, _active_key or None, currency=currency)
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
     if doc_type == "credit_note":
         draft_cnt       = _cbs.get("draft", 0)
@@ -4918,7 +4918,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": "Not Restocked",               "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
             {"label": t("btn.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
         ]
-        return status_cards(cards, base_url, _active_key or None, currency=currency)
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
     if doc_type == "bill":
         all_issued_cnt  = _sm.get("all_issued_count", 0)
@@ -4967,13 +4967,13 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             _active_key = "void"
 
         cards = [
-            {"label": t("status.draft", lang),            "count": draft_cnt,      "total": None, "status": "draft",      "color": "gray"},
-            {"label": t("status.all_issued", lang),       "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
-            {"label": t("status.overdue", lang),          "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
-            {"label": t("status.converted_to_invoice", lang), "count": converted_cnt, "total": None, "status": "converted", "color": "green"},
-            {"label": t("btn.void", lang),                "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+            {"label": t("status.draft", lang),       "count": draft_cnt,      "total": None, "status": "draft",      "color": "gray"},
+            {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
+            {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
+            {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
+            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
         ]
-        return status_cards(cards, base_url, _active_key or None, currency=currency)
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
     # Purchase order: keep as-is
     if doc_type == "purchase_order":
@@ -4982,7 +4982,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("doc.sent", lang),              "count": _cbs.get("sent", 0),  "total": None, "status": "sent",  "color": "blue"},
             {"label": t("btn.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
-        return status_cards(cards, base_url, _active_key or None, currency=currency)
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
     # Generic fallback for remaining doc types (receipt, etc.)
     _DEFAULT_CARDS = [
@@ -5119,7 +5119,7 @@ def _list_status_cards(summary: dict, active_status: str = "", converted_to_type
         {"label": "Converted to Invoice", "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": "/lists?converted_to_type=invoice","_active_key": "converted_to_invoice"},
         {"label": "Void",                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
-    return status_cards(cards, "/lists", _active_key or None)
+    return status_cards(cards, "/lists", _active_key or None, show_all_card=False)
 
 
 def _list_type_tabs(active: str) -> FT:
