@@ -945,6 +945,32 @@ async def test_receive_return_no_sold_inventory(client, session):
 
 
 @pytest.mark.anyio
+async def test_receive_return_fails_loudly_when_no_data_resolvable(client, session):
+    """receive-return must 422 with a clear message when neither sold inventory nor
+    invoice line items can supply name/sell_by for the requested SKU.
+
+    This prevents silent creation of broken inventory records.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Unlinked CN (no original_doc_id), no inventory, no invoice fallback
+    cn = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note",
+        "line_items": [],  # no line items - nothing to resolve from
+        "subtotal": 0, "tax": 0, "total": 0,
+    })
+    assert cn.status_code == 200
+    cn_id = cn.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # SKU has no sold record and no line item on the CN - must fail loudly
+    r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "GHOST-SKU", "quantity": 1}]})
+    assert r.status_code == 422, r.text
+    assert "name" in r.json()["detail"] or "sell_by" in r.json()["detail"]
+
+
+@pytest.mark.anyio
 async def test_receive_return_draft_cn_rejected(client, session):
     """receive-return must be rejected on draft credit notes."""
     token = await _register(client)

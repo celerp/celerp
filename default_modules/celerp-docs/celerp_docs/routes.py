@@ -2201,11 +2201,30 @@ async def receive_return(
             "cost_price", "unit_price",
         )}
 
+        resolved_name = ref.get("name") or li_fallback.get("name") or ""
+        resolved_sell_by = ref.get("sell_by") or li_fallback.get("sell_by") or ""
+
+        # Hard stop: if we cannot resolve the minimum required fields from any source, refuse loudly.
+        missing = []
+        if not resolved_name:
+            missing.append("name")
+        if not resolved_sell_by:
+            missing.append("sell_by")
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot receive return for SKU '{it.sku}': missing required field(s) {missing}. "
+                    f"No sold inventory record and no matching line item in the original invoice were found. "
+                    f"Ensure the credit note is linked to an invoice or that the item was sold through this system."
+                ),
+            )
+
         item_data = {
             "sku": it.sku,
-            "name": ref.get("name") or li_fallback.get("name") or it.sku,
+            "name": resolved_name,
             "quantity": it.quantity,
-            "sell_by": ref.get("sell_by") or li_fallback.get("sell_by") or "piece",
+            "sell_by": resolved_sell_by,
             "cost_price": float(ref.get("cost_price") or 0),
             "unit_price": float(ref.get("unit_price") or ref.get("sell_price") or li_fallback.get("unit_price") or 0),
             "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
