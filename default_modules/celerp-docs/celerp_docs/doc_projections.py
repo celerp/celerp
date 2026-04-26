@@ -18,8 +18,16 @@ def _recalc_list_totals(state: dict) -> dict:
     state["discount_amount"] = discount_amount
 
     taxable = subtotal - discount_amount
-    tax_rate = float(state.get("tax", 0) or 0)
-    tax_amount = taxable * tax_rate / 100
+    # Use per-line tax rates if present; fall back to header tax rate.
+    per_line_tax = sum(
+        float(i.get("line_total", 0) or 0) * float(i.get("tax_rate", 0) or 0) / 100
+        for i in items
+    )
+    if per_line_tax:
+        tax_amount = per_line_tax
+    else:
+        tax_rate = float(state.get("tax", 0) or 0)
+        tax_amount = taxable * tax_rate / 100
     state["tax_amount"] = tax_amount
     state["total"] = taxable + tax_amount
     return state

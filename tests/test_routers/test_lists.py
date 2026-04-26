@@ -715,3 +715,44 @@ async def test_list_note_added(client):
     # Empty note rejected
     bad = await client.post(f"/lists/{eid}/notes", headers=_h(token), json={"text": ""})
     assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_totals_correct_after_patch_with_per_line_tax(client):
+    """Patching line items with per-line tax rates yields correct totals.
+
+    Regression for the bug where save_list_lines sent tax as an amount and
+    _recalc_list_totals incorrectly treated it as a percentage rate.
+    """
+    token = await _register(client)
+    # Create list with one line: qty=2, unit_price=100, line_total=200, tax_rate=10%
+    eid = (await client.post("/lists", headers=_h(token), json={
+        "list_type": "quotation",
+        "line_items": [{"name": "Widget", "quantity": 2, "unit_price": 100, "line_total": 200, "tax_rate": 10}],
+        "subtotal": 200,
+        "discount": 0,
+        "discount_type": "flat",
+        "tax": 0,
+        "total": 220,
+        "currency": "USD",
+    })).json()["id"]
+
+    detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+    assert detail["subtotal"] == 200, f"subtotal wrong: {detail}"
+    # Per-line tax: 200 * 10% = 20, total = 220
+    assert detail["total"] == 220, f"total wrong after create: {detail}"
+
+    # Now patch (simulating what save_list_lines does)
+    fields_changed = {
+        "line_items": {"old": None, "new": [{"name": "Widget", "quantity": 2, "unit_price": 100, "line_total": 200, "tax_rate": 10}]},
+        "subtotal": {"old": None, "new": 200},
+        "tax": {"old": None, "new": 20},   # JS sends tax AMOUNT not rate - this was the bug
+        "total": {"old": None, "new": 220},
+    }
+    r = await client.patch(f"/lists/{eid}", headers=_h(token), json={"fields_changed": fields_changed})
+    assert r.status_code == 200
+
+    detail2 = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+    # Total must still be 220 - not inflated by treating 20 as a 20% rate
+    assert detail2["total"] == 220, f"total wrong after patch: {detail2}"
+    assert detail2["subtotal"] == 200, f"subtotal wrong after patch: {detail2}"
