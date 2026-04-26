@@ -48,6 +48,7 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "doc.line_returned": "Line item returned",
     "doc.items_returned": "Items returned",
     "doc.shared": "Share link created",
+    "doc.reverted_to_draft": "Reverted to draft",
     "contact.created": "Contact added",
     "contact.updated": "Contact updated",
     "deal.created": "Deal created",
@@ -204,6 +205,12 @@ def detail_from_entry(data: dict, event_type: str) -> str:
             parts.append(f"refunded: {amount}")
         return " - ".join(parts) if parts else ""
     if event_type == "doc.voided":
+        reason = data.get("reason", "")
+        parts = [doc_ref] if doc_ref else []
+        if reason:
+            parts.append(str(reason)[:80])
+        return " - ".join(parts) if parts else ""
+    if event_type == "doc.reverted_to_draft":
         reason = data.get("reason", "")
         parts = [doc_ref] if doc_ref else []
         if reason:
