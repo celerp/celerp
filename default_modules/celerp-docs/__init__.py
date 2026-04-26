@@ -15,6 +15,7 @@ PLUGIN_MANIFEST = {
     "slots": {
         "nav": [
             {"group": "Sales Documents", "key": "invoices", "href": "/docs?type=invoice", "label": "Invoices", "label_key": "nav.invoices", "order": 20, "settings_href": "/settings/sales", "min_role": "operator"},
+            {"group": "Sales Documents", "key": "credit-notes", "href": "/docs?type=credit_note", "label": "Credit Notes", "label_key": "nav.credit_notes", "order": 20.8, "min_role": "operator"},
             {"group": "Sales Documents", "key": "memos", "href": "/docs?type=memo", "label": "Consignment Out", "label_key": "nav.consignment_out", "order": 20.5, "min_role": "operator"},
             {"group": "Sales Documents", "key": "lists", "href": "/lists", "label": "Lists / Quotations", "label_key": "nav.lists_quotations", "order": 21, "min_role": "operator"},
             {"group": "Purchasing Documents", "key": "purchase-orders", "href": "/docs?type=purchase_order", "label": "Draft Bills & POs", "label_key": "nav.draft_bills_pos", "order": 26, "settings_href": "/settings/purchasing", "min_role": "operator"},
