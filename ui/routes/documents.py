@@ -735,6 +735,7 @@ def setup_routes(app):
         if not code:
             return JSONResponse({})
         price_list = request.query_params.get("price_list", "Retail").strip() or "Retail"
+        is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
 
         def _extract(item: dict) -> dict:
             return {
@@ -749,21 +750,24 @@ def setup_routes(app):
             }
 
         try:
-            # Try exact SKU match first
-            resp = await api.list_items(token, {"sku": code, "limit": 1})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-            if items:
-                return JSONResponse(_extract(items[0]))
-            # Try exact barcode match
-            resp = await api.list_items(token, {"barcode": code, "limit": 1})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-            if items:
-                return JSONResponse(_extract(items[0]))
-            # Fallback: general search (name, description, attributes)
-            resp = await api.list_items(token, {"q": code, "limit": 1})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-            if items:
-                return JSONResponse(_extract(items[0]))
+            if is_credit_note:
+                # Credit notes: sold items first (returns), then active fallback
+                for params in ({"sku": code, "limit": 1, "status": "sold"},
+                               {"barcode": code, "limit": 1, "status": "sold"},
+                               {"sku": code, "limit": 1},
+                               {"barcode": code, "limit": 1}):
+                    resp = await api.list_items(token, params)
+                    items = resp.get("items", []) if isinstance(resp, dict) else resp
+                    if items:
+                        return JSONResponse(_extract(items[0]))
+            else:
+                for params in ({"sku": code, "limit": 1},
+                               {"barcode": code, "limit": 1},
+                               {"q": code, "limit": 1}):
+                    resp = await api.list_items(token, params)
+                    items = resp.get("items", []) if isinstance(resp, dict) else resp
+                    if items:
+                        return JSONResponse(_extract(items[0]))
         except Exception:
             pass
         return JSONResponse({})
@@ -777,6 +781,7 @@ def setup_routes(app):
             return _J({"error": "unauthorized"}, status_code=401)
         q = request.query_params.get("q", "").strip()
         price_list = request.query_params.get("price_list", "Retail").strip() or "Retail"
+        is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
         if not q:
             return _J([])
 
@@ -793,9 +798,24 @@ def setup_routes(app):
             }
 
         try:
-            resp = await api.list_items(token, {"q": q, "limit": 10})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-            return _J([_extract(i) for i in items])
+            if is_credit_note:
+                # Credit notes: search sold items first, then active, merge (sold first)
+                resp_sold = await api.list_items(token, {"q": q, "limit": 10, "status": "sold"})
+                sold = resp_sold.get("items", []) if isinstance(resp_sold, dict) else resp_sold
+                resp_active = await api.list_items(token, {"q": q, "limit": 10})
+                active = resp_active.get("items", []) if isinstance(resp_active, dict) else resp_active
+                seen = set()
+                items = []
+                for item in sold + active:
+                    key = item.get("sku") or item.get("entity_id")
+                    if key and key not in seen:
+                        seen.add(key)
+                        items.append(item)
+                return _J([_extract(i) for i in items[:10]])
+            else:
+                resp = await api.list_items(token, {"q": q, "limit": 10})
+                items = resp.get("items", []) if isinstance(resp, dict) else resp
+                return _J([_extract(i) for i in items])
         except Exception:
             return _J([])
 
@@ -3827,10 +3847,14 @@ const _CELERP_EID = {repr(entity_id)};
 const _CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
-/* ── Price list helper ── */
+/* ── Price list / doc-type helpers ── */
+const _CELERP_DOC_TYPE = {repr(doc_type)};
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
+}}
+function _celerpDocTypeParam() {{
+    return _CELERP_DOC_TYPE ? '&doc_type=' + encodeURIComponent(_CELERP_DOC_TYPE) : '';
 }}
 /* ── Barcode scan bar ── */
 (function() {{
@@ -3845,7 +3869,7 @@ function _celerpPriceListParam() {{
         scanStatus.textContent = 'Looking up...';
         scanStatus.className = 'scan-bar-status';
         try {{
-            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam());
+            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
             if (!resp.ok) throw new Error('lookup failed');
             const data = await resp.json();
             if (data.description || data.sku) {{
@@ -3947,7 +3971,7 @@ async function celerpAcSearch(input, field) {{
     clearTimeout(_celerpAcTimer);
     _celerpAcTimer = setTimeout(async () => {{
         const pl = _celerpPriceListParam();
-        const resp = await fetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl);
+        const resp = await fetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam());
         if (!resp.ok) return;
         const items = await resp.json();
         list.innerHTML = '';
