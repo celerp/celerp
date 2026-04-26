@@ -131,6 +131,16 @@ def _render_fulfill_section(doc: dict):
     )
 
 
+def _render_fulfillment_badge(doc: dict):
+    """Fulfillment badge - shown when doc is fulfilled."""
+    fs = doc.get("fulfillment_status") or ""
+    if fs == "fulfilled":
+        return Span("Fulfilled", cls="badge badge--green")
+    if fs == "partial":
+        return Span("Partially Fulfilled", cls="badge badge--amber")
+    return None
+
+
 def _render_receive_return_section(doc: dict):
     """Receive Return button - shown on credit notes when celerp-inventory is installed.
 
