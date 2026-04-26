@@ -2315,15 +2315,15 @@ celerpUpdateBulkAlloc();
 
     @app.post("/docs/{entity_id}/receive-return")
     async def doc_receive_return(request: Request, entity_id: str):
+        import re as _re
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        cid_safe = f"receive-return-{entity_id}".replace(":", "-")
         form = await request.form()
-        # Parse items[N][field] form encoding
         items_raw: dict[int, dict] = {}
         for key, value in form.multi_items():
-            import re as _re
             m = _re.match(r"items\[(\d+)\]\[(\w+)\]", key)
             if m:
                 idx, field = int(m.group(1)), m.group(2)
@@ -2344,17 +2344,12 @@ celerpUpdateBulkAlloc();
                 "cost_price": float(row.get("cost_price") or 0),
             })
         if not items:
-            cid_safe = f"receive-return-{entity_id}".replace(":", "-")
-            return Div(
-                Span("No valid quantities entered.", cls="flash flash--error"),
-                id=cid_safe,
-            )
+            return Div(Span("No valid quantities entered.", cls="flash flash--error"), id=cid_safe)
         try:
             await api.receive_return(token, entity_id, items)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            cid_safe = f"receive-return-{entity_id}".replace(":", "-")
             return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
         try:
             doc = await api.get_doc(token, entity_id)
