@@ -362,8 +362,8 @@ async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _
 
 
 @pytest.mark.asyncio
-async def test_void_fulfilled_doc_restores_stock(client, session, auth, _setup_ids):
-    """Voiding a fulfilled doc should restore stock automatically."""
+async def test_void_does_not_change_fulfillment_status(client, session, auth, _setup_ids):
+    """Voiding a fulfilled doc must NOT change its fulfillment_status (independent lifecycles)."""
     from celerp.models.projections import Projection
     from celerp.services.fulfill import execute_fulfill
     from celerp.services.pick import compute_pick_plan
@@ -390,15 +390,20 @@ async def test_void_fulfilled_doc_restores_stock(client, session, auth, _setup_i
     r = await client.post(f"/docs/{doc_id}/void", headers=auth["headers"], json={"reason": "test"})
     assert r.status_code == 200, r.text
 
-    # Stock should be restored
+    # fulfillment_status must be preserved - void and fulfillment are independent lifecycles
+    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
+    assert doc_row.state.get("fulfillment_status") == "fulfilled", \
+        "Voiding a fulfilled doc must NOT clear fulfillment_status"
+
+    # Stock must NOT be automatically restored (fulfillment is independent)
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 5
-    assert inv_row.state.get("is_available") is True
+    assert float(inv_row.state.get("quantity", 0)) == 0, \
+        "Voiding must not auto-restore stock; use Revert Fulfillment for that"
 
 
 @pytest.mark.asyncio
-async def test_revert_fulfilled_doc_restores_stock(client, session, auth, _setup_ids):
-    """Reverting a fulfilled doc to draft should restore stock automatically."""
+async def test_revert_to_draft_does_not_change_fulfillment_status(client, session, auth, _setup_ids):
+    """Reverting a fulfilled doc to draft must NOT change its fulfillment_status (independent lifecycles)."""
     from celerp.models.projections import Projection
     from celerp.services.fulfill import execute_fulfill
     from celerp.services.pick import compute_pick_plan
@@ -421,22 +426,24 @@ async def test_revert_fulfilled_doc_restores_stock(client, session, auth, _setup
     )
     await session.commit()
 
-    # Verify item is depleted
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 0
-
     # Revert to draft via API
     r = await client.post(f"/docs/{doc_id}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
 
-    # Stock should be restored
+    # fulfillment_status must be preserved
+    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
+    assert doc_row.state.get("fulfillment_status") == "fulfilled", \
+        "Reverting to draft must NOT clear fulfillment_status"
+
+    # Stock must NOT be automatically restored
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 8
+    assert float(inv_row.state.get("quantity", 0)) == 0, \
+        "Revert-to-draft must not auto-restore stock; use Revert Fulfillment for that"
 
 
 @pytest.mark.asyncio
-async def test_unvoid_previously_fulfilled_doc_refulfills(client, session, auth, _setup_ids):
-    """Unvoiding a previously-fulfilled doc should re-fulfill."""
+async def test_unvoid_does_not_auto_refulfill(client, session, auth, _setup_ids):
+    """Unvoiding a doc must NOT auto-re-fulfill it (fulfillment is always manual)."""
     from celerp.models.projections import Projection
     from celerp.services.fulfill import execute_fulfill
     from celerp.services.pick import compute_pick_plan
@@ -459,22 +466,19 @@ async def test_unvoid_previously_fulfilled_doc_refulfills(client, session, auth,
     )
     await session.commit()
 
-    # Void the doc (un-fulfills automatically)
+    # Void the doc
     r = await client.post(f"/docs/{doc_id}/void", headers=auth["headers"], json={"reason": "test void"})
     assert r.status_code == 200
 
-    # Verify stock restored after void
-    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    # Stock should be available (qty restored to 5 or original remaining)
-    assert float(inv_row.state.get("quantity", 0)) > 0
-
-    # Unvoid the doc (should re-fulfill)
+    # Unvoid the doc
     r = await client.post(f"/docs/{doc_id}/unvoid", headers=auth["headers"], json={})
     assert r.status_code == 200
 
-    # Check doc is re-fulfilled
+    # fulfillment_status must remain what it was (fulfilled - void didn't change it)
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") in ("fulfilled", "partial")
+    fs = doc_row.state.get("fulfillment_status")
+    assert fs == "fulfilled", \
+        f"fulfillment_status should be 'fulfilled' (unchanged through void/unvoid cycle), got: {fs}"
 
 
 @pytest.mark.asyncio

@@ -85,10 +85,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]
             current["doc_number"] = data["ref_id"]
-        current.pop("fulfillment_status", None)
-        current.pop("fulfilled_items", None)
-        current.pop("fulfilled_at", None)
-        current.pop("fulfilled_by", None)
+        # Fulfillment state is independent of doc status - do not clear it here.
+        # Use the /unfulfill endpoint to explicitly revert fulfillment.
     elif event_type == "doc.unvoided":
         restored = data.get("restored_status", "final")
         current["status"] = restored
