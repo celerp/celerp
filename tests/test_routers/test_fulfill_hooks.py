@@ -130,3 +130,86 @@ class TestOnPreFulfill:
         with pytest.raises(HTTPException) as exc_info:
             await on_pre_fulfill(doc_id="doc:456", company_id="00000000-0000-0000-0000-000000000001", session=mock_session)
         assert exc_info.value.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# on_post_unfulfill
+# ---------------------------------------------------------------------------
+
+class TestOnPostUnfulfill:
+    @pytest.fixture(autouse=True)
+    def _require_warehousing(self):
+        pytest.importorskip("celerp_warehousing")
+
+    @pytest.mark.asyncio
+    async def test_no_pick_no_error(self):
+        """No pick instruction linked to doc - function returns without error."""
+        from celerp_warehousing.hooks import on_post_unfulfill
+
+        mock_session = AsyncMock()
+        mock_session.get = AsyncMock(return_value=MagicMock(settings={}))
+        mock_session.execute = AsyncMock(return_value=MagicMock(scalars=lambda: MagicMock(__iter__=lambda s: iter([]))))
+
+        await on_post_unfulfill(doc_id="doc:123", company_id="00000000-0000-0000-0000-000000000001", session=mock_session)
+
+    @pytest.mark.asyncio
+    async def test_completed_pick_reopened(self):
+        """Completed pick instruction gets reopened and history entry added."""
+        from celerp_warehousing.hooks import on_post_unfulfill
+
+        mock_session = AsyncMock()
+
+        mock_pick = MagicMock()
+        mock_pick.state = {
+            "list_type": "pick_instruction",
+            "source_doc_id": "doc:789",
+            "status": "completed",
+        }
+
+        # First execute (active pick search) returns nothing; second (completed) returns mock_pick
+        call_count = {"n": 0}
+        def _execute_side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                scalars_result = MagicMock()
+                scalars_result.__iter__ = lambda s: iter([])
+                return MagicMock(scalars=lambda: scalars_result)
+            scalars_result = MagicMock()
+            scalars_result.__iter__ = lambda s: iter([mock_pick])
+            return MagicMock(scalars=lambda: scalars_result)
+
+        mock_session.execute = AsyncMock(side_effect=_execute_side_effect)
+
+        await on_post_unfulfill(doc_id="doc:789", company_id="00000000-0000-0000-0000-000000000001", session=mock_session)
+
+        assert mock_pick.state["status"] == "open"
+        assert mock_pick.state["reopened_reason"] == "fulfillment_reverted"
+        history = mock_pick.state["history"]
+        assert len(history) == 1
+        assert history[0]["event"] == "pick_reopened"
+        assert history[0]["doc_id"] == "doc:789"
+
+    @pytest.mark.asyncio
+    async def test_open_pick_also_reopened(self):
+        """Active (open/draft) pick instruction also gets reopened with history."""
+        from celerp_warehousing.hooks import on_post_unfulfill
+
+        mock_session = AsyncMock()
+
+        mock_pick = MagicMock()
+        mock_pick.state = {
+            "list_type": "pick_instruction",
+            "source_doc_id": "doc:111",
+            "status": "draft",
+            "history": [{"event": "pick_created"}],
+        }
+
+        scalars_result = MagicMock()
+        scalars_result.__iter__ = lambda s: iter([mock_pick])
+        mock_session.execute = AsyncMock(return_value=MagicMock(scalars=lambda: scalars_result))
+
+        await on_post_unfulfill(doc_id="doc:111", company_id="00000000-0000-0000-0000-000000000001", session=mock_session)
+
+        assert mock_pick.state["status"] == "open"
+        assert len(mock_pick.state["history"]) == 2
+        assert mock_pick.state["history"][-1]["event"] == "pick_reopened"

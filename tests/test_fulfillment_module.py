@@ -162,3 +162,17 @@ async def test_unfulfill_rejects_unfulfilled(client, session, auth, _setup_ids):
     ])
     r = await client.post(f"/docs/{doc_id}/unfulfill", headers=auth["headers"], json={})
     assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_fulfill_raises_on_stock_shortage(client, session, auth, _setup_ids):
+    """POST /docs/{id}/fulfill returns 409 with item detail when stock is insufficient."""
+    # Create a doc needing 9999 units of an item we only have a little of
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": "X", "quantity": 9999, "unit_price": 1.0, "sell_by": "piece"},
+    ])
+    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"], json={})
+    assert r.status_code == 409
+    detail = r.json().get("detail", "")
+    assert "insufficient stock" in detail.lower() or "cannot fulfill" in detail.lower(), \
+        f"Expected shortage detail, got: {detail!r}"

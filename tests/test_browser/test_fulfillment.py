@@ -187,3 +187,41 @@ def test_no_legacy_references_in_ui(page, ui_server):
         assert "mark-delivered" not in html, f"Found 'mark-delivered' in {path} page HTML"
         assert "celerp_fulfillment" not in html, f"Found 'celerp_fulfillment' in {path} page HTML"
         assert "celerp-fulfillment" not in html, f"Found 'celerp-fulfillment' in {path} page HTML"
+
+
+def test_void_does_not_change_fulfillment_status(api):
+    """FULFILL-07: Voiding a fulfilled document does NOT change its fulfillment_status."""
+    # Create and finalize a doc
+    r = api.post("/docs", json={
+        "doc_type": "invoice",
+        "ref_id": "FULFILL-VOID-TEST-001",
+        "status": "draft",
+        "line_items": [{"name": "Gadget", "quantity": 1, "unit_price": 10.0, "line_total": 10.0}],
+        "total": 10.0,
+    })
+    assert r.status_code in {200, 201}, f"Create failed: {r.text}"
+    doc_id = r.json()["id"]
+
+    # Finalize
+    r2 = api.post(f"/docs/{doc_id}/finalize")
+    if r2.status_code not in {200, 201}:
+        pytest.skip("Cannot finalize doc in test environment")
+
+    # Fulfill via API (may fail if inventory not installed - skip gracefully)
+    r3 = api.post(f"/docs/{doc_id}/fulfill")
+    if r3.status_code not in {200, 201}:
+        pytest.skip("Fulfill failed - inventory module likely not installed")
+
+    # Check fulfilled
+    doc_before = api.get(f"/docs/{doc_id}").json()
+    assert doc_before.get("fulfillment_status") in ("fulfilled", "partial"), \
+        f"Expected fulfilled before void, got: {doc_before.get('fulfillment_status')}"
+
+    # Void the doc
+    r4 = api.post(f"/docs/{doc_id}/void", json={"reason": "test void no unfulfill"})
+    assert r4.status_code in {200, 201}, f"Void failed: {r4.text}"
+
+    # Fulfillment status must be unchanged
+    doc_after = api.get(f"/docs/{doc_id}").json()
+    assert doc_after.get("fulfillment_status") == doc_before.get("fulfillment_status"), \
+        f"Void changed fulfillment_status: was {doc_before.get('fulfillment_status')!r}, now {doc_after.get('fulfillment_status')!r}"

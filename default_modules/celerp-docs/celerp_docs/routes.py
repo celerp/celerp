@@ -603,18 +603,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     if current_status in ("paid", "partial"):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
 
-    # Un-fulfill before voiding if doc was fulfilled
-    fulfillment_status = row.state.get("fulfillment_status")
-    if fulfillment_status and fulfillment_status != "unfulfilled":
-        await execute_unfulfill(
-            session, doc_entity_id=entity_id, doc_state=row.state,
-            company_id=company_id, user_id=user.id, reason="void",
-        )
-
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
-    if fulfillment_status:
-        event_data["pre_void_fulfillment"] = fulfillment_status
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",
@@ -636,14 +626,6 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
     if state.get("received_items"):
         raise HTTPException(status_code=409, detail="Cannot revert document with received items")
-
-    # Un-fulfill before reverting if doc was fulfilled
-    fulfillment_status = state.get("fulfillment_status")
-    if fulfillment_status and fulfillment_status != "unfulfilled":
-        await execute_unfulfill(
-            session, doc_entity_id=entity_id, doc_state=state,
-            company_id=company_id, user_id=user.id, reason="revert_to_draft",
-        )
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:
@@ -2047,6 +2029,20 @@ async def fulfill_doc(
                 })
 
     pick_result = compute_pick_plan(state.get("line_items", []), available_inv)
+
+    if pick_result.unfulfilled:
+        # Build a name lookup from line items for better error messages
+        sku_to_name = {li.get("sku", ""): li.get("name", "Unknown") for li in state.get("line_items", [])}
+        shortages = []
+        for sh in pick_result.unfulfilled:
+            sku = sh.get("sku", "")
+            name = sku_to_name.get(sku, "Unknown")
+            shortages.append(f"  \u2022 {name} (SKU: {sku}): short by {sh.get('short_qty', 0)}")
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot fulfill: insufficient stock for the following items:\n" + "\n".join(shortages),
+        )
+
     from celerp.modules.slots import fire_lifecycle_strict
     await fire_lifecycle_strict("pre_fulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
     result = await execute_fulfill(
@@ -2084,5 +2080,7 @@ async def unfulfill_doc(
         user_id=user.id,
         reason="manual",
     )
+    from celerp.modules.slots import fire_lifecycle_strict
+    await fire_lifecycle_strict("post_unfulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
     await session.commit()
     return result

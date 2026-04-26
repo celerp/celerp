@@ -91,12 +91,26 @@ def _render_fulfill_section(doc: dict):
         return ""
     if doc.get("status") not in FULFILLABLE_STATUSES:
         return ""
+    # Service-only docs don't track inventory - no fulfill needed
+    line_items = doc.get("line_items") or []
+    if line_items and all((item.get("sell_by") or "") in ("service", "hour") for item in line_items):
+        return ""
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     cid = f"fulfill-toggle-{entity_id}"
     fs = doc.get("fulfillment_status") or "unfulfilled"
     if fs == "fulfilled":
         return Div(
-            Span("Fulfilled ✓", cls="badge badge--green"),
+            Form(
+                Button(
+                    "Revert Fulfillment",
+                    cls="btn btn--warning btn--sm",
+                    title="Undo fulfillment. Returns stock to inventory. If a pick instruction exists, it will be reopened. This action is logged.",
+                ),
+                hx_post=f"/docs/{entity_id}/unfulfill",
+                hx_confirm="Revert fulfillment? This will return stock to inventory and reopen any associated pick instruction.",
+                hx_target=f"#{cid}",
+                hx_swap="outerHTML",
+            ),
             id=cid,
         )
     return Div(
@@ -107,6 +121,7 @@ def _render_fulfill_section(doc: dict):
             hx_target=f"#{cid}",
             hx_swap="outerHTML",
             cls="btn btn--primary btn--sm",
+            title="Mark this document as fulfilled. Use this after goods have been handed off to the customer. This action affects inventory stock levels.",
         ),
         id=cid,
     )
