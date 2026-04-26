@@ -26,7 +26,7 @@ from celerp.services.auth import get_current_company_id, get_current_user, requi
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import compute_pick_plan
-from celerp_docs.doc_constants import FULFILLABLE_STATUSES
+from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1988,8 +1988,8 @@ async def fulfill_doc(
     """Fulfill a document: compute pick plan and deduct inventory."""
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
-    if state.get("status") not in FULFILLABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Document must be finalized before fulfillment")
+    if state.get("status") in UNFULFILLABLE_STATUSES:
+        raise HTTPException(status_code=409, detail="Cannot fulfill a draft or voided document")
     if state.get("fulfillment_status") == "fulfilled":
         raise HTTPException(status_code=409, detail="Document is already fully fulfilled")
 

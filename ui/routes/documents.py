@@ -84,18 +84,22 @@ def _doc_section_label(doc_type: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_fulfill_section(doc: dict):
-    """Fulfill button - shown when celerp-inventory is installed and doc is fulfillable."""
+    """Fulfill / Revert Fulfillment button.
+
+    Revert: shows whenever fulfillment_status == "fulfilled" (no status restriction - even void docs).
+    Fulfill: hidden only on draft and void statuses; shown on all other statuses.
+    Requires celerp-inventory to be installed.
+    """
     from celerp.modules.loader import loaded_modules
-    from celerp_docs.doc_constants import FULFILLABLE_STATUSES
+    from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
     if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
-        return ""
-    if doc.get("status") not in FULFILLABLE_STATUSES:
         return ""
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     # CSS IDs cannot contain colons (e.g. "doc:PF-2604-0002") - sanitize for use as selector
     cid_safe = f"fulfill-toggle-{entity_id}".replace(":", "-")
     fs = doc.get("fulfillment_status") or "unfulfilled"
     if fs == "fulfilled":
+        # Revert always shows when fulfilled, regardless of doc status
         return Div(
             Form(
                 Button(
@@ -110,6 +114,9 @@ def _render_fulfill_section(doc: dict):
             ),
             id=cid_safe,
         )
+    # Fulfill button hidden on draft and void only
+    if doc.get("status") in UNFULFILLABLE_STATUSES:
+        return ""
     return Div(
         Button(
             "Fulfill / Deduct Inventory",
