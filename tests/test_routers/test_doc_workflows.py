@@ -757,16 +757,15 @@ async def test_summary_all_card_count_equals_all_issued_not_sum_of_cards(client,
 
 
 @pytest.mark.anyio
-async def test_credit_note_requires_original_doc_id(client, session):
-    """Regression: creating a credit_note without original_doc_id must return 422, not 500."""
+async def test_credit_note_can_be_created_without_original_doc_id(client, session):
+    """Regression: creating a credit_note without original_doc_id is now allowed (link can be added later)."""
     token = await _register(client)
     r = await client.post(
         "/docs",
         headers=_h(token),
         json={"doc_type": "credit_note", "line_items": [], "subtotal": 0, "tax": 0, "total": 10},
     )
-    assert r.status_code == 422
-    assert "original_doc_id" in r.json().get("detail", "").lower()
+    assert r.status_code == 200, r.text
 
 
 @pytest.mark.anyio

@@ -632,10 +632,6 @@ def setup_routes(app):
             from starlette.responses import Response as _R
             return _R("", status_code=401)
         doc_type = request.query_params.get("type", "invoice")
-        # Credit notes must be created from an existing invoice, not as blank docs
-        if doc_type == "credit_note":
-            from starlette.responses import Response as _R
-            return _R("", status_code=204, headers={"HX-Redirect": "/docs?type=invoice&hint=create_credit_note"})
         try:
             result = await api.create_doc(token, {"doc_type": doc_type, "status": "draft"})
             entity_id = result.get("entity_id") or result.get("id", "")
@@ -1729,6 +1725,25 @@ def setup_routes(app):
                 await api.delete_doc(token, entity_id)
                 doc_type = str(form.get("doc_type", "")).strip() or "invoice"
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})
+            elif action == "create-credit-note":
+                # Fetch source invoice and pre-populate CN with its line items (negated quantities)
+                source = await api.get_doc(token, entity_id)
+                line_items = [
+                    {k: v for k, v in li.items() if k not in ("id", "line_total")}
+                    for li in (source.get("line_items") or [])
+                ]
+                cn_payload = {
+                    "doc_type": "credit_note",
+                    "original_doc_id": entity_id,
+                    "contact_id": source.get("contact_id"),
+                    "line_items": line_items,
+                    "subtotal": source.get("subtotal") or 0,
+                    "tax": source.get("tax") or 0,
+                    "total": source.get("total") or 0,
+                }
+                result = await api.create_doc(token, cn_payload)
+                cn_id = result.get("entity_id") or result.get("id", "")
+                return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{cn_id}"})
             else:
                 return _R("", status_code=400)
         except APIError as e:
@@ -2801,12 +2816,6 @@ def _doc_table(
     if not docs:
         dt_slug = doc_type if doc_type else "invoice"
         empty_keys = _EMPTY_STATE_KEYS.get(dt_slug, ("label.no_documents_yet", "btn.new_document"))
-        if dt_slug == "credit_note":
-            # Credit notes are created from an invoice - redirect to invoices list
-            return Div(
-                empty_state_cta(t(empty_keys[0], lang), t(empty_keys[1], lang), "/docs?type=invoice"),
-                id="doc-table",
-            )
         return Div(
             empty_state_cta(t(empty_keys[0], lang), t(empty_keys[1], lang), f"/docs/create-blank?type={dt_slug}", hx_post=True),
             id="doc-table",
@@ -3338,6 +3347,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     # --- Action buttons ---
     action_btns = []
+    if doc_type == "invoice" and status in ("partial", "paid"):
+        action_btns.append(
+            Button(
+                "Create Credit Note",
+                hx_post=f"/docs/{entity_id}/action/create-credit-note",
+                hx_swap="none",
+                cls="btn btn--secondary btn--sm",
+                title="Create a credit note from this invoice. The CN will be pre-populated with this invoice's line items.",
+            )
+        )
     if doc_type == "invoice" and status in ("sent", "final", "partial", "awaiting_payment"):
         pass  # Payment section is now a separate component rendered below
     if doc_type == "quotation" and status not in ("void", "converted"):

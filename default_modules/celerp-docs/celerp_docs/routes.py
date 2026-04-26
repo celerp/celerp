@@ -369,9 +369,7 @@ async def create_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    if payload.doc_type == "credit_note":
-        if not payload.original_doc_id:
-            raise HTTPException(status_code=422, detail="Credit note requires original_doc_id")
+    if payload.doc_type == "credit_note" and payload.original_doc_id:
         inv = await _get_doc(session, company_id, payload.original_doc_id)
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
