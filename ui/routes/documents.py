@@ -161,10 +161,26 @@ def _render_receive_return_section(doc: dict):
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     cid_safe = f"receive-return-{entity_id}".replace(":", "-")
 
-    # Already received - show badge only
+    # Already received - show badge + Undo Return button (GDR: user must be able to undo)
     received = doc.get("return_received_items") or []
     if received:
-        return Div(Span("Return Received", cls="badge badge--green"), id=cid_safe)
+        undo_form = Form(
+            Button(
+                "Undo Return",
+                cls="btn btn--secondary btn--sm",
+                title="Undo the received return. Deletes the returned inventory items and reverses the COGS journal entry.",
+            ),
+            hx_delete=f"/docs/{entity_id}/receive-return",
+            hx_confirm="Undo the received return? This will delete the returned inventory items and reverse the accounting entry.",
+            hx_target=f"#{cid_safe}",
+            hx_swap="outerHTML",
+        )
+        return Div(
+            Span("Return Received", cls="badge badge--green"),
+            undo_form,
+            id=cid_safe,
+            style="display:flex;align-items:center;gap:8px;",
+        )
 
     # Only show button if there are stocked line items to return
     line_items = doc.get("line_items") or []
@@ -2362,6 +2378,25 @@ celerpUpdateBulkAlloc();
             return Div(Span("No valid quantities entered.", cls="flash flash--error"), id=cid_safe)
         try:
             await api.receive_return(token, entity_id, items)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except Exception:
+            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _render_receive_return_section(doc)
+
+    @app.delete("/docs/{entity_id}/receive-return")
+    async def doc_undo_receive_return(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        cid_safe = f"receive-return-{entity_id}".replace(":", "-")
+        try:
+            await api.undo_receive_return(token, entity_id)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})

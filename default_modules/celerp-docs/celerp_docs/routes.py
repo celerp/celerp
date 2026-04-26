@@ -2195,15 +2195,30 @@ async def receive_return(
         ref = sold_map[it.sku][0]  # LIFO head; existence guaranteed by validation above
         # Use original invoice line item as fallback for descriptive fields if sold record is sparse
         li_fallback = original_line_map.get(it.sku, {})
+
+        # Collect any extra dynamic price keys from ref (e.g. wholesale_price, retail_price, vip_price, ...)
+        _CORE_KEYS = frozenset({
+            "id", "entity_id", "status", "quantity", "created_at", "updated_at",
+            "location_id", "location_name", "source_doc_id",
+        })
+        extra_prices = {k: v for k, v in ref.items() if k not in _CORE_KEYS and k.endswith("_price") and k not in (
+            "cost_price", "unit_price",
+        )}
+
         item_data = {
             "sku": it.sku,
             "name": ref.get("name") or li_fallback.get("name") or it.sku,
             "quantity": it.quantity,
+            "sell_by": ref.get("sell_by") or li_fallback.get("sell_by") or "piece",
             "cost_price": float(ref.get("cost_price") or 0),
             "unit_price": float(ref.get("unit_price") or ref.get("sell_price") or li_fallback.get("unit_price") or 0),
+            "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
+            "retail_price": float(ref.get("retail_price") or li_fallback.get("retail_price") or 0) or None,
+            "barcode": ref.get("barcode") or li_fallback.get("barcode") or None,
             "description": ref.get("description") or li_fallback.get("description") or "",
             "category": ref.get("category") or li_fallback.get("category") or "",
             "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
+            **extra_prices,
             "status": "available",
             "source_doc_id": entity_id,
             "created_at": now,
@@ -2263,3 +2278,76 @@ async def receive_return(
 
     await session.commit()
     return {"received_items": received_items, "total_cogs_reversed": total_cogs}
+
+
+@router.delete("/{entity_id}/receive-return")
+async def undo_receive_return(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo a receive-return on a credit note.
+
+    Deletes all inventory items created by the return and reverses the COGS JE.
+    Clears return_received_items on the CN projection.
+    """
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("doc_type") != "credit_note":
+        raise HTTPException(status_code=409, detail="undo-receive-return is only valid for credit notes")
+    received_items = state.get("return_received_items") or []
+    if not received_items:
+        raise HTTPException(status_code=409, detail="No received return to undo")
+
+    now = datetime.now(UTC).isoformat()
+    item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
+    total_cogs = sum(
+        float(r.get("cost_price") or 0) * float(r.get("quantity") or 0)
+        for r in received_items
+    )
+
+    # Delete each returned inventory item
+    for iid in item_ids:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=iid,
+            entity_type="item",
+            event_type="item.deleted",
+            data={"reason": "undo receive-return", "source_cn": entity_id},
+            actor_id=user.id,
+            location_id=None,
+            source="return_undo",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"source_return_cn": entity_id},
+        )
+
+    # Emit doc.return_undone to clear projection
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.return_undone",
+        data={"undone_by": str(user.id), "undone_at": now, "item_ids": item_ids},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    # Reverse the COGS JE
+    if total_cogs > 0:
+        await auto_je.create_for_return_undone(
+            session,
+            company_id=company_id,
+            user_id=user.id,
+            cn_id=entity_id,
+            total_cogs=total_cogs,
+        )
+
+    await session.commit()
+    return {"undone": True, "item_ids": item_ids}

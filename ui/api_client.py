@@ -511,6 +511,11 @@ async def receive_return(token: str, entity_id: str, items: list[dict], notes: s
         return _raise(await c.post(f"/docs/{entity_id}/receive-return", json={"items": items, "notes": notes})).json()
 
 
+async def undo_receive_return(token: str, entity_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/docs/{entity_id}/receive-return")).json()
+
+
 async def delete_doc(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}")).json()

@@ -381,6 +381,26 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
     )
 
 
+async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, total_cogs: float) -> None:
+    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1300)."""
+    if total_cogs <= 0:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{cn_id}:return:undo",
+        idem_create=je_idempotency_key(cn_id, "return.undo", "c"),
+        idem_posted=je_idempotency_key(cn_id, "return.undo", "p"),
+        memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
+        entries=[
+            {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
+            {"account": "1300", "debit": 0.0, "credit": float(total_cogs)},
+        ],
+        metadata_={"trigger": "doc.return_undone", "cn_id": cn_id},
+    )
+
+
 async def create_for_mfg_completed(session, *, company_id, user_id, order_id: str, input_cost: float, waste_cost: float) -> None:
     output_cost = max(0.0, float(input_cost) - float(waste_cost))
     await _emit_auto_posted_je(

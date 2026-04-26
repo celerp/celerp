@@ -111,11 +111,18 @@ def ui_server(api_server):
     # The root conftest imports ui.app before MODULE_DIR is set, so
     # module-level load_all / register_ui_routes runs with MODULE_DIR=""
     # and skips external modules. Re-register any missing module UI routes.
+    # Use absolute paths so load_all resolves correctly regardless of cwd.
     from celerp.modules.loader import load_all, register_ui_routes
-    _module_dir = os.environ.get("MODULE_DIR", "")
+    import pathlib as _pl
+    _repo_root = _pl.Path(__file__).resolve().parents[2]
+    _abs_module_dirs = ",".join(
+        str(_repo_root / d.strip())
+        for d in os.environ.get("MODULE_DIR", "default_modules").split(",")
+        if d.strip()
+    )
     _enabled = {m.strip() for m in os.environ.get("ENABLED_MODULES", "").split(",") if m.strip()}
-    if _module_dir and _enabled:
-        _loaded = load_all(_module_dir, _enabled)
+    if _abs_module_dirs and _enabled:
+        _loaded = load_all(_abs_module_dirs, _enabled)
         register_ui_routes(ui_app, _loaded)
 
     config = uvicorn.Config(ui_app, host="127.0.0.1", port=_UI_PORT, log_level="error")

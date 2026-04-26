@@ -188,6 +188,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         items = data.get("items", [])
         current.setdefault("return_received_items", [])
         current["return_received_items"].extend(items)
+    elif event_type == "doc.return_undone":
+        # Undo a receive-return: clear the received items list
+        current["return_received_items"] = []
     elif event_type == "doc.shared_import":
         # Inbound doc received via p2p share / bundle upload.
         # Carries the sender's full doc state; status forced to "received".
