@@ -1098,6 +1098,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         location_uuid = None
 
     is_consignment = doc_type == "consignment_in"
+    created_item_ids: list[str] = []
 
     for it in payload.received_items:
         if it.item_id:
@@ -1117,10 +1118,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             item_data: dict = {"sku": it.sku, "name": it.name, "quantity": it.quantity_received, "location_id": payload.location_id}
             if is_consignment:
                 item_data["consignment_flag"] = "in"
+            new_eid = f"item:{uuid.uuid4()}"
+            created_item_ids.append(new_eid)
             await emit_event(
                 session,
                 company_id=company_id,
-                entity_id=f"item:{uuid.uuid4()}",
+                entity_id=new_eid,
                 entity_type="item",
                 event_type="item.created",
                 data=item_data,
@@ -1138,6 +1141,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             "location_id": payload.location_id,
             "received_by": str(user.id),
             "notes": payload.notes,
+            "created_item_ids": created_item_ids,
         },
         actor_id=user.id, location_id=location_uuid, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
@@ -2464,3 +2468,105 @@ async def undo_receive_return(
 
     await session.commit()
     return {"undone": True, "item_ids": item_ids}
+
+
+@router.delete("/{entity_id}/receive")
+async def undo_receive(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo a goods-received on a bill.
+
+    Disposes all inventory items created by the receive and reverses the AP/Inventory JE.
+    Clears received_items and received_item_ids on the bill projection.
+    """
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("doc_type") != "bill":
+        raise HTTPException(status_code=409, detail="undo-receive is only valid for bills")
+    received_item_ids = state.get("received_item_ids") or []
+    if not received_item_ids:
+        raise HTTPException(status_code=409, detail="No received goods to revert")
+
+    now = datetime.now(UTC).isoformat()
+
+    # Pre-flight: verify every created item is still "available" before disposing
+    rows_result = await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            Projection.entity_id.in_(received_item_ids),
+        )
+    )
+    item_rows = {r.entity_id: r.state for r in rows_result.scalars().all()}
+    blocked: list[str] = []
+    for iid in received_item_ids:
+        item_state = item_rows.get(iid)
+        if item_state is None:
+            blocked.append(f"{iid} (not found - may have already been removed)")
+        elif item_state.get("status") != "available":
+            sku = item_state.get("sku") or iid
+            status = item_state.get("status") or "unknown"
+            blocked.append(f"SKU '{sku}' is '{status}' - cannot dispose")
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot revert goods received: one or more items are no longer available. "
+                f"Blocked items: {'; '.join(blocked)}. "
+                "You may need to manually correct the inventory before reverting."
+            ),
+        )
+
+    undo_suffix = str(uuid.uuid4())
+
+    for iid in received_item_ids:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=iid,
+            entity_type="item",
+            event_type="item.disposed",
+            data={"reason": f"undo receive on {entity_id}"},
+            actor_id=user.id,
+            location_id=None,
+            source="receive_undo",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"source_doc": entity_id},
+        )
+
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.receive_undone",
+        data={"undone_by": str(user.id), "undone_at": now, "item_ids": received_item_ids},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    po_total = float(state.get("total", 0) or 0)
+    if po_total == 0:
+        po_total = sum(
+            float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
+            for li in state.get("line_items", [])
+        )
+    await auto_je.create_for_receive_undone(
+        session,
+        company_id=company_id,
+        user_id=user.id,
+        bill_id=entity_id,
+        doc=state,
+        total_cost=po_total,
+        unique_suffix=undo_suffix,
+    )
+
+    await session.commit()
+    return {"undone": True, "item_ids": received_item_ids}

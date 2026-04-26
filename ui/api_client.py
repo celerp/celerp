@@ -421,6 +421,11 @@ async def get_item_field_values(token: str, field: str) -> list[str]:
         return _raise(await c.get("/items/field-values", params={"field": field})).json().get("values", [])
 
 
+async def list_item_categories(token: str) -> list[str]:
+    async with _client(token) as c:
+        return _raise(await c.get("/items/categories")).json()
+
+
 # ---------------------------------------------------------------------------
 # Documents
 # ---------------------------------------------------------------------------
@@ -514,6 +519,11 @@ async def receive_return(token: str, entity_id: str, items: list[dict], notes: s
 async def undo_receive_return(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/receive-return")).json()
+
+
+async def undo_receive_goods(token: str, entity_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/docs/{entity_id}/receive")).json()
 
 
 async def receive_goods(token: str, entity_id: str, line_items: list[dict], location_id: str | None = None) -> dict:

@@ -233,6 +233,21 @@ def _render_receive_goods_section(doc: dict) -> FT:
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
 
+    if doc.get("received_item_ids"):
+        return Div(
+            Span("Goods Received", cls="badge badge--green"),
+            Button(
+                "Revert Goods Received",
+                hx_delete=f"/docs/{entity_id}/receive-goods",
+                hx_confirm="Revert goods received? This will dispose all created inventory items and reverse the accounting entry.",
+                hx_target=f"#{cid_safe}",
+                hx_swap="outerHTML",
+                cls="btn btn--danger btn--sm",
+                style="margin-left:8px;",
+            ),
+            id=cid_safe,
+        )
+
     if doc.get("received_items"):
         return Div(Span("Goods Received", cls="badge badge--green"), id=cid_safe)
 
@@ -812,6 +827,10 @@ def setup_routes(app):
                 "hs_code": item.get("hs_code") or None,
                 "entity_id": item.get("entity_id") or None,
                 "allow_splitting": bool(item.get("allow_splitting")),
+                "category": item.get("category") or None,
+                "cost_price": item.get("cost_price") or None,
+                "wholesale_price": item.get("wholesale_price") or None,
+                "barcode": item.get("barcode") or None,
             }
 
         try:
@@ -860,6 +879,10 @@ def setup_routes(app):
                 "quantity": item.get("quantity") or 0,
                 "entity_id": item.get("entity_id") or None,
                 "allow_splitting": bool(item.get("allow_splitting")),
+                "category": item.get("category") or None,
+                "cost_price": item.get("cost_price") or None,
+                "wholesale_price": item.get("wholesale_price") or None,
+                "barcode": item.get("barcode") or None,
             }
 
         try:
@@ -1192,6 +1215,13 @@ def setup_routes(app):
             company_locations = _all_locs
         except Exception:
             locations = []
+
+        item_categories: list[str] = []
+        if doc_type in ("purchase_order", "bill", "consignment_in"):
+            try:
+                item_categories = await api.list_item_categories(token)
+            except Exception:
+                item_categories = []
             company_locations = []
 
         # Fetch document history (ledger entries)
@@ -1248,7 +1278,7 @@ def setup_routes(app):
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request)),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
             request=request,
@@ -2475,6 +2505,25 @@ celerpUpdateBulkAlloc();
             return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
         return _render_receive_goods_section(doc)
 
+    @app.delete("/docs/{entity_id}/receive-goods")
+    async def doc_undo_receive_goods(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
+        try:
+            await api.undo_receive_goods(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except Exception:
+            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _render_receive_goods_section(doc)
+
     @app.get("/lists")
     async def lists_page(request: Request):
         token = _token(request)
@@ -3381,7 +3430,7 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner") -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -3822,8 +3871,32 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          data_name="account_code", placeholder="e.g. 1130",
                          cls="cell-input cell-input--xs",
                          onblur="celerpAutoSave()")) if doc_type in ("purchase_order", "bill") else None
+
+            _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
+            _cats = item_categories or []
+            if _show_category and is_draft:
+                _cat_val = li.get("category") or ""
+                _cat_options = [Option("", value="")]
+                for c in _cats:
+                    _cat_options.append(Option(c, value=c, selected=(c == _cat_val)))
+                _cat_options.append(Option("+ Add new", value="__add_new__"))
+                category_cell = Td(Select(
+                    *_cat_options,
+                    data_name="category",
+                    cls="cell-input cell-input--select cell-input--xs",
+                    onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
+                ))
+            elif _show_category:
+                category_cell = Td(li.get("category") or "--")
+            else:
+                category_cell = None
+
             cells = [
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id)),
+            ]
+            if category_cell:
+                cells.append(category_cell)
+            cells.extend([
                 Td(_desc_input(li.get("description", "") or li.get("name", ""))),
                 Td(Input(type="number", value=str(qty), step="any",
                          data_name="quantity", oninput="celerpUpdateTotals()",
@@ -3845,7 +3918,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
                    Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity")),
-            ]
+            ])
             if account_cell:
                 cells.append(account_cell)
             cells.extend([
@@ -3856,8 +3929,26 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             return Tr(*cells)
 
         def _li_empty_row() -> FT:
-            return Tr(
-                Td(_sku_input()),
+            _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
+            _cats = item_categories or []
+            if _show_category:
+                _cat_options = [Option("", value="")]
+                for c in _cats:
+                    _cat_options.append(Option(c, value=c))
+                _cat_options.append(Option("+ Add new", value="__add_new__"))
+                _cat_cell = Td(Select(
+                    *_cat_options,
+                    data_name="category",
+                    cls="cell-input cell-input--select cell-input--xs",
+                    onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
+                ))
+            else:
+                _cat_cell = None
+
+            cells = [Td(_sku_input())]
+            if _cat_cell:
+                cells.append(_cat_cell)
+            cells.extend([
                 Td(_desc_input()),
                 Td(Input(type="number", value="1", step="any", data_name="quantity",
                          oninput="celerpUpdateTotals()", onblur="celerpQtyBlur(this); celerpAutoSave()",
@@ -3878,13 +3969,17 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Span(fmt_money(0, currency), cls="line-total"), cls="cell--number"),
                 Td(Button("x", type="button", cls="btn btn--danger btn--xs",
                           onclick="this.closest('tr').remove(); celerpUpdateTotals(); celerpAutoSave();")),
-            )
+            ])
+            return Tr(*cells)
 
         rows = [_li_editable_row(li, i) for i, li in enumerate(line_items)]
         if not rows:
             rows = [_li_empty_row()]
 
-        _line_headers = [Th(t("th.skuitem")), Th(t("th.description")), Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))]
+        _line_headers = [Th(t("th.skuitem"))]
+        if doc_type in ("bill", "purchase_order", "consignment_in"):
+            _line_headers.append(Th("Category"))
+        _line_headers.extend([Th(t("th.description")), Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
         _line_headers.extend([Th(t("th.total")), Th("")])
@@ -4030,6 +4125,8 @@ function celerpFillRow(row, data) {{
     if (entityIdEl) entityIdEl.value = data.entity_id || '';
     if (allowSplitEl) allowSplitEl.value = data.allow_splitting ? '1' : '';
     if (itemQtyEl && data.quantity) itemQtyEl.value = data.quantity;
+    const categoryEl = row.querySelector('[data-name="category"]');
+    if (categoryEl && data.category) categoryEl.value = data.category;
     // Set quantity: if allow_splitting is false, use full item quantity
     if (qtyEl) {{
         if (!data.allow_splitting && data.quantity > 0) {{

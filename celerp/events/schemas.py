@@ -421,6 +421,12 @@ class DocReturnUndone(BaseModel):
     notes: str | None = None
 
 
+class DocReceiveUndone(BaseModel):
+    undone_by: str
+    undone_at: str = ""
+    item_ids: list[str] = []
+
+
 
 class DocPartiallyFulfilled(BaseModel):
     fulfilled_items: list[dict[str, Any]]
@@ -759,6 +765,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.partially_fulfilled": DocPartiallyFulfilled,
     "doc.return_received": DocReturnReceived,
     "doc.return_undone": DocReturnUndone,
+    "doc.receive_undone": DocReceiveUndone,
     "doc.fulfillment_reversed": DocFulfillmentReversed,
 
     # Manufacturing

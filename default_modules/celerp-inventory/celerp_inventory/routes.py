@@ -1608,6 +1608,22 @@ async def undo_import_batch(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/categories")
+async def list_item_categories(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> list[str]:
+    """Return distinct non-empty category values across all items for this company."""
+    stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
+    rows = (await session.execute(stmt)).scalars().all()
+    cats: list[str] = sorted({
+        str(r.state.get("category") or "").strip()
+        for r in rows
+        if r.state.get("category") and str(r.state.get("category") or "").strip()
+    })
+    return cats
+
+
 @router.get("/export/csv")
 async def export_items_csv(
     company_id=Depends(get_current_company_id),

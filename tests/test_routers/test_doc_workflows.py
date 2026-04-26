@@ -1115,3 +1115,83 @@ async def test_bill_receive_goods_without_po_line_index(client, session):
         "location_id": "",
     })
     assert receive_r.status_code == 200, f"Expected 200, got {receive_r.status_code}: {receive_r.text}"
+
+
+@pytest.mark.anyio
+async def test_revert_goods_received_removes_items_from_inventory(client, session):
+    """Revert Goods Received must dispose all inventory items created by the receive."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Widget RG1", "sku": "RG-001", "quantity": 2, "unit_price": 15.0, "sell_by": "piece"},
+        ],
+        "subtotal": 30, "tax": 0, "total": 30,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "RG-001", "name": "Widget RG1", "quantity_received": 2.0}],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    # Verify items appear in inventory
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert bill_state.get("received_item_ids"), "received_item_ids must be populated after receive"
+
+    # Revert
+    undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
+    assert undo_r.status_code == 200, undo_r.text
+    assert undo_r.json()["undone"] is True
+
+    # Bill projection must be cleared and status restored to final
+    bill_after = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert bill_after.get("received_items") in (None, [])
+    assert bill_after.get("received_item_ids") in (None, [])
+    assert bill_after.get("status") == "final"
+
+    # Items must be disposed (not available in inventory)
+    inv = (await client.get("/items", headers=h)).json()["items"]
+    available_skus = [i["sku"] for i in inv if i.get("status") == "available"]
+    assert "RG-001" not in available_skus, "Disposed item must not appear in inventory"
+
+
+@pytest.mark.anyio
+async def test_revert_goods_received_blocked_if_item_resold(client, session):
+    """Revert Goods Received must 409 if any created item has been sold."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Widget RG2", "sku": "RG-002", "quantity": 1, "unit_price": 25.0, "sell_by": "piece"},
+        ],
+        "subtotal": 25, "tax": 0, "total": 25,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "RG-002", "name": "Widget RG2", "quantity_received": 1.0}],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    item_ids = bill_state.get("received_item_ids", [])
+    assert item_ids, "received_item_ids must be populated"
+
+    # Mark item as sold to block revert
+    await client.post(f"/items/{item_ids[0]}/status", headers=h, json={"new_status": "sold"})
+
+    undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
+    assert undo_r.status_code == 409, undo_r.text
+    detail = undo_r.json().get("detail", "")
+    assert "sold" in detail.lower() or "RG-002" in detail, f"Error must identify the blocked item. Got: {detail}"

@@ -408,6 +408,44 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
     )
 
 
+async def create_for_receive_undone(
+    session,
+    *,
+    company_id,
+    user_id,
+    bill_id: str,
+    doc: dict | None = None,
+    total_cost: float,
+    unique_suffix: str,
+) -> None:
+    """Reverse the PO-received JE when goods-received is undone: Debit AP (2110) / Credit Inventory account.
+
+    unique_suffix must be unique per call so repeated undo attempts each get their own JE.
+    """
+    if total_cost <= 0:
+        return
+    purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
+    credit_account = {
+        "inventory": "1130",
+        "expense": "6950",
+        "asset": "1210",
+    }.get(purchase_kind, "1130")
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{bill_id}:rcv:undo:{unique_suffix}",
+        idem_create=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "c"),
+        idem_posted=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "p"),
+        memo=f"Auto JE for {bill_id} goods-received undone",
+        entries=[
+            {"account": "2110", "debit": float(total_cost), "credit": 0.0},
+            {"account": credit_account, "debit": 0.0, "credit": float(total_cost)},
+        ],
+        metadata_={"trigger": "doc.receive_undone", "doc_id": bill_id, "purchase_kind": purchase_kind},
+    )
+
+
 async def create_for_mfg_completed(session, *, company_id, user_id, order_id: str, input_cost: float, waste_cost: float) -> None:
     output_cost = max(0.0, float(input_cost) - float(waste_cost))
     await _emit_auto_posted_je(
