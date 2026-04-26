@@ -770,39 +770,43 @@ async def test_credit_note_can_be_created_without_original_doc_id(client, sessio
 
 @pytest.mark.anyio
 async def test_receive_return_on_credit_note(client, session):
-    """Regression: receive-return on a credit note creates inventory items and records the event."""
+    """Regression: receive-return on a credit note creates inventory items and records the event.
+
+    Backend resolves item values from sold inventory records (LIFO).
+    Original invoice line items serve as descriptive fallback only.
+    """
     token = await _register(client)
+    h = _h(token)
+
+    # Create a sold inventory item with qty 2 (simulates goods sold to the customer)
+    item1 = await client.post("/items", headers=h, json={"sku": "W-001", "name": "Widget", "quantity": 2, "cost_price": 40.0, "unit_price": 50.0, "sell_by": "piece"})
+    assert item1.status_code == 200
+    item1_id = item1.json()["id"]
+    # Mark as sold
+    await client.post(f"/items/{item1_id}/status", headers=h, json={"new_status": "sold"})
+
     # Create and finalize an invoice
-    inv_id = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
-    await client.post(f"/docs/{inv_id}/finalize", headers=_h(token))
+    inv = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 2, "unit_price": 50, "sell_by": "unit"}], "subtotal": 100, "tax": 0, "total": 100})
+    assert inv.status_code == 200
+    inv_id = inv.json()["id"]
+    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+
     # Create credit note linked to invoice
-    cn = await client.post(
-        "/docs",
-        headers=_h(token),
-        json={
-            "doc_type": "credit_note",
-            "original_doc_id": inv_id,
-            "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 2, "unit_price": 50, "sell_by": "unit"}],
-            "subtotal": 100, "tax": 0, "total": 100,
-        },
-    )
+    cn = await client.post("/docs", headers=h, json={"doc_type": "credit_note", "original_doc_id": inv_id, "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 2, "unit_price": 50, "sell_by": "unit"}], "subtotal": 100, "tax": 0, "total": 100})
     assert cn.status_code == 200
     cn_id = cn.json()["id"]
-    # Finalize CN
-    await client.post(f"/docs/{cn_id}/finalize", headers=_h(token))
-    # Receive return
-    r = await client.post(
-        f"/docs/{cn_id}/receive-return",
-        headers=_h(token),
-        json={"items": [{"sku": "W-001", "name": "Widget", "quantity": 2, "cost_price": 40.0}]},
-    )
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # Receive return - minimal payload; backend resolves all values from sold inventory records
+    r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "W-001", "quantity": 2}]})
     assert r.status_code == 200
     data = r.json()
     assert len(data["received_items"]) == 1
     assert data["received_items"][0]["quantity"] == 2
+    # cost_price resolved from sold inventory records (cost_price=40 each, qty=2)
     assert data["total_cogs_reversed"] == pytest.approx(80.0)
     # CN projection should have return_received_items
-    cn_state = (await client.get(f"/docs/{cn_id}", headers=_h(token))).json()
+    cn_state = (await client.get(f"/docs/{cn_id}", headers=h)).json()
     assert len(cn_state.get("return_received_items", [])) == 1
 
 
@@ -860,12 +864,21 @@ async def test_create_credit_note_from_invoice_pre_populates_fields(client, sess
 async def test_doc_return_received_projection(client, session):
     """doc.return_received projection: return_received_items appended, CN status unchanged."""
     token = await _register(client)
-    inv_id = await _create_invoice(client, token, subtotal=50, tax=0, total=50)
-    await client.post(f"/docs/{inv_id}/finalize", headers=_h(token))
+    h = _h(token)
+
+    # Create a sold inventory item for the SKU being returned
+    item = await client.post("/items", headers=h, json={"sku": "W-001", "name": "Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 50.0, "sell_by": "piece"})
+    assert item.status_code == 200
+    await client.post(f"/items/{item.json()['id']}/status", headers=h, json={"new_status": "sold"})
+
+    inv = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 1, "unit_price": 50, "sell_by": "unit"}], "subtotal": 50, "tax": 0, "total": 50})
+    assert inv.status_code == 200
+    inv_id = inv.json()["id"]
+    await client.post(f"/docs/{inv_id}/finalize", headers=h)
 
     cn_r = await client.post(
         "/docs",
-        headers=_h(token),
+        headers=h,
         json={
             "doc_type": "credit_note",
             "original_doc_id": inv_id,
@@ -875,19 +888,19 @@ async def test_doc_return_received_projection(client, session):
     )
     assert cn_r.status_code == 200
     cn_id = cn_r.json()["id"]
-    await client.post(f"/docs/{cn_id}/finalize", headers=_h(token))
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
 
-    before = (await client.get(f"/docs/{cn_id}", headers=_h(token))).json()
+    before = (await client.get(f"/docs/{cn_id}", headers=h)).json()
     assert before.get("return_received_items") is None or before.get("return_received_items") == []
 
     rr = await client.post(
         f"/docs/{cn_id}/receive-return",
-        headers=_h(token),
-        json={"items": [{"sku": "W-001", "name": "Widget", "quantity": 1, "cost_price": 30.0}]},
+        headers=h,
+        json={"items": [{"sku": "W-001", "quantity": 1}]},
     )
     assert rr.status_code == 200
 
-    after = (await client.get(f"/docs/{cn_id}", headers=_h(token))).json()
+    after = (await client.get(f"/docs/{cn_id}", headers=h)).json()
     assert len(after.get("return_received_items", [])) == 1
     # Status must NOT change - CN stays in its financial status
     assert after["status"] == before["status"]
@@ -908,6 +921,6 @@ async def test_receive_return_draft_cn_rejected(client, session):
     r = await client.post(
         f"/docs/{cn_id}/receive-return",
         headers=_h(token),
-        json={"items": [{"sku": "X", "name": "X", "quantity": 1, "cost_price": 10.0}]},
+        json={"items": [{"sku": "X", "quantity": 1}]},
     )
     assert r.status_code == 409

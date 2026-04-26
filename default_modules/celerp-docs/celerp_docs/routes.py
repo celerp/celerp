@@ -2098,9 +2098,7 @@ async def unfulfill_doc(
 
 class ReturnReceivedItem(BaseModel):
     sku: str
-    name: str
     quantity: float
-    cost_price: float = 0.0
 
 
 class ReceiveReturnPayload(BaseModel):
@@ -2118,7 +2116,15 @@ async def receive_return(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Receive returned goods on a credit note. Creates new inventory items and a reversing COGS JE."""
+    """Receive returned goods on a credit note.
+
+    Item values are resolved server-side (not trusted from the UI):
+    - Case 1: CN has original_doc_id -> fetch original invoice, match by SKU, use its values.
+    - Case 2: No original_doc_id -> query sold inventory by SKU (LIFO), use those values.
+    Creates new inventory items (status=available) and a reversing COGS JE.
+    """
+    from celerp_inventory.routes import _flatten_item
+
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     if state.get("doc_type") != "credit_note":
@@ -2128,13 +2134,81 @@ async def receive_return(
     if not payload.items:
         raise HTTPException(status_code=422, detail="At least one item is required")
 
+    # --- Resolve item metadata ---
+    # Priority: sold inventory records (most authoritative - have cost_price + full attributes).
+    # Fallback for descriptive fields only: original invoice line items.
+    original_doc_id = state.get("original_doc_id")
+    original_line_map: dict[str, dict] = {}
+    if original_doc_id:
+        try:
+            orig_row = await _get_doc(session, company_id, original_doc_id)
+            for li in (orig_row.state.get("line_items") or []):
+                sku = li.get("sku") or ""
+                if sku and sku not in original_line_map:
+                    original_line_map[sku] = li
+        except HTTPException:
+            pass  # original doc inaccessible - descriptive fallback unavailable
+
+    # Load all sold inventory rows upfront
+    all_skus = {it.sku for it in payload.items}
+    sold_map: dict[str, list[dict]] = {}
+    item_rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    for r in item_rows:
+        flat = _flatten_item(r.state, r.entity_id)
+        if str(flat.get("status") or "").lower() == "sold" and flat.get("sku") in all_skus:
+            sold_map.setdefault(flat["sku"], []).append(flat)
+    # LIFO: most recently created first
+    for sku in sold_map:
+        sold_map[sku].sort(key=lambda x: x.get("created_at") or "", reverse=True)
+
+    # --- Validate quantities before touching anything ---
+    for it in payload.items:
+        if it.quantity <= 0:
+            raise HTTPException(status_code=422, detail=f"Quantity must be positive for SKU '{it.sku}'")
+        if it.sku not in sold_map:
+            # No sold items at all for this SKU
+            raise HTTPException(
+                status_code=422,
+                detail=f"No sold unit(s) of SKU '{it.sku}' found. "
+                       f"Ensure the goods were sold through this system before receiving a return.",
+            )
+        available = sum(float(s.get("quantity") or 0) for s in sold_map[it.sku])
+        if available < it.quantity:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found; {it.quantity:g} requested. "
+                       f"Ensure the goods were sold through this system before receiving a return.",
+            )
+
+    # --- Create returned inventory items ---
     now = datetime.now(UTC).isoformat()
     total_cogs = 0.0
     received_items = []
 
     for it in payload.items:
-        if it.quantity <= 0:
-            raise HTTPException(status_code=422, detail=f"Quantity must be positive for item '{it.name}'")
+        # Sold inventory record is the authoritative source (has cost_price + all attributes)
+        ref = sold_map[it.sku][0]  # LIFO head; existence guaranteed by validation above
+        # Use original invoice line item as fallback for descriptive fields if sold record is sparse
+        li_fallback = original_line_map.get(it.sku, {})
+        item_data = {
+            "sku": it.sku,
+            "name": ref.get("name") or li_fallback.get("name") or it.sku,
+            "quantity": it.quantity,
+            "cost_price": float(ref.get("cost_price") or 0),
+            "unit_price": float(ref.get("unit_price") or ref.get("sell_price") or li_fallback.get("unit_price") or 0),
+            "description": ref.get("description") or li_fallback.get("description") or "",
+            "category": ref.get("category") or li_fallback.get("category") or "",
+            "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
+            "status": "available",
+            "source_doc_id": entity_id,
+            "created_at": now,
+        }
+
         item_id = f"item:{uuid.uuid4()}"
         await emit_event(
             session,
@@ -2142,28 +2216,21 @@ async def receive_return(
             entity_id=item_id,
             entity_type="item",
             event_type="item.created",
-            data={
-                "sku": it.sku,
-                "name": it.name,
-                "quantity": it.quantity,
-                "cost_price": it.cost_price,
-                "status": "available",
-                "source_doc_id": entity_id,
-                "created_at": now,
-            },
+            data=item_data,
             actor_id=user.id,
             location_id=None,
             source="return",
             idempotency_key=str(uuid.uuid4()),
             metadata_={"source_return_cn": entity_id},
         )
-        total_cogs += it.cost_price * it.quantity
+        cost_price = item_data["cost_price"]
+        total_cogs += cost_price * it.quantity
         received_items.append({
             "item_id": item_id,
             "sku": it.sku,
-            "name": it.name,
+            "name": item_data["name"],
             "quantity": it.quantity,
-            "cost_price": it.cost_price,
+            "cost_price": cost_price,
             "received_at": now,
         })
 

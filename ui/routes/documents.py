@@ -172,14 +172,12 @@ def _render_receive_return_section(doc: dict):
     if not stocked:
         return ""
 
-    # Hidden fields carry the full quantities - no inline form editing needed (v1)
+    # Hidden fields carry sku + quantity only - backend resolves all other values
     hidden_fields = []
     for i, li in enumerate(stocked):
         hidden_fields += [
-            Input(type="hidden", name=f"items[{i}][sku]",        value=li.get("sku", "")),
-            Input(type="hidden", name=f"items[{i}][name]",       value=li.get("name", "")),
-            Input(type="hidden", name=f"items[{i}][quantity]",   value=str(li.get("quantity") or 0)),
-            Input(type="hidden", name=f"items[{i}][cost_price]", value=str(li.get("cost_price") or 0)),
+            Input(type="hidden", name=f"items[{i}][sku]",      value=li.get("sku", "")),
+            Input(type="hidden", name=f"items[{i}][quantity]", value=str(li.get("quantity") or 0)),
         ]
 
     return Div(
@@ -2339,12 +2337,7 @@ celerpUpdateBulkAlloc();
                 qty = 0.0
             if qty <= 0:
                 continue
-            items.append({
-                "sku": row.get("sku", ""),
-                "name": row.get("name", ""),
-                "quantity": qty,
-                "cost_price": float(row.get("cost_price") or 0),
-            })
+            items.append({"sku": row.get("sku", ""), "quantity": qty})
         if not items:
             return Div(Span("No valid quantities entered.", cls="flash flash--error"), id=cid_safe)
         try:
