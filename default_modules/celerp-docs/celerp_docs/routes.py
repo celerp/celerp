@@ -2289,6 +2289,7 @@ async def receive_return(
         user_id=user.id,
         cn_id=entity_id,
         total_cogs=total_cogs,
+        je_suffix=received_items[0]["item_id"].split(":")[-1] if received_items else str(uuid.uuid4()),
     )
 
     await session.commit()

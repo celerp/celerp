@@ -361,17 +361,21 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str) -
         )
 
 
-async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float) -> None:
-    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1300) / Credit COGS (5100)."""
+async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float, je_suffix: str) -> None:
+    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1300) / Credit COGS (5100).
+
+    je_suffix must be unique per receive-return call (e.g. first item_id) to avoid idempotency key collisions
+    when receive-return is called multiple times on the same CN.
+    """
     if total_cogs <= 0:
         return
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{cn_id}:return",
-        idem_create=je_idempotency_key(cn_id, "return", "c"),
-        idem_posted=je_idempotency_key(cn_id, "return", "p"),
+        je_id=f"je:auto:{cn_id}:return:{je_suffix}",
+        idem_create=je_idempotency_key(cn_id, f"return:{je_suffix}", "c"),
+        idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
         entries=[
             {"account": "1300", "debit": float(total_cogs), "credit": 0.0},

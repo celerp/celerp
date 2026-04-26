@@ -2348,15 +2348,12 @@ celerpUpdateBulkAlloc();
     @app.post("/docs/{entity_id}/receive-return")
     async def doc_receive_return(request: Request, entity_id: str):
         import re as _re
-        import logging as _logging
-        _log = _logging.getLogger("ui.receive_return")
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         cid_safe = f"receive-return-{entity_id}".replace(":", "-")
         form = await request.form()
-        _log.warning("receive-return form keys: %s", list(form.multi_items()))
         items_raw: dict[int, dict] = {}
         for key, value in form.multi_items():
             m = _re.match(r"items\[(\d+)\]\[(\w+)\]", key)
@@ -2373,19 +2370,16 @@ celerpUpdateBulkAlloc();
             if qty <= 0:
                 continue
             items.append({"sku": row.get("sku", ""), "quantity": qty})
-        _log.warning("receive-return resolved items: %s", items)
         if not items:
             return Div(Span("No valid quantities entered.", cls="flash flash--error"), id=cid_safe)
         try:
-            result = await api.receive_return(token, entity_id, items)
-            _log.warning("receive-return api result: %s", result)
+            await api.receive_return(token, entity_id, items)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
         try:
             doc = await api.get_doc(token, entity_id)
-            _log.warning("receive-return post-fetch return_received_items: %s", doc.get("return_received_items"))
         except Exception:
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
         return _render_receive_return_section(doc)
