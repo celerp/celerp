@@ -2170,37 +2170,33 @@ async def receive_return(
     for it in payload.items:
         if it.quantity <= 0:
             raise HTTPException(status_code=422, detail=f"Quantity must be positive for SKU '{it.sku}'")
-        if it.sku not in sold_map:
-            # No sold items at all for this SKU
-            raise HTTPException(
-                status_code=422,
-                detail=f"No sold unit(s) of SKU '{it.sku}' found. "
-                       f"Ensure the goods were sold through this system before receiving a return.",
-            )
-        available = sum(float(s.get("quantity") or 0) for s in sold_map[it.sku])
-        if available < it.quantity:
-            raise HTTPException(
-                status_code=422,
-                detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found; {it.quantity:g} requested. "
-                       f"Ensure the goods were sold through this system before receiving a return.",
-            )
+        # Sold inventory is best-effort enrichment; no hard gate on its existence.
+        # If sold records exist, validate available quantity.
+        if it.sku in sold_map:
+            available = sum(float(s.get("quantity") or 0) for s in sold_map[it.sku])
+            if available < it.quantity:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found in inventory; {it.quantity:g} requested.",
+                )
 
     # --- Create returned inventory items ---
     now = datetime.now(UTC).isoformat()
     total_cogs = 0.0
     received_items = []
 
+    _CORE_KEYS = frozenset({
+        "id", "entity_id", "status", "quantity", "created_at", "updated_at",
+        "location_id", "location_name", "source_doc_id",
+    })
+
     for it in payload.items:
-        # Sold inventory record is the authoritative source (has cost_price + all attributes)
-        ref = sold_map[it.sku][0]  # LIFO head; existence guaranteed by validation above
-        # Use original invoice line item as fallback for descriptive fields if sold record is sparse
+        # Sold inventory record is the preferred source (has cost_price + all attributes).
+        # Fall back to invoice line item data when no sold record exists (e.g. pre-fulfillment items).
+        ref = sold_map[it.sku][0] if it.sku in sold_map else {}
         li_fallback = original_line_map.get(it.sku, {})
 
         # Collect any extra dynamic price keys from ref (e.g. wholesale_price, retail_price, vip_price, ...)
-        _CORE_KEYS = frozenset({
-            "id", "entity_id", "status", "quantity", "created_at", "updated_at",
-            "location_id", "location_name", "source_doc_id",
-        })
         extra_prices = {k: v for k, v in ref.items() if k not in _CORE_KEYS and k.endswith("_price") and k not in (
             "cost_price", "unit_price",
         )}

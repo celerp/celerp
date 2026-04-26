@@ -907,6 +907,44 @@ async def test_doc_return_received_projection(client, session):
 
 
 @pytest.mark.anyio
+async def test_receive_return_no_sold_inventory(client, session):
+    """receive-return must succeed even when no sold inventory records exist for the SKU.
+
+    Real-world case: CN created manually against an invoice whose items were never
+    run through item.fulfilled, or items sold before fulfillment tracking existed.
+    Backend falls back to CN/invoice line item data.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create and finalize an invoice with a line item (no inventory item created/sold)
+    inv = await client.post("/docs", headers=h, json={
+        "doc_type": "invoice",
+        "line_items": [{"name": "Widget", "sku": "W-NOSOLD", "quantity": 1, "unit_price": 60, "sell_by": "piece"}],
+        "subtotal": 60, "tax": 0, "total": 60,
+    })
+    assert inv.status_code == 200
+    inv_id = inv.json()["id"]
+    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+
+    # Create and finalize a CN linked to that invoice
+    cn = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note", "original_doc_id": inv_id,
+        "line_items": [{"name": "Widget", "sku": "W-NOSOLD", "quantity": 1, "unit_price": 60, "sell_by": "piece"}],
+        "subtotal": 60, "tax": 0, "total": 60,
+    })
+    assert cn.status_code == 200
+    cn_id = cn.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # receive-return must succeed using invoice line item data as fallback
+    r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "W-NOSOLD", "quantity": 1}]})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert len(data["received_items"]) == 1
+
+
+@pytest.mark.anyio
 async def test_receive_return_draft_cn_rejected(client, session):
     """receive-return must be rejected on draft credit notes."""
     token = await _register(client)
