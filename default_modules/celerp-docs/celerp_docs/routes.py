@@ -172,6 +172,11 @@ async def list_docs(
     limit: int | None = None,
     offset: int = 0,
     overdue_only: bool = False,
+    all_issued: bool = False,
+    unfulfilled_only: bool = False,
+    not_restocked: bool = False,
+    not_stocked: bool = False,
+    converted_to_type: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -186,9 +191,18 @@ async def list_docs(
     if status_in:
         _allowed = set(status_in.split(","))
         out = [x for x in out if x.get("status") in _allowed]
+    if all_issued:
+        out = [x for x in out if x.get("status") not in ("draft", "void")]
     if overdue_only:
-        # Overdue = awaiting payment + due_date before today
-        out = [x for x in out if x.get("due_date") and x["due_date"] < today]
+        out = [x for x in out if x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void")]
+    if unfulfilled_only:
+        out = [x for x in out if x.get("status") not in ("draft", "void") and x.get("fulfillment_status") != "fulfilled"]
+    if not_restocked:
+        out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or [])]
+    if not_stocked:
+        out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
+    if converted_to_type:
+        out = [x for x in out if x.get("converted_to_type") == converted_to_type]
     if exclude_status:
         out = [x for x in out if x.get("status") != exclude_status]
     if date_from:
@@ -222,26 +236,30 @@ async def get_doc_summary(
     ar_gross = ar_paid = ar_outstanding = 0.0
     count_by_status: dict[str, int] = {}
     invoice_count = 0
-    # Awaiting payment = all finalized invoices not yet fully paid
-    # (final, sent, awaiting_payment, partial - every issued status except paid/void)
     _AWAITING_STATUSES = {"final", "sent", "awaiting_payment", "partial"}
     awaiting_payment_count = 0
-    awaiting_payment_total = 0.0  # sum of outstanding balances
+    awaiting_payment_total = 0.0
     overdue_count = 0
-    overdue_total = 0.0           # outstanding on overdue invoices
+    overdue_total = 0.0
     paid_count = 0
-    paid_total = 0.0              # face value of fully-paid invoices
-    sent_total = 0.0              # outstanding on sent invoices
-    draft_total = 0.0             # face value of draft/pro-forma invoices
-    void_total = 0.0              # face value of voided invoices
+    paid_total = 0.0
+    sent_total = 0.0
+    draft_total = 0.0
+    void_total = 0.0
+    unfulfilled_count = 0
+    unfulfilled_total = 0.0
+    not_restocked_count = 0
+    not_stocked_count = 0
+    converted_to_memo_count = 0
+    converted_to_invoice_count = 0
     for row in rows:
         state = row.state
-        # Filter by doc_type if specified
         if doc_type and state.get("doc_type") != doc_type:
             continue
         st = state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
-        if state.get("doc_type") == "invoice":
+        dt = state.get("doc_type")
+        if dt == "invoice":
             total_ = float(state.get("total", 0) or 0)
             outstanding_ = float(state.get("amount_outstanding", 0) or 0)
             paid_ = float(state.get("amount_paid", 0) or 0)
@@ -255,6 +273,9 @@ async def get_doc_summary(
             ar_gross += total_
             ar_paid += paid_
             ar_outstanding += outstanding_
+            if state.get("fulfillment_status") != "fulfilled":
+                unfulfilled_count += 1
+                unfulfilled_total += total_
             if st in _AWAITING_STATUSES:
                 awaiting_payment_count += 1
                 awaiting_payment_total += outstanding_
@@ -270,6 +291,22 @@ async def get_doc_summary(
         else:
             if st in ("void", "draft"):
                 continue
+            if dt in ("memo", "consignment_in"):
+                due = state.get("due_date") or ""
+                if due and due < today:
+                    overdue_count += 1
+            if dt == "credit_note":
+                if not (state.get("return_received_items") or []):
+                    not_restocked_count += 1
+            if dt == "bill":
+                if not (state.get("received_items") or []):
+                    not_stocked_count += 1
+            if dt == "list" and st == "converted":
+                ctt = state.get("converted_to_type") or ""
+                if ctt == "memo":
+                    converted_to_memo_count += 1
+                elif ctt == "invoice":
+                    converted_to_invoice_count += 1
     draft_count = count_by_status.get("draft", 0)
     total_rows = sum(count_by_status.values())
     live_count = total_rows - draft_count
@@ -293,6 +330,12 @@ async def get_doc_summary(
         "ar_paid": ar_paid,
         "ar_outstanding": ar_outstanding,
         "invoice_count": invoice_count,
+        "unfulfilled_count": unfulfilled_count,
+        "unfulfilled_total": unfulfilled_total,
+        "not_restocked_count": not_restocked_count,
+        "not_stocked_count": not_stocked_count,
+        "converted_to_memo_count": converted_to_memo_count,
+        "converted_to_invoice_count": converted_to_invoice_count,
         "count_by_status": count_by_status,
     }
 
@@ -1560,6 +1603,8 @@ async def list_lists(
     q: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    all_issued: bool = False,
+    converted_to_type: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1569,10 +1614,14 @@ async def list_lists(
     out = [r.state | {"id": r.entity_id} for r in rows]
     if list_type:
         out = [x for x in out if x.get("list_type") == list_type]
-    if status:
+    if all_issued:
+        out = [x for x in out if x.get("status") not in ("draft", "void")]
+    elif status:
         out = [x for x in out if x.get("status") == status]
     if exclude_status:
         out = [x for x in out if x.get("status") != exclude_status]
+    if converted_to_type:
+        out = [x for x in out if x.get("converted_to_type") == converted_to_type]
     if date_from:
         out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] >= date_from]
     if date_to:
@@ -1600,15 +1649,29 @@ async def get_list_summary(
     )).scalars().all()
     count_by_status: dict[str, int] = {}
     total_value = 0.0
+    converted_to_memo_count = 0
+    converted_to_invoice_count = 0
     for row in rows:
         st = row.state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
         if st != "void":
             total_value += float(row.state.get("total", 0) or 0)
+        if st == "converted":
+            ctt = row.state.get("converted_to_type") or ""
+            if ctt == "memo":
+                converted_to_memo_count += 1
+            elif ctt == "invoice":
+                converted_to_invoice_count += 1
+    draft_count = count_by_status.get("draft", 0)
+    void_count = count_by_status.get("void", 0)
+    all_issued_count = sum(v for k, v in count_by_status.items() if k not in ("draft", "void"))
     return {
         "total_count": len(rows),
-        "draft_count": count_by_status.get("draft", 0),
+        "draft_count": draft_count,
+        "all_issued_count": all_issued_count,
         "total_value": total_value,
+        "converted_to_memo_count": converted_to_memo_count,
+        "converted_to_invoice_count": converted_to_invoice_count,
         "count_by_status": count_by_status,
     }
 

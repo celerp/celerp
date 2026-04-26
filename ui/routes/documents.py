@@ -94,8 +94,8 @@ def _render_fulfill_section(doc: dict):
     from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
     if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
         return ""
-    if doc.get("doc_type") == "credit_note":
-        return ""  # CNs use Receive Returns, not Fulfill
+    if doc.get("doc_type") in ("credit_note", "bill"):
+        return ""  # CNs use Receive Returns; bills receive INTO stock, never deduct
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     # CSS IDs cannot contain colons (e.g. "doc:PF-2604-0002") - sanitize for use as selector
     cid_safe = f"fulfill-toggle-{entity_id}".replace(":", "-")
@@ -218,6 +218,40 @@ def _render_receive_return_section(doc: dict):
     if fs == "partial":
         return Span("Partially Fulfilled", cls="badge badge--amber")
     return None
+
+
+def _render_receive_goods_section(doc: dict) -> FT:
+    """Receive Goods button for bills - one-click, full quantity, no partial control."""
+    from celerp.modules.loader import loaded_modules
+    if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
+        return ""
+    if doc.get("doc_type") != "bill":
+        return ""
+    if doc.get("status") in ("draft", "void"):
+        return ""
+
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
+
+    if doc.get("received_items"):
+        return Div(Span("Goods Received", cls="badge badge--green"), id=cid_safe)
+
+    line_items = doc.get("line_items") or []
+    if not line_items:
+        return ""
+
+    return Div(
+        Button(
+            "Receive Goods",
+            hx_post=f"/docs/{entity_id}/receive-goods",
+            hx_confirm="Receive all goods into stock? This will create inventory items for all line items at full quantity.",
+            hx_target=f"#{cid_safe}",
+            hx_swap="outerHTML",
+            cls="btn btn--primary btn--sm",
+            title="Receive all goods on this bill into inventory at full quantity.",
+        ),
+        id=cid_safe,
+    )
 
 
 def _doc_section_url(doc_type: str) -> str:
@@ -438,6 +472,11 @@ def setup_routes(app):
         status = request.query_params.get("status", "")
         status_in = request.query_params.get("status_in", "")
         overdue_only = request.query_params.get("overdue_only", "") in ("1", "true")
+        unfulfilled_only = request.query_params.get("unfulfilled_only", "") in ("1", "true")
+        not_restocked = request.query_params.get("not_restocked", "") in ("1", "true")
+        not_stocked = request.query_params.get("not_stocked", "") in ("1", "true")
+        all_issued = request.query_params.get("all_issued", "") in ("1", "true")
+        converted_to_type = request.query_params.get("converted_to_type", "")
         view = request.query_params.get("view", "")  # "drafts" = drafts-only mode
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "date")
@@ -490,10 +529,24 @@ def setup_routes(app):
                 params["status_in"] = status_in
                 if overdue_only:
                     params["overdue_only"] = "1"
+            elif all_issued:
+                params["all_issued"] = "1"
+                if overdue_only:
+                    params["overdue_only"] = "1"
             elif effective_status == "exclude_draft":
                 params["exclude_status"] = "draft"
             elif effective_status:
                 params["status"] = effective_status
+            if overdue_only and not status_in and not all_issued:
+                params["overdue_only"] = "1"
+            if unfulfilled_only:
+                params["unfulfilled_only"] = "1"
+            if not_restocked:
+                params["not_restocked"] = "1"
+            if not_stocked:
+                params["not_stocked"] = "1"
+            if converted_to_type:
+                params["converted_to_type"] = converted_to_type
             if date_from and not is_drafts_view:
                 params["date_from"] = date_from
             if date_to and not is_drafts_view:
@@ -541,7 +594,7 @@ def setup_routes(app):
                 _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
             ]),
             _summary_bar(summary, doc_type, currency, lang),
-            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only),
+            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only, unfulfilled_only=unfulfilled_only, not_restocked=not_restocked, not_stocked=not_stocked, all_issued=all_issued, converted_to_type=converted_to_type),
             _doc_table(
                 docs,
                 sort=sort,
@@ -2403,7 +2456,24 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
         return _render_receive_return_section(doc)
 
-
+    @app.post("/docs/{entity_id}/receive-goods")
+    async def doc_receive_goods(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _R
+            return _R("", status_code=401)
+        cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
+        try:
+            doc = await api.get_doc(token, entity_id)
+            line_items = doc.get("line_items") or []
+            await api.receive_goods(token, entity_id, line_items)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                from starlette.responses import Response as _R2
+                return _R2("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+        return _render_receive_goods_section(doc)
 
     @app.get("/lists")
     async def lists_page(request: Request):
@@ -2414,6 +2484,8 @@ celerpUpdateBulkAlloc();
         list_type = request.query_params.get("type", "")
         status = request.query_params.get("status", "")
         view = request.query_params.get("view", "")
+        converted_to_type_list = request.query_params.get("converted_to_type", "")
+        all_issued_list = request.query_params.get("all_issued", "") in ("1", "true")
         page = int(request.query_params.get("page", 1))
         is_drafts_view = view == "drafts" or status == "draft"
         effective_status = "draft" if is_drafts_view else ("exclude_draft" if not status else status)
@@ -2423,10 +2495,14 @@ celerpUpdateBulkAlloc();
                 params["q"] = q
             if list_type:
                 params["list_type"] = list_type
-            if effective_status == "exclude_draft":
+            if all_issued_list:
+                params["all_issued"] = "1"
+            elif effective_status == "exclude_draft":
                 params["exclude_status"] = "draft"
             elif effective_status:
                 params["status"] = effective_status
+            if converted_to_type_list:
+                params["converted_to_type"] = converted_to_type_list
             result = await api.list_lists(token, params)
             lists = result.get("items", [])
             filtered_total = result.get("total", len(lists))
@@ -2447,7 +2523,7 @@ celerpUpdateBulkAlloc();
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary"),
             ),
             _list_type_tabs(list_type),
-            _list_status_cards(summary, status),
+            _list_status_cards(summary, status, converted_to_type=converted_to_type_list),
             _list_table(lists, lang=lang),
             pagination(page, filtered_total, _PER_PAGE, "/lists",
                        f"q={q}&type={list_type}&status={status}&view={view}".strip("&")),
@@ -3560,6 +3636,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # --- Inventory section action buttons (rendered above line items, not in the top bar) ---
     _fulfill_el = _render_fulfill_section(doc)
     _receive_return_el = _render_receive_return_section(doc)
+    _receive_goods_el = _render_receive_goods_section(doc)
 
     # --- Slot: doc_detail_badges (module-contributed status badges) ---
     _slot_badges = []
@@ -3579,9 +3656,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             except Exception:
                 pass
 
-    # --- Bill receive (per-line) ---
+    # --- PO/consignment_in receive (per-line form); bills use _receive_goods_el above ---
     po_receive_section = ""
-    if doc_type in ("bill", "purchase_order") and status in ("awaiting_payment", "finalized", "sent", "final", "partially_received"):
+    if doc_type in ("purchase_order", "consignment_in") and status in ("awaiting_payment", "finalized", "sent", "final", "partially_received"):
         po_items = doc.get("line_items", [])
         if po_items:
             receive_rows = []
@@ -3626,7 +3703,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # --- Price list bar (positioned in line items section) ---
     _pl_names = [pl.get("name", "") for pl in (price_lists or []) if pl.get("name")]
     _current_pl = doc.get("price_list") or ""
-    if is_draft and _pl_names:
+    if doc_type in ("purchase_order", "bill"):
+        _pl_bar = ""  # Vendor docs use cost price, not price lists
+    elif is_draft and _pl_names:
         _pl_select = Select(
             *[Option(name, value=name, selected=(name == _current_pl)) for name in _pl_names],
             id="doc-price-list",
@@ -4539,9 +4618,9 @@ async function celerpCsvImport(input, entityId) {{
         ),
         # Inventory action button - appears just above the line items section, aligned right
         Div(
-            _fulfill_el or _receive_return_el or "",
+            _fulfill_el or _receive_return_el or _receive_goods_el or "",
             cls="doc-inventory-action",
-        ) if (_fulfill_el or _receive_return_el) else "",
+        ) if (_fulfill_el or _receive_return_el or _receive_goods_el) else "",
         # Line items + price list bar
         Div(
             lines_section,
@@ -4715,137 +4794,197 @@ def _doc_history_section(ledger: list[dict]) -> FT:
     )
 
 
-def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False) -> FT:
-    """Aggregate counts/totals per status and render status_cards.
-
-    Card definitions are doc-type-aware: only statuses valid for the
-    document lifecycle are shown.
-
-    Invoice counters use virtual statuses backed by composite DB status sets:
-      - all_issued   = every non-draft, non-void invoice
-      - awaiting_payment = final + sent + awaiting_payment (not yet fully paid)
-      - overdue      = awaiting_payment + due_date < today
-      - paid         = paid + partial
-    These are resolved by the summary endpoint and rendered with the correct
-    filter URLs (?status_in=... or ?overdue_only=1).
-    """
+def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False, unfulfilled_only: bool = False, not_restocked: bool = False, not_stocked: bool = False, all_issued: bool = False, converted_to_type: str = "") -> FT:
+    """Render status cards for the doc list page. Doc-type-aware."""
     _sm = summary or {}
     base_url = f"/docs?type={doc_type}" if doc_type else "/docs"
+    _cbs = _sm.get("count_by_status") or {}
 
-    # Determine which virtual card key is currently active for invoice cards
-    _ALL_ISSUED_STATUSES = "final,sent,awaiting_payment,paid,partial,overdue"
-    _AWAITING_STATUSES   = "final,sent,awaiting_payment"
-    _PAID_STATUSES       = "paid,partial"
-    _active_key: str
-    if status_in == _ALL_ISSUED_STATUSES:
+    # Determine active card key
+    if all_issued:
         _active_key = "all_issued"
-    elif status_in == _AWAITING_STATUSES and overdue_only:
+    elif unfulfilled_only:
+        _active_key = "unfulfilled"
+    elif not_restocked:
+        _active_key = "not_restocked"
+    elif not_stocked:
+        _active_key = "not_stocked"
+    elif overdue_only:
         _active_key = "overdue"
-    elif status_in == _AWAITING_STATUSES:
-        _active_key = "awaiting_payment"
-    elif status_in == _PAID_STATUSES:
-        _active_key = "paid"
+    elif active_status:
+        _active_key = active_status
+    elif status_in:
+        _active_key = f"status_in:{status_in}"
     else:
-        _active_key = active_status or ""  # fallback: exact status match (sent, void, etc.)
+        _active_key = ""
 
-    # ------------------------------------------------------------------
-    # Invoice: custom card set using virtual/aggregate counts from summary
-    # ------------------------------------------------------------------
     if doc_type == "invoice":
-        _cbs = _sm.get("count_by_status") or {}
+        _AWAITING_STATUSES = "final,sent,awaiting_payment,partial"
+        _PAID_STATUSES = "paid"
+        _ALL_ISSUED_STATUSES = "final,sent,awaiting_payment,paid,partial"
+
         draft_cnt      = _cbs.get("draft", 0)
-        all_issued     = _sm.get("all_issued_count", _sm.get("non_void_count", 0))
+        all_issued_cnt = _sm.get("all_issued_count", 0)
         awaiting       = _sm.get("awaiting_payment_count", 0)
         overdue        = _sm.get("overdue_count", 0)
+        unfulfilled    = _sm.get("unfulfilled_count", 0)
         paid_cnt       = _cbs.get("paid", 0)
-        sent_cnt       = _cbs.get("sent", 0)
         void_cnt       = _cbs.get("void", 0)
 
-        # Per-bucket totals - all calculated server-side
         draft_total      = _sm.get("draft_total", 0.0)
         all_issued_total = _sm.get("all_issued_total", _sm.get("ar_total", 0.0))
-        sent_total       = _sm.get("sent_total", 0.0)
         awaiting_total   = _sm.get("awaiting_payment_total", 0.0)
         overdue_total    = _sm.get("overdue_total", 0.0)
+        unfulfilled_total = _sm.get("unfulfilled_total", 0.0)
         paid_total       = _sm.get("paid_total", 0.0)
         void_total       = _sm.get("void_total", 0.0)
 
-        # Awaiting Payment covers every issued-but-not-fully-paid status
-        _AWAITING_STATUSES = "final,sent,awaiting_payment,partial"
-        _PAID_STATUSES     = "paid"
-
-        # Resolve which virtual card is active
+        # Resolve active key for invoice virtual cards
         if active_status == "draft":
             _active_key = "draft"
-        elif status_in == _ALL_ISSUED_STATUSES:
+        elif all_issued or status_in == _ALL_ISSUED_STATUSES:
             _active_key = "all_issued"
-        elif status_in == _AWAITING_STATUSES and overdue_only:
+        elif overdue_only:
             _active_key = "overdue"
+        elif unfulfilled_only:
+            _active_key = "unfulfilled"
         elif status_in == _AWAITING_STATUSES:
             _active_key = "awaiting_payment"
         elif status_in == _PAID_STATUSES or active_status == "paid":
             _active_key = "paid"
+        elif active_status == "void":
+            _active_key = "void"
         else:
             _active_key = active_status or ""
 
-        invoice_cards = [
-            {"label": t("status.pro_forma", lang),        "count": draft_cnt,  "total": draft_total,      "status": "draft",            "color": "gray"},
-            {"label": t("status.all_issued", lang),       "count": all_issued, "total": all_issued_total, "status": "all_issued",       "color": "blue",   "_url": f"{base_url}&status_in={_ALL_ISSUED_STATUSES}", "_active_key": "all_issued"},
-            {"label": t("doc.sent", lang),                "count": sent_cnt,   "total": sent_total,       "status": "sent",             "color": "blue"},
-            {"label": t("status.awaiting_payment", lang), "count": awaiting,   "total": awaiting_total,   "status": "awaiting_payment", "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES}",                       "_active_key": "awaiting_payment"},
-            {"label": t("status.overdue", lang),          "count": overdue,    "total": overdue_total,    "status": "overdue",          "color": "red",    "_url": f"{base_url}&status_in={_AWAITING_STATUSES}&overdue_only=1",         "_active_key": "overdue"},
-            {"label": t("label.paid", lang),              "count": paid_cnt,   "total": paid_total,       "status": "paid",             "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",                           "_active_key": "paid"},
-            {"label": t("btn.void", lang),                "count": void_cnt,   "total": void_total,       "status": "void",             "color": "gray"},
+        cards = [
+            {"label": t("status.pro_forma", lang),        "count": draft_cnt,      "total": draft_total,      "status": "draft",            "color": "gray"},
+            {"label": t("status.all_issued", lang),       "count": all_issued_cnt, "total": all_issued_total, "status": "all_issued",       "color": "blue",   "_url": f"{base_url}&all_issued=1",                                      "_active_key": "all_issued"},
+            {"label": t("status.awaiting_payment", lang), "count": awaiting,       "total": awaiting_total,   "status": "awaiting_payment", "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES}",                    "_active_key": "awaiting_payment"},
+            {"label": t("status.overdue", lang),          "count": overdue,        "total": overdue_total,    "status": "overdue",          "color": "red",    "_url": f"{base_url}&overdue_only=1",                                    "_active_key": "overdue"},
+            {"label": t("status.unfulfilled", lang),      "count": unfulfilled,    "total": unfulfilled_total,"status": "unfulfilled",      "color": "orange", "_url": f"{base_url}&unfulfilled_only=1",                                "_active_key": "unfulfilled"},
+            {"label": t("label.paid", lang),              "count": paid_cnt,       "total": paid_total,       "status": "paid",             "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",                        "_active_key": "paid"},
+            {"label": t("btn.void", lang),                "count": void_cnt,       "total": void_total,       "status": "void",             "color": "gray"},
         ]
-        # total_override=all_issued prevents the "All" card from summing sub-cards.
-        # Sub-cards overlap (e.g. a paid invoice is counted in both All Issued and Paid),
-        # so summing them would produce a number larger than the real invoice count.
-        return status_cards(invoice_cards, base_url, _active_key or None, total_override=all_issued, currency=currency, show_all_card=False)
+        return status_cards(cards, base_url, _active_key or None, total_override=all_issued_cnt, currency=currency, show_all_card=False)
 
-    # ------------------------------------------------------------------
-    # All other doc types: simple per-status cards
-    # ------------------------------------------------------------------
-    _CARDS_BY_TYPE: dict[str, list[tuple[str, str, str]]] = {
-        "purchase_order": [
-            ("draft", t("status.purchase_order", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "bill": [
-            ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
-            ("paid", t("label.paid", lang), "green"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "credit_note": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "memo": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("final", t("status.issued", lang), "blue"),
-            ("converted", t("status.converted", lang), "green"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "consignment_in": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("final", t("status.issued", lang), "blue"),
-            ("converted", t("status.converted", lang), "green"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "receipt": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "list": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("accepted", t("status.accepted", lang), "yellow"),
-            ("completed", t("status.completed", lang), "green"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-    }
+    if doc_type == "memo":
+        draft_cnt      = _cbs.get("draft", 0)
+        all_issued_cnt = _sm.get("all_issued_count", 0)
+        overdue        = _sm.get("overdue_count", 0)
+        converted_cnt  = _cbs.get("converted", 0)
+        void_cnt       = _cbs.get("void", 0)
+
+        if all_issued or active_status == "" and not overdue_only:
+            _active_key = _active_key or ""
+        if active_status == "draft":
+            _active_key = "draft"
+        elif all_issued:
+            _active_key = "all_issued"
+        elif overdue_only:
+            _active_key = "overdue"
+        elif active_status == "converted":
+            _active_key = "converted"
+        elif active_status == "void":
+            _active_key = "void"
+
+        cards = [
+            {"label": t("status.draft", lang),            "count": draft_cnt,      "total": None, "status": "draft",      "color": "gray"},
+            {"label": t("status.all_issued", lang),       "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",                       "_active_key": "all_issued"},
+            {"label": t("status.overdue", lang),          "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1",                     "_active_key": "overdue"},
+            {"label": t("status.converted_to_invoice", lang), "count": converted_cnt, "total": None, "status": "converted", "color": "green"},
+            {"label": t("btn.void", lang),                "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency)
+
+    if doc_type == "credit_note":
+        draft_cnt       = _cbs.get("draft", 0)
+        all_issued_cnt  = _sm.get("all_issued_count", 0)
+        not_restocked_cnt = _sm.get("not_restocked_count", 0)
+        void_cnt        = _cbs.get("void", 0)
+
+        if active_status == "draft":
+            _active_key = "draft"
+        elif all_issued:
+            _active_key = "all_issued"
+        elif not_restocked:
+            _active_key = "not_restocked"
+        elif active_status == "void":
+            _active_key = "void"
+
+        cards = [
+            {"label": t("status.draft", lang),       "count": draft_cnt,         "total": None, "status": "draft",        "color": "gray"},
+            {"label": t("status.all_issued", lang),  "count": all_issued_cnt,    "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
+            {"label": "Not Restocked",               "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
+            {"label": t("btn.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency)
+
+    if doc_type == "bill":
+        all_issued_cnt  = _sm.get("all_issued_count", 0)
+        not_stocked_cnt = _sm.get("not_stocked_count", 0)
+        awaiting        = _sm.get("awaiting_payment_count", 0)
+        overdue         = _sm.get("overdue_count", 0)
+        paid_cnt        = _cbs.get("paid", 0)
+        void_cnt        = _cbs.get("void", 0)
+
+        if all_issued:
+            _active_key = "all_issued"
+        elif not_stocked:
+            _active_key = "not_stocked"
+        elif overdue_only:
+            _active_key = "overdue"
+        elif active_status:
+            _active_key = active_status
+
+        _AWAITING_STATUSES_BILL = "final,sent,awaiting_payment,partial"
+        cards = [
+            {"label": t("status.all_issued", lang),   "count": all_issued_cnt,  "total": None, "status": "all_issued",  "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
+            {"label": "Not Stocked Goods",            "count": not_stocked_cnt, "total": None, "status": "not_stocked", "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
+            {"label": t("status.awaiting_payment", lang), "count": awaiting,    "total": None, "status": "awaiting_payment", "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}", "_active_key": "awaiting_payment"},
+            {"label": t("status.overdue", lang),      "count": overdue,         "total": None, "status": "overdue",     "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
+            {"label": t("label.paid", lang),          "count": paid_cnt,        "total": None, "status": "paid",        "color": "green"},
+            {"label": t("btn.void", lang),            "count": void_cnt,        "total": None, "status": "void",        "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
+
+    if doc_type == "consignment_in":
+        draft_cnt      = _cbs.get("draft", 0)
+        all_issued_cnt = _sm.get("all_issued_count", 0)
+        overdue        = _sm.get("overdue_count", 0)
+        converted_cnt  = _cbs.get("converted", 0)
+        void_cnt       = _cbs.get("void", 0)
+
+        if active_status == "draft":
+            _active_key = "draft"
+        elif all_issued:
+            _active_key = "all_issued"
+        elif overdue_only:
+            _active_key = "overdue"
+        elif active_status == "converted":
+            _active_key = "converted"
+        elif active_status == "void":
+            _active_key = "void"
+
+        cards = [
+            {"label": t("status.draft", lang),            "count": draft_cnt,      "total": None, "status": "draft",      "color": "gray"},
+            {"label": t("status.all_issued", lang),       "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
+            {"label": t("status.overdue", lang),          "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
+            {"label": t("status.converted_to_invoice", lang), "count": converted_cnt, "total": None, "status": "converted", "color": "green"},
+            {"label": t("btn.void", lang),                "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency)
+
+    # Purchase order: keep as-is
+    if doc_type == "purchase_order":
+        cards = [
+            {"label": t("status.purchase_order", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
+            {"label": t("doc.sent", lang),              "count": _cbs.get("sent", 0),  "total": None, "status": "sent",  "color": "blue"},
+            {"label": t("btn.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency)
+
+    # Generic fallback for remaining doc types (receipt, etc.)
     _DEFAULT_CARDS = [
         ("draft", t("status.draft", lang), "gray"),
         ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
@@ -4853,10 +4992,8 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         ("overdue", t("status.overdue", lang), "red"),
         ("void", t("btn.void", lang), "gray"),
     ]
-    card_defs = _CARDS_BY_TYPE.get(doc_type, _DEFAULT_CARDS)
-
-    # Use API-level counts from summary when available (full dataset, not just current page)
-    api_counts = (_sm).get("count_by_status", {})
+    card_defs = _DEFAULT_CARDS
+    api_counts = _cbs
     counts: dict[str, int] = {s: api_counts.get(s, 0) for s, _, _ in card_defs}
     totals: dict[str, float] = {s: 0.0 for s, _, _ in card_defs}
     for d in docs:
@@ -4958,21 +5095,31 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
     )
 
 
-def _list_status_cards(summary: dict, active_status: str = "") -> FT:
-    _CARD_DEFS = [
-        ("draft", "Draft", "gray"),
-        ("sent", "Sent", "blue"),
-        ("accepted", "Accepted", "yellow"),
-        ("completed", "Completed", "green"),
-        ("void", "Void", "gray"),
-    ]
+def _list_status_cards(summary: dict, active_status: str = "", converted_to_type: str = "") -> FT:
     count_by_status = summary.get("count_by_status", {})
-    all_total = summary.get("total_count", sum(count_by_status.values()))
+    draft_cnt          = count_by_status.get("draft", 0)
+    all_issued_cnt     = summary.get("all_issued_count", 0)
+    memo_cnt           = summary.get("converted_to_memo_count", 0)
+    invoice_cnt        = summary.get("converted_to_invoice_count", 0)
+    void_cnt           = count_by_status.get("void", 0)
+
+    if converted_to_type == "memo":
+        _active_key = "converted_to_memo"
+    elif converted_to_type == "invoice":
+        _active_key = "converted_to_invoice"
+    elif active_status == "all_issued":
+        _active_key = "all_issued"
+    else:
+        _active_key = active_status or ""
+
     cards = [
-        {"label": label, "count": count_by_status.get(s, 0), "total": None, "status": s, "color": color}
-        for s, label, color in _CARD_DEFS
+        {"label": "Draft",                "count": draft_cnt,      "total": None, "status": "draft",            "color": "gray"},
+        {"label": "All Issued",           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": "/lists?all_issued=1",              "_active_key": "all_issued"},
+        {"label": "Converted to Memo",    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": "/lists?converted_to_type=memo",    "_active_key": "converted_to_memo"},
+        {"label": "Converted to Invoice", "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": "/lists?converted_to_type=invoice","_active_key": "converted_to_invoice"},
+        {"label": "Void",                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
-    return status_cards(cards, "/lists", active_status or None, total_override=all_total)
+    return status_cards(cards, "/lists", _active_key or None)
 
 
 def _list_type_tabs(active: str) -> FT:

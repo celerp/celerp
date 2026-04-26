@@ -516,6 +516,24 @@ async def undo_receive_return(token: str, entity_id: str) -> dict:
         return _raise(await c.delete(f"/docs/{entity_id}/receive-return")).json()
 
 
+async def receive_goods(token: str, entity_id: str, line_items: list[dict], location_id: str | None = None) -> dict:
+    payload = {
+        "received_items": [
+            {
+                "sku": li.get("sku", ""),
+                "name": li.get("name", "") or li.get("description", ""),
+                "quantity_received": float(li.get("quantity", 0) or 0),
+                "unit_price": float(li.get("unit_price", 0) or 0),
+                "cost_price": float(li.get("cost_price") or li.get("unit_price", 0) or 0),
+            }
+            for li in line_items
+        ],
+        "location_id": location_id or "",
+    }
+    async with _client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/receive", json=payload)).json()
+
+
 async def delete_doc(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}")).json()
