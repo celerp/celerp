@@ -98,7 +98,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.unreserved":
         current["reserved_quantity"] = max(0.0, float(current.get("reserved_quantity", 0)) - float(data["quantity"]))
     elif event_type == "item.fulfilled":
-        current["quantity"] = 0
+        current["quantity"] = float(data.get("quantity_fulfilled", 0))
         current["is_available"] = False
         current["status"] = "sold"
         current.setdefault("fulfilled_for_docs", [])
