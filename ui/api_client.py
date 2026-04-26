@@ -506,6 +506,11 @@ async def unfulfill_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/unfulfill", json={})).json()
 
 
+async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/receive-return", json={"items": items, "notes": notes})).json()
+
+
 async def delete_doc(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}")).json()

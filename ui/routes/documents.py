@@ -131,7 +131,85 @@ def _render_fulfill_section(doc: dict):
     )
 
 
-def _render_fulfillment_badge(doc: dict):
+def _render_receive_return_section(doc: dict):
+    """Receive Return button - shown on credit notes when celerp-inventory is installed.
+
+    Hidden on draft/void. Once all CN line items have been received back, button disappears.
+    Clicking opens an inline form pre-populated from the CN's line items.
+    """
+    from celerp.modules.loader import loaded_modules
+    if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
+        return ""
+    if doc.get("doc_type") != "credit_note":
+        return ""
+    if doc.get("status") in ("draft", "void"):
+        return ""
+
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    cid_safe = f"receive-return-{entity_id}".replace(":", "-")
+
+    # Already received - show a badge, no button
+    received = doc.get("return_received_items") or []
+    if received:
+        return Div(Span("Return Received", cls="badge badge--green"), id=cid_safe)
+
+    # Build pre-populated form rows from CN line items
+    line_items = doc.get("line_items") or []
+    stocked = [li for li in line_items if (li.get("sku") or "") and (li.get("sell_by") or "") not in ("service", "hour")]
+    if not stocked:
+        return ""
+
+    rows = []
+    for i, li in enumerate(stocked):
+        rows.append(
+            Div(
+                Span(f"{li.get('name', li.get('sku', '?'))} (SKU: {li.get('sku', '')})", cls="return-item-label"),
+                Input(
+                    type="hidden",
+                    name=f"items[{i}][sku]",
+                    value=li.get("sku", ""),
+                ),
+                Input(
+                    type="hidden",
+                    name=f"items[{i}][name]",
+                    value=li.get("name", ""),
+                ),
+                Input(
+                    type="hidden",
+                    name=f"items[{i}][cost_price]",
+                    value=str(li.get("cost_price") or 0),
+                ),
+                Input(
+                    type="number",
+                    name=f"items[{i}][quantity]",
+                    value=str(li.get("quantity") or 0),
+                    min="0",
+                    step="any",
+                    cls="input input--sm",
+                    style="width:80px",
+                ),
+                cls="return-item-row",
+            )
+        )
+
+    return Div(
+        Form(
+            *rows,
+            Button(
+                "Receive Return",
+                cls="btn btn--secondary btn--sm",
+                title="Record returned goods from this credit note. New inventory items will be created and COGS will be reversed.",
+            ),
+            hx_post=f"/docs/{entity_id}/receive-return",
+            hx_encoding="application/x-www-form-urlencoded",
+            hx_target=f"#{cid_safe}",
+            hx_swap="outerHTML",
+        ),
+        id=cid_safe,
+    )
+
+
+
     """Fulfillment badge - shown when doc is fulfilled."""
     fs = doc.get("fulfillment_status") or ""
     if fs == "fulfilled":
@@ -2227,9 +2305,56 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
         return _render_fulfill_section(doc)
 
-    # -----------------------------------------------------------------------
-    # List routes — folded here so lists.py is a thin shim
-    # -----------------------------------------------------------------------
+    @app.post("/docs/{entity_id}/receive-return")
+    async def doc_receive_return(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        # Parse items[N][field] form encoding
+        items_raw: dict[int, dict] = {}
+        for key, value in form.multi_items():
+            import re as _re
+            m = _re.match(r"items\[(\d+)\]\[(\w+)\]", key)
+            if m:
+                idx, field = int(m.group(1)), m.group(2)
+                items_raw.setdefault(idx, {})[field] = value
+        items = []
+        for idx in sorted(items_raw):
+            row = items_raw[idx]
+            try:
+                qty = float(row.get("quantity") or 0)
+            except (ValueError, TypeError):
+                qty = 0.0
+            if qty <= 0:
+                continue
+            items.append({
+                "sku": row.get("sku", ""),
+                "name": row.get("name", ""),
+                "quantity": qty,
+                "cost_price": float(row.get("cost_price") or 0),
+            })
+        if not items:
+            cid_safe = f"receive-return-{entity_id}".replace(":", "-")
+            return Div(
+                Span("No valid quantities entered.", cls="flash flash--error"),
+                id=cid_safe,
+            )
+        try:
+            await api.receive_return(token, entity_id, items)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            cid_safe = f"receive-return-{entity_id}".replace(":", "-")
+            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except Exception:
+            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _render_receive_return_section(doc)
+
+
 
     @app.get("/lists")
     async def lists_page(request: Request):
@@ -3358,6 +3483,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     _fulfill_el = _render_fulfill_section(doc)
     if _fulfill_el:
         action_btns.append(_fulfill_el)
+    _receive_return_el = _render_receive_return_section(doc)
+    if _receive_return_el:
+        action_btns.append(_receive_return_el)
     for _contrib in _get_slot("doc_detail_actions"):
         _render_path = _contrib.get("render", "")
         if _render_path:

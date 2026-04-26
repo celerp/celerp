@@ -2096,3 +2096,105 @@ async def unfulfill_doc(
     await fire_lifecycle_strict("post_unfulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
     await session.commit()
     return result
+
+
+class ReturnReceivedItem(BaseModel):
+    sku: str
+    name: str
+    quantity: float
+    cost_price: float = 0.0
+
+
+class ReceiveReturnPayload(BaseModel):
+    items: list[ReturnReceivedItem]
+    notes: str | None = None
+    idempotency_key: str | None = None
+
+
+@router.post("/{entity_id}/receive-return")
+async def receive_return(
+    entity_id: str,
+    payload: ReceiveReturnPayload,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Receive returned goods on a credit note. Creates new inventory items and a reversing COGS JE."""
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("doc_type") != "credit_note":
+        raise HTTPException(status_code=409, detail="receive-return is only valid for credit notes")
+    if state.get("status") in ("draft", "void"):
+        raise HTTPException(status_code=409, detail="Cannot receive return on a draft or voided credit note")
+    if not payload.items:
+        raise HTTPException(status_code=422, detail="At least one item is required")
+
+    now = datetime.now(UTC).isoformat()
+    total_cogs = 0.0
+    received_items = []
+
+    for it in payload.items:
+        if it.quantity <= 0:
+            raise HTTPException(status_code=422, detail=f"Quantity must be positive for item '{it.name}'")
+        item_id = f"item:{uuid.uuid4()}"
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=item_id,
+            entity_type="item",
+            event_type="item.created",
+            data={
+                "sku": it.sku,
+                "name": it.name,
+                "quantity": it.quantity,
+                "cost_price": it.cost_price,
+                "status": "available",
+                "source_doc_id": entity_id,
+                "created_at": now,
+            },
+            actor_id=user.id,
+            location_id=None,
+            source="return",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"source_return_cn": entity_id},
+        )
+        total_cogs += it.cost_price * it.quantity
+        received_items.append({
+            "item_id": item_id,
+            "sku": it.sku,
+            "name": it.name,
+            "quantity": it.quantity,
+            "cost_price": it.cost_price,
+            "received_at": now,
+        })
+
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.return_received",
+        data={
+            "items": received_items,
+            "received_by": str(user.id),
+            "notes": payload.notes,
+            "received_at": now,
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    await auto_je.create_for_return_received(
+        session,
+        company_id=company_id,
+        user_id=user.id,
+        cn_id=entity_id,
+        total_cogs=total_cogs,
+    )
+
+    await session.commit()
+    return {"received_items": received_items, "total_cogs_reversed": total_cogs}

@@ -361,6 +361,26 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str) -
         )
 
 
+async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float) -> None:
+    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1300) / Credit COGS (5100)."""
+    if total_cogs <= 0:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{cn_id}:return",
+        idem_create=je_idempotency_key(cn_id, "return", "c"),
+        idem_posted=je_idempotency_key(cn_id, "return", "p"),
+        memo=f"Auto JE for {cn_id} return received (COGS reversal)",
+        entries=[
+            {"account": "1300", "debit": float(total_cogs), "credit": 0.0},
+            {"account": "5100", "debit": 0.0, "credit": float(total_cogs)},
+        ],
+        metadata_={"trigger": "doc.return_received", "cn_id": cn_id},
+    )
+
+
 async def create_for_mfg_completed(session, *, company_id, user_id, order_id: str, input_cost: float, waste_cost: float) -> None:
     output_cost = max(0.0, float(input_cost) - float(waste_cost))
     await _emit_auto_posted_je(

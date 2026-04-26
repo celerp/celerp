@@ -175,6 +175,11 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current["status"] = "returned"
         elif total_returned > 0:
             current["status"] = "partial_returned"
+    elif event_type == "doc.return_received":
+        # Customer return on a credit note: track what came back (status unchanged - CN stays final/paid)
+        items = data.get("items", [])
+        current.setdefault("return_received_items", [])
+        current["return_received_items"].extend(items)
     elif event_type == "doc.shared_import":
         # Inbound doc received via p2p share / bundle upload.
         # Carries the sender's full doc state; status forced to "received".
