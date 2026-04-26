@@ -210,26 +210,19 @@ def test_no_fulfill_button_on_service_only_doc(page, ui_server, service_doc_id):
 
 
 def test_warehousing_settings_has_auto_complete_pick(page, ui_server):
-    """FULFILL-06: Warehousing settings page has auto_complete_pick, not require_pick_before_fulfill."""
+    """FULFILL-06: Settings page must not expose the legacy require_pick_before_fulfill field.
+
+    Full schema + hook coverage lives in celerp-warehousing:
+        tests/test_fulfill_toggle.py::test_settings_schema_uses_auto_complete_pick_not_legacy_field
+        tests/test_fulfill_toggle.py::test_hook_reads_auto_complete_pick
+    This browser test only checks the rendered HTML of pages loaded without the warehousing module.
+    """
     page.goto(f"{ui_server}/settings", wait_until="domcontentloaded")
     _assert_no_crash(page, "/settings")
     _save_screenshot(page, "06-settings-page")
-
     html = page.content()
     assert "require_pick_before_fulfill" not in html, \
         "Found legacy field 'require_pick_before_fulfill' in settings page HTML"
-
-    warehousing_tab = page.locator("a:has-text('Warehousing'), button:has-text('Warehousing')").first
-    if warehousing_tab.count() > 0:
-        warehousing_tab.click()
-        page.wait_for_load_state("networkidle", timeout=5000)
-        _save_screenshot(page, "06-warehousing-settings-tab")
-        html_after = page.content()
-        assert "require_pick_before_fulfill" not in html_after, \
-            "Found legacy field in warehousing settings tab HTML"
-        _assert_no_crash(page, "warehousing settings tab")
-    else:
-        pytest.skip("Warehousing module not installed")
 
 
 def test_no_legacy_references_in_ui(page, ui_server):
