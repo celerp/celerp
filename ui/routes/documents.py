@@ -540,7 +540,7 @@ def setup_routes(app):
             ),
             pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&sort={sort}&dir={sort_dir}".strip("&")),
             title=f"{page_title} - Celerp",
-            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in"}.get(doc_type, "invoices"),
+            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
             lang=lang,
             request=request,
         )
@@ -1185,7 +1185,7 @@ def setup_routes(app):
             page_header(f"{type_label} - {status_label} {doc_ref}"),
             _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request)),
             title=f"{type_label} {doc_ref} - Celerp",
-            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in"}.get(doc_type, "invoices"),
+            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
             request=request,
         )
 
