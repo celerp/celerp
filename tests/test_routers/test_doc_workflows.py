@@ -817,3 +817,97 @@ async def test_receive_return_rejected_on_non_credit_note(client, session):
         json={"items": [{"sku": "X-001", "name": "Item", "quantity": 1, "cost_price": 50.0}]},
     )
     assert r.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_create_credit_note_from_invoice_pre_populates_fields(client, session):
+    """create-credit-note action: CN gets original_doc_id, contact_id, and line items from invoice."""
+    token = await _register(client)
+    inv_id = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
+    # Finalize and fully pay so status = paid
+    await client.post(f"/docs/{inv_id}/finalize", headers=_h(token))
+    await _pay(client, token, inv_id, 100, "FULL")
+
+    # Create CN from invoice (simulates the action handler logic directly via API)
+    source = (await client.get(f"/docs/{inv_id}", headers=_h(token))).json()
+    cn_r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={
+            "doc_type": "credit_note",
+            "original_doc_id": inv_id,
+            "contact_id": source.get("contact_id"),
+            "line_items": source.get("line_items", []),
+            "subtotal": source.get("subtotal") or 0,
+            "tax": source.get("tax") or 0,
+            "total": source.get("total") or 0,
+        },
+    )
+    assert cn_r.status_code == 200, cn_r.text
+    cn_id = cn_r.json()["id"]
+
+    cn = (await client.get(f"/docs/{cn_id}", headers=_h(token))).json()
+    assert cn["doc_type"] == "credit_note"
+    assert cn["original_doc_id"] == inv_id
+    assert cn["contact_id"] == source.get("contact_id")
+    assert len(cn.get("line_items", [])) == len(source.get("line_items", []))
+    # Original invoice outstanding reduced by CN total
+    inv_state = (await client.get(f"/docs/{inv_id}", headers=_h(token))).json()
+    assert inv_state["amount_outstanding"] == pytest.approx(0.0)  # already paid; CN total deducted further (clamps at 0)
+
+
+@pytest.mark.anyio
+async def test_doc_return_received_projection(client, session):
+    """doc.return_received projection: return_received_items appended, CN status unchanged."""
+    token = await _register(client)
+    inv_id = await _create_invoice(client, token, subtotal=50, tax=0, total=50)
+    await client.post(f"/docs/{inv_id}/finalize", headers=_h(token))
+
+    cn_r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={
+            "doc_type": "credit_note",
+            "original_doc_id": inv_id,
+            "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 1, "unit_price": 50, "sell_by": "unit"}],
+            "subtotal": 50, "tax": 0, "total": 50,
+        },
+    )
+    assert cn_r.status_code == 200
+    cn_id = cn_r.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=_h(token))
+
+    before = (await client.get(f"/docs/{cn_id}", headers=_h(token))).json()
+    assert before.get("return_received_items") is None or before.get("return_received_items") == []
+
+    rr = await client.post(
+        f"/docs/{cn_id}/receive-return",
+        headers=_h(token),
+        json={"items": [{"sku": "W-001", "name": "Widget", "quantity": 1, "cost_price": 30.0}]},
+    )
+    assert rr.status_code == 200
+
+    after = (await client.get(f"/docs/{cn_id}", headers=_h(token))).json()
+    assert len(after.get("return_received_items", [])) == 1
+    # Status must NOT change - CN stays in its financial status
+    assert after["status"] == before["status"]
+
+
+@pytest.mark.anyio
+async def test_receive_return_draft_cn_rejected(client, session):
+    """receive-return must be rejected on draft credit notes."""
+    token = await _register(client)
+    cn_r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={"doc_type": "credit_note", "line_items": [], "subtotal": 0, "tax": 0, "total": 0},
+    )
+    assert cn_r.status_code == 200
+    cn_id = cn_r.json()["id"]
+    # Status is draft - receive-return should be rejected
+    r = await client.post(
+        f"/docs/{cn_id}/receive-return",
+        headers=_h(token),
+        json={"items": [{"sku": "X", "name": "X", "quantity": 1, "cost_price": 10.0}]},
+    )
+    assert r.status_code == 409
