@@ -100,7 +100,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.fulfilled":
         current["quantity"] = 0
         current["is_available"] = False
-        current["status"] = "fulfilled"
+        current["status"] = "sold"
         current.setdefault("fulfilled_for_docs", [])
         current["fulfilled_for_docs"].append(data["source_doc_id"])
     elif event_type == "item.fulfillment_reversed":
