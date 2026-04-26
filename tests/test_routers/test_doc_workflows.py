@@ -988,3 +988,96 @@ async def test_receive_return_draft_cn_rejected(client, session):
         json={"items": [{"sku": "X", "quantity": 1}]},
     )
     assert r.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_undo_receive_return_removes_items_from_inventory(client, session):
+    """Regression: Revert Return Stock must dispose returned items so they no longer appear in inventory.
+
+    Previously item.disposed projection never set status='disposed', so items remained visible
+    in inventory (filtered by _HIDDEN_STATUSES which checks status field, not is_available).
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create sold inventory item
+    item_r = await client.post("/items", headers=h, json={"sku": "RR-001", "name": "Returnable Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 60.0, "sell_by": "piece"})
+    assert item_r.status_code == 200
+    await client.post(f"/items/{item_r.json()['id']}/status", headers=h, json={"new_status": "sold"})
+
+    # Create CN and finalize
+    cn_r = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Returnable Widget", "sku": "RR-001", "quantity": 1, "unit_price": 60, "sell_by": "piece"}],
+        "subtotal": 60, "tax": 0, "total": 60,
+    })
+    assert cn_r.status_code == 200
+    cn_id = cn_r.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # Receive return - creates a new inventory item with status=available
+    rr = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "RR-001", "quantity": 1}]})
+    assert rr.status_code == 200, rr.text
+    received_items = rr.json()["received_items"]
+    assert len(received_items) == 1
+
+    # Verify the returned item appears in inventory
+    inv_list = (await client.get("/items", headers=h)).json()["items"]
+    returned_skus = [i["sku"] for i in inv_list if i.get("status") == "available"]
+    assert "RR-001" in returned_skus, "Returned item should be available in inventory after receive-return"
+
+    # Revert Return Stock
+    undo_r = await client.delete(f"/docs/{cn_id}/receive-return", headers=h)
+    assert undo_r.status_code == 200, undo_r.text
+    assert undo_r.json()["undone"] is True
+
+    # CN projection should be cleared
+    cn_state = (await client.get(f"/docs/{cn_id}", headers=h)).json()
+    assert cn_state.get("return_received_items") in (None, []), "return_received_items must be cleared after undo"
+
+    # The returned item must no longer appear as available in inventory (status=disposed hides it)
+    inv_list_after = (await client.get("/items", headers=h)).json()["items"]
+    available_skus_after = [i["sku"] for i in inv_list_after if i.get("status") == "available"]
+    assert "RR-001" not in available_skus_after, (
+        "Disposed item must not appear in inventory after Revert Return Stock. "
+        "Check item.disposed projection sets status='disposed'."
+    )
+
+
+@pytest.mark.anyio
+async def test_undo_receive_return_blocked_if_item_resold(client, session):
+    """Revert Return Stock must return 409 with actionable message if a returned item was re-sold."""
+    token = await _register(client)
+    h = _h(token)
+
+    # Create sold inventory item
+    item_r = await client.post("/items", headers=h, json={"sku": "RR-002", "name": "Resold Widget", "quantity": 1, "cost_price": 25.0, "unit_price": 50.0, "sell_by": "piece"})
+    assert item_r.status_code == 200
+    await client.post(f"/items/{item_r.json()['id']}/status", headers=h, json={"new_status": "sold"})
+
+    # Create and finalize CN
+    cn_r = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Resold Widget", "sku": "RR-002", "quantity": 1, "unit_price": 50, "sell_by": "piece"}],
+        "subtotal": 50, "tax": 0, "total": 50,
+    })
+    assert cn_r.status_code == 200
+    cn_id = cn_r.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # Receive return
+    rr = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "RR-002", "quantity": 1}]})
+    assert rr.status_code == 200, rr.text
+    returned_items = rr.json()["received_items"]
+    new_item_id = returned_items[0]["item_id"]
+
+    # Re-sell the returned item (simulates someone selling it before the undo)
+    await client.post(f"/items/{new_item_id}/status", headers=h, json={"new_status": "sold"})
+
+    # Revert Return Stock must fail with 409 and name the blocked item
+    undo_r = await client.delete(f"/docs/{cn_id}/receive-return", headers=h)
+    assert undo_r.status_code == 409, undo_r.text
+    detail = undo_r.json().get("detail", "")
+    assert "sold" in detail.lower() or "RR-002" in detail, (
+        f"Error message must name the blocked item or status. Got: {detail}"
+    )

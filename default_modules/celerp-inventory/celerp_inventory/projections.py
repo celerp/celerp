@@ -76,6 +76,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type in {"item.expired", "item.disposed"}:
         current["is_available"] = False
         current["is_expired"] = event_type == "item.expired"
+        current["status"] = "expired" if event_type == "item.expired" else "disposed"
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])
