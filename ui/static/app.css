@@ -1177,7 +1177,10 @@ a:hover { text-decoration: underline; }
 /* ── GemCloud-style document detail layout (doc-detail--gc) ── */
 .doc-detail--gc { display: flex; flex-direction: column; gap: 0; max-width: 1100px; }
 
-.doc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 0 16px; }
+.doc-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 0 16px; }
+.doc-actions-left { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.doc-actions-right { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.doc-inventory-action { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 
 /* Metadata bar: 4-column row at top */
 .doc-meta-bar { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border: 1px solid var(--c-border); border-radius: 6px; overflow: hidden; margin-bottom: 16px; }

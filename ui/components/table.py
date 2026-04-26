@@ -77,14 +77,14 @@ def fmt_money(value: str | float, currency: str | None = None) -> str:
         return EMPTY
 
 
-def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None) -> FT:
+def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True) -> FT:
     """Clickable status filter cards at top of list pages.
 
     cards: [{"label": "Paid", "count": 489, "total": 2990000.0, "status": "paid", "color": "green"}, ...]
     Clicking a card navigates to base_url?status=<status>.
     Cards may include a "_url" key to override the generated href entirely.
     Cards may include "_active_key" to override which value is compared against active_status.
-    "All" card (status=None/"") is always first and clears the filter.
+    "All" card (status=None/"") is prepended unless show_all_card=False.
     total_override: if provided, the "All" card shows this count instead of summing cards.
     """
     def _card(label: str, count: int, total: float | None, status: str | None, color: str, href_override: str | None = None, active_key: str | None = None) -> FT:
@@ -106,9 +106,9 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
             inner.append(Span(fmt_money(total, currency), cls="status-card-total"))
         return A(*inner, href=href, cls=cls)
 
-    # Ensure "All" card is first
+    # Ensure "All" card is first (optional)
     all_total = total_override if total_override is not None else sum(c.get("count", 0) for c in cards)
-    els = [_card("All", all_total, None, None, "blue")]
+    els = [_card("All", all_total, None, None, "blue")] if show_all_card else []
     for c in cards:
         els.append(_card(
             c.get("label", ""),

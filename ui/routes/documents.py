@@ -142,10 +142,11 @@ def _render_fulfillment_badge(doc: dict):
 
 
 def _render_receive_return_section(doc: dict):
-    """Receive Return button - shown on credit notes when celerp-inventory is installed.
+    """Receive Returns button - shown on credit notes when celerp-inventory is installed.
 
-    Hidden on draft/void. Once all CN line items have been received back, button disappears.
-    Clicking opens an inline form pre-populated from the CN's line items.
+    Mirrors _render_fulfill_section() but for the return direction.
+    Hidden on draft/void. Shows badge once return_received_items is set.
+    Clicking fires the receive-return endpoint with all CN line items as hidden fields (full qty, no inline editing).
     """
     from celerp.modules.loader import loaded_modules
     if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
@@ -158,59 +159,37 @@ def _render_receive_return_section(doc: dict):
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     cid_safe = f"receive-return-{entity_id}".replace(":", "-")
 
-    # Already received - show a badge, no button
+    # Already received - show badge only
     received = doc.get("return_received_items") or []
     if received:
         return Div(Span("Return Received", cls="badge badge--green"), id=cid_safe)
 
-    # Build pre-populated form rows from CN line items
+    # Only show button if there are stocked line items to return
     line_items = doc.get("line_items") or []
     stocked = [li for li in line_items if (li.get("sku") or "") and (li.get("sell_by") or "") not in ("service", "hour")]
     if not stocked:
         return ""
 
-    rows = []
+    # Hidden fields carry the full quantities - no inline form editing needed (v1)
+    hidden_fields = []
     for i, li in enumerate(stocked):
-        rows.append(
-            Div(
-                Span(f"{li.get('name', li.get('sku', '?'))} (SKU: {li.get('sku', '')})", cls="return-item-label"),
-                Input(
-                    type="hidden",
-                    name=f"items[{i}][sku]",
-                    value=li.get("sku", ""),
-                ),
-                Input(
-                    type="hidden",
-                    name=f"items[{i}][name]",
-                    value=li.get("name", ""),
-                ),
-                Input(
-                    type="hidden",
-                    name=f"items[{i}][cost_price]",
-                    value=str(li.get("cost_price") or 0),
-                ),
-                Input(
-                    type="number",
-                    name=f"items[{i}][quantity]",
-                    value=str(li.get("quantity") or 0),
-                    min="0",
-                    step="any",
-                    cls="input input--sm",
-                    style="width:80px",
-                ),
-                cls="return-item-row",
-            )
-        )
+        hidden_fields += [
+            Input(type="hidden", name=f"items[{i}][sku]",        value=li.get("sku", "")),
+            Input(type="hidden", name=f"items[{i}][name]",       value=li.get("name", "")),
+            Input(type="hidden", name=f"items[{i}][quantity]",   value=str(li.get("quantity") or 0)),
+            Input(type="hidden", name=f"items[{i}][cost_price]", value=str(li.get("cost_price") or 0)),
+        ]
 
     return Div(
         Form(
-            *rows,
+            *hidden_fields,
             Button(
-                "Receive Return",
-                cls="btn btn--secondary btn--sm",
-                title="Record returned goods from this credit note. New inventory items will be created and COGS will be reversed.",
+                "Receive Returns",
+                cls="btn btn--primary btn--sm",
+                title="Receive returned goods back into inventory. Creates new inventory items and reverses COGS.",
             ),
             hx_post=f"/docs/{entity_id}/receive-return",
+            hx_confirm="Receive all returned goods back into inventory? This will create new inventory items and reverse the COGS journal entry.",
             hx_encoding="application/x-www-form-urlencoded",
             hx_target=f"#{cid_safe}",
             hx_swap="outerHTML",
@@ -3345,10 +3324,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;",
             )
 
-    # --- Action buttons ---
-    action_btns = []
+    # --- Action buttons (left = primary actions; right = destructive/void actions) ---
+    action_btns_left = []
+    action_btns_right = []
     if doc_type == "invoice" and status in ("partial", "paid"):
-        action_btns.append(
+        action_btns_left.append(
             Button(
                 "Create Credit Note",
                 hx_post=f"/docs/{entity_id}/action/create-credit-note",
@@ -3360,34 +3340,34 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if doc_type == "invoice" and status in ("sent", "final", "partial", "awaiting_payment"):
         pass  # Payment section is now a separate component rendered below
     if doc_type == "quotation" and status not in ("void", "converted"):
-        action_btns.append(
+        action_btns_left.append(
             Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--primary")
         )
     # Issued memos can be converted to invoices (customer keeps goods)
     if doc_type == "memo" and status in ("final", "sent", "received", "partially_received"):
-        action_btns.append(
+        action_btns_left.append(
             Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary")
         )
     # Issued consignment_in can be converted to vendor bills (vendor keeps goods)
     if doc_type == "consignment_in" and status in ("final", "sent", "received", "partially_received"):
-        action_btns.append(
+        action_btns_left.append(
             Button(t("btn.convert_to_vendor_bill"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary")
         )
     # List-specific lifecycle buttons
     if is_list:
         if status == "draft":
-            action_btns.append(Button(t("btn.send"), hx_post=f"/lists/{entity_id}/action/send", hx_swap="none", cls="btn btn--primary"))
+            action_btns_left.append(Button(t("btn.send"), hx_post=f"/lists/{entity_id}/action/send", hx_swap="none", cls="btn btn--primary"))
         if status == "sent":
-            action_btns.append(Button(t("btn.accept"), hx_post=f"/lists/{entity_id}/action/accept", hx_swap="none", cls="btn btn--primary"))
+            action_btns_left.append(Button(t("btn.accept"), hx_post=f"/lists/{entity_id}/action/accept", hx_swap="none", cls="btn btn--primary"))
         if status == "accepted":
-            action_btns.append(Button(t("btn.complete"), hx_post=f"/lists/{entity_id}/action/complete", hx_swap="none", cls="btn btn--primary"))
+            action_btns_left.append(Button(t("btn.complete"), hx_post=f"/lists/{entity_id}/action/complete", hx_swap="none", cls="btn btn--primary"))
         if status not in ("void", "converted"):
-            action_btns.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice", hx_swap="none", cls="btn btn--secondary"))
-            action_btns.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo", hx_swap="none", cls="btn btn--secondary"))
-        action_btns.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate", hx_swap="none", cls="btn btn--secondary"))
+            action_btns_left.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice", hx_swap="none", cls="btn btn--secondary"))
+            action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo", hx_swap="none", cls="btn btn--secondary"))
+        action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate", hx_swap="none", cls="btn btn--secondary"))
     if status in ("draft", "sent") and not is_list:
         _finalize_labels = {
             "invoice": "Issue Invoice",
@@ -3399,7 +3379,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         }
         finalize_label = _finalize_labels.get(doc_type, "Finalize")
         if _is_manager:
-            action_btns.append(
+            action_btns_left.append(
                 Button(finalize_label, hx_post=f"/docs/{entity_id}/action/finalize",
                        hx_swap="none", cls="btn btn--primary")
             )
@@ -3411,7 +3391,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         type_label = doc_type.replace("_", " ").title()
         default_subject = f"{type_label} #{doc_number} from {company_name}" if doc_number else ""
         default_body = f"Please find attached {type_label} #{doc_number}." if doc_number else ""
-        action_btns.append(
+        action_btns_left.append(
             Details(
                 Summary(t("btn.send"), cls="btn btn--secondary"),
                 Form(
@@ -3434,7 +3414,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
         )
     if status not in ("void", "draft") and _is_manager:
-        action_btns.append(
+        action_btns_right.append(
             Details(
                 Summary(t("btn.void"), cls="btn btn--danger"),
                 Form(
@@ -3442,14 +3422,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger"),
                     hx_post=f"{_base}/action/void", hx_swap="none", cls="inline-form",
                 ),
-                cls="void-section void-section--right",
+                cls="void-section",
             )
         )
     # "Revert to Draft" button - only from final/sent with no payments and no received items
     amount_paid_for_revert = float(doc.get("amount_paid") or 0)
     has_received_items = bool(doc.get("received_items"))
     if status in ("final", "sent") and amount_paid_for_revert == 0 and not has_received_items and _is_manager:
-        action_btns.append(
+        action_btns_right.append(
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
                 Form(
@@ -3457,12 +3437,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Button(t("btn.confirm_revert"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/revert_to_draft", hx_swap="none", cls="inline-form",
                 ),
-                cls="void-section void-section--right",
+                cls="void-section",
             )
         )
     # "Unvoid" button - only from void with pre_void_status set
     if status == "void" and doc.get("pre_void_status") and _is_manager:
-        action_btns.append(
+        action_btns_right.append(
             Details(
                 Summary(t("doc.unvoid"), cls="btn btn--secondary"),
                 Form(
@@ -3470,11 +3450,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Button(t("btn.confirm_unvoid"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/unvoid", hx_swap="none", cls="inline-form",
                 ),
-                cls="void-section void-section--right",
+                cls="void-section",
             )
         )
     if status == "draft" and _is_manager:
-        action_btns.append(
+        action_btns_right.append(
             Details(
                 Summary(t("btn.delete"), cls="btn btn--danger"),
                 Form(
@@ -3483,48 +3463,42 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Button(t("btn.confirm_delete"), type="submit", cls="btn btn--danger"),
                     hx_post=f"{_base}/action/delete", hx_swap="none", cls="inline-form",
                 ),
-                cls="void-section void-section--right",
+                cls="void-section",
             )
         )
     # Refund is now handled via credit notes + void in the payment section
     # "Mark as Sent" button (instant, no confirmation; undo via "Unmark")
     if status in ("draft", "sent") and not is_list:
         if status == "draft":
-            action_btns.append(
+            action_btns_left.append(
                 Button(t("btn.mark_as_sent"), hx_post=f"/docs/{entity_id}/action/mark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
         else:
             # Already sent - offer undo
-            action_btns.append(
+            action_btns_left.append(
                 Button(t("btn.unmark_sent"), hx_post=f"/docs/{entity_id}/action/unmark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
     # PDF button
     if not is_list:
-        action_btns.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
+        action_btns_left.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
     # CSV line items export/import icons
-    action_btns.append(
+    action_btns_left.append(
         A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
           cls="btn btn--ghost btn--icon", title=t("doc.export_line_items_csv")),
     )
     if is_draft:
-        action_btns.append(
+        action_btns_left.append(
             Button(NotStr(_ICON_CSV_IMPORT), type="button",
                    cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
                    onclick="document.getElementById('csv-import-input').click()"),
         )
-    action_btns.append(Span("", id="share-result"))
-    action_btns.append(Span("", id="action-error"))
+    action_btns_left.append(Span("", id="share-result"))
+    action_btns_left.append(Span("", id="action-error"))
 
-    # --- Slot: doc_detail_actions (module-contributed action buttons) ---
+    # --- Slot: doc_detail_actions (module-contributed action buttons - go left) ---
     from celerp.modules.slots import get as _get_slot
-    _fulfill_el = _render_fulfill_section(doc)
-    if _fulfill_el:
-        action_btns.append(_fulfill_el)
-    _receive_return_el = _render_receive_return_section(doc)
-    if _receive_return_el:
-        action_btns.append(_receive_return_el)
     for _contrib in _get_slot("doc_detail_actions"):
         _render_path = _contrib.get("render", "")
         if _render_path:
@@ -3534,9 +3508,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _render_fn = getattr(_il.import_module(_mod_path), _fn_name)
                 _el = _render_fn(doc)
                 if _el is not None:
-                    action_btns.append(_el)
+                    action_btns_left.append(_el)
             except Exception:
                 pass
+
+    # --- Inventory section action buttons (rendered above line items, not in the top bar) ---
+    _fulfill_el = _render_fulfill_section(doc)
+    _receive_return_el = _render_receive_return_section(doc)
 
     # --- Slot: doc_detail_badges (module-contributed status badges) ---
     _slot_badges = []
@@ -4464,7 +4442,11 @@ async function celerpCsvImport(input, entityId) {{
 
     return Div(
         list_type_selector,
-        Div(*action_btns, cls="doc-actions") if action_btns else "",
+        Div(
+            Div(*action_btns_left, cls="doc-actions-left"),
+            Div(*action_btns_right, cls="doc-actions-right") if action_btns_right else "",
+            cls="doc-actions",
+        ) if (action_btns_left or action_btns_right) else "",
         po_receive_section,
         # Metadata bar: Doc ID | Reference | Issue date | Due date
         Div(
@@ -4501,6 +4483,11 @@ async function celerpCsvImport(input, entityId) {{
             ),
             cls="doc-row",
         ),
+        # Inventory action button - appears just above the line items section, aligned right
+        Div(
+            _fulfill_el or _receive_return_el or "",
+            cls="doc-inventory-action",
+        ) if (_fulfill_el or _receive_return_el) else "",
         # Line items + price list bar
         Div(
             lines_section,
@@ -4759,7 +4746,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         # total_override=all_issued prevents the "All" card from summing sub-cards.
         # Sub-cards overlap (e.g. a paid invoice is counted in both All Issued and Paid),
         # so summing them would produce a number larger than the real invoice count.
-        return status_cards(invoice_cards, base_url, _active_key or None, total_override=all_issued, currency=currency)
+        return status_cards(invoice_cards, base_url, _active_key or None, total_override=all_issued, currency=currency, show_all_card=False)
 
     # ------------------------------------------------------------------
     # All other doc types: simple per-status cards
