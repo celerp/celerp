@@ -2324,6 +2324,39 @@ async def undo_receive_return(
         for r in received_items
     )
 
+    # Pre-flight: verify every returned item is still "available" before disposing.
+    # If an item was re-sold or otherwise disposed, we cannot silently remove it.
+    if item_ids:
+        rows = await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+                Projection.entity_id.in_(item_ids),
+            )
+        )
+        item_rows = {r.entity_id: r.state for r in rows.scalars().all()}
+        blocked: list[str] = []
+        for iid in item_ids:
+            item_state = item_rows.get(iid)
+            if item_state is None:
+                blocked.append(f"{iid} (not found - may have already been removed)")
+            elif item_state.get("status") != "available":
+                sku = item_state.get("sku") or iid
+                status = item_state.get("status") or "unknown"
+                blocked.append(f"SKU '{sku}' is '{status}' - cannot dispose")
+        if blocked:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot revert return stock: one or more returned items are no longer available. "
+                    f"Blocked items: {'; '.join(blocked)}. "
+                    "You may need to manually correct the inventory before reverting."
+                ),
+            )
+
+    # Unique suffix ensures each undo gets its own JE - prevents idempotency collision on repeated attempts
+    undo_suffix = str(uuid.uuid4())
+
     # Dispose each returned inventory item (item.deleted does not exist; disposed hides from inventory)
     for iid in item_ids:
         await emit_event(
@@ -2355,7 +2388,7 @@ async def undo_receive_return(
         metadata_={},
     )
 
-    # Reverse the COGS JE
+    # Reverse the COGS JE (unique key per undo prevents idempotency collision if attempted twice)
     if total_cogs > 0:
         await auto_je.create_for_return_undone(
             session,
@@ -2363,6 +2396,7 @@ async def undo_receive_return(
             user_id=user.id,
             cn_id=entity_id,
             total_cogs=total_cogs,
+            unique_suffix=undo_suffix,
         )
 
     await session.commit()

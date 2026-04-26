@@ -385,17 +385,20 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
     )
 
 
-async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, total_cogs: float) -> None:
-    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1300)."""
+async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, total_cogs: float, unique_suffix: str) -> None:
+    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1300).
+
+    unique_suffix must be unique per call (e.g. a UUID) so repeated undo attempts each get their own JE.
+    """
     if total_cogs <= 0:
         return
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{cn_id}:return:undo",
-        idem_create=je_idempotency_key(cn_id, "return.undo", "c"),
-        idem_posted=je_idempotency_key(cn_id, "return.undo", "p"),
+        je_id=f"je:auto:{cn_id}:return:undo:{unique_suffix}",
+        idem_create=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "c"),
+        idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
