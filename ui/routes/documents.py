@@ -161,26 +161,21 @@ def _render_receive_return_section(doc: dict):
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     cid_safe = f"receive-return-{entity_id}".replace(":", "-")
 
-    # Already received - show badge + Undo Return button (GDR: user must be able to undo)
+    # Already received - show Revert Return Stock button (GDR: user must be able to undo)
     received = doc.get("return_received_items") or []
     if received:
         undo_form = Form(
             Button(
-                "Undo Return",
+                "Revert Return Stock",
                 cls="btn btn--secondary btn--sm",
-                title="Undo the received return. Deletes the returned inventory items and reverses the COGS journal entry.",
+                title="Revert the received return. Disposes the returned inventory items and reverses the COGS journal entry.",
             ),
             hx_delete=f"/docs/{entity_id}/receive-return",
-            hx_confirm="Undo the received return? This will delete the returned inventory items and reverse the accounting entry.",
+            hx_confirm="Revert the received return? This will dispose the returned inventory items and reverse the accounting entry.",
             hx_target=f"#{cid_safe}",
             hx_swap="outerHTML",
         )
-        return Div(
-            Span("Return Received", cls="badge badge--green"),
-            undo_form,
-            id=cid_safe,
-            style="display:flex;align-items:center;gap:8px;",
-        )
+        return Div(undo_form, id=cid_safe)
 
     # Only show button if there are stocked line items to return
     line_items = doc.get("line_items") or []

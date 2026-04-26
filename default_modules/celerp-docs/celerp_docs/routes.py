@@ -2308,15 +2308,15 @@ async def undo_receive_return(
         for r in received_items
     )
 
-    # Delete each returned inventory item
+    # Dispose each returned inventory item (item.deleted does not exist; disposed hides from inventory)
     for iid in item_ids:
         await emit_event(
             session,
             company_id=company_id,
             entity_id=iid,
             entity_type="item",
-            event_type="item.deleted",
-            data={"reason": "undo receive-return", "source_cn": entity_id},
+            event_type="item.disposed",
+            data={"reason": f"undo receive-return on {entity_id}"},
             actor_id=user.id,
             location_id=None,
             source="return_undo",
