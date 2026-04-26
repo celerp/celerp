@@ -1144,5 +1144,6 @@
   "settings.passwords_do_not_match": "Passwords do not match",
   "settings.password_min_length": "Password must be at least 8 characters",
   "settings.password_changed": "Password changed successfully",
-  "btn.change_password": "Change Password"
+  "btn.change_password": "Change Password",
+  "nav.credit_notes": "Credit Notes"
 }

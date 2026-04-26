@@ -407,6 +407,14 @@ class DocFulfilled(BaseModel):
     total_cogs: float
 
 
+class DocReturnReceived(BaseModel):
+    items: list[dict[str, Any]]
+    received_by: str
+    received_at: str = ""
+    notes: str | None = None
+
+
+
 class DocPartiallyFulfilled(BaseModel):
     fulfilled_items: list[dict[str, Any]]
     unfulfilled_items: list[dict[str, Any]]
@@ -742,6 +750,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.note_added": DocNoteAdded,
     "doc.fulfilled": DocFulfilled,
     "doc.partially_fulfilled": DocPartiallyFulfilled,
+    "doc.return_received": DocReturnReceived,
     "doc.fulfillment_reversed": DocFulfillmentReversed,
 
     # Manufacturing

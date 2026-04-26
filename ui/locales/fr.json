@@ -1144,5 +1144,6 @@
   "settings.password_min_length": "Le mot de passe doit comporter au moins 8 caractères",
   "settings.password_changed": "Mot de passe modifié avec succès",
   "btn.change_password": "Changer le mot de passe",
-  "status.all_issued": "Toutes émises"
+  "status.all_issued": "Toutes émises",
+  "nav.credit_notes": "Avoirs"
 }

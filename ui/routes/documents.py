@@ -632,6 +632,10 @@ def setup_routes(app):
             from starlette.responses import Response as _R
             return _R("", status_code=401)
         doc_type = request.query_params.get("type", "invoice")
+        # Credit notes must be created from an existing invoice, not as blank docs
+        if doc_type == "credit_note":
+            from starlette.responses import Response as _R
+            return _R("", status_code=204, headers={"HX-Redirect": "/docs?type=invoice&hint=create_credit_note"})
         try:
             result = await api.create_doc(token, {"doc_type": doc_type, "status": "draft"})
             entity_id = result.get("entity_id") or result.get("id", "")
@@ -2797,6 +2801,12 @@ def _doc_table(
     if not docs:
         dt_slug = doc_type if doc_type else "invoice"
         empty_keys = _EMPTY_STATE_KEYS.get(dt_slug, ("label.no_documents_yet", "btn.new_document"))
+        if dt_slug == "credit_note":
+            # Credit notes are created from an invoice - redirect to invoices list
+            return Div(
+                empty_state_cta(t(empty_keys[0], lang), t(empty_keys[1], lang), "/docs?type=invoice"),
+                id="doc-table",
+            )
         return Div(
             empty_state_cta(t(empty_keys[0], lang), t(empty_keys[1], lang), f"/docs/create-blank?type={dt_slug}", hx_post=True),
             id="doc-table",

@@ -1144,5 +1144,6 @@
   "settings.password_min_length": "La contraseña debe tener al menos 8 caracteres",
   "settings.password_changed": "Contraseña cambiada correctamente",
   "btn.change_password": "Cambiar contraseña",
-  "status.all_issued": "Todas las emitidas"
+  "status.all_issued": "Todas las emitidas",
+  "nav.credit_notes": "Notas de Crédito"
 }

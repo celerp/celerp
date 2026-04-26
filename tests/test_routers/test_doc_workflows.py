@@ -754,3 +754,67 @@ async def test_summary_all_card_count_equals_all_issued_not_sum_of_cards(client,
     assert s["awaiting_payment_count"] == 0, (
         f"awaiting_payment_count should be 0 for a fully-paid invoice, got {s['awaiting_payment_count']}"
     )
+
+
+@pytest.mark.anyio
+async def test_credit_note_requires_original_doc_id(client, session):
+    """Regression: creating a credit_note without original_doc_id must return 422, not 500."""
+    token = await _register(client)
+    r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={"doc_type": "credit_note", "line_items": [], "subtotal": 0, "tax": 0, "total": 10},
+    )
+    assert r.status_code == 422
+    assert "original_doc_id" in r.json().get("detail", "").lower()
+
+
+@pytest.mark.anyio
+async def test_receive_return_on_credit_note(client, session):
+    """Regression: receive-return on a credit note creates inventory items and records the event."""
+    token = await _register(client)
+    # Create and finalize an invoice
+    inv_id = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
+    await client.post(f"/docs/{inv_id}/finalize", headers=_h(token))
+    # Create credit note linked to invoice
+    cn = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={
+            "doc_type": "credit_note",
+            "original_doc_id": inv_id,
+            "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 2, "unit_price": 50, "sell_by": "unit"}],
+            "subtotal": 100, "tax": 0, "total": 100,
+        },
+    )
+    assert cn.status_code == 200
+    cn_id = cn.json()["id"]
+    # Finalize CN
+    await client.post(f"/docs/{cn_id}/finalize", headers=_h(token))
+    # Receive return
+    r = await client.post(
+        f"/docs/{cn_id}/receive-return",
+        headers=_h(token),
+        json={"items": [{"sku": "W-001", "name": "Widget", "quantity": 2, "cost_price": 40.0}]},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data["received_items"]) == 1
+    assert data["received_items"][0]["quantity"] == 2
+    assert data["total_cogs_reversed"] == pytest.approx(80.0)
+    # CN projection should have return_received_items
+    cn_state = (await client.get(f"/docs/{cn_id}", headers=_h(token))).json()
+    assert len(cn_state.get("return_received_items", [])) == 1
+
+
+@pytest.mark.anyio
+async def test_receive_return_rejected_on_non_credit_note(client, session):
+    """Regression: receive-return must be rejected on non-credit-note doc types."""
+    token = await _register(client)
+    inv_id = await _create_invoice(client, token, subtotal=50, tax=0, total=50)
+    r = await client.post(
+        f"/docs/{inv_id}/receive-return",
+        headers=_h(token),
+        json={"items": [{"sku": "X-001", "name": "Item", "quantity": 1, "cost_price": 50.0}]},
+    )
+    assert r.status_code == 409
