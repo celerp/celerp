@@ -235,7 +235,6 @@ def _render_receive_goods_section(doc: dict) -> FT:
 
     if doc.get("received_item_ids"):
         return Div(
-            Span("Goods Received", cls="badge badge--green"),
             Button(
                 "Revert Goods Received",
                 hx_delete=f"/docs/{entity_id}/receive-goods",
@@ -243,7 +242,6 @@ def _render_receive_goods_section(doc: dict) -> FT:
                 hx_target=f"#{cid_safe}",
                 hx_swap="outerHTML",
                 cls="btn btn--danger btn--sm",
-                style="margin-left:8px;",
             ),
             id=cid_safe,
         )
@@ -3893,11 +3891,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
             cells = [
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id)),
+                Td(_desc_input(li.get("description", "") or li.get("name", ""))),
             ]
             if category_cell:
                 cells.append(category_cell)
             cells.extend([
-                Td(_desc_input(li.get("description", "") or li.get("name", ""))),
                 Td(Input(type="number", value=str(qty), step="any",
                          data_name="quantity", oninput="celerpUpdateTotals()",
                          onblur="celerpQtyBlur(this); celerpAutoSave()",
@@ -3945,11 +3943,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             else:
                 _cat_cell = None
 
-            cells = [Td(_sku_input())]
+            cells = [Td(_sku_input()), Td(_desc_input())]
             if _cat_cell:
                 cells.append(_cat_cell)
             cells.extend([
-                Td(_desc_input()),
                 Td(Input(type="number", value="1", step="any", data_name="quantity",
                          oninput="celerpUpdateTotals()", onblur="celerpQtyBlur(this); celerpAutoSave()",
                          cls="cell-input cell-input--xs")),
@@ -3976,10 +3973,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if not rows:
             rows = [_li_empty_row()]
 
-        _line_headers = [Th(t("th.skuitem"))]
+        _line_headers = [Th(t("th.skuitem")), Th(t("th.description"))]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th("Category"))
-        _line_headers.extend([Th(t("th.description")), Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
+        _line_headers.extend([Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
         _line_headers.extend([Th(t("th.total")), Th("")])
@@ -4126,7 +4123,20 @@ function celerpFillRow(row, data) {{
     if (allowSplitEl) allowSplitEl.value = data.allow_splitting ? '1' : '';
     if (itemQtyEl && data.quantity) itemQtyEl.value = data.quantity;
     const categoryEl = row.querySelector('[data-name="category"]');
-    if (categoryEl && data.category) categoryEl.value = data.category;
+    if (categoryEl && data.category) {{
+        // Ensure option exists before setting value (category may not be in inventory yet)
+        if (categoryEl.tagName === 'SELECT') {{
+            const exists = Array.from(categoryEl.options).some(o => o.value === data.category);
+            if (!exists) {{
+                const opt = new Option(data.category, data.category);
+                // Insert before the last "Add new" option if present
+                const addNewIdx = Array.from(categoryEl.options).findIndex(o => o.value === '__add_new__');
+                if (addNewIdx >= 0) categoryEl.insertBefore(opt, categoryEl.options[addNewIdx]);
+                else categoryEl.appendChild(opt);
+            }}
+        }}
+        categoryEl.value = data.category;
+    }}
     // Set quantity: if allow_splitting is false, use full item quantity
     if (qtyEl) {{
         if (!data.allow_splitting && data.quantity > 0) {{
