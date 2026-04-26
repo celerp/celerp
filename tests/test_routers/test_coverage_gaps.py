@@ -87,17 +87,17 @@ async def test_docs_pdf_endpoint(client):
 
 @pytest.mark.asyncio
 async def test_docs_credit_note_validation(client):
-    """Covers credit_note: no original_doc_id → 422; total exceeds original → 409."""
+    """Covers credit_note: total exceeds original → 409; valid CN → 200."""
     tok = await _reg(client)
 
     # Create original invoice
     inv_id = await _doc(client, tok, total=50)
 
-    # Credit note without original_doc_id → 422
+    # Credit note without original_doc_id is allowed (link can be added later)
     r1 = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "credit_note", "contact_id": "c:1", "line_items": [], "subtotal": 10, "tax": 0, "total": 10,
     })
-    assert r1.status_code == 422
+    assert r1.status_code == 200
 
     # Credit note with total > original → 409
     r2 = await client.post("/docs", headers=_h(tok), json={

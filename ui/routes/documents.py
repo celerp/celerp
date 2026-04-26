@@ -3334,9 +3334,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;",
             )
 
-    # --- Action buttons (left = primary actions; right = destructive/void actions) ---
+    # --- Action buttons ---
+    # action_btns_left:  primary workflow actions (left-aligned)
+    # action_btns_right: destructive/void/delete (right side, before print group)
+    # action_btns_print: PDF + CSV export/import – always far-right, preceded by "|" separator
     action_btns_left = []
     action_btns_right = []
+    action_btns_print = []
     if doc_type == "invoice" and status in ("partial", "paid"):
         action_btns_left.append(
             Button(
@@ -3490,22 +3494,22 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Button(t("btn.unmark_sent"), hx_post=f"/docs/{entity_id}/action/unmark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
-    # PDF button
+    # PDF + CSV buttons → print group (always far-right)
     if not is_list:
-        action_btns_left.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
+        action_btns_print.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
     # CSV line items export/import icons
-    action_btns_left.append(
+    action_btns_print.append(
         A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
           cls="btn btn--ghost btn--icon", title=t("doc.export_line_items_csv")),
     )
     if is_draft:
-        action_btns_left.append(
+        action_btns_print.append(
             Button(NotStr(_ICON_CSV_IMPORT), type="button",
                    cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
                    onclick="document.getElementById('csv-import-input').click()"),
         )
-    action_btns_left.append(Span("", id="share-result"))
-    action_btns_left.append(Span("", id="action-error"))
+    action_btns_print.append(Span("", id="share-result"))
+    action_btns_print.append(Span("", id="action-error"))
 
     # --- Slot: doc_detail_actions (module-contributed action buttons - go left) ---
     from celerp.modules.slots import get as _get_slot
@@ -4458,9 +4462,14 @@ async function celerpCsvImport(input, entityId) {{
         list_type_selector,
         Div(
             Div(*action_btns_left, cls="doc-actions-left"),
-            Div(*action_btns_right, cls="doc-actions-right") if action_btns_right else "",
+            Div(
+                Div(*action_btns_right, cls="doc-actions-right") if action_btns_right else "",
+                Span("|", cls="doc-actions-sep") if action_btns_right else "",
+                Div(*action_btns_print, cls="doc-actions-print"),
+                cls="doc-actions-right-group",
+            ),
             cls="doc-actions",
-        ) if (action_btns_left or action_btns_right) else "",
+        ) if (action_btns_left or action_btns_right or action_btns_print) else "",
         po_receive_section,
         # Metadata bar: Doc ID | Reference | Issue date | Due date
         Div(
