@@ -94,6 +94,8 @@ def _render_fulfill_section(doc: dict):
     from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
     if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
         return ""
+    if doc.get("doc_type") == "credit_note":
+        return ""  # CNs use Receive Returns, not Fulfill
     entity_id = doc.get("entity_id") or doc.get("id") or ""
     # CSS IDs cannot contain colons (e.g. "doc:PF-2604-0002") - sanitize for use as selector
     cid_safe = f"fulfill-toggle-{entity_id}".replace(":", "-")
