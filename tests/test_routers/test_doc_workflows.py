@@ -1373,3 +1373,65 @@ async def test_receive_as_defaults_to_stock(client, session):
     bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
     created_ids = bill_state.get("received_item_ids", [])
     assert len(created_ids) == 1, f"Expected 1 inventory item (default stock), got {len(created_ids)}"
+
+
+@pytest.mark.anyio
+async def test_bill_category_and_receive_as_preserved_after_finalize(client, session):
+    """category and receive_as on line items must survive patch_doc (autosave) and finalize.
+
+    Root cause: _celerpCollectLines() was not collecting category/receive_as from the DOM,
+    so autosave sent line items without those fields and they were lost on next load.
+    This test verifies the backend correctly stores and returns both fields via patch_doc.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create draft bill with category and receive_as on the line item
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {
+                "name": "Widget",
+                "sku": "WDG-CAT-01",
+                "quantity": 2,
+                "unit_price": 30.0,
+                "category": "Electronics",
+                "receive_as": "stock",
+            }
+        ],
+        "subtotal": 60, "tax": 0, "total": 60,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+
+    # Simulate autosave: patch with the same line items (as the JS now collects them)
+    patch_r = await client.patch(f"/docs/{bill_id}", headers=h, json={
+        "fields_changed": {
+            "line_items": {
+                "old": None,
+                "new": [
+                    {
+                        "name": "Widget",
+                        "sku": "WDG-CAT-01",
+                        "quantity": 2,
+                        "unit_price": 30.0,
+                        "category": "Electronics",
+                        "receive_as": "stock",
+                        "line_total": 60.0,
+                    }
+                ],
+            }
+        }
+    })
+    assert patch_r.status_code == 200, patch_r.text
+
+    # Finalize the bill
+    fin_r = await client.post(f"/docs/{bill_id}/finalize", headers=h)
+    assert fin_r.status_code == 200, fin_r.text
+
+    # Verify category and receive_as survived
+    doc = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert doc["status"] == "final", f"Expected final, got {doc['status']}"
+    line = doc["line_items"][0]
+    assert line.get("category") == "Electronics", f"category lost after finalize: {line}"
+    assert line.get("receive_as") == "stock", f"receive_as lost after finalize: {line}"

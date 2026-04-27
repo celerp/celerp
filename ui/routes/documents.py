@@ -4511,13 +4511,23 @@ function _celerpCollectLines() {{
         const hsCode = row.querySelector('[data-name="hs_code"]')?.value || null;
         const entityId = row.querySelector('[data-name="entity_id"]')?.value || null;
         const taxLabel = row.querySelector('[data-name="tax_label"]')?.value || '';
+        const categoryEl = row.querySelector('[data-name="category"]');
+        const category = categoryEl ? (categoryEl.value || categoryEl.textContent || '').trim() || null : null;
+        const receiveAsEl = row.querySelector('[data-name="receive_as"]');
+        const receiveAs = receiveAsEl ? (receiveAsEl.value || receiveAsEl.textContent || '').trim().toLowerCase() || null : null;
+        const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
+        const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
         if (desc || sku || price) {{
             const discounted = qty * price * (1 - discPct / 100);
             const taxList = rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : [];
             lines.push({{description: desc || '', sku: sku || '', quantity: qty || 1, unit,
                          unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
                          line_total: discounted, hs_code: hsCode || undefined,
-                         entity_id: entityId || undefined}});
+                         entity_id: entityId || undefined,
+                         ...(category ? {{category}} : {{}}),
+                         ...(receiveAs ? {{receive_as: receiveAs}} : {{}}),
+                         ...(accountCode ? {{account_code: accountCode}} : {{}}),
+                         allow_splitting: allowSplitting}});
         }}
     }});
     return lines;
