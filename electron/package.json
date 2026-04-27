@@ -1,7 +1,7 @@
 {
   "name": "celerp",
   "version": "1.0.0",
-  "description": "Free business software — inventory, invoicing, and operations in one place.",
+  "description": "Free business software \u2014 inventory, invoicing, and operations in one place.",
   "main": "main.js",
   "author": "Data Universal Limited",
   "license": "BSL-1.1",
@@ -27,7 +27,7 @@
   "build": {
     "appId": "com.celerp.app",
     "productName": "Celerp",
-    "copyright": "Copyright © 2026 Data Universal Limited",
+    "copyright": "Copyright \u00a9 2026 Data Universal Limited",
     "directories": {
       "output": "dist"
     },
@@ -98,7 +98,6 @@
         }
       ]
     },
-    "afterSign": "scripts/notarize.js",
     "linux": {
       "icon": "assets/icon.png",
       "category": "Office",

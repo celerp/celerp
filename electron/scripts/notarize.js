@@ -5,6 +5,8 @@
 const { notarize } = require('@electron/notarize');
 const { execSync } = require('child_process');
 
+const NOTARIZE_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
+
 exports.default = async function notarizing(context) {
   const { electronPlatformName, appOutDir } = context;
   if (electronPlatformName !== 'darwin') return;
@@ -24,7 +26,6 @@ exports.default = async function notarizing(context) {
 
   // Guard: fail loudly if the app is not signed with a Developer ID.
   // Notarizing an ad-hoc or unsigned app always fails with "code has no resources".
-  // Better to catch it here with a clear message than a cryptic notarize error.
   let sigInfo;
   try {
     sigInfo = execSync(`codesign -dv "${appPath}" 2>&1`).toString();
@@ -39,13 +40,25 @@ exports.default = async function notarizing(context) {
     );
   }
 
-  console.log(`Notarizing ${appPath} …`);
-  await notarize({
-    tool: 'notarytool',
-    appPath,
-    appleId,
-    appleIdPassword,
-    teamId,
-  });
+  console.log(`Notarizing ${appPath} … (timeout: ${NOTARIZE_TIMEOUT_MS / 60000} min)`);
+
+  const timeoutPromise = new Promise((_, reject) =>
+    setTimeout(
+      () => reject(new Error(`Notarization timed out after ${NOTARIZE_TIMEOUT_MS / 60000} minutes. Apple notarization service may be slow or unreachable.`)),
+      NOTARIZE_TIMEOUT_MS
+    )
+  );
+
+  await Promise.race([
+    notarize({
+      tool: 'notarytool',
+      appPath,
+      appleId,
+      appleIdPassword,
+      teamId,
+    }),
+    timeoutPromise,
+  ]);
+
   console.log('Notarization complete.');
 };
