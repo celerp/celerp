@@ -19,6 +19,7 @@
     "embedded-postgres": "^17.9.0-beta.16"
   },
   "devDependencies": {
+    "@electron/notarize": "^2.5.0",
     "electron": "^30.0.0",
     "electron-builder": "^25.0.0",
     "jest": "^30.3.0"
@@ -84,6 +85,10 @@
     "mac": {
       "icon": "assets/icon.icns",
       "category": "public.app-category.business",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
       "target": [
         {
           "target": "dmg",
@@ -91,9 +96,9 @@
             "arm64"
           ]
         }
-      ],
-      "identity": null
+      ]
     },
+    "afterSign": "scripts/notarize.js",
     "linux": {
       "icon": "assets/icon.png",
       "category": "Office",
