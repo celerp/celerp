@@ -1195,3 +1195,86 @@ async def test_revert_goods_received_blocked_if_item_resold(client, session):
     assert undo_r.status_code == 409, undo_r.text
     detail = undo_r.json().get("detail", "")
     assert "sold" in detail.lower() or "RG-002" in detail, f"Error must identify the blocked item. Got: {detail}"
+
+
+@pytest.mark.anyio
+async def test_receive_goods_inherits_sku_attributes(client, session):
+    """Receive Goods must copy category, sell_by, retail_price etc. from an existing item with same SKU."""
+    token = await _register(client)
+    h = _h(token)
+
+    # Create a master item with rich attributes
+    item_r = await client.post("/items", headers=h, json={
+        "sku": "MASTER-001", "name": "Master Widget",
+        "sell_by": "piece", "category": "Electronics",
+        "retail_price": 99.0, "wholesale_price": 60.0, "cost_price": 40.0,
+        "barcode": "1234567890",
+    })
+    assert item_r.status_code == 200, item_r.text
+
+    # Create and finalize a bill for that SKU
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Master Widget", "sku": "MASTER-001", "quantity": 2, "unit_price": 40.0, "sell_by": "piece"},
+        ],
+        "subtotal": 80, "tax": 0, "total": 80,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "MASTER-001", "name": "Master Widget", "quantity_received": 2.0}],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    # Check that the new inventory item inherited attributes from master
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert created_ids, "received_item_ids must be set"
+
+    new_item = (await client.get(f"/items/{created_ids[0]}", headers=h)).json()
+    assert new_item.get("category") == "Electronics", f"category not inherited: {new_item.get('category')}"
+    assert new_item.get("sell_by") == "piece", f"sell_by not inherited: {new_item.get('sell_by')}"
+    assert new_item.get("barcode") == "1234567890", f"barcode not inherited: {new_item.get('barcode')}"
+
+
+@pytest.mark.anyio
+async def test_receive_goods_works_after_revert(client, session):
+    """Receive Goods button must work again after Revert Goods Received (idempotency key must be unique per receive)."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Widget Retry", "sku": "RR-001", "quantity": 1, "unit_price": 20.0, "sell_by": "piece"},
+        ],
+        "subtotal": 20, "tax": 0, "total": 20,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    # First receive
+    r1 = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "RR-001", "name": "Widget Retry", "quantity_received": 1.0}],
+        "location_id": "",
+    })
+    assert r1.status_code == 200, r1.text
+
+    # Revert
+    undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
+    assert undo_r.status_code == 200, undo_r.text
+
+    # Second receive - must succeed with fresh items and JE
+    r2 = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "RR-001", "name": "Widget Retry", "quantity_received": 1.0}],
+        "location_id": "",
+    })
+    assert r2.status_code == 200, f"Re-receive after revert must succeed. Got: {r2.status_code}: {r2.text}"
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert bill_state.get("received_item_ids"), "received_item_ids must be repopulated after second receive"

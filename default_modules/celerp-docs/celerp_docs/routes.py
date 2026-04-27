@@ -122,6 +122,7 @@ class ReceivedItem(BaseModel):
     condition: str = "good"
     sku: str | None = None
     name: str | None = None
+    cost_price: float | None = None
 
 
 class ReceiveBody(BaseModel):
@@ -1115,7 +1116,38 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         else:
             if not it.sku or not it.name:
                 raise HTTPException(status_code=422, detail="sku and name required when creating received item")
-            item_data: dict = {"sku": it.sku, "name": it.name, "quantity": it.quantity_received, "location_id": payload.location_id}
+
+            # Copy attributes from an existing item with same SKU (best-effort enrichment)
+            sku_ref_row = await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                )
+            )
+            sku_ref: dict = {}
+            for ref_proj in sku_ref_row.scalars().all():
+                if str(ref_proj.state.get("sku") or "").strip() == it.sku.strip():
+                    sku_ref = ref_proj.state
+                    break
+
+            # Fields to inherit from existing item; override quantity/location from receive payload
+            _INHERIT = (
+                "category", "unit", "sell_by", "description", "barcode",
+                "cost_price", "wholesale_price", "retail_price",
+                "tax_codes", "hs_code", "weight", "weight_unit",
+                "dimensions", "dimensions_unit", "purchase_sku",
+                "purchase_name", "purchase_unit", "purchase_conversion_factor",
+            )
+            item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
+            # Payload values always take precedence for the fields below
+            item_data.update({
+                "sku": it.sku,
+                "name": it.name,
+                "quantity": it.quantity_received,
+                "location_id": payload.location_id,
+            })
+            if it.cost_price is not None:
+                item_data["cost_price"] = it.cost_price
             if is_consignment:
                 item_data["consignment_flag"] = "in"
             new_eid = f"item:{uuid.uuid4()}"
@@ -1162,6 +1194,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             po_id=entity_id,
             doc=row.state,
             total=po_total,
+            unique_suffix=str(uuid.uuid4()),
         )
     await session.commit()
     return {"event_id": entry.id}

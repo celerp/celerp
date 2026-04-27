@@ -168,6 +168,7 @@ async def create_for_po_received(
     po_id: str,
     total: float,
     doc: dict | None = None,
+    unique_suffix: str | None = None,
 ) -> None:
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     debit_account = {
@@ -176,13 +177,14 @@ async def create_for_po_received(
         "asset": "1210",
     }.get(purchase_kind, "1130")
 
+    suffix = unique_suffix or "0"
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{po_id}:rcv",
-        idem_create=je_idempotency_key(po_id, "po.received", "c"),
-        idem_posted=je_idempotency_key(po_id, "po.received", "p"),
+        je_id=f"je:auto:{po_id}:rcv:{suffix}",
+        idem_create=je_idempotency_key(po_id, f"po.received:{suffix}", "c"),
+        idem_posted=je_idempotency_key(po_id, f"po.received:{suffix}", "p"),
         memo=f"Auto JE for {po_id} received",
         entries=[
             {"account": debit_account, "debit": float(total), "credit": 0.0},
