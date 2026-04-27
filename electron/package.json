@@ -96,7 +96,8 @@
             "arm64"
           ]
         }
-      ]
+      ],
+      "timestamp": "none"
     },
     "linux": {
       "icon": "assets/icon.png",
