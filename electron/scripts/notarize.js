@@ -22,17 +22,21 @@ exports.default = async function notarizing(context) {
   const appName = context.packager.appInfo.productFilename;
   const appPath = `${appOutDir}/${appName}.app`;
 
-  // Guard: abort if the app was not signed with a Developer ID (ad-hoc or no signature).
-  // Notarizing an unsigned app always fails with "code has no resources".
+  // Guard: fail loudly if the app is not signed with a Developer ID.
+  // Notarizing an ad-hoc or unsigned app always fails with "code has no resources".
+  // Better to catch it here with a clear message than a cryptic notarize error.
+  let sigInfo;
   try {
-    const result = execSync(`codesign -dv "${appPath}" 2>&1`).toString();
-    if (result.includes('adhoc') || result.includes('TeamIdentifier=not set')) {
-      console.log('Notarization skipped: app is not signed with a Developer ID certificate.');
-      return;
-    }
+    sigInfo = execSync(`codesign -dv "${appPath}" 2>&1`).toString();
   } catch (e) {
-    console.log('Notarization skipped: could not verify app signature:', e.message);
-    return;
+    throw new Error(`App is not signed - codesign check failed: ${e.message}`);
+  }
+  if (sigInfo.includes('adhoc') || sigInfo.includes('TeamIdentifier=not set')) {
+    throw new Error(
+      'App was built with ad-hoc or no Developer ID signature. ' +
+      'Check that CSC_LINK and CSC_KEY_PASSWORD are set correctly in CI. ' +
+      'Refusing to notarize unsigned app.'
+    );
   }
 
   console.log(`Notarizing ${appPath} …`);
