@@ -253,9 +253,12 @@ def _render_receive_goods_section(doc: dict) -> FT:
     if not line_items:
         return ""
 
+    stock_count = sum(1 for li in line_items if li.get("receive_as", "stock") == "stock")
+    btn_label = f"Receive Goods ({stock_count} items)" if any("receive_as" in li for li in line_items) else "Receive Goods"
+
     return Div(
         Button(
-            "Receive Goods",
+            btn_label,
             hx_post=f"/docs/{entity_id}/receive-goods",
             hx_confirm="Receive all goods into stock? This will create inventory items for all line items at full quantity.",
             hx_target=f"#{cid_safe}",
@@ -3871,6 +3874,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          onblur="celerpAutoSave()")) if doc_type in ("purchase_order", "bill") else None
 
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
+            _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
             _cats = item_categories or []
             if _show_category and is_draft:
                 _cat_val = li.get("category") or ""
@@ -3889,12 +3893,28 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             else:
                 category_cell = None
 
+            if _show_receive_as and is_draft:
+                _ra_val = li.get("receive_as", "stock")
+                receive_as_cell = Td(Select(
+                    Option("Stock", value="stock", selected=(_ra_val == "stock")),
+                    Option("Expense", value="expense", selected=(_ra_val == "expense")),
+                    data_name="receive_as",
+                    cls="cell-input cell-input--select cell-input--xs",
+                    onchange="celerpAutoSave()",
+                ))
+            elif _show_receive_as:
+                receive_as_cell = Td(li.get("receive_as", "stock").capitalize())
+            else:
+                receive_as_cell = None
+
             cells = [
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id)),
                 Td(_desc_input(li.get("description", "") or li.get("name", ""))),
             ]
             if category_cell:
                 cells.append(category_cell)
+            if receive_as_cell:
+                cells.append(receive_as_cell)
             cells.extend([
                 Td(Input(type="number", value=str(qty), step="any",
                          data_name="quantity", oninput="celerpUpdateTotals()",
@@ -3928,6 +3948,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
         def _li_empty_row() -> FT:
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
+            _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
             _cats = item_categories or []
             if _show_category:
                 _cat_options = [Option("", value="")]
@@ -3943,9 +3964,22 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             else:
                 _cat_cell = None
 
+            if _show_receive_as:
+                _ra_cell = Td(Select(
+                    Option("Stock", value="stock", selected=True),
+                    Option("Expense", value="expense"),
+                    data_name="receive_as",
+                    cls="cell-input cell-input--select cell-input--xs",
+                    onchange="celerpAutoSave()",
+                ))
+            else:
+                _ra_cell = None
+
             cells = [Td(_sku_input()), Td(_desc_input())]
             if _cat_cell:
                 cells.append(_cat_cell)
+            if _ra_cell:
+                cells.append(_ra_cell)
             cells.extend([
                 Td(Input(type="number", value="1", step="any", data_name="quantity",
                          oninput="celerpUpdateTotals()", onblur="celerpQtyBlur(this); celerpAutoSave()",
@@ -3976,6 +4010,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _line_headers = [Th(t("th.skuitem")), Th(t("th.description"))]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th("Category"))
+            _line_headers.append(Th("Type"))
         _line_headers.extend([Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
@@ -4122,6 +4157,8 @@ function celerpFillRow(row, data) {{
     if (entityIdEl) entityIdEl.value = data.entity_id || '';
     if (allowSplitEl) allowSplitEl.value = data.allow_splitting ? '1' : '';
     if (itemQtyEl && data.quantity) itemQtyEl.value = data.quantity;
+    const receiveAsEl = row.querySelector('[data-name="receive_as"]');
+    if (receiveAsEl) receiveAsEl.value = data.entity_id ? 'stock' : 'expense';
     const categoryEl = row.querySelector('[data-name="category"]');
     if (categoryEl && data.category) {{
         // Ensure option exists before setting value (category may not be in inventory yet)
@@ -4216,11 +4253,16 @@ async function celerpAcSearch(input, field) {{
         // Always append "Use as custom entry" at the bottom
         const custom = document.createElement('div');
         custom.className = 'catalog-ac-option catalog-ac-option--custom';
-        custom.textContent = '✏ Use as custom entry: "' + q + '"';
+        custom.textContent = '✏ Use as expense: "' + q + '"';
         custom.addEventListener('mousedown', e => {{
             e.preventDefault();
             list.style.display = 'none';
-            // Keep whatever the user typed – no catalog fill
+            // Mark line as expense since no catalog item matched
+            const row = input.closest('tr');
+            if (row) {{
+                const raEl = row.querySelector('[data-name="receive_as"]');
+                if (raEl) raEl.value = 'expense';
+            }}
         }});
         list.appendChild(custom);
         list.style.display = 'block';

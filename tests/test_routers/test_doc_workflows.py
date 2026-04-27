@@ -1284,3 +1284,92 @@ async def test_receive_goods_works_after_revert(client, session):
 
     bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
     assert bill_state.get("received_item_ids"), "received_item_ids must be repopulated after second receive"
+
+
+@pytest.mark.anyio
+async def test_receive_as_expense_skips_inventory_creation(client, session):
+    """Expense lines must not create inventory items; stock lines must."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Stock Widget", "sku": "SW-001", "quantity": 2, "unit_price": 10.0},
+            {"name": "Shipping Fee", "sku": "SHP-001", "quantity": 1, "unit_price": 5.0},
+        ],
+        "subtotal": 25, "tax": 0, "total": 25,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {"sku": "SW-001", "name": "Stock Widget", "quantity_received": 2.0, "receive_as": "stock"},
+            {"sku": "SHP-001", "name": "Shipping Fee", "quantity_received": 1.0, "receive_as": "expense"},
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    # Only the stock line should have created an inventory item
+    assert len(created_ids) == 1, f"Expected 1 inventory item (stock line only), got {len(created_ids)}: {created_ids}"
+
+
+@pytest.mark.anyio
+async def test_receive_as_stock_creates_inventory(client, session):
+    """Explicit receive_as=stock must create an inventory item."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [{"name": "Gadget", "sku": "GDG-001", "quantity": 1, "unit_price": 50.0}],
+        "subtotal": 50, "tax": 0, "total": 50,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {"sku": "GDG-001", "name": "Gadget", "quantity_received": 1.0, "receive_as": "stock"},
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert len(created_ids) == 1, f"Expected 1 inventory item for stock line, got {len(created_ids)}"
+
+
+@pytest.mark.anyio
+async def test_receive_as_defaults_to_stock(client, session):
+    """When receive_as is omitted, it defaults to stock behavior (inventory item created)."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [{"name": "Default Widget", "sku": "DW-001", "quantity": 1, "unit_price": 15.0}],
+        "subtotal": 15, "tax": 0, "total": 15,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {"sku": "DW-001", "name": "Default Widget", "quantity_received": 1.0},
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert len(created_ids) == 1, f"Expected 1 inventory item (default stock), got {len(created_ids)}"

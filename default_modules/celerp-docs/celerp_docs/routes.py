@@ -123,6 +123,7 @@ class ReceivedItem(BaseModel):
     sku: str | None = None
     name: str | None = None
     cost_price: float | None = None
+    receive_as: str = "stock"
 
 
 class ReceiveBody(BaseModel):
@@ -1114,6 +1115,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 idempotency_key=str(uuid.uuid4()), metadata_={"source_doc": entity_id},
             )
         else:
+            if it.receive_as != "stock":
+                continue
             if not it.sku or not it.name:
                 raise HTTPException(status_code=422, detail="sku and name required when creating received item")
 

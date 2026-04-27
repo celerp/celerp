@@ -10502,3 +10502,44 @@ class TestVendorDocCategoryColumn:
         assert r.status_code == 200
         data = r.json()
         assert data.get("category") == "Electronics"
+
+
+class TestVendorDocReceiveAsColumn:
+    """Tests for receive_as (Type) column on vendor docs (bill/PO/consignment_in)."""
+
+    def _make_bill(self, status="draft", line_items=None):
+        return {
+            "entity_id": "doc:bill-ra-1", "doc_type": "bill", "status": status,
+            "ref_id": "BILL-RA-001", "currency": "USD", "subtotal": 100, "tax": 0, "total": 100,
+            "line_items": line_items or [
+                {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50.0,
+                 "sell_by": "piece", "receive_as": "stock", "tax_rate": 0, "line_total": 100}
+            ],
+        }
+
+    def test_vendor_doc_shows_type_column(self):
+        """Bill draft must have 'Type' header and receive_as select in line item rows."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill(status="draft")
+        html = to_xml(_doc_detail(doc, item_categories=[]))
+        assert ">Type<" in html, "Type header must be present in bill draft"
+        assert 'data-name="receive_as"' in html, "receive_as select must be present"
+
+    def test_invoice_has_no_type_column(self):
+        """Invoice must NOT show 'Type' header or receive_as select."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {
+            "entity_id": "doc:inv-ra-1", "doc_type": "invoice", "status": "draft",
+            "ref_id": "INV-RA-001", "currency": "USD", "subtotal": 100, "tax": 0, "total": 100,
+            "line_items": [
+                {"sku": "X-1", "name": "Item", "quantity": 1, "unit_price": 100.0,
+                 "sell_by": "piece", "tax_rate": 0, "line_total": 100}
+            ],
+        }
+        html = to_xml(_doc_detail(doc, item_categories=[]))
+        assert ">Type<" not in html, "Type header must not appear for invoices"
+        # The JS includes data-name="receive_as" as code text, so check for the select element specifically
+        assert '<select' not in html or 'data-name="receive_as"' not in html.split('<script')[0], \
+            "receive_as select element must not appear in invoice markup (outside script)"
