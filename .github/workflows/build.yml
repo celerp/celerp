@@ -123,6 +123,11 @@ jobs:
             ' _
           echo "Pre-signing complete."
 
+          # Remove presign keychain from search list so it doesn't interfere
+          # with electron-builder's own keychain setup during the build step.
+          security list-keychain -d user -s $(security list-keychain -d user | tr -d '"' | grep -v presign) || true
+          security delete-keychain "$KEYCHAIN_PATH" || true
+
       - name: Build (macOS - with signing)
         if: matrix.os == 'macos-latest'
         working-directory: electron
