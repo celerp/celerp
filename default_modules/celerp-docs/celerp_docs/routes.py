@@ -1130,15 +1130,18 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     sku_ref = ref_proj.state
                     break
 
-            # Fields to inherit from existing item; override quantity/location from receive payload
+            # Fields to inherit from existing item; barcode excluded (unique per physical item)
             _INHERIT = (
-                "category", "unit", "sell_by", "description", "barcode",
+                "category", "unit", "sell_by", "description",
                 "cost_price", "wholesale_price", "retail_price",
                 "tax_codes", "hs_code", "weight", "weight_unit",
                 "dimensions", "dimensions_unit", "purchase_sku",
                 "purchase_name", "purchase_unit", "purchase_conversion_factor",
             )
             item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
+            # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
+            if sku_ref.get("attributes"):
+                item_data["attributes"] = dict(sku_ref["attributes"])
             # Payload values always take precedence for the fields below
             item_data.update({
                 "sku": it.sku,

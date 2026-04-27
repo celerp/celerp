@@ -1199,16 +1199,19 @@ async def test_revert_goods_received_blocked_if_item_resold(client, session):
 
 @pytest.mark.anyio
 async def test_receive_goods_inherits_sku_attributes(client, session):
-    """Receive Goods must copy category, sell_by, retail_price etc. from an existing item with same SKU."""
+    """Receive Goods must copy category, sell_by, prices, and dynamic attributes from existing item with same SKU.
+    Barcode must NOT be copied (unique per physical item).
+    """
     token = await _register(client)
     h = _h(token)
 
-    # Create a master item with rich attributes
+    # Create a master item with rich attributes including dynamic category-specific ones
     item_r = await client.post("/items", headers=h, json={
         "sku": "MASTER-001", "name": "Master Widget",
         "sell_by": "piece", "category": "Electronics",
         "retail_price": 99.0, "wholesale_price": 60.0, "cost_price": 40.0,
         "barcode": "1234567890",
+        "attributes": {"color": "red", "shape": "round"},
     })
     assert item_r.status_code == 200, item_r.text
 
@@ -1230,7 +1233,6 @@ async def test_receive_goods_inherits_sku_attributes(client, session):
     })
     assert receive_r.status_code == 200, receive_r.text
 
-    # Check that the new inventory item inherited attributes from master
     bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
     created_ids = bill_state.get("received_item_ids", [])
     assert created_ids, "received_item_ids must be set"
@@ -1238,7 +1240,11 @@ async def test_receive_goods_inherits_sku_attributes(client, session):
     new_item = (await client.get(f"/items/{created_ids[0]}", headers=h)).json()
     assert new_item.get("category") == "Electronics", f"category not inherited: {new_item.get('category')}"
     assert new_item.get("sell_by") == "piece", f"sell_by not inherited: {new_item.get('sell_by')}"
-    assert new_item.get("barcode") == "1234567890", f"barcode not inherited: {new_item.get('barcode')}"
+    # Dynamic attributes are flattened to top-level by the GET endpoint
+    assert new_item.get("color") == "red", f"attributes.color not inherited: {new_item}"
+    assert new_item.get("shape") == "round", f"attributes.shape not inherited: {new_item}"
+    # Barcode must NOT be copied (unique per physical item)
+    assert not new_item.get("barcode"), f"barcode must not be inherited, got: {new_item.get('barcode')}"
 
 
 @pytest.mark.anyio
