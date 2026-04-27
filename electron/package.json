@@ -98,7 +98,7 @@
         }
       ],
       "signIgnore": [
-        "Contents/Resources/app/python/"
+        "Contents/Resources/python/"
       ]
     },
     "linux": {
