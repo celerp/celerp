@@ -3,6 +3,7 @@
 // Only runs when APPLE_ID env var is set (i.e. CI with secrets populated).
 
 const { notarize } = require('@electron/notarize');
+const { execSync } = require('child_process');
 
 exports.default = async function notarizing(context) {
   const { electronPlatformName, appOutDir } = context;
@@ -20,6 +21,19 @@ exports.default = async function notarizing(context) {
 
   const appName = context.packager.appInfo.productFilename;
   const appPath = `${appOutDir}/${appName}.app`;
+
+  // Guard: abort if the app was not signed with a Developer ID (ad-hoc or no signature).
+  // Notarizing an unsigned app always fails with "code has no resources".
+  try {
+    const result = execSync(`codesign -dv "${appPath}" 2>&1`).toString();
+    if (result.includes('adhoc') || result.includes('TeamIdentifier=not set')) {
+      console.log('Notarization skipped: app is not signed with a Developer ID certificate.');
+      return;
+    }
+  } catch (e) {
+    console.log('Notarization skipped: could not verify app signature:', e.message);
+    return;
+  }
 
   console.log(`Notarizing ${appPath} …`);
   await notarize({
