@@ -177,14 +177,17 @@ async def create_for_po_received(
         "asset": "1210",
     }.get(purchase_kind, "1130")
 
-    suffix = unique_suffix or "0"
+    # suffix=None means "first receive" - use fixed key for backward compat with doctor/duplicate checks
+    # suffix provided means "re-receive after revert" - use unique key to avoid idempotency collision
+    suffix = unique_suffix if unique_suffix is not None else "0"
+    idem_suffix = f":{suffix}" if unique_suffix is not None else ""
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{po_id}:rcv:{suffix}",
-        idem_create=je_idempotency_key(po_id, f"po.received:{suffix}", "c"),
-        idem_posted=je_idempotency_key(po_id, f"po.received:{suffix}", "p"),
+        je_id=f"je:auto:{po_id}:rcv{idem_suffix}",
+        idem_create=je_idempotency_key(po_id, f"po.received{idem_suffix}", "c"),
+        idem_posted=je_idempotency_key(po_id, f"po.received{idem_suffix}", "p"),
         memo=f"Auto JE for {po_id} received",
         entries=[
             {"account": debit_account, "debit": float(total), "credit": 0.0},
