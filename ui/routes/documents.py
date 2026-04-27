@@ -4587,27 +4587,41 @@ async function celerpCsvImport(input, entityId) {{
             cls="lines-section",
         )
     else:
+        _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
+
         def _li_row(li: dict) -> FT:
             qty = float(li.get("quantity", 0) or 0)
             price = float(li.get("unit_price", 0) or 0)
             discount_pct = float(li.get("discount_pct") or 0)
             discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
             line_total = float(li.get("line_total", 0) or 0) or discounted
-            return Tr(
+            cells = [
                 Td(format_value(li.get("description") or li.get("name"))),
                 Td(format_value(li.get("sku") or None)),
+            ]
+            if _is_vendor_doc:
+                cells.append(Td(format_value(li.get("category") or None)))
+                cells.append(Td(format_value(li.get("receive_as", "stock").capitalize())))
+            cells.extend([
                 Td(format_value(li.get("quantity"))),
                 Td(format_value(li.get("unit") or None)),
                 Td(format_value(li.get("unit_price"), "money"), cls="cell--number"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "-"),
                 Td(format_value(li.get("tax_rate"))),
                 Td(format_value(line_total, "money"), cls="cell--number"),
-            )
+            ])
+            return Tr(*cells)
+
+        _thead_base = [Th(t("th.description")), Th(t("th.skuitem"))]
+        if _is_vendor_doc:
+            _thead_base += [Th("Category"), Th("Type")]
+        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"))]
+        _colspan = len(_thead_base)
         lines_section = Div(
             Table(
-                Thead(Tr(Th(t("th.description")), Th(t("th.skuitem")), Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total")))),
+                Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li) for li in line_items] if line_items else [
-                    Tr(Td(t("doc.no_line_items"), colspan="8", cls="empty-state-msg"))
+                    Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ])),
                 cls="data-table doc-lines",
             ),
