@@ -708,3 +708,41 @@ async def test_split_children_inherit_allow_splitting_false(client):
     state = r.json()
     assert "allow_splitting" in state, "Split child must have allow_splitting in state"
     assert state["allow_splitting"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_item_categories_includes_schema_categories(client):
+    """GET /items/categories must return categories from company category_schemas even if no items exist yet."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Seed category schemas via company settings (simulates vertical preset / category library)
+    r = await client.patch("/companies/me", headers=h, json={
+        "settings": {"category_schemas": {"Colored Stones": [], "Gold Jewelry": []}}
+    })
+    assert r.status_code == 200, r.text
+
+    cats = (await client.get("/items/categories", headers=h)).json()
+    assert "Colored Stones" in cats, f"Expected 'Colored Stones' in {cats}"
+    assert "Gold Jewelry" in cats, f"Expected 'Gold Jewelry' in {cats}"
+
+
+@pytest.mark.asyncio
+async def test_list_item_categories_union_of_schema_and_items(client):
+    """GET /items/categories returns union: schema categories + categories on actual items."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Schema has one category
+    await client.patch("/companies/me", headers=h, json={
+        "settings": {"category_schemas": {"Schema Cat": []}}
+    })
+
+    # Create an item with a different category (not in schema)
+    await client.post("/items", headers=h, json={
+        "sku": "CAT-TEST-001", "name": "Widget", "sell_by": "piece", "category": "Item Cat",
+    })
+
+    cats = (await client.get("/items/categories", headers=h)).json()
+    assert "Schema Cat" in cats, f"Schema category missing: {cats}"
+    assert "Item Cat" in cats, f"Item category missing: {cats}"

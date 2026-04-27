@@ -76,6 +76,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type in {"item.expired", "item.disposed"}:
         current["is_available"] = False
         current["is_expired"] = event_type == "item.expired"
+        current["status"] = "expired" if event_type == "item.expired" else "disposed"
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])
@@ -99,8 +100,9 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["reserved_quantity"] = max(0.0, float(current.get("reserved_quantity", 0)) - float(data["quantity"]))
     elif event_type == "item.fulfilled":
         current["quantity"] = 0
+        current["quantity_fulfilled"] = float(data.get("quantity_fulfilled", 0))
         current["is_available"] = False
-        current["status"] = "fulfilled"
+        current["status"] = "sold"
         current.setdefault("fulfilled_for_docs", [])
         current["fulfilled_for_docs"].append(data["source_doc_id"])
     elif event_type == "item.fulfillment_reversed":

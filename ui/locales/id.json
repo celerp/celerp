@@ -1144,5 +1144,6 @@
   "settings.password_min_length": "Kata sandi minimal 8 karakter",
   "settings.password_changed": "Kata sandi berhasil diubah",
   "btn.change_password": "Ganti Kata Sandi",
-  "status.all_issued": "Semua Diterbitkan"
+  "status.all_issued": "Semua Diterbitkan",
+  "nav.credit_notes": "Nota Kredit"
 }

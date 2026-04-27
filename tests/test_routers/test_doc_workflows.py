@@ -754,3 +754,741 @@ async def test_summary_all_card_count_equals_all_issued_not_sum_of_cards(client,
     assert s["awaiting_payment_count"] == 0, (
         f"awaiting_payment_count should be 0 for a fully-paid invoice, got {s['awaiting_payment_count']}"
     )
+
+
+@pytest.mark.anyio
+async def test_credit_note_can_be_created_without_original_doc_id(client, session):
+    """Regression: creating a credit_note without original_doc_id is now allowed (link can be added later)."""
+    token = await _register(client)
+    r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={"doc_type": "credit_note", "line_items": [], "subtotal": 0, "tax": 0, "total": 10},
+    )
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.anyio
+async def test_receive_return_on_credit_note(client, session):
+    """Regression: receive-return on a credit note creates inventory items and records the event.
+
+    Backend resolves item values from sold inventory records (LIFO).
+    Original invoice line items serve as descriptive fallback only.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create a sold inventory item with qty 2 (simulates goods sold to the customer)
+    item1 = await client.post("/items", headers=h, json={"sku": "W-001", "name": "Widget", "quantity": 2, "cost_price": 40.0, "unit_price": 50.0, "sell_by": "piece"})
+    assert item1.status_code == 200
+    item1_id = item1.json()["id"]
+    # Mark as sold
+    await client.post(f"/items/{item1_id}/status", headers=h, json={"new_status": "sold"})
+
+    # Create and finalize an invoice
+    inv = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 2, "unit_price": 50, "sell_by": "unit"}], "subtotal": 100, "tax": 0, "total": 100})
+    assert inv.status_code == 200
+    inv_id = inv.json()["id"]
+    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+
+    # Create credit note linked to invoice
+    cn = await client.post("/docs", headers=h, json={"doc_type": "credit_note", "original_doc_id": inv_id, "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 2, "unit_price": 50, "sell_by": "unit"}], "subtotal": 100, "tax": 0, "total": 100})
+    assert cn.status_code == 200
+    cn_id = cn.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # Receive return - minimal payload; backend resolves all values from sold inventory records
+    r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "W-001", "quantity": 2}]})
+    assert r.status_code == 200
+    data = r.json()
+    assert len(data["received_items"]) == 1
+    assert data["received_items"][0]["quantity"] == 2
+    # cost_price resolved from sold inventory records (cost_price=40 each, qty=2)
+    assert data["total_cogs_reversed"] == pytest.approx(80.0)
+    # CN projection should have return_received_items
+    cn_state = (await client.get(f"/docs/{cn_id}", headers=h)).json()
+    assert len(cn_state.get("return_received_items", [])) == 1
+
+
+@pytest.mark.anyio
+async def test_receive_return_rejected_on_non_credit_note(client, session):
+    """Regression: receive-return must be rejected on non-credit-note doc types."""
+    token = await _register(client)
+    inv_id = await _create_invoice(client, token, subtotal=50, tax=0, total=50)
+    r = await client.post(
+        f"/docs/{inv_id}/receive-return",
+        headers=_h(token),
+        json={"items": [{"sku": "X-001", "name": "Item", "quantity": 1, "cost_price": 50.0}]},
+    )
+    assert r.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_create_credit_note_from_invoice_pre_populates_fields(client, session):
+    """create-credit-note action: CN gets original_doc_id, contact_id, and line items from invoice."""
+    token = await _register(client)
+    inv_id = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
+    # Finalize and fully pay so status = paid
+    await client.post(f"/docs/{inv_id}/finalize", headers=_h(token))
+    await _pay(client, token, inv_id, 100, "FULL")
+
+    # Create CN from invoice (simulates the action handler logic directly via API)
+    source = (await client.get(f"/docs/{inv_id}", headers=_h(token))).json()
+    cn_r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={
+            "doc_type": "credit_note",
+            "original_doc_id": inv_id,
+            "contact_id": source.get("contact_id"),
+            "line_items": source.get("line_items", []),
+            "subtotal": source.get("subtotal") or 0,
+            "tax": source.get("tax") or 0,
+            "total": source.get("total") or 0,
+        },
+    )
+    assert cn_r.status_code == 200, cn_r.text
+    cn_id = cn_r.json()["id"]
+
+    cn = (await client.get(f"/docs/{cn_id}", headers=_h(token))).json()
+    assert cn["doc_type"] == "credit_note"
+    assert cn["original_doc_id"] == inv_id
+    assert cn["contact_id"] == source.get("contact_id")
+    assert len(cn.get("line_items", [])) == len(source.get("line_items", []))
+    # Original invoice outstanding reduced by CN total
+    inv_state = (await client.get(f"/docs/{inv_id}", headers=_h(token))).json()
+    assert inv_state["amount_outstanding"] == pytest.approx(0.0)  # already paid; CN total deducted further (clamps at 0)
+
+
+@pytest.mark.anyio
+async def test_doc_return_received_projection(client, session):
+    """doc.return_received projection: return_received_items appended, CN status unchanged."""
+    token = await _register(client)
+    h = _h(token)
+
+    # Create a sold inventory item for the SKU being returned
+    item = await client.post("/items", headers=h, json={"sku": "W-001", "name": "Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 50.0, "sell_by": "piece"})
+    assert item.status_code == 200
+    await client.post(f"/items/{item.json()['id']}/status", headers=h, json={"new_status": "sold"})
+
+    inv = await client.post("/docs", headers=h, json={"doc_type": "invoice", "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 1, "unit_price": 50, "sell_by": "unit"}], "subtotal": 50, "tax": 0, "total": 50})
+    assert inv.status_code == 200
+    inv_id = inv.json()["id"]
+    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+
+    cn_r = await client.post(
+        "/docs",
+        headers=h,
+        json={
+            "doc_type": "credit_note",
+            "original_doc_id": inv_id,
+            "line_items": [{"name": "Widget", "sku": "W-001", "quantity": 1, "unit_price": 50, "sell_by": "unit"}],
+            "subtotal": 50, "tax": 0, "total": 50,
+        },
+    )
+    assert cn_r.status_code == 200
+    cn_id = cn_r.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    before = (await client.get(f"/docs/{cn_id}", headers=h)).json()
+    assert before.get("return_received_items") is None or before.get("return_received_items") == []
+
+    rr = await client.post(
+        f"/docs/{cn_id}/receive-return",
+        headers=h,
+        json={"items": [{"sku": "W-001", "quantity": 1}]},
+    )
+    assert rr.status_code == 200
+
+    after = (await client.get(f"/docs/{cn_id}", headers=h)).json()
+    assert len(after.get("return_received_items", [])) == 1
+    # Status must NOT change - CN stays in its financial status
+    assert after["status"] == before["status"]
+
+
+@pytest.mark.anyio
+async def test_receive_return_no_sold_inventory(client, session):
+    """receive-return must succeed even when no sold inventory records exist for the SKU.
+
+    Real-world case: CN created manually against an invoice whose items were never
+    run through item.fulfilled, or items sold before fulfillment tracking existed.
+    Backend falls back to CN/invoice line item data.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create and finalize an invoice with a line item (no inventory item created/sold)
+    inv = await client.post("/docs", headers=h, json={
+        "doc_type": "invoice",
+        "line_items": [{"name": "Widget", "sku": "W-NOSOLD", "quantity": 1, "unit_price": 60, "sell_by": "piece"}],
+        "subtotal": 60, "tax": 0, "total": 60,
+    })
+    assert inv.status_code == 200
+    inv_id = inv.json()["id"]
+    await client.post(f"/docs/{inv_id}/finalize", headers=h)
+
+    # Create and finalize a CN linked to that invoice
+    cn = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note", "original_doc_id": inv_id,
+        "line_items": [{"name": "Widget", "sku": "W-NOSOLD", "quantity": 1, "unit_price": 60, "sell_by": "piece"}],
+        "subtotal": 60, "tax": 0, "total": 60,
+    })
+    assert cn.status_code == 200
+    cn_id = cn.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # receive-return must succeed using invoice line item data as fallback
+    r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "W-NOSOLD", "quantity": 1}]})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert len(data["received_items"]) == 1
+
+
+@pytest.mark.anyio
+async def test_receive_return_fails_loudly_when_no_data_resolvable(client, session):
+    """receive-return must 422 with a clear message when neither sold inventory nor
+    invoice line items can supply name/sell_by for the requested SKU.
+
+    This prevents silent creation of broken inventory records.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Unlinked CN (no original_doc_id), no inventory, no invoice fallback
+    cn = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note",
+        "line_items": [],  # no line items - nothing to resolve from
+        "subtotal": 0, "tax": 0, "total": 0,
+    })
+    assert cn.status_code == 200
+    cn_id = cn.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # SKU has no sold record and no line item on the CN - must fail loudly
+    r = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "GHOST-SKU", "quantity": 1}]})
+    assert r.status_code == 422, r.text
+    assert "name" in r.json()["detail"] or "sell_by" in r.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_receive_return_draft_cn_rejected(client, session):
+    """receive-return must be rejected on draft credit notes."""
+    token = await _register(client)
+    cn_r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={"doc_type": "credit_note", "line_items": [], "subtotal": 0, "tax": 0, "total": 0},
+    )
+    assert cn_r.status_code == 200
+    cn_id = cn_r.json()["id"]
+    # Status is draft - receive-return should be rejected
+    r = await client.post(
+        f"/docs/{cn_id}/receive-return",
+        headers=_h(token),
+        json={"items": [{"sku": "X", "quantity": 1}]},
+    )
+    assert r.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_undo_receive_return_removes_items_from_inventory(client, session):
+    """Regression: Revert Return Stock must dispose returned items so they no longer appear in inventory.
+
+    Previously item.disposed projection never set status='disposed', so items remained visible
+    in inventory (filtered by _HIDDEN_STATUSES which checks status field, not is_available).
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create sold inventory item
+    item_r = await client.post("/items", headers=h, json={"sku": "RR-001", "name": "Returnable Widget", "quantity": 1, "cost_price": 30.0, "unit_price": 60.0, "sell_by": "piece"})
+    assert item_r.status_code == 200
+    await client.post(f"/items/{item_r.json()['id']}/status", headers=h, json={"new_status": "sold"})
+
+    # Create CN and finalize
+    cn_r = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Returnable Widget", "sku": "RR-001", "quantity": 1, "unit_price": 60, "sell_by": "piece"}],
+        "subtotal": 60, "tax": 0, "total": 60,
+    })
+    assert cn_r.status_code == 200
+    cn_id = cn_r.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # Receive return - creates a new inventory item with status=available
+    rr = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "RR-001", "quantity": 1}]})
+    assert rr.status_code == 200, rr.text
+    received_items = rr.json()["received_items"]
+    assert len(received_items) == 1
+
+    # Verify the returned item appears in inventory
+    inv_list = (await client.get("/items", headers=h)).json()["items"]
+    returned_skus = [i["sku"] for i in inv_list if i.get("status") == "available"]
+    assert "RR-001" in returned_skus, "Returned item should be available in inventory after receive-return"
+
+    # Revert Return Stock
+    undo_r = await client.delete(f"/docs/{cn_id}/receive-return", headers=h)
+    assert undo_r.status_code == 200, undo_r.text
+    assert undo_r.json()["undone"] is True
+
+    # CN projection should be cleared
+    cn_state = (await client.get(f"/docs/{cn_id}", headers=h)).json()
+    assert cn_state.get("return_received_items") in (None, []), "return_received_items must be cleared after undo"
+
+    # The returned item must no longer appear as available in inventory (status=disposed hides it)
+    inv_list_after = (await client.get("/items", headers=h)).json()["items"]
+    available_skus_after = [i["sku"] for i in inv_list_after if i.get("status") == "available"]
+    assert "RR-001" not in available_skus_after, (
+        "Disposed item must not appear in inventory after Revert Return Stock. "
+        "Check item.disposed projection sets status='disposed'."
+    )
+
+
+@pytest.mark.anyio
+async def test_undo_receive_return_blocked_if_item_resold(client, session):
+    """Revert Return Stock must return 409 with actionable message if a returned item was re-sold."""
+    token = await _register(client)
+    h = _h(token)
+
+    # Create sold inventory item
+    item_r = await client.post("/items", headers=h, json={"sku": "RR-002", "name": "Resold Widget", "quantity": 1, "cost_price": 25.0, "unit_price": 50.0, "sell_by": "piece"})
+    assert item_r.status_code == 200
+    await client.post(f"/items/{item_r.json()['id']}/status", headers=h, json={"new_status": "sold"})
+
+    # Create and finalize CN
+    cn_r = await client.post("/docs", headers=h, json={
+        "doc_type": "credit_note",
+        "line_items": [{"name": "Resold Widget", "sku": "RR-002", "quantity": 1, "unit_price": 50, "sell_by": "piece"}],
+        "subtotal": 50, "tax": 0, "total": 50,
+    })
+    assert cn_r.status_code == 200
+    cn_id = cn_r.json()["id"]
+    await client.post(f"/docs/{cn_id}/finalize", headers=h)
+
+    # Receive return
+    rr = await client.post(f"/docs/{cn_id}/receive-return", headers=h, json={"items": [{"sku": "RR-002", "quantity": 1}]})
+    assert rr.status_code == 200, rr.text
+    returned_items = rr.json()["received_items"]
+    new_item_id = returned_items[0]["item_id"]
+
+    # Re-sell the returned item (simulates someone selling it before the undo)
+    await client.post(f"/items/{new_item_id}/status", headers=h, json={"new_status": "sold"})
+
+    # Revert Return Stock must fail with 409 and name the blocked item
+    undo_r = await client.delete(f"/docs/{cn_id}/receive-return", headers=h)
+    assert undo_r.status_code == 409, undo_r.text
+    detail = undo_r.json().get("detail", "")
+    assert "sold" in detail.lower() or "RR-002" in detail, (
+        f"Error message must name the blocked item or status. Got: {detail}"
+    )
+
+
+@pytest.mark.anyio
+async def test_bill_receive_goods_without_po_line_index(client, session):
+    """Regression: one-click 'Receive Goods' on bills must succeed without po_line_index.
+
+    The per-line PO receive form sends po_line_index; the bill one-click endpoint does not.
+    po_line_index must be optional (defaults to -1) so both flows work.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create and finalize a bill
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Widget A", "sku": "W-A", "quantity": 5, "unit_price": 20.0, "sell_by": "piece"},
+            {"name": "Widget B", "sku": "W-B", "quantity": 3, "unit_price": 10.0, "sell_by": "piece"},
+        ],
+        "subtotal": 130, "tax": 0, "total": 130,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    # POST to /receive without po_line_index - must not 422
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {"sku": "W-A", "name": "Widget A", "quantity_received": 5.0, "cost_price": 20.0},
+            {"sku": "W-B", "name": "Widget B", "quantity_received": 3.0, "cost_price": 10.0},
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, f"Expected 200, got {receive_r.status_code}: {receive_r.text}"
+
+
+@pytest.mark.anyio
+async def test_revert_goods_received_removes_items_from_inventory(client, session):
+    """Revert Goods Received must dispose all inventory items created by the receive."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Widget RG1", "sku": "RG-001", "quantity": 2, "unit_price": 15.0, "sell_by": "piece"},
+        ],
+        "subtotal": 30, "tax": 0, "total": 30,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "RG-001", "name": "Widget RG1", "quantity_received": 2.0}],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    # Verify items appear in inventory
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert bill_state.get("received_item_ids"), "received_item_ids must be populated after receive"
+
+    # Revert
+    undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
+    assert undo_r.status_code == 200, undo_r.text
+    assert undo_r.json()["undone"] is True
+
+    # Bill projection must be cleared and status restored to final
+    bill_after = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert bill_after.get("received_items") in (None, [])
+    assert bill_after.get("received_item_ids") in (None, [])
+    assert bill_after.get("status") == "final"
+
+    # Items must be disposed (not available in inventory)
+    inv = (await client.get("/items", headers=h)).json()["items"]
+    available_skus = [i["sku"] for i in inv if i.get("status") == "available"]
+    assert "RG-001" not in available_skus, "Disposed item must not appear in inventory"
+
+
+@pytest.mark.anyio
+async def test_revert_goods_received_blocked_if_item_resold(client, session):
+    """Revert Goods Received must 409 if any created item has been sold."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Widget RG2", "sku": "RG-002", "quantity": 1, "unit_price": 25.0, "sell_by": "piece"},
+        ],
+        "subtotal": 25, "tax": 0, "total": 25,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "RG-002", "name": "Widget RG2", "quantity_received": 1.0}],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    item_ids = bill_state.get("received_item_ids", [])
+    assert item_ids, "received_item_ids must be populated"
+
+    # Mark item as sold to block revert
+    await client.post(f"/items/{item_ids[0]}/status", headers=h, json={"new_status": "sold"})
+
+    undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
+    assert undo_r.status_code == 409, undo_r.text
+    detail = undo_r.json().get("detail", "")
+    assert "sold" in detail.lower() or "RG-002" in detail, f"Error must identify the blocked item. Got: {detail}"
+
+
+@pytest.mark.anyio
+async def test_receive_goods_inherits_sku_attributes(client, session):
+    """Receive Goods must copy category, sell_by, prices, and dynamic attributes from existing item with same SKU.
+    Barcode must NOT be copied (unique per physical item).
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create a master item with rich attributes including dynamic category-specific ones
+    item_r = await client.post("/items", headers=h, json={
+        "sku": "MASTER-001", "name": "Master Widget",
+        "sell_by": "piece", "category": "Electronics",
+        "retail_price": 99.0, "wholesale_price": 60.0, "cost_price": 40.0,
+        "barcode": "1234567890",
+        "attributes": {"color": "red", "shape": "round"},
+    })
+    assert item_r.status_code == 200, item_r.text
+
+    # Create and finalize a bill for that SKU
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Master Widget", "sku": "MASTER-001", "quantity": 2, "unit_price": 40.0, "sell_by": "piece"},
+        ],
+        "subtotal": 80, "tax": 0, "total": 80,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "MASTER-001", "name": "Master Widget", "quantity_received": 2.0}],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert created_ids, "received_item_ids must be set"
+
+    new_item = (await client.get(f"/items/{created_ids[0]}", headers=h)).json()
+    assert new_item.get("category") == "Electronics", f"category not inherited: {new_item.get('category')}"
+    assert new_item.get("sell_by") == "piece", f"sell_by not inherited: {new_item.get('sell_by')}"
+    # Dynamic attributes are flattened to top-level by the GET endpoint
+    assert new_item.get("color") == "red", f"attributes.color not inherited: {new_item}"
+    assert new_item.get("shape") == "round", f"attributes.shape not inherited: {new_item}"
+    # Barcode must NOT be copied (unique per physical item)
+    assert not new_item.get("barcode"), f"barcode must not be inherited, got: {new_item.get('barcode')}"
+
+
+@pytest.mark.anyio
+async def test_receive_goods_works_after_revert(client, session):
+    """Receive Goods button must work again after Revert Goods Received (idempotency key must be unique per receive)."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Widget Retry", "sku": "RR-001", "quantity": 1, "unit_price": 20.0, "sell_by": "piece"},
+        ],
+        "subtotal": 20, "tax": 0, "total": 20,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    # First receive
+    r1 = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "RR-001", "name": "Widget Retry", "quantity_received": 1.0}],
+        "location_id": "",
+    })
+    assert r1.status_code == 200, r1.text
+
+    # Revert
+    undo_r = await client.delete(f"/docs/{bill_id}/receive", headers=h)
+    assert undo_r.status_code == 200, undo_r.text
+
+    # Second receive - must succeed with fresh items and JE
+    r2 = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [{"sku": "RR-001", "name": "Widget Retry", "quantity_received": 1.0}],
+        "location_id": "",
+    })
+    assert r2.status_code == 200, f"Re-receive after revert must succeed. Got: {r2.status_code}: {r2.text}"
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert bill_state.get("received_item_ids"), "received_item_ids must be repopulated after second receive"
+
+
+@pytest.mark.anyio
+async def test_receive_as_expense_skips_inventory_creation(client, session):
+    """Expense lines must not create inventory items; stock lines must."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {"name": "Stock Widget", "sku": "SW-001", "quantity": 2, "unit_price": 10.0},
+            {"name": "Shipping Fee", "sku": "SHP-001", "quantity": 1, "unit_price": 5.0},
+        ],
+        "subtotal": 25, "tax": 0, "total": 25,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {"sku": "SW-001", "name": "Stock Widget", "quantity_received": 2.0, "receive_as": "stock"},
+            {"sku": "SHP-001", "name": "Shipping Fee", "quantity_received": 1.0, "receive_as": "expense"},
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    # Only the stock line should have created an inventory item
+    assert len(created_ids) == 1, f"Expected 1 inventory item (stock line only), got {len(created_ids)}: {created_ids}"
+
+
+@pytest.mark.anyio
+async def test_receive_as_stock_creates_inventory(client, session):
+    """Explicit receive_as=stock must create an inventory item."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [{"name": "Gadget", "sku": "GDG-001", "quantity": 1, "unit_price": 50.0}],
+        "subtotal": 50, "tax": 0, "total": 50,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {"sku": "GDG-001", "name": "Gadget", "quantity_received": 1.0, "receive_as": "stock"},
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert len(created_ids) == 1, f"Expected 1 inventory item for stock line, got {len(created_ids)}"
+
+
+@pytest.mark.anyio
+async def test_receive_as_defaults_to_stock(client, session):
+    """When receive_as is omitted, it defaults to stock behavior (inventory item created)."""
+    token = await _register(client)
+    h = _h(token)
+
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [{"name": "Default Widget", "sku": "DW-001", "quantity": 1, "unit_price": 15.0}],
+        "subtotal": 15, "tax": 0, "total": 15,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {"sku": "DW-001", "name": "Default Widget", "quantity_received": 1.0},
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert len(created_ids) == 1, f"Expected 1 inventory item (default stock), got {len(created_ids)}"
+
+
+@pytest.mark.anyio
+async def test_bill_category_and_receive_as_preserved_after_finalize(client, session):
+    """category and receive_as on line items must survive patch_doc (autosave) and finalize.
+
+    Root cause: _celerpCollectLines() was not collecting category/receive_as from the DOM,
+    so autosave sent line items without those fields and they were lost on next load.
+    This test verifies the backend correctly stores and returns both fields via patch_doc.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create draft bill with category and receive_as on the line item
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {
+                "name": "Widget",
+                "sku": "WDG-CAT-01",
+                "quantity": 2,
+                "unit_price": 30.0,
+                "category": "Electronics",
+                "receive_as": "stock",
+            }
+        ],
+        "subtotal": 60, "tax": 0, "total": 60,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+
+    # Simulate autosave: patch with the same line items (as the JS now collects them)
+    patch_r = await client.patch(f"/docs/{bill_id}", headers=h, json={
+        "fields_changed": {
+            "line_items": {
+                "old": None,
+                "new": [
+                    {
+                        "name": "Widget",
+                        "sku": "WDG-CAT-01",
+                        "quantity": 2,
+                        "unit_price": 30.0,
+                        "category": "Electronics",
+                        "receive_as": "stock",
+                        "line_total": 60.0,
+                    }
+                ],
+            }
+        }
+    })
+    assert patch_r.status_code == 200, patch_r.text
+
+    # Finalize the bill
+    fin_r = await client.post(f"/docs/{bill_id}/finalize", headers=h)
+    assert fin_r.status_code == 200, fin_r.text
+
+    # Verify category and receive_as survived
+    doc = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert doc["status"] == "final", f"Expected final, got {doc['status']}"
+    line = doc["line_items"][0]
+    assert line.get("category") == "Electronics", f"category lost after finalize: {line}"
+    assert line.get("receive_as") == "stock", f"receive_as lost after finalize: {line}"
+
+
+@pytest.mark.anyio
+async def test_receive_goods_uses_bill_line_category_and_attributes(client, session):
+    """Receive Goods must copy category and attributes from the bill line item.
+
+    This covers the case where a brand-new SKU is received (no existing inventory item),
+    so sku_ref lookup returns nothing. The bill line item is the authoritative source.
+
+    Priority order: bill line item > sku_ref (existing inventory).
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create and finalize a bill with category + attributes on the line item (new SKU, no prior inventory)
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {
+                "name": "Emerald Stone",
+                "sku": "GEM-EM-001",
+                "quantity": 5,
+                "unit_price": 200.0,
+                "category": "Gemstones",
+                "attributes": {"color": "green", "shape": "oval", "measurements (mm)": "10x8"},
+            }
+        ],
+        "subtotal": 1000, "tax": 0, "total": 1000,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {
+                "sku": "GEM-EM-001",
+                "name": "Emerald Stone",
+                "quantity_received": 5.0,
+                "category": "Gemstones",
+                "attributes": {"color": "green", "shape": "oval", "measurements (mm)": "10x8"},
+            }
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert created_ids, "Expected inventory items to be created"
+
+    new_item = (await client.get(f"/items/{created_ids[0]}", headers=h)).json()
+    assert new_item.get("category") == "Gemstones", f"category not set from bill line: {new_item}"
+    # Dynamic attributes are flattened to top-level by the GET endpoint
+    assert new_item.get("color") == "green", f"attributes.color not set: {new_item}"
+    assert new_item.get("shape") == "oval", f"attributes.shape not set: {new_item}"
+    assert new_item.get("measurements (mm)") == "10x8", f"attributes.measurements not set: {new_item}"

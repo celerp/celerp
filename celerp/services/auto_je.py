@@ -168,6 +168,7 @@ async def create_for_po_received(
     po_id: str,
     total: float,
     doc: dict | None = None,
+    unique_suffix: str | None = None,
 ) -> None:
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     debit_account = {
@@ -176,13 +177,17 @@ async def create_for_po_received(
         "asset": "1210",
     }.get(purchase_kind, "1130")
 
+    # suffix=None means "first receive" - use fixed key for backward compat with doctor/duplicate checks
+    # suffix provided means "re-receive after revert" - use unique key to avoid idempotency collision
+    suffix = unique_suffix if unique_suffix is not None else "0"
+    idem_suffix = f":{suffix}" if unique_suffix is not None else ""
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{po_id}:rcv",
-        idem_create=je_idempotency_key(po_id, "po.received", "c"),
-        idem_posted=je_idempotency_key(po_id, "po.received", "p"),
+        je_id=f"je:auto:{po_id}:rcv{idem_suffix}",
+        idem_create=je_idempotency_key(po_id, f"po.received{idem_suffix}", "c"),
+        idem_posted=je_idempotency_key(po_id, f"po.received{idem_suffix}", "p"),
         memo=f"Auto JE for {po_id} received",
         entries=[
             {"account": debit_account, "debit": float(total), "credit": 0.0},
@@ -359,6 +364,91 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str) -
             idempotency_key=je_idempotency_key(doc_id, "fulfill-void", "void"),
             metadata_={"trigger": "doc.fulfillment_reversed", "doc_id": doc_id},
         )
+
+
+async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float, je_suffix: str) -> None:
+    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1300) / Credit COGS (5100).
+
+    je_suffix must be unique per receive-return call (e.g. first item_id) to avoid idempotency key collisions
+    when receive-return is called multiple times on the same CN.
+    """
+    if total_cogs <= 0:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{cn_id}:return:{je_suffix}",
+        idem_create=je_idempotency_key(cn_id, f"return:{je_suffix}", "c"),
+        idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
+        memo=f"Auto JE for {cn_id} return received (COGS reversal)",
+        entries=[
+            {"account": "1300", "debit": float(total_cogs), "credit": 0.0},
+            {"account": "5100", "debit": 0.0, "credit": float(total_cogs)},
+        ],
+        metadata_={"trigger": "doc.return_received", "cn_id": cn_id},
+    )
+
+
+async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, total_cogs: float, unique_suffix: str) -> None:
+    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1300).
+
+    unique_suffix must be unique per call (e.g. a UUID) so repeated undo attempts each get their own JE.
+    """
+    if total_cogs <= 0:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{cn_id}:return:undo:{unique_suffix}",
+        idem_create=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "c"),
+        idem_posted=je_idempotency_key(cn_id, f"return.undo.{unique_suffix}", "p"),
+        memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
+        entries=[
+            {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
+            {"account": "1300", "debit": 0.0, "credit": float(total_cogs)},
+        ],
+        metadata_={"trigger": "doc.return_undone", "cn_id": cn_id},
+    )
+
+
+async def create_for_receive_undone(
+    session,
+    *,
+    company_id,
+    user_id,
+    bill_id: str,
+    doc: dict | None = None,
+    total_cost: float,
+    unique_suffix: str,
+) -> None:
+    """Reverse the PO-received JE when goods-received is undone: Debit AP (2110) / Credit Inventory account.
+
+    unique_suffix must be unique per call so repeated undo attempts each get their own JE.
+    """
+    if total_cost <= 0:
+        return
+    purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
+    credit_account = {
+        "inventory": "1130",
+        "expense": "6950",
+        "asset": "1210",
+    }.get(purchase_kind, "1130")
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{bill_id}:rcv:undo:{unique_suffix}",
+        idem_create=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "c"),
+        idem_posted=je_idempotency_key(bill_id, f"receive.undo.{unique_suffix}", "p"),
+        memo=f"Auto JE for {bill_id} goods-received undone",
+        entries=[
+            {"account": "2110", "debit": float(total_cost), "credit": 0.0},
+            {"account": credit_account, "debit": 0.0, "credit": float(total_cost)},
+        ],
+        metadata_={"trigger": "doc.receive_undone", "doc_id": bill_id, "purchase_kind": purchase_kind},
+    )
 
 
 async def create_for_mfg_completed(session, *, company_id, user_id, order_id: str, input_cost: float, waste_cost: float) -> None:

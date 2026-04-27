@@ -1144,5 +1144,6 @@
   "settings.password_min_length": "パスワードは8文字以上にしてください",
   "settings.password_changed": "パスワードが正常に変更されました",
   "btn.change_password": "パスワードを変更",
-  "status.all_issued": "発行済み一覧"
+  "status.all_issued": "発行済み一覧",
+  "nav.credit_notes": "クレジットノート"
 }

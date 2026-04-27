@@ -222,12 +222,30 @@ async def execute_unfulfill(
     Returns: {success: bool, reversed_items: [...]}
     """
     fulfilled_items = doc_state.get("fulfilled_items", [])
-    if not fulfilled_items:
-        return {"success": True, "reversed_items": []}
-
     cid = _to_uuid(company_id)
     uid = _to_uuid(user_id)
     reversed_items: list[dict] = []
+
+    if not fulfilled_items:
+        # No items to reverse - still emit the doc event to clear fulfillment_status
+        await emit_event(
+            session,
+            company_id=cid,
+            entity_id=doc_entity_id,
+            entity_type="doc",
+            event_type="doc.fulfillment_reversed",
+            data={
+                "reversed_items": [],
+                "reversed_by": str(uid),
+                "reason": reason,
+            },
+            actor_id=uid,
+            location_id=None,
+            source="fulfillment",
+            idempotency_key=str(_uuid.uuid4()),
+            metadata_={},
+        )
+        return {"success": True, "reversed_items": []}
 
     for fi in fulfilled_items:
         item_id = fi.get("item_id")

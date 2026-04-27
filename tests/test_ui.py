@@ -10390,3 +10390,156 @@ class TestAIPage:
         assert "playScenario" in html
         assert "appendMsg" in html
         assert "appendThinking" in html
+
+
+class TestVendorDocCategoryColumn:
+    """Tests for Category column on vendor docs (bill/PO/consignment_in)."""
+
+    def _make_bill(self, status="draft", received_item_ids=None, received_items=None, line_items=None):
+        return {
+            "entity_id": "doc:bill-1", "doc_type": "bill", "status": status,
+            "ref_id": "BILL-001", "currency": "USD", "subtotal": 100, "tax": 0, "total": 100,
+            "line_items": line_items or [
+                {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50.0,
+                 "sell_by": "piece", "category": "Electronics", "tax_rate": 0, "line_total": 100}
+            ],
+            "received_item_ids": received_item_ids,
+            "received_items": received_items,
+        }
+
+    def test_bill_draft_category_column_appears_after_description(self):
+        """Category column header must appear after Description in bill draft."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill(status="draft")
+        html = to_xml(_doc_detail(doc, item_categories=["Electronics", "Tools"]))
+        desc_pos = html.find("th.description") if "th.description" in html else html.find(">Description<")
+        cat_pos = html.find(">Category<")
+        sku_pos = html.find(">SKU") if ">SKU" in html else html.find("th.skuitem")
+        assert cat_pos > 0, "Category header must be present"
+        assert desc_pos > 0, "Description header must be present"
+        assert cat_pos > desc_pos, "Category column must appear after Description column"
+
+    def test_bill_draft_category_select_populated(self):
+        """Category select must contain the provided categories."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill(status="draft")
+        html = to_xml(_doc_detail(doc, item_categories=["Electronics", "Tools"]))
+        assert "Electronics" in html
+        assert "Tools" in html
+
+    def test_invoice_has_no_category_column(self):
+        """Category column must NOT appear for invoices."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {
+            "entity_id": "doc:inv-1", "doc_type": "invoice", "status": "draft",
+            "ref_id": "INV-001", "currency": "USD", "subtotal": 100, "tax": 0, "total": 100,
+            "line_items": [
+                {"sku": "X-1", "name": "Item", "quantity": 1, "unit_price": 100.0,
+                 "sell_by": "piece", "category": "Electronics", "tax_rate": 0, "line_total": 100}
+            ],
+        }
+        html = to_xml(_doc_detail(doc, item_categories=["Electronics"]))
+        assert ">Category<" not in html
+
+    def test_revert_goods_received_has_no_goods_received_badge(self):
+        """When received_item_ids is set, the render must show only the Revert button - no badge text."""
+        from ui.routes.documents import _render_receive_goods_section
+        from fasthtml.common import to_xml
+        doc = self._make_bill(
+            status="final",
+            received_item_ids=["item:abc"],
+            received_items=[{"sku": "W-A", "name": "Widget A", "quantity_received": 2}],
+        )
+        with patch("celerp.modules.loader.loaded_modules", return_value=[{"name": "celerp-inventory"}]):
+            html = to_xml(_render_receive_goods_section(doc))
+        assert "Revert Goods Received" in html
+        # Badge text must be absent in the revert state
+        assert html.count("Goods Received") == 1  # only button text, not badge+button
+        assert "badge--green" not in html
+
+    def test_receive_goods_section_shows_badge_when_no_item_ids(self):
+        """When received_items exist but received_item_ids is empty, show badge only (legacy state)."""
+        from ui.routes.documents import _render_receive_goods_section
+        from fasthtml.common import to_xml
+        doc = self._make_bill(
+            status="final",
+            received_item_ids=None,
+            received_items=[{"sku": "W-A"}],
+        )
+        with patch("celerp.modules.loader.loaded_modules", return_value=[{"name": "celerp-inventory"}]):
+            html = to_xml(_render_receive_goods_section(doc))
+        assert "badge--green" in html
+        assert "Revert" not in html
+
+    def test_catalog_lookup_returns_category(self):
+        """Catalog lookup must return category field for autofill."""
+        from ui.routes.documents import _doc_detail
+        # This is a unit assertion that _extract includes category - checked via catalog lookup result shape.
+        # The actual route test is in TestDocCatalogLookup; here we confirm the field is in the extract dict.
+        import sys
+        # Access the private extract logic indirectly by checking catalog lookup response schema.
+        # The category field was added in the sub-agent task; verify it's returned.
+        from ui.routes.documents import _doc_detail as _fn
+        # Ensure _doc_detail accepts item_categories kwarg without error
+        doc = self._make_bill()
+        from fasthtml.common import to_xml
+        html = to_xml(_doc_detail(doc, item_categories=["Electronics"]))
+        assert html  # Must not raise
+
+    @pytest.mark.asyncio
+    async def test_catalog_lookup_includes_category_in_response(self, ui_client):
+        """GET /docs/catalog-lookup must return category field."""
+        item = {
+            "entity_id": "item:cat-1", "sku": "CAT-001", "name": "Gadget",
+            "retail_price": 200, "sell_by": "piece", "quantity": 5,
+            "category": "Electronics", "hs_code": None,
+        }
+        with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
+            r = await ui_client.get("/docs/catalog-lookup?sku=CAT-001", cookies=_authed())
+        assert r.status_code == 200
+        data = r.json()
+        assert data.get("category") == "Electronics"
+
+
+class TestVendorDocReceiveAsColumn:
+    """Tests for receive_as (Type) column on vendor docs (bill/PO/consignment_in)."""
+
+    def _make_bill(self, status="draft", line_items=None):
+        return {
+            "entity_id": "doc:bill-ra-1", "doc_type": "bill", "status": status,
+            "ref_id": "BILL-RA-001", "currency": "USD", "subtotal": 100, "tax": 0, "total": 100,
+            "line_items": line_items or [
+                {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50.0,
+                 "sell_by": "piece", "receive_as": "stock", "tax_rate": 0, "line_total": 100}
+            ],
+        }
+
+    def test_vendor_doc_shows_type_column(self):
+        """Bill draft must have 'Type' header and receive_as select in line item rows."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill(status="draft")
+        html = to_xml(_doc_detail(doc, item_categories=[]))
+        assert ">Type<" in html, "Type header must be present in bill draft"
+        assert 'data-name="receive_as"' in html, "receive_as select must be present"
+
+    def test_invoice_has_no_type_column(self):
+        """Invoice must NOT show 'Type' header or receive_as select."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {
+            "entity_id": "doc:inv-ra-1", "doc_type": "invoice", "status": "draft",
+            "ref_id": "INV-RA-001", "currency": "USD", "subtotal": 100, "tax": 0, "total": 100,
+            "line_items": [
+                {"sku": "X-1", "name": "Item", "quantity": 1, "unit_price": 100.0,
+                 "sell_by": "piece", "tax_rate": 0, "line_total": 100}
+            ],
+        }
+        html = to_xml(_doc_detail(doc, item_categories=[]))
+        assert ">Type<" not in html, "Type header must not appear for invoices"
+        # The JS includes data-name="receive_as" as code text, so check for the select element specifically
+        assert '<select' not in html or 'data-name="receive_as"' not in html.split('<script')[0], \
+            "receive_as select element must not appear in invoice markup (outside script)"

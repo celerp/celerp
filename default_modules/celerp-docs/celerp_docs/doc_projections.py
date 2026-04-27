@@ -18,8 +18,16 @@ def _recalc_list_totals(state: dict) -> dict:
     state["discount_amount"] = discount_amount
 
     taxable = subtotal - discount_amount
-    tax_rate = float(state.get("tax", 0) or 0)
-    tax_amount = taxable * tax_rate / 100
+    # Use per-line tax rates if present; fall back to header tax rate.
+    per_line_tax = sum(
+        float(i.get("line_total", 0) or 0) * float(i.get("tax_rate", 0) or 0) / 100
+        for i in items
+    )
+    if per_line_tax:
+        tax_amount = per_line_tax
+    else:
+        tax_rate = float(state.get("tax", 0) or 0)
+        tax_amount = taxable * tax_rate / 100
     state["tax_amount"] = tax_amount
     state["total"] = taxable + tax_amount
     return state
@@ -85,10 +93,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]
             current["doc_number"] = data["ref_id"]
-        current.pop("fulfillment_status", None)
-        current.pop("fulfilled_items", None)
-        current.pop("fulfilled_at", None)
-        current.pop("fulfilled_by", None)
+        # Fulfillment state is independent of doc status - do not clear it here.
+        # Use the /unfulfill endpoint to explicitly revert fulfillment.
     elif event_type == "doc.unvoided":
         restored = data.get("restored_status", "final")
         current["status"] = restored
@@ -143,6 +149,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         received = data.get("received_items", [])
         current.setdefault("received_items", [])
         current["received_items"].extend(received)
+        current.setdefault("received_item_ids", [])
+        current["received_item_ids"].extend(data.get("created_item_ids", []))
 
         line_items = current.get("line_items", [])
         all_received = True
@@ -177,6 +185,18 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             current["status"] = "returned"
         elif total_returned > 0:
             current["status"] = "partial_returned"
+    elif event_type == "doc.return_received":
+        # Customer return on a credit note: track what came back (status unchanged - CN stays final/paid)
+        items = data.get("items", [])
+        current.setdefault("return_received_items", [])
+        current["return_received_items"].extend(items)
+    elif event_type == "doc.return_undone":
+        # Undo a receive-return: clear the received items list
+        current["return_received_items"] = []
+    elif event_type == "doc.receive_undone":
+        current["received_items"] = []
+        current["received_item_ids"] = []
+        current["status"] = "final"
     elif event_type == "doc.shared_import":
         # Inbound doc received via p2p share / bundle upload.
         # Carries the sender's full doc state; status forced to "received".

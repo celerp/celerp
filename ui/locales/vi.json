@@ -1144,5 +1144,6 @@
   "settings.password_min_length": "Mật khẩu phải có ít nhất 8 ký tự",
   "settings.password_changed": "Đổi mật khẩu thành công",
   "btn.change_password": "Đổi mật khẩu",
-  "status.all_issued": "Tất cả đã phát hành"
+  "status.all_issued": "Tất cả đã phát hành",
+  "nav.credit_notes": "Phiếu Ghi Có"
 }

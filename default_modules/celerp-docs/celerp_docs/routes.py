@@ -26,7 +26,7 @@ from celerp.services.auth import get_current_company_id, get_current_user, requi
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import compute_pick_plan
-from celerp_docs.doc_constants import FULFILLABLE_STATUSES
+from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -116,12 +116,16 @@ class DocPaymentBody(BaseModel):
 
 
 class ReceivedItem(BaseModel):
-    po_line_index: int
+    po_line_index: int = -1  # optional; -1 means not specified (e.g. one-click bill receive)
     item_id: str | None = None
     quantity_received: float
     condition: str = "good"
     sku: str | None = None
     name: str | None = None
+    cost_price: float | None = None
+    receive_as: str = "stock"
+    category: str | None = None
+    attributes: dict | None = None
 
 
 class ReceiveBody(BaseModel):
@@ -172,6 +176,11 @@ async def list_docs(
     limit: int | None = None,
     offset: int = 0,
     overdue_only: bool = False,
+    all_issued: bool = False,
+    unfulfilled_only: bool = False,
+    not_restocked: bool = False,
+    not_stocked: bool = False,
+    converted_to_type: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -186,9 +195,18 @@ async def list_docs(
     if status_in:
         _allowed = set(status_in.split(","))
         out = [x for x in out if x.get("status") in _allowed]
+    if all_issued:
+        out = [x for x in out if x.get("status") not in ("draft", "void")]
     if overdue_only:
-        # Overdue = awaiting payment + due_date before today
-        out = [x for x in out if x.get("due_date") and x["due_date"] < today]
+        out = [x for x in out if x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void")]
+    if unfulfilled_only:
+        out = [x for x in out if x.get("status") not in ("draft", "void") and x.get("fulfillment_status") != "fulfilled"]
+    if not_restocked:
+        out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or [])]
+    if not_stocked:
+        out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
+    if converted_to_type:
+        out = [x for x in out if x.get("converted_to_type") == converted_to_type]
     if exclude_status:
         out = [x for x in out if x.get("status") != exclude_status]
     if date_from:
@@ -222,26 +240,30 @@ async def get_doc_summary(
     ar_gross = ar_paid = ar_outstanding = 0.0
     count_by_status: dict[str, int] = {}
     invoice_count = 0
-    # Awaiting payment = all finalized invoices not yet fully paid
-    # (final, sent, awaiting_payment, partial - every issued status except paid/void)
     _AWAITING_STATUSES = {"final", "sent", "awaiting_payment", "partial"}
     awaiting_payment_count = 0
-    awaiting_payment_total = 0.0  # sum of outstanding balances
+    awaiting_payment_total = 0.0
     overdue_count = 0
-    overdue_total = 0.0           # outstanding on overdue invoices
+    overdue_total = 0.0
     paid_count = 0
-    paid_total = 0.0              # face value of fully-paid invoices
-    sent_total = 0.0              # outstanding on sent invoices
-    draft_total = 0.0             # face value of draft/pro-forma invoices
-    void_total = 0.0              # face value of voided invoices
+    paid_total = 0.0
+    sent_total = 0.0
+    draft_total = 0.0
+    void_total = 0.0
+    unfulfilled_count = 0
+    unfulfilled_total = 0.0
+    not_restocked_count = 0
+    not_stocked_count = 0
+    converted_to_memo_count = 0
+    converted_to_invoice_count = 0
     for row in rows:
         state = row.state
-        # Filter by doc_type if specified
         if doc_type and state.get("doc_type") != doc_type:
             continue
         st = state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
-        if state.get("doc_type") == "invoice":
+        dt = state.get("doc_type")
+        if dt == "invoice":
             total_ = float(state.get("total", 0) or 0)
             outstanding_ = float(state.get("amount_outstanding", 0) or 0)
             paid_ = float(state.get("amount_paid", 0) or 0)
@@ -255,6 +277,9 @@ async def get_doc_summary(
             ar_gross += total_
             ar_paid += paid_
             ar_outstanding += outstanding_
+            if state.get("fulfillment_status") != "fulfilled":
+                unfulfilled_count += 1
+                unfulfilled_total += total_
             if st in _AWAITING_STATUSES:
                 awaiting_payment_count += 1
                 awaiting_payment_total += outstanding_
@@ -270,6 +295,22 @@ async def get_doc_summary(
         else:
             if st in ("void", "draft"):
                 continue
+            if dt in ("memo", "consignment_in"):
+                due = state.get("due_date") or ""
+                if due and due < today:
+                    overdue_count += 1
+            if dt == "credit_note":
+                if not (state.get("return_received_items") or []):
+                    not_restocked_count += 1
+            if dt == "bill":
+                if not (state.get("received_items") or []):
+                    not_stocked_count += 1
+            if dt == "list" and st == "converted":
+                ctt = state.get("converted_to_type") or ""
+                if ctt == "memo":
+                    converted_to_memo_count += 1
+                elif ctt == "invoice":
+                    converted_to_invoice_count += 1
     draft_count = count_by_status.get("draft", 0)
     total_rows = sum(count_by_status.values())
     live_count = total_rows - draft_count
@@ -293,6 +334,12 @@ async def get_doc_summary(
         "ar_paid": ar_paid,
         "ar_outstanding": ar_outstanding,
         "invoice_count": invoice_count,
+        "unfulfilled_count": unfulfilled_count,
+        "unfulfilled_total": unfulfilled_total,
+        "not_restocked_count": not_restocked_count,
+        "not_stocked_count": not_stocked_count,
+        "converted_to_memo_count": converted_to_memo_count,
+        "converted_to_invoice_count": converted_to_invoice_count,
         "count_by_status": count_by_status,
     }
 
@@ -369,9 +416,7 @@ async def create_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    if payload.doc_type == "credit_note":
-        if not payload.original_doc_id:
-            raise HTTPException(status_code=422, detail="Credit note requires original_doc_id")
+    if payload.doc_type == "credit_note" and payload.original_doc_id:
         inv = await _get_doc(session, company_id, payload.original_doc_id)
         original_total = float(inv.state.get("total", 0) or 0)
         if payload.total > original_total + 1e-9:
@@ -603,18 +648,8 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
     if current_status in ("paid", "partial"):
         raise HTTPException(status_code=409, detail="Cannot void a document with payments; void the payments first")
 
-    # Un-fulfill before voiding if doc was fulfilled
-    fulfillment_status = row.state.get("fulfillment_status")
-    if fulfillment_status and fulfillment_status != "unfulfilled":
-        await execute_unfulfill(
-            session, doc_entity_id=entity_id, doc_state=row.state,
-            company_id=company_id, user_id=user.id, reason="void",
-        )
-
     event_data = payload.model_dump(exclude_none=True)
     event_data["pre_void_status"] = current_status
-    if fulfillment_status:
-        event_data["pre_void_fulfillment"] = fulfillment_status
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.voided",
         data=event_data, actor_id=user.id, location_id=None, source="api",
@@ -636,14 +671,6 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
     if state.get("received_items"):
         raise HTTPException(status_code=409, detail="Cannot revert document with received items")
-
-    # Un-fulfill before reverting if doc was fulfilled
-    fulfillment_status = state.get("fulfillment_status")
-    if fulfillment_status and fulfillment_status != "unfulfilled":
-        await execute_unfulfill(
-            session, doc_entity_id=entity_id, doc_state=state,
-            company_id=company_id, user_id=user.id, reason="revert_to_draft",
-        )
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:
@@ -1075,6 +1102,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         location_uuid = None
 
     is_consignment = doc_type == "consignment_in"
+    created_item_ids: list[str] = []
 
     for it in payload.received_items:
         if it.item_id:
@@ -1089,15 +1117,67 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 idempotency_key=str(uuid.uuid4()), metadata_={"source_doc": entity_id},
             )
         else:
+            if it.receive_as != "stock":
+                continue
             if not it.sku or not it.name:
                 raise HTTPException(status_code=422, detail="sku and name required when creating received item")
-            item_data: dict = {"sku": it.sku, "name": it.name, "quantity": it.quantity_received, "location_id": payload.location_id}
+
+            # Copy attributes from an existing item with same SKU (best-effort enrichment)
+            sku_ref_row = await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                )
+            )
+            sku_ref: dict = {}
+            for ref_proj in sku_ref_row.scalars().all():
+                if str(ref_proj.state.get("sku") or "").strip() == it.sku.strip():
+                    sku_ref = ref_proj.state
+                    break
+
+            # Bill line item: explicit user-set fields take highest priority over sku_ref
+            doc_line: dict = next(
+                (li for li in row.state.get("line_items", [])
+                 if str(li.get("sku") or "").strip() == it.sku.strip()),
+                {},
+            )
+
+            # Fields to inherit from existing item; barcode excluded (unique per physical item)
+            _INHERIT = (
+                "category", "unit", "sell_by", "description",
+                "cost_price", "wholesale_price", "retail_price",
+                "tax_codes", "hs_code", "weight", "weight_unit",
+                "dimensions", "dimensions_unit", "purchase_sku",
+                "purchase_name", "purchase_unit", "purchase_conversion_factor",
+            )
+            item_data: dict = {k: sku_ref[k] for k in _INHERIT if k in sku_ref and sku_ref[k] is not None}
+            # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
+            if sku_ref.get("attributes"):
+                item_data["attributes"] = dict(sku_ref["attributes"])
+            # Bill line item fields override sku_ref (user explicitly set these on the bill)
+            for _f in ("category", "attributes"):
+                _doc_val = doc_line.get(_f)
+                _payload_val = getattr(it, _f, None)
+                _v = _doc_val or _payload_val
+                if _v:
+                    item_data[_f] = _v
+            # Payload values always take precedence for the fields below
+            item_data.update({
+                "sku": it.sku,
+                "name": it.name,
+                "quantity": it.quantity_received,
+                "location_id": payload.location_id,
+            })
+            if it.cost_price is not None:
+                item_data["cost_price"] = it.cost_price
             if is_consignment:
                 item_data["consignment_flag"] = "in"
+            new_eid = f"item:{uuid.uuid4()}"
+            created_item_ids.append(new_eid)
             await emit_event(
                 session,
                 company_id=company_id,
-                entity_id=f"item:{uuid.uuid4()}",
+                entity_id=new_eid,
                 entity_type="item",
                 event_type="item.created",
                 data=item_data,
@@ -1115,6 +1195,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             "location_id": payload.location_id,
             "received_by": str(user.id),
             "notes": payload.notes,
+            "created_item_ids": created_item_ids,
         },
         actor_id=user.id, location_id=location_uuid, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
@@ -1135,6 +1216,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             po_id=entity_id,
             doc=row.state,
             total=po_total,
+            unique_suffix=str(uuid.uuid4()),
         )
     await session.commit()
     return {"event_id": entry.id}
@@ -1580,6 +1662,8 @@ async def list_lists(
     q: str | None = None,
     limit: int | None = None,
     offset: int = 0,
+    all_issued: bool = False,
+    converted_to_type: str | None = None,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1589,10 +1673,14 @@ async def list_lists(
     out = [r.state | {"id": r.entity_id} for r in rows]
     if list_type:
         out = [x for x in out if x.get("list_type") == list_type]
-    if status:
+    if all_issued:
+        out = [x for x in out if x.get("status") not in ("draft", "void")]
+    elif status:
         out = [x for x in out if x.get("status") == status]
     if exclude_status:
         out = [x for x in out if x.get("status") != exclude_status]
+    if converted_to_type:
+        out = [x for x in out if x.get("converted_to_type") == converted_to_type]
     if date_from:
         out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] >= date_from]
     if date_to:
@@ -1620,15 +1708,29 @@ async def get_list_summary(
     )).scalars().all()
     count_by_status: dict[str, int] = {}
     total_value = 0.0
+    converted_to_memo_count = 0
+    converted_to_invoice_count = 0
     for row in rows:
         st = row.state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
         if st != "void":
             total_value += float(row.state.get("total", 0) or 0)
+        if st == "converted":
+            ctt = row.state.get("converted_to_type") or ""
+            if ctt == "memo":
+                converted_to_memo_count += 1
+            elif ctt == "invoice":
+                converted_to_invoice_count += 1
+    draft_count = count_by_status.get("draft", 0)
+    void_count = count_by_status.get("void", 0)
+    all_issued_count = sum(v for k, v in count_by_status.items() if k not in ("draft", "void"))
     return {
         "total_count": len(rows),
-        "draft_count": count_by_status.get("draft", 0),
+        "draft_count": draft_count,
+        "all_issued_count": all_issued_count,
         "total_value": total_value,
+        "converted_to_memo_count": converted_to_memo_count,
+        "converted_to_invoice_count": converted_to_invoice_count,
         "count_by_status": count_by_status,
     }
 
@@ -2006,10 +2108,22 @@ async def fulfill_doc(
     """Fulfill a document: compute pick plan and deduct inventory."""
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
-    if state.get("status") not in FULFILLABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Document must be finalized before fulfillment")
+    if state.get("status") in UNFULFILLABLE_STATUSES:
+        raise HTTPException(status_code=409, detail="Cannot fulfill a draft or voided document")
     if state.get("fulfillment_status") == "fulfilled":
         raise HTTPException(status_code=409, detail="Document is already fully fulfilled")
+
+    # Check that doc has at least one stocked (non-service) line item
+    line_items_all = state.get("line_items", [])
+    has_stocked = any(
+        (li.get("sku") or "") and (li.get("sell_by") or "") not in ("service", "hour")
+        for li in line_items_all
+    )
+    if not has_stocked:
+        raise HTTPException(
+            status_code=422,
+            detail="This document contains no stocked goods. Only service or non-SKU items are present - there is nothing to fulfill from inventory.",
+        )
 
     # Gather available inventory for SKUs in line items
     skus: set[str] = set()
@@ -2047,6 +2161,22 @@ async def fulfill_doc(
                 })
 
     pick_result = compute_pick_plan(state.get("line_items", []), available_inv)
+
+    if pick_result.unfulfilled:
+        # Build a name lookup from line items for better error messages
+        sku_to_name = {li.get("sku", ""): li.get("name", "Unknown") for li in state.get("line_items", [])}
+        shortages = []
+        for sh in pick_result.unfulfilled:
+            sku = sh.get("sku", "")
+            name = sku_to_name.get(sku, "Unknown")
+            shortages.append(f"  \u2022 {name} (SKU: {sku}): short by {sh.get('short_qty', 0)}")
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot fulfill: insufficient stock for the following items:\n" + "\n".join(shortages),
+        )
+
+    from celerp.modules.slots import fire_lifecycle_strict
+    await fire_lifecycle_strict("pre_fulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
     result = await execute_fulfill(
         session,
         doc_entity_id=entity_id,
@@ -2082,5 +2212,416 @@ async def unfulfill_doc(
         user_id=user.id,
         reason="manual",
     )
+    from celerp.modules.slots import fire_lifecycle_strict
+    await fire_lifecycle_strict("post_unfulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
     await session.commit()
     return result
+
+
+class ReturnReceivedItem(BaseModel):
+    sku: str
+    quantity: float
+
+
+class ReceiveReturnPayload(BaseModel):
+    items: list[ReturnReceivedItem]
+    notes: str | None = None
+    idempotency_key: str | None = None
+
+
+@router.post("/{entity_id}/receive-return")
+async def receive_return(
+    entity_id: str,
+    payload: ReceiveReturnPayload,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Receive returned goods on a credit note.
+
+    Item values are resolved server-side (not trusted from the UI):
+    - Case 1: CN has original_doc_id -> fetch original invoice, match by SKU, use its values.
+    - Case 2: No original_doc_id -> query sold inventory by SKU (LIFO), use those values.
+    Creates new inventory items (status=available) and a reversing COGS JE.
+    """
+    from celerp_inventory.routes import _flatten_item
+
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("doc_type") != "credit_note":
+        raise HTTPException(status_code=409, detail="receive-return is only valid for credit notes")
+    if state.get("status") in ("draft", "void"):
+        raise HTTPException(status_code=409, detail="Cannot receive return on a draft or voided credit note")
+    if not payload.items:
+        raise HTTPException(status_code=422, detail="At least one item is required")
+
+    # --- Resolve item metadata ---
+    # Priority: sold inventory records (most authoritative - have cost_price + full attributes).
+    # Fallback for descriptive fields only: original invoice line items.
+    original_doc_id = state.get("original_doc_id")
+    original_line_map: dict[str, dict] = {}
+    if original_doc_id:
+        try:
+            orig_row = await _get_doc(session, company_id, original_doc_id)
+            for li in (orig_row.state.get("line_items") or []):
+                sku = li.get("sku") or ""
+                if sku and sku not in original_line_map:
+                    original_line_map[sku] = li
+        except HTTPException:
+            pass  # original doc inaccessible - descriptive fallback unavailable
+
+    # Load all sold inventory rows upfront
+    all_skus = {it.sku for it in payload.items}
+    sold_map: dict[str, list[dict]] = {}
+    item_rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    for r in item_rows:
+        flat = _flatten_item(r.state, r.entity_id)
+        if str(flat.get("status") or "").lower() == "sold" and flat.get("sku") in all_skus:
+            sold_map.setdefault(flat["sku"], []).append(flat)
+    # LIFO: most recently created first
+    for sku in sold_map:
+        sold_map[sku].sort(key=lambda x: x.get("created_at") or "", reverse=True)
+
+    # --- Validate quantities before touching anything ---
+    for it in payload.items:
+        if it.quantity <= 0:
+            raise HTTPException(status_code=422, detail=f"Quantity must be positive for SKU '{it.sku}'")
+        # Sold inventory is best-effort enrichment; no hard gate on its existence.
+        # If sold records exist, validate available quantity.
+        if it.sku in sold_map:
+            available = sum(float(s.get("quantity") or 0) for s in sold_map[it.sku])
+            if available < it.quantity:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Only {available:g} sold unit(s) of SKU '{it.sku}' found in inventory; {it.quantity:g} requested.",
+                )
+
+    # --- Create returned inventory items ---
+    now = datetime.now(UTC).isoformat()
+    total_cogs = 0.0
+    received_items = []
+
+    _CORE_KEYS = frozenset({
+        "id", "entity_id", "status", "quantity", "created_at", "updated_at",
+        "location_id", "location_name", "source_doc_id",
+    })
+
+    for it in payload.items:
+        # Sold inventory record is the preferred source (has cost_price + all attributes).
+        # Fall back to invoice line item data when no sold record exists (e.g. pre-fulfillment items).
+        ref = sold_map[it.sku][0] if it.sku in sold_map else {}
+        li_fallback = original_line_map.get(it.sku, {})
+
+        # Collect any extra dynamic price keys from ref (e.g. wholesale_price, retail_price, vip_price, ...)
+        extra_prices = {k: v for k, v in ref.items() if k not in _CORE_KEYS and k.endswith("_price") and k not in (
+            "cost_price", "unit_price",
+        )}
+
+        resolved_name = ref.get("name") or li_fallback.get("name") or ""
+        resolved_sell_by = ref.get("sell_by") or li_fallback.get("sell_by") or ""
+
+        # Hard stop: if we cannot resolve the minimum required fields from any source, refuse loudly.
+        missing = []
+        if not resolved_name:
+            missing.append("name")
+        if not resolved_sell_by:
+            missing.append("sell_by")
+        if missing:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cannot receive return for SKU '{it.sku}': missing required field(s) {missing}. "
+                    f"No sold inventory record and no matching line item in the original invoice were found. "
+                    f"Ensure the credit note is linked to an invoice or that the item was sold through this system."
+                ),
+            )
+
+        item_data = {
+            "sku": it.sku,
+            "name": resolved_name,
+            "quantity": it.quantity,
+            "sell_by": resolved_sell_by,
+            "cost_price": float(ref.get("cost_price") or 0),
+            "unit_price": float(ref.get("unit_price") or ref.get("sell_price") or li_fallback.get("unit_price") or 0),
+            "wholesale_price": float(ref.get("wholesale_price") or li_fallback.get("wholesale_price") or 0) or None,
+            "retail_price": float(ref.get("retail_price") or li_fallback.get("retail_price") or 0) or None,
+            "barcode": ref.get("barcode") or li_fallback.get("barcode") or None,
+            "description": ref.get("description") or li_fallback.get("description") or "",
+            "category": ref.get("category") or li_fallback.get("category") or "",
+            "attributes": ref.get("attributes") or li_fallback.get("attributes") or {},
+            **extra_prices,
+            "status": "available",
+            "source_doc_id": entity_id,
+            "created_at": now,
+        }
+
+        item_id = f"item:{uuid.uuid4()}"
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=item_id,
+            entity_type="item",
+            event_type="item.created",
+            data=item_data,
+            actor_id=user.id,
+            location_id=None,
+            source="return",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"source_return_cn": entity_id},
+        )
+        cost_price = item_data["cost_price"]
+        total_cogs += cost_price * it.quantity
+        received_items.append({
+            "item_id": item_id,
+            "sku": it.sku,
+            "name": item_data["name"],
+            "quantity": it.quantity,
+            "cost_price": cost_price,
+            "received_at": now,
+        })
+
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.return_received",
+        data={
+            "items": received_items,
+            "received_by": str(user.id),
+            "notes": payload.notes,
+            "received_at": now,
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    await auto_je.create_for_return_received(
+        session,
+        company_id=company_id,
+        user_id=user.id,
+        cn_id=entity_id,
+        total_cogs=total_cogs,
+        je_suffix=received_items[0]["item_id"].split(":")[-1] if received_items else str(uuid.uuid4()),
+    )
+
+    await session.commit()
+    return {"received_items": received_items, "total_cogs_reversed": total_cogs}
+
+
+@router.delete("/{entity_id}/receive-return")
+async def undo_receive_return(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo a receive-return on a credit note.
+
+    Deletes all inventory items created by the return and reverses the COGS JE.
+    Clears return_received_items on the CN projection.
+    """
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("doc_type") != "credit_note":
+        raise HTTPException(status_code=409, detail="undo-receive-return is only valid for credit notes")
+    received_items = state.get("return_received_items") or []
+    if not received_items:
+        raise HTTPException(status_code=409, detail="No received return to undo")
+
+    now = datetime.now(UTC).isoformat()
+    item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
+    total_cogs = sum(
+        float(r.get("cost_price") or 0) * float(r.get("quantity") or 0)
+        for r in received_items
+    )
+
+    # Pre-flight: verify every returned item is still "available" before disposing.
+    # If an item was re-sold or otherwise disposed, we cannot silently remove it.
+    if item_ids:
+        rows = await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+                Projection.entity_id.in_(item_ids),
+            )
+        )
+        item_rows = {r.entity_id: r.state for r in rows.scalars().all()}
+        blocked: list[str] = []
+        for iid in item_ids:
+            item_state = item_rows.get(iid)
+            if item_state is None:
+                blocked.append(f"{iid} (not found - may have already been removed)")
+            elif item_state.get("status") != "available":
+                sku = item_state.get("sku") or iid
+                status = item_state.get("status") or "unknown"
+                blocked.append(f"SKU '{sku}' is '{status}' - cannot dispose")
+        if blocked:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Cannot revert return stock: one or more returned items are no longer available. "
+                    f"Blocked items: {'; '.join(blocked)}. "
+                    "You may need to manually correct the inventory before reverting."
+                ),
+            )
+
+    # Unique suffix ensures each undo gets its own JE - prevents idempotency collision on repeated attempts
+    undo_suffix = str(uuid.uuid4())
+
+    # Dispose each returned inventory item (item.deleted does not exist; disposed hides from inventory)
+    for iid in item_ids:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=iid,
+            entity_type="item",
+            event_type="item.disposed",
+            data={"reason": f"undo receive-return on {entity_id}"},
+            actor_id=user.id,
+            location_id=None,
+            source="return_undo",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"source_return_cn": entity_id},
+        )
+
+    # Emit doc.return_undone to clear projection
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.return_undone",
+        data={"undone_by": str(user.id), "undone_at": now, "item_ids": item_ids},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    # Reverse the COGS JE (unique key per undo prevents idempotency collision if attempted twice)
+    if total_cogs > 0:
+        await auto_je.create_for_return_undone(
+            session,
+            company_id=company_id,
+            user_id=user.id,
+            cn_id=entity_id,
+            total_cogs=total_cogs,
+            unique_suffix=undo_suffix,
+        )
+
+    await session.commit()
+    return {"undone": True, "item_ids": item_ids}
+
+
+@router.delete("/{entity_id}/receive")
+async def undo_receive(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Undo a goods-received on a bill.
+
+    Disposes all inventory items created by the receive and reverses the AP/Inventory JE.
+    Clears received_items and received_item_ids on the bill projection.
+    """
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("doc_type") != "bill":
+        raise HTTPException(status_code=409, detail="undo-receive is only valid for bills")
+    received_item_ids = state.get("received_item_ids") or []
+    if not received_item_ids:
+        raise HTTPException(status_code=409, detail="No received goods to revert")
+
+    now = datetime.now(UTC).isoformat()
+
+    # Pre-flight: verify every created item is still "available" before disposing
+    rows_result = await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            Projection.entity_id.in_(received_item_ids),
+        )
+    )
+    item_rows = {r.entity_id: r.state for r in rows_result.scalars().all()}
+    blocked: list[str] = []
+    for iid in received_item_ids:
+        item_state = item_rows.get(iid)
+        if item_state is None:
+            blocked.append(f"{iid} (not found - may have already been removed)")
+        elif item_state.get("status") != "available":
+            sku = item_state.get("sku") or iid
+            status = item_state.get("status") or "unknown"
+            blocked.append(f"SKU '{sku}' is '{status}' - cannot dispose")
+    if blocked:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot revert goods received: one or more items are no longer available. "
+                f"Blocked items: {'; '.join(blocked)}. "
+                "You may need to manually correct the inventory before reverting."
+            ),
+        )
+
+    undo_suffix = str(uuid.uuid4())
+
+    for iid in received_item_ids:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=iid,
+            entity_type="item",
+            event_type="item.disposed",
+            data={"reason": f"undo receive on {entity_id}"},
+            actor_id=user.id,
+            location_id=None,
+            source="receive_undo",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"source_doc": entity_id},
+        )
+
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.receive_undone",
+        data={"undone_by": str(user.id), "undone_at": now, "item_ids": received_item_ids},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    po_total = float(state.get("total", 0) or 0)
+    if po_total == 0:
+        po_total = sum(
+            float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
+            for li in state.get("line_items", [])
+        )
+    await auto_je.create_for_receive_undone(
+        session,
+        company_id=company_id,
+        user_id=user.id,
+        bill_id=entity_id,
+        doc=state,
+        total_cost=po_total,
+        unique_suffix=undo_suffix,
+    )
+
+    await session.commit()
+    return {"undone": True, "item_ids": received_item_ids}

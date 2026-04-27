@@ -257,3 +257,32 @@ async def test_unvoid_blocked_from_non_void_status(client):
 
     r = await client.post(f"/docs/{inv}/unvoid", headers=_h(token), json={})
     assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_revert_to_draft_reason_stored_in_ledger(client):
+    """Revert-to-draft with a reason stores the reason in the ledger event data."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+
+    # Finalize so we can revert
+    r = await client.post(f"/docs/{inv}/finalize", headers=_h(token), json={})
+    assert r.status_code == 200
+
+    reason = "Client requested changes"
+    r = await client.post(
+        f"/docs/{inv}/revert-to-draft",
+        headers=_h(token),
+        json={"reason": reason},
+    )
+    assert r.status_code == 200
+
+    # Fetch ledger for this entity and confirm reason is in the event data
+    r = await client.get(f"/ledger?entity_id={inv}", headers=_h(token))
+    assert r.status_code == 200
+    events = r.json()["items"]
+    revert_events = [e for e in events if e.get("event_type") == "doc.reverted_to_draft"]
+    assert revert_events, "Expected a doc.reverted_to_draft event in ledger"
+    assert revert_events[0]["data"]["reason"] == reason, (
+        f"Reason not stored in event data: {revert_events[0]['data']}"
+    )

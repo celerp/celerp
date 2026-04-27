@@ -1144,5 +1144,6 @@
   "settings.password_min_length": "รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร",
   "settings.password_changed": "เปลี่ยนรหัสผ่านเรียบร้อยแล้ว",
   "btn.change_password": "เปลี่ยนรหัสผ่าน",
-  "status.all_issued": "ออกใบแจ้งหนี้แล้วทั้งหมด"
+  "status.all_issued": "ออกใบแจ้งหนี้แล้วทั้งหมด",
+  "nav.credit_notes": "ใบลดหนี้"
 }

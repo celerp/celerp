@@ -79,6 +79,197 @@ def _doc_section_label(doc_type: str) -> str:
     return _DOC_TYPE_PAGE_LABELS.get(doc_type, "Documents")
 
 
+# ---------------------------------------------------------------------------
+# Inline fulfillment helpers (no celerp-fulfillment module needed)
+# ---------------------------------------------------------------------------
+
+def _render_fulfill_section(doc: dict):
+    """Fulfill / Revert Fulfillment button.
+
+    Revert: shows whenever fulfillment_status == "fulfilled" (no status restriction - even void docs).
+    Fulfill: hidden only on draft and void statuses; shown on all other statuses.
+    Requires celerp-inventory to be installed.
+    """
+    from celerp.modules.loader import loaded_modules
+    from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
+    if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
+        return ""
+    if doc.get("doc_type") in ("credit_note", "bill"):
+        return ""  # CNs use Receive Returns; bills receive INTO stock, never deduct
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    # CSS IDs cannot contain colons (e.g. "doc:PF-2604-0002") - sanitize for use as selector
+    cid_safe = f"fulfill-toggle-{entity_id}".replace(":", "-")
+    fs = doc.get("fulfillment_status") or "unfulfilled"
+    if fs == "fulfilled":
+        # Revert always shows when fulfilled, regardless of doc status
+        return Div(
+            Form(
+                Button(
+                    "Revert Fulfillment",
+                    cls="btn btn--warning btn--sm",
+                    title="Undo fulfillment. Returns stock to inventory. If a pick instruction exists, it will be reopened. This action is logged.",
+                ),
+                hx_post=f"/docs/{entity_id}/unfulfill",
+                hx_confirm="Revert fulfillment? This will return stock to inventory and reopen any associated pick instruction.",
+                hx_target=f"#{cid_safe}",
+                hx_swap="outerHTML",
+            ),
+            id=cid_safe,
+        )
+    # Fulfill button hidden on draft and void only
+    if doc.get("status") in UNFULFILLABLE_STATUSES:
+        return ""
+    return Div(
+        Button(
+            "Fulfill / Deduct Inventory",
+            hx_post=f"/docs/{entity_id}/fulfill",
+            hx_confirm="Mark this document as fulfilled?",
+            hx_target=f"#{cid_safe}",
+            hx_swap="outerHTML",
+            cls="btn btn--primary btn--sm",
+            title="Mark this document as fulfilled. Use this after goods have been handed off to the customer. This action affects inventory stock levels.",
+        ),
+        id=cid_safe,
+    )
+
+
+def _render_fulfillment_badge(doc: dict):
+    """Fulfillment badge - shown when doc is fulfilled."""
+    fs = doc.get("fulfillment_status") or ""
+    if fs == "fulfilled":
+        return Span("Fulfilled", cls="badge badge--green")
+    if fs == "partial":
+        return Span("Partially Fulfilled", cls="badge badge--amber")
+    return None
+
+
+def _render_receive_return_section(doc: dict):
+    """Receive Returns button - shown on credit notes when celerp-inventory is installed.
+
+    Mirrors _render_fulfill_section() but for the return direction.
+    Hidden on draft/void. Shows badge once return_received_items is set.
+    Clicking fires the receive-return endpoint with all CN line items as hidden fields (full qty, no inline editing).
+    """
+    from celerp.modules.loader import loaded_modules
+    if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
+        return ""
+    if doc.get("doc_type") != "credit_note":
+        return ""
+    if doc.get("status") in ("draft", "void"):
+        return ""
+
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    cid_safe = f"receive-return-{entity_id}".replace(":", "-")
+
+    # Already received - show Revert Return Stock button (GDR: user must be able to undo)
+    received = doc.get("return_received_items") or []
+    if received:
+        undo_form = Form(
+            Button(
+                "Revert Return Stock",
+                cls="btn btn--secondary btn--sm",
+                title="Revert the received return. Disposes the returned inventory items and reverses the COGS journal entry.",
+            ),
+            hx_delete=f"/docs/{entity_id}/receive-return",
+            hx_confirm="Revert the received return? This will dispose the returned inventory items and reverse the accounting entry.",
+            hx_target=f"#{cid_safe}",
+            hx_swap="outerHTML",
+        )
+        return Div(undo_form, id=cid_safe)
+
+    # Only show button if there are stocked line items to return
+    line_items = doc.get("line_items") or []
+    stocked = [li for li in line_items if (li.get("sku") or "") and (li.get("sell_by") or "") not in ("service", "hour")]
+    if not stocked:
+        return ""
+
+    # Hidden fields carry sku + quantity only - backend resolves all other values
+    hidden_fields = []
+    for i, li in enumerate(stocked):
+        hidden_fields += [
+            Input(type="hidden", name=f"items[{i}][sku]",      value=li.get("sku", "")),
+            Input(type="hidden", name=f"items[{i}][quantity]", value=str(li.get("quantity") or 0)),
+        ]
+
+    return Div(
+        Form(
+            *hidden_fields,
+            Button(
+                "Receive Returns",
+                cls="btn btn--primary btn--sm",
+                title="Receive returned goods back into inventory. Creates new inventory items and reverses COGS.",
+                hx_post=f"/docs/{entity_id}/receive-return",
+                hx_confirm="Receive all returned goods back into inventory? This will create new inventory items and reverse the COGS journal entry.",
+                hx_encoding="application/x-www-form-urlencoded",
+                hx_target=f"#{cid_safe}",
+                hx_swap="outerHTML",
+                hx_include="closest form",
+            ),
+        ),
+        id=cid_safe,
+    )
+
+
+
+    """Fulfillment badge - shown when doc is fulfilled."""
+    fs = doc.get("fulfillment_status") or ""
+    if fs == "fulfilled":
+        return Span("Fulfilled", cls="badge badge--green")
+    if fs == "partial":
+        return Span("Partially Fulfilled", cls="badge badge--amber")
+    return None
+
+
+def _render_receive_goods_section(doc: dict) -> FT:
+    """Receive Goods button for bills - one-click, full quantity, no partial control."""
+    from celerp.modules.loader import loaded_modules
+    if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
+        return ""
+    if doc.get("doc_type") != "bill":
+        return ""
+    if doc.get("status") in ("draft", "void"):
+        return ""
+
+    entity_id = doc.get("entity_id") or doc.get("id") or ""
+    cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
+
+    if doc.get("received_item_ids"):
+        return Div(
+            Button(
+                "Revert Goods Received",
+                hx_delete=f"/docs/{entity_id}/receive-goods",
+                hx_confirm="Revert goods received? This will dispose all created inventory items and reverse the accounting entry.",
+                hx_target=f"#{cid_safe}",
+                hx_swap="outerHTML",
+                cls="btn btn--danger btn--sm",
+            ),
+            id=cid_safe,
+        )
+
+    if doc.get("received_items"):
+        return Div(Span("Goods Received", cls="badge badge--green"), id=cid_safe)
+
+    line_items = doc.get("line_items") or []
+    if not line_items:
+        return ""
+
+    stock_count = sum(1 for li in line_items if li.get("receive_as", "stock") == "stock")
+    btn_label = f"Receive Goods ({stock_count} items)" if any("receive_as" in li for li in line_items) else "Receive Goods"
+
+    return Div(
+        Button(
+            btn_label,
+            hx_post=f"/docs/{entity_id}/receive-goods",
+            hx_confirm="Receive all goods into stock? This will create inventory items for all line items at full quantity.",
+            hx_target=f"#{cid_safe}",
+            hx_swap="outerHTML",
+            cls="btn btn--primary btn--sm",
+            title="Receive all goods on this bill into inventory at full quantity.",
+        ),
+        id=cid_safe,
+    )
+
+
 def _doc_section_url(doc_type: str) -> str:
     """URL for the doc type's listing page."""
     if doc_type == "list":
@@ -297,6 +488,11 @@ def setup_routes(app):
         status = request.query_params.get("status", "")
         status_in = request.query_params.get("status_in", "")
         overdue_only = request.query_params.get("overdue_only", "") in ("1", "true")
+        unfulfilled_only = request.query_params.get("unfulfilled_only", "") in ("1", "true")
+        not_restocked = request.query_params.get("not_restocked", "") in ("1", "true")
+        not_stocked = request.query_params.get("not_stocked", "") in ("1", "true")
+        all_issued = request.query_params.get("all_issued", "") in ("1", "true")
+        converted_to_type = request.query_params.get("converted_to_type", "")
         view = request.query_params.get("view", "")  # "drafts" = drafts-only mode
         page = int(request.query_params.get("page", 1))
         sort = request.query_params.get("sort", "date")
@@ -349,10 +545,24 @@ def setup_routes(app):
                 params["status_in"] = status_in
                 if overdue_only:
                     params["overdue_only"] = "1"
+            elif all_issued:
+                params["all_issued"] = "1"
+                if overdue_only:
+                    params["overdue_only"] = "1"
             elif effective_status == "exclude_draft":
                 params["exclude_status"] = "draft"
             elif effective_status:
                 params["status"] = effective_status
+            if overdue_only and not status_in and not all_issued:
+                params["overdue_only"] = "1"
+            if unfulfilled_only:
+                params["unfulfilled_only"] = "1"
+            if not_restocked:
+                params["not_restocked"] = "1"
+            if not_stocked:
+                params["not_stocked"] = "1"
+            if converted_to_type:
+                params["converted_to_type"] = converted_to_type
             if date_from and not is_drafts_view:
                 params["date_from"] = date_from
             if date_to and not is_drafts_view:
@@ -400,7 +610,7 @@ def setup_routes(app):
                 _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
             ]),
             _summary_bar(summary, doc_type, currency, lang),
-            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only),
+            _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only, unfulfilled_only=unfulfilled_only, not_restocked=not_restocked, not_stocked=not_stocked, all_issued=all_issued, converted_to_type=converted_to_type),
             _doc_table(
                 docs,
                 sort=sort,
@@ -411,7 +621,7 @@ def setup_routes(app):
             ),
             pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&sort={sort}&dir={sort_dir}".strip("&")),
             title=f"{page_title} - Celerp",
-            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in"}.get(doc_type, "invoices"),
+            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
             lang=lang,
             request=request,
         )
@@ -606,6 +816,7 @@ def setup_routes(app):
         if not code:
             return JSONResponse({})
         price_list = request.query_params.get("price_list", "Retail").strip() or "Retail"
+        is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
 
         def _extract(item: dict) -> dict:
             return {
@@ -617,24 +828,31 @@ def setup_routes(app):
                 "hs_code": item.get("hs_code") or None,
                 "entity_id": item.get("entity_id") or None,
                 "allow_splitting": bool(item.get("allow_splitting")),
+                "category": item.get("category") or None,
+                "cost_price": item.get("cost_price") or None,
+                "wholesale_price": item.get("wholesale_price") or None,
+                "barcode": item.get("barcode") or None,
             }
 
         try:
-            # Try exact SKU match first
-            resp = await api.list_items(token, {"sku": code, "limit": 1})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-            if items:
-                return JSONResponse(_extract(items[0]))
-            # Try exact barcode match
-            resp = await api.list_items(token, {"barcode": code, "limit": 1})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-            if items:
-                return JSONResponse(_extract(items[0]))
-            # Fallback: general search (name, description, attributes)
-            resp = await api.list_items(token, {"q": code, "limit": 1})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-            if items:
-                return JSONResponse(_extract(items[0]))
+            if is_credit_note:
+                # Credit notes: sold items first (returns), then active fallback
+                for params in ({"sku": code, "limit": 1, "status": "sold"},
+                               {"barcode": code, "limit": 1, "status": "sold"},
+                               {"sku": code, "limit": 1},
+                               {"barcode": code, "limit": 1}):
+                    resp = await api.list_items(token, params)
+                    items = resp.get("items", []) if isinstance(resp, dict) else resp
+                    if items:
+                        return JSONResponse(_extract(items[0]))
+            else:
+                for params in ({"sku": code, "limit": 1},
+                               {"barcode": code, "limit": 1},
+                               {"q": code, "limit": 1}):
+                    resp = await api.list_items(token, params)
+                    items = resp.get("items", []) if isinstance(resp, dict) else resp
+                    if items:
+                        return JSONResponse(_extract(items[0]))
         except Exception:
             pass
         return JSONResponse({})
@@ -648,6 +866,7 @@ def setup_routes(app):
             return _J({"error": "unauthorized"}, status_code=401)
         q = request.query_params.get("q", "").strip()
         price_list = request.query_params.get("price_list", "Retail").strip() or "Retail"
+        is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
         if not q:
             return _J([])
 
@@ -661,12 +880,31 @@ def setup_routes(app):
                 "quantity": item.get("quantity") or 0,
                 "entity_id": item.get("entity_id") or None,
                 "allow_splitting": bool(item.get("allow_splitting")),
+                "category": item.get("category") or None,
+                "cost_price": item.get("cost_price") or None,
+                "wholesale_price": item.get("wholesale_price") or None,
+                "barcode": item.get("barcode") or None,
             }
 
         try:
-            resp = await api.list_items(token, {"q": q, "limit": 10})
-            items = resp.get("items", []) if isinstance(resp, dict) else resp
-            return _J([_extract(i) for i in items])
+            if is_credit_note:
+                # Credit notes: search sold items first, then active, merge (sold first)
+                resp_sold = await api.list_items(token, {"q": q, "limit": 10, "status": "sold"})
+                sold = resp_sold.get("items", []) if isinstance(resp_sold, dict) else resp_sold
+                resp_active = await api.list_items(token, {"q": q, "limit": 10})
+                active = resp_active.get("items", []) if isinstance(resp_active, dict) else resp_active
+                seen = set()
+                items = []
+                for item in sold + active:
+                    key = item.get("sku") or item.get("entity_id")
+                    if key and key not in seen:
+                        seen.add(key)
+                        items.append(item)
+                return _J([_extract(i) for i in items[:10]])
+            else:
+                resp = await api.list_items(token, {"q": q, "limit": 10})
+                items = resp.get("items", []) if isinstance(resp, dict) else resp
+                return _J([_extract(i) for i in items])
         except Exception:
             return _J([])
 
@@ -978,6 +1216,13 @@ def setup_routes(app):
             company_locations = _all_locs
         except Exception:
             locations = []
+
+        item_categories: list[str] = []
+        if doc_type in ("purchase_order", "bill", "consignment_in"):
+            try:
+                item_categories = await api.list_item_categories(token)
+            except Exception:
+                item_categories = []
             company_locations = []
 
         # Fetch document history (ledger entries)
@@ -1034,9 +1279,9 @@ def setup_routes(app):
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request)),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories),
             title=f"{type_label} {doc_ref} - Celerp",
-            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in"}.get(doc_type, "invoices"),
+            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
             request=request,
         )
 
@@ -1575,6 +1820,25 @@ def setup_routes(app):
                 await api.delete_doc(token, entity_id)
                 doc_type = str(form.get("doc_type", "")).strip() or "invoice"
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})
+            elif action == "create-credit-note":
+                # Fetch source invoice and pre-populate CN with its line items (negated quantities)
+                source = await api.get_doc(token, entity_id)
+                line_items = [
+                    {k: v for k, v in li.items() if k not in ("id", "line_total")}
+                    for li in (source.get("line_items") or [])
+                ]
+                cn_payload = {
+                    "doc_type": "credit_note",
+                    "original_doc_id": entity_id,
+                    "contact_id": source.get("contact_id"),
+                    "line_items": line_items,
+                    "subtotal": source.get("subtotal") or 0,
+                    "tax": source.get("tax") or 0,
+                    "total": source.get("total") or 0,
+                }
+                result = await api.create_doc(token, cn_payload)
+                cn_id = result.get("entity_id") or result.get("id", "")
+                return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{cn_id}"})
             else:
                 return _R("", status_code=400)
         except APIError as e:
@@ -2141,11 +2405,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except Exception:
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        from celerp_fulfillment.ui import render_fulfill_toggle
-        el = render_fulfill_toggle(doc)
-        if el is None:
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        return el
+        return _render_fulfill_section(doc)
 
     @app.post("/docs/{entity_id}/unfulfill")
     async def doc_unfulfill(request: Request, entity_id: str):
@@ -2162,20 +2422,108 @@ celerpUpdateBulkAlloc();
                 Span(str(e.detail), cls="flash flash--error"),
                 hx_swap_oob="true", id="action-error",
             )
-        # Re-fetch doc and return updated toggle
+        # Re-fetch doc and return updated section
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        from celerp_fulfillment.ui import render_fulfill_toggle
-        el = render_fulfill_toggle(doc)
-        if el is None:
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        return el
+        return _render_fulfill_section(doc)
 
-    # -----------------------------------------------------------------------
-    # List routes — folded here so lists.py is a thin shim
-    # -----------------------------------------------------------------------
+    @app.post("/docs/{entity_id}/receive-return")
+    async def doc_receive_return(request: Request, entity_id: str):
+        import re as _re
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        cid_safe = f"receive-return-{entity_id}".replace(":", "-")
+        form = await request.form()
+        items_raw: dict[int, dict] = {}
+        for key, value in form.multi_items():
+            m = _re.match(r"items\[(\d+)\]\[(\w+)\]", key)
+            if m:
+                idx, field = int(m.group(1)), m.group(2)
+                items_raw.setdefault(idx, {})[field] = value
+        items = []
+        for idx in sorted(items_raw):
+            row = items_raw[idx]
+            try:
+                qty = float(row.get("quantity") or 0)
+            except (ValueError, TypeError):
+                qty = 0.0
+            if qty <= 0:
+                continue
+            items.append({"sku": row.get("sku", ""), "quantity": qty})
+        if not items:
+            return Div(Span("No valid quantities entered.", cls="flash flash--error"), id=cid_safe)
+        try:
+            await api.receive_return(token, entity_id, items)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except Exception:
+            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _render_receive_return_section(doc)
+
+    @app.delete("/docs/{entity_id}/receive-return")
+    async def doc_undo_receive_return(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        cid_safe = f"receive-return-{entity_id}".replace(":", "-")
+        try:
+            await api.undo_receive_return(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except Exception:
+            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _render_receive_return_section(doc)
+
+    @app.post("/docs/{entity_id}/receive-goods")
+    async def doc_receive_goods(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _R
+            return _R("", status_code=401)
+        cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
+        try:
+            doc = await api.get_doc(token, entity_id)
+            line_items = doc.get("line_items") or []
+            await api.receive_goods(token, entity_id, line_items)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                from starlette.responses import Response as _R2
+                return _R2("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+        return _render_receive_goods_section(doc)
+
+    @app.delete("/docs/{entity_id}/receive-goods")
+    async def doc_undo_receive_goods(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
+        try:
+            await api.undo_receive_goods(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except Exception:
+            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
+        return _render_receive_goods_section(doc)
 
     @app.get("/lists")
     async def lists_page(request: Request):
@@ -2186,6 +2534,8 @@ celerpUpdateBulkAlloc();
         list_type = request.query_params.get("type", "")
         status = request.query_params.get("status", "")
         view = request.query_params.get("view", "")
+        converted_to_type_list = request.query_params.get("converted_to_type", "")
+        all_issued_list = request.query_params.get("all_issued", "") in ("1", "true")
         page = int(request.query_params.get("page", 1))
         is_drafts_view = view == "drafts" or status == "draft"
         effective_status = "draft" if is_drafts_view else ("exclude_draft" if not status else status)
@@ -2195,10 +2545,14 @@ celerpUpdateBulkAlloc();
                 params["q"] = q
             if list_type:
                 params["list_type"] = list_type
-            if effective_status == "exclude_draft":
+            if all_issued_list:
+                params["all_issued"] = "1"
+            elif effective_status == "exclude_draft":
                 params["exclude_status"] = "draft"
             elif effective_status:
                 params["status"] = effective_status
+            if converted_to_type_list:
+                params["converted_to_type"] = converted_to_type_list
             result = await api.list_lists(token, params)
             lists = result.get("items", [])
             filtered_total = result.get("total", len(lists))
@@ -2219,7 +2573,7 @@ celerpUpdateBulkAlloc();
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary"),
             ),
             _list_type_tabs(list_type),
-            _list_status_cards(summary, status),
+            _list_status_cards(summary, status, converted_to_type=converted_to_type_list),
             _list_table(lists, lang=lang),
             pagination(page, filtered_total, _PER_PAGE, "/lists",
                        f"q={q}&type={list_type}&status={status}&view={view}".strip("&")),
@@ -3077,7 +3431,7 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner") -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -3138,38 +3492,53 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
 
     # --- Action buttons ---
-    action_btns = []
+    # action_btns_left:  primary workflow actions (left-aligned)
+    # action_btns_right: destructive/void/delete (right side, before print group)
+    # action_btns_print: PDF + CSV export/import – always far-right, preceded by "|" separator
+    action_btns_left = []
+    action_btns_right = []
+    action_btns_print = []
+    if doc_type == "invoice" and status in ("partial", "paid"):
+        action_btns_left.append(
+            Button(
+                "Create Credit Note",
+                hx_post=f"/docs/{entity_id}/action/create-credit-note",
+                hx_swap="none",
+                cls="btn btn--secondary btn--sm",
+                title="Create a credit note from this invoice. The CN will be pre-populated with this invoice's line items.",
+            )
+        )
     if doc_type == "invoice" and status in ("sent", "final", "partial", "awaiting_payment"):
         pass  # Payment section is now a separate component rendered below
     if doc_type == "quotation" and status not in ("void", "converted"):
-        action_btns.append(
+        action_btns_left.append(
             Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--primary")
         )
     # Issued memos can be converted to invoices (customer keeps goods)
     if doc_type == "memo" and status in ("final", "sent", "received", "partially_received"):
-        action_btns.append(
+        action_btns_left.append(
             Button(t("btn.convert"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary")
         )
     # Issued consignment_in can be converted to vendor bills (vendor keeps goods)
     if doc_type == "consignment_in" and status in ("final", "sent", "received", "partially_received"):
-        action_btns.append(
+        action_btns_left.append(
             Button(t("btn.convert_to_vendor_bill"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary")
         )
     # List-specific lifecycle buttons
     if is_list:
         if status == "draft":
-            action_btns.append(Button(t("btn.send"), hx_post=f"/lists/{entity_id}/action/send", hx_swap="none", cls="btn btn--primary"))
+            action_btns_left.append(Button(t("btn.send"), hx_post=f"/lists/{entity_id}/action/send", hx_swap="none", cls="btn btn--primary"))
         if status == "sent":
-            action_btns.append(Button(t("btn.accept"), hx_post=f"/lists/{entity_id}/action/accept", hx_swap="none", cls="btn btn--primary"))
+            action_btns_left.append(Button(t("btn.accept"), hx_post=f"/lists/{entity_id}/action/accept", hx_swap="none", cls="btn btn--primary"))
         if status == "accepted":
-            action_btns.append(Button(t("btn.complete"), hx_post=f"/lists/{entity_id}/action/complete", hx_swap="none", cls="btn btn--primary"))
+            action_btns_left.append(Button(t("btn.complete"), hx_post=f"/lists/{entity_id}/action/complete", hx_swap="none", cls="btn btn--primary"))
         if status not in ("void", "converted"):
-            action_btns.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice", hx_swap="none", cls="btn btn--secondary"))
-            action_btns.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo", hx_swap="none", cls="btn btn--secondary"))
-        action_btns.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate", hx_swap="none", cls="btn btn--secondary"))
+            action_btns_left.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice", hx_swap="none", cls="btn btn--secondary"))
+            action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo", hx_swap="none", cls="btn btn--secondary"))
+        action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate", hx_swap="none", cls="btn btn--secondary"))
     if status in ("draft", "sent") and not is_list:
         _finalize_labels = {
             "invoice": "Issue Invoice",
@@ -3181,7 +3550,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         }
         finalize_label = _finalize_labels.get(doc_type, "Finalize")
         if _is_manager:
-            action_btns.append(
+            action_btns_left.append(
                 Button(finalize_label, hx_post=f"/docs/{entity_id}/action/finalize",
                        hx_swap="none", cls="btn btn--primary")
             )
@@ -3193,7 +3562,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         type_label = doc_type.replace("_", " ").title()
         default_subject = f"{type_label} #{doc_number} from {company_name}" if doc_number else ""
         default_body = f"Please find attached {type_label} #{doc_number}." if doc_number else ""
-        action_btns.append(
+        action_btns_left.append(
             Details(
                 Summary(t("btn.send"), cls="btn btn--secondary"),
                 Form(
@@ -3216,7 +3585,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
         )
     if status not in ("void", "draft") and _is_manager:
-        action_btns.append(
+        action_btns_right.append(
             Details(
                 Summary(t("btn.void"), cls="btn btn--danger"),
                 Form(
@@ -3224,14 +3593,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger"),
                     hx_post=f"{_base}/action/void", hx_swap="none", cls="inline-form",
                 ),
-                cls="void-section void-section--right",
+                cls="void-section",
             )
         )
     # "Revert to Draft" button - only from final/sent with no payments and no received items
     amount_paid_for_revert = float(doc.get("amount_paid") or 0)
     has_received_items = bool(doc.get("received_items"))
     if status in ("final", "sent") and amount_paid_for_revert == 0 and not has_received_items and _is_manager:
-        action_btns.append(
+        action_btns_right.append(
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
                 Form(
@@ -3239,12 +3608,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Button(t("btn.confirm_revert"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/revert_to_draft", hx_swap="none", cls="inline-form",
                 ),
-                cls="void-section void-section--right",
+                cls="void-section",
             )
         )
     # "Unvoid" button - only from void with pre_void_status set
     if status == "void" and doc.get("pre_void_status") and _is_manager:
-        action_btns.append(
+        action_btns_right.append(
             Details(
                 Summary(t("doc.unvoid"), cls="btn btn--secondary"),
                 Form(
@@ -3252,11 +3621,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Button(t("btn.confirm_unvoid"), type="submit", cls="btn btn--secondary"),
                     hx_post=f"{_base}/action/unvoid", hx_swap="none", cls="inline-form",
                 ),
-                cls="void-section void-section--right",
+                cls="void-section",
             )
         )
     if status == "draft" and _is_manager:
-        action_btns.append(
+        action_btns_right.append(
             Details(
                 Summary(t("btn.delete"), cls="btn btn--danger"),
                 Form(
@@ -3265,41 +3634,41 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Button(t("btn.confirm_delete"), type="submit", cls="btn btn--danger"),
                     hx_post=f"{_base}/action/delete", hx_swap="none", cls="inline-form",
                 ),
-                cls="void-section void-section--right",
+                cls="void-section",
             )
         )
     # Refund is now handled via credit notes + void in the payment section
     # "Mark as Sent" button (instant, no confirmation; undo via "Unmark")
     if status in ("draft", "sent") and not is_list:
         if status == "draft":
-            action_btns.append(
+            action_btns_left.append(
                 Button(t("btn.mark_as_sent"), hx_post=f"/docs/{entity_id}/action/mark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
         else:
             # Already sent - offer undo
-            action_btns.append(
+            action_btns_left.append(
                 Button(t("btn.unmark_sent"), hx_post=f"/docs/{entity_id}/action/unmark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
-    # PDF button
+    # PDF + CSV buttons → print group (always far-right)
     if not is_list:
-        action_btns.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
+        action_btns_print.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
     # CSV line items export/import icons
-    action_btns.append(
+    action_btns_print.append(
         A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
           cls="btn btn--ghost btn--icon", title=t("doc.export_line_items_csv")),
     )
     if is_draft:
-        action_btns.append(
+        action_btns_print.append(
             Button(NotStr(_ICON_CSV_IMPORT), type="button",
                    cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
                    onclick="document.getElementById('csv-import-input').click()"),
         )
-    action_btns.append(Span("", id="share-result"))
-    action_btns.append(Span("", id="action-error"))
+    action_btns_print.append(Span("", id="share-result"))
+    action_btns_print.append(Span("", id="action-error"))
 
-    # --- Slot: doc_detail_actions (module-contributed action buttons) ---
+    # --- Slot: doc_detail_actions (module-contributed action buttons - go left) ---
     from celerp.modules.slots import get as _get_slot
     for _contrib in _get_slot("doc_detail_actions"):
         _render_path = _contrib.get("render", "")
@@ -3310,12 +3679,20 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _render_fn = getattr(_il.import_module(_mod_path), _fn_name)
                 _el = _render_fn(doc)
                 if _el is not None:
-                    action_btns.append(_el)
+                    action_btns_left.append(_el)
             except Exception:
                 pass
 
+    # --- Inventory section action buttons (rendered above line items, not in the top bar) ---
+    _fulfill_el = _render_fulfill_section(doc)
+    _receive_return_el = _render_receive_return_section(doc)
+    _receive_goods_el = _render_receive_goods_section(doc)
+
     # --- Slot: doc_detail_badges (module-contributed status badges) ---
     _slot_badges = []
+    _fulfill_badge = _render_fulfillment_badge(doc)
+    if _fulfill_badge is not None:
+        _slot_badges.append(_fulfill_badge)
     for _contrib in _get_slot("doc_detail_badges"):
         _render_path = _contrib.get("render", "")
         if _render_path:
@@ -3329,9 +3706,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             except Exception:
                 pass
 
-    # --- Bill receive (per-line) ---
+    # --- PO/consignment_in receive (per-line form); bills use _receive_goods_el above ---
     po_receive_section = ""
-    if doc_type in ("bill", "purchase_order") and status in ("awaiting_payment", "finalized", "sent", "final", "partially_received"):
+    if doc_type in ("purchase_order", "consignment_in") and status in ("awaiting_payment", "finalized", "sent", "final", "partially_received"):
         po_items = doc.get("line_items", [])
         if po_items:
             receive_rows = []
@@ -3376,7 +3753,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # --- Price list bar (positioned in line items section) ---
     _pl_names = [pl.get("name", "") for pl in (price_lists or []) if pl.get("name")]
     _current_pl = doc.get("price_list") or ""
-    if is_draft and _pl_names:
+    if doc_type in ("purchase_order", "bill"):
+        _pl_bar = ""  # Vendor docs use cost price, not price lists
+    elif is_draft and _pl_names:
         _pl_select = Select(
             *[Option(name, value=name, selected=(name == _current_pl)) for name in _pl_names],
             id="doc-price-list",
@@ -3493,9 +3872,50 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          data_name="account_code", placeholder="e.g. 1130",
                          cls="cell-input cell-input--xs",
                          onblur="celerpAutoSave()")) if doc_type in ("purchase_order", "bill") else None
+
+            _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
+            _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
+            _cats = item_categories or []
+            if _show_category and is_draft:
+                _cat_val = li.get("category") or ""
+                _cat_options = [Option("", value="")]
+                for c in _cats:
+                    _cat_options.append(Option(c, value=c, selected=(c == _cat_val)))
+                _cat_options.append(Option("+ Add new", value="__add_new__"))
+                category_cell = Td(Select(
+                    *_cat_options,
+                    data_name="category",
+                    cls="cell-input cell-input--select cell-input--xs",
+                    onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
+                ))
+            elif _show_category:
+                category_cell = Td(li.get("category") or "--")
+            else:
+                category_cell = None
+
+            if _show_receive_as and is_draft:
+                _ra_val = li.get("receive_as", "stock")
+                receive_as_cell = Td(Select(
+                    Option("Stock", value="stock", selected=(_ra_val == "stock")),
+                    Option("Expense", value="expense", selected=(_ra_val == "expense")),
+                    data_name="receive_as",
+                    cls="cell-input cell-input--select cell-input--xs",
+                    onchange="celerpAutoSave()",
+                ))
+            elif _show_receive_as:
+                receive_as_cell = Td(li.get("receive_as", "stock").capitalize())
+            else:
+                receive_as_cell = None
+
             cells = [
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id)),
                 Td(_desc_input(li.get("description", "") or li.get("name", ""))),
+            ]
+            if category_cell:
+                cells.append(category_cell)
+            if receive_as_cell:
+                cells.append(receive_as_cell)
+            cells.extend([
                 Td(Input(type="number", value=str(qty), step="any",
                          data_name="quantity", oninput="celerpUpdateTotals()",
                          onblur="celerpQtyBlur(this); celerpAutoSave()",
@@ -3516,7 +3936,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
                    Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity")),
-            ]
+            ])
             if account_cell:
                 cells.append(account_cell)
             cells.extend([
@@ -3527,9 +3947,40 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             return Tr(*cells)
 
         def _li_empty_row() -> FT:
-            return Tr(
-                Td(_sku_input()),
-                Td(_desc_input()),
+            _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
+            _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
+            _cats = item_categories or []
+            if _show_category:
+                _cat_options = [Option("", value="")]
+                for c in _cats:
+                    _cat_options.append(Option(c, value=c))
+                _cat_options.append(Option("+ Add new", value="__add_new__"))
+                _cat_cell = Td(Select(
+                    *_cat_options,
+                    data_name="category",
+                    cls="cell-input cell-input--select cell-input--xs",
+                    onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
+                ))
+            else:
+                _cat_cell = None
+
+            if _show_receive_as:
+                _ra_cell = Td(Select(
+                    Option("Stock", value="stock", selected=True),
+                    Option("Expense", value="expense"),
+                    data_name="receive_as",
+                    cls="cell-input cell-input--select cell-input--xs",
+                    onchange="celerpAutoSave()",
+                ))
+            else:
+                _ra_cell = None
+
+            cells = [Td(_sku_input()), Td(_desc_input())]
+            if _cat_cell:
+                cells.append(_cat_cell)
+            if _ra_cell:
+                cells.append(_ra_cell)
+            cells.extend([
                 Td(Input(type="number", value="1", step="any", data_name="quantity",
                          oninput="celerpUpdateTotals()", onblur="celerpQtyBlur(this); celerpAutoSave()",
                          cls="cell-input cell-input--xs")),
@@ -3549,13 +4000,18 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Span(fmt_money(0, currency), cls="line-total"), cls="cell--number"),
                 Td(Button("x", type="button", cls="btn btn--danger btn--xs",
                           onclick="this.closest('tr').remove(); celerpUpdateTotals(); celerpAutoSave();")),
-            )
+            ])
+            return Tr(*cells)
 
         rows = [_li_editable_row(li, i) for i, li in enumerate(line_items)]
         if not rows:
             rows = [_li_empty_row()]
 
-        _line_headers = [Th(t("th.skuitem")), Th(t("th.description")), Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))]
+        _line_headers = [Th(t("th.skuitem")), Th(t("th.description"))]
+        if doc_type in ("bill", "purchase_order", "consignment_in"):
+            _line_headers.append(Th("Category"))
+            _line_headers.append(Th("Type"))
+        _line_headers.extend([Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
         _line_headers.extend([Th(t("th.total")), Th("")])
@@ -3632,10 +4088,14 @@ const _CELERP_EID = {repr(entity_id)};
 const _CELERP_BASE = {'"/lists/"' if is_list else '"/docs/"'};
 const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
-/* ── Price list helper ── */
+/* ── Price list / doc-type helpers ── */
+const _CELERP_DOC_TYPE = {repr(doc_type)};
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
+}}
+function _celerpDocTypeParam() {{
+    return _CELERP_DOC_TYPE ? '&doc_type=' + encodeURIComponent(_CELERP_DOC_TYPE) : '';
 }}
 /* ── Barcode scan bar ── */
 (function() {{
@@ -3650,7 +4110,7 @@ function _celerpPriceListParam() {{
         scanStatus.textContent = 'Looking up...';
         scanStatus.className = 'scan-bar-status';
         try {{
-            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam());
+            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
             if (!resp.ok) throw new Error('lookup failed');
             const data = await resp.json();
             if (data.description || data.sku) {{
@@ -3697,6 +4157,23 @@ function celerpFillRow(row, data) {{
     if (entityIdEl) entityIdEl.value = data.entity_id || '';
     if (allowSplitEl) allowSplitEl.value = data.allow_splitting ? '1' : '';
     if (itemQtyEl && data.quantity) itemQtyEl.value = data.quantity;
+    const receiveAsEl = row.querySelector('[data-name="receive_as"]');
+    if (receiveAsEl) receiveAsEl.value = data.entity_id ? 'stock' : 'expense';
+    const categoryEl = row.querySelector('[data-name="category"]');
+    if (categoryEl && data.category) {{
+        // Ensure option exists before setting value (category may not be in inventory yet)
+        if (categoryEl.tagName === 'SELECT') {{
+            const exists = Array.from(categoryEl.options).some(o => o.value === data.category);
+            if (!exists) {{
+                const opt = new Option(data.category, data.category);
+                // Insert before the last "Add new" option if present
+                const addNewIdx = Array.from(categoryEl.options).findIndex(o => o.value === '__add_new__');
+                if (addNewIdx >= 0) categoryEl.insertBefore(opt, categoryEl.options[addNewIdx]);
+                else categoryEl.appendChild(opt);
+            }}
+        }}
+        categoryEl.value = data.category;
+    }}
     // Set quantity: if allow_splitting is false, use full item quantity
     if (qtyEl) {{
         if (!data.allow_splitting && data.quantity > 0) {{
@@ -3752,7 +4229,7 @@ async function celerpAcSearch(input, field) {{
     clearTimeout(_celerpAcTimer);
     _celerpAcTimer = setTimeout(async () => {{
         const pl = _celerpPriceListParam();
-        const resp = await fetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl);
+        const resp = await fetch('/docs/catalog-search?q=' + encodeURIComponent(q) + pl + _celerpDocTypeParam());
         if (!resp.ok) return;
         const items = await resp.json();
         list.innerHTML = '';
@@ -3776,11 +4253,16 @@ async function celerpAcSearch(input, field) {{
         // Always append "Use as custom entry" at the bottom
         const custom = document.createElement('div');
         custom.className = 'catalog-ac-option catalog-ac-option--custom';
-        custom.textContent = '✏ Use as custom entry: "' + q + '"';
+        custom.textContent = '✏ Use as expense: "' + q + '"';
         custom.addEventListener('mousedown', e => {{
             e.preventDefault();
             list.style.display = 'none';
-            // Keep whatever the user typed – no catalog fill
+            // Mark line as expense since no catalog item matched
+            const row = input.closest('tr');
+            if (row) {{
+                const raEl = row.querySelector('[data-name="receive_as"]');
+                if (raEl) raEl.value = 'expense';
+            }}
         }});
         list.appendChild(custom);
         list.style.display = 'block';
@@ -4029,13 +4511,23 @@ function _celerpCollectLines() {{
         const hsCode = row.querySelector('[data-name="hs_code"]')?.value || null;
         const entityId = row.querySelector('[data-name="entity_id"]')?.value || null;
         const taxLabel = row.querySelector('[data-name="tax_label"]')?.value || '';
+        const categoryEl = row.querySelector('[data-name="category"]');
+        const category = categoryEl ? (categoryEl.value || categoryEl.textContent || '').trim() || null : null;
+        const receiveAsEl = row.querySelector('[data-name="receive_as"]');
+        const receiveAs = receiveAsEl ? (receiveAsEl.value || receiveAsEl.textContent || '').trim().toLowerCase() || null : null;
+        const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
+        const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
         if (desc || sku || price) {{
             const discounted = qty * price * (1 - discPct / 100);
             const taxList = rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : [];
             lines.push({{description: desc || '', sku: sku || '', quantity: qty || 1, unit,
                          unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
                          line_total: discounted, hs_code: hsCode || undefined,
-                         entity_id: entityId || undefined}});
+                         entity_id: entityId || undefined,
+                         ...(category ? {{category}} : {{}}),
+                         ...(receiveAs ? {{receive_as: receiveAs}} : {{}}),
+                         ...(accountCode ? {{account_code: accountCode}} : {{}}),
+                         allow_splitting: allowSplitting}});
         }}
     }});
     return lines;
@@ -4105,27 +4597,41 @@ async function celerpCsvImport(input, entityId) {{
             cls="lines-section",
         )
     else:
+        _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
+
         def _li_row(li: dict) -> FT:
             qty = float(li.get("quantity", 0) or 0)
             price = float(li.get("unit_price", 0) or 0)
             discount_pct = float(li.get("discount_pct") or 0)
             discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
             line_total = float(li.get("line_total", 0) or 0) or discounted
-            return Tr(
+            cells = [
                 Td(format_value(li.get("description") or li.get("name"))),
                 Td(format_value(li.get("sku") or None)),
+            ]
+            if _is_vendor_doc:
+                cells.append(Td(format_value(li.get("category") or None)))
+                cells.append(Td(format_value(li.get("receive_as", "stock").capitalize())))
+            cells.extend([
                 Td(format_value(li.get("quantity"))),
                 Td(format_value(li.get("unit") or None)),
                 Td(format_value(li.get("unit_price"), "money"), cls="cell--number"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "-"),
                 Td(format_value(li.get("tax_rate"))),
                 Td(format_value(line_total, "money"), cls="cell--number"),
-            )
+            ])
+            return Tr(*cells)
+
+        _thead_base = [Th(t("th.description")), Th(t("th.skuitem"))]
+        if _is_vendor_doc:
+            _thead_base += [Th("Category"), Th("Type")]
+        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"))]
+        _colspan = len(_thead_base)
         lines_section = Div(
             Table(
-                Thead(Tr(Th(t("th.description")), Th(t("th.skuitem")), Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total")))),
+                Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li) for li in line_items] if line_items else [
-                    Tr(Td(t("doc.no_line_items"), colspan="8", cls="empty-state-msg"))
+                    Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ])),
                 cls="data-table doc-lines",
             ),
@@ -4237,7 +4743,16 @@ async function celerpCsvImport(input, entityId) {{
 
     return Div(
         list_type_selector,
-        Div(*action_btns, cls="doc-actions") if action_btns else "",
+        Div(
+            Div(*action_btns_left, cls="doc-actions-left"),
+            Div(
+                Div(*action_btns_right, cls="doc-actions-right") if action_btns_right else "",
+                Span("|", cls="doc-actions-sep") if action_btns_right else "",
+                Div(*action_btns_print, cls="doc-actions-print"),
+                cls="doc-actions-right-group",
+            ),
+            cls="doc-actions",
+        ) if (action_btns_left or action_btns_right or action_btns_print) else "",
         po_receive_section,
         # Metadata bar: Doc ID | Reference | Issue date | Due date
         Div(
@@ -4274,6 +4789,11 @@ async function celerpCsvImport(input, entityId) {{
             ),
             cls="doc-row",
         ),
+        # Inventory action button - appears just above the line items section, aligned right
+        Div(
+            _fulfill_el or _receive_return_el or _receive_goods_el or "",
+            cls="doc-inventory-action",
+        ) if (_fulfill_el or _receive_return_el or _receive_goods_el) else "",
         # Line items + price list bar
         Div(
             lines_section,
@@ -4447,137 +4967,197 @@ def _doc_history_section(ledger: list[dict]) -> FT:
     )
 
 
-def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False) -> FT:
-    """Aggregate counts/totals per status and render status_cards.
-
-    Card definitions are doc-type-aware: only statuses valid for the
-    document lifecycle are shown.
-
-    Invoice counters use virtual statuses backed by composite DB status sets:
-      - all_issued   = every non-draft, non-void invoice
-      - awaiting_payment = final + sent + awaiting_payment (not yet fully paid)
-      - overdue      = awaiting_payment + due_date < today
-      - paid         = paid + partial
-    These are resolved by the summary endpoint and rendered with the correct
-    filter URLs (?status_in=... or ?overdue_only=1).
-    """
+def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None = None, currency: str | None = None, doc_type: str = "", lang: str = "en", status_in: str = "", overdue_only: bool = False, unfulfilled_only: bool = False, not_restocked: bool = False, not_stocked: bool = False, all_issued: bool = False, converted_to_type: str = "") -> FT:
+    """Render status cards for the doc list page. Doc-type-aware."""
     _sm = summary or {}
     base_url = f"/docs?type={doc_type}" if doc_type else "/docs"
+    _cbs = _sm.get("count_by_status") or {}
 
-    # Determine which virtual card key is currently active for invoice cards
-    _ALL_ISSUED_STATUSES = "final,sent,awaiting_payment,paid,partial,overdue"
-    _AWAITING_STATUSES   = "final,sent,awaiting_payment"
-    _PAID_STATUSES       = "paid,partial"
-    _active_key: str
-    if status_in == _ALL_ISSUED_STATUSES:
+    # Determine active card key
+    if all_issued:
         _active_key = "all_issued"
-    elif status_in == _AWAITING_STATUSES and overdue_only:
+    elif unfulfilled_only:
+        _active_key = "unfulfilled"
+    elif not_restocked:
+        _active_key = "not_restocked"
+    elif not_stocked:
+        _active_key = "not_stocked"
+    elif overdue_only:
         _active_key = "overdue"
-    elif status_in == _AWAITING_STATUSES:
-        _active_key = "awaiting_payment"
-    elif status_in == _PAID_STATUSES:
-        _active_key = "paid"
+    elif active_status:
+        _active_key = active_status
+    elif status_in:
+        _active_key = f"status_in:{status_in}"
     else:
-        _active_key = active_status or ""  # fallback: exact status match (sent, void, etc.)
+        _active_key = ""
 
-    # ------------------------------------------------------------------
-    # Invoice: custom card set using virtual/aggregate counts from summary
-    # ------------------------------------------------------------------
     if doc_type == "invoice":
-        _cbs = _sm.get("count_by_status") or {}
+        _AWAITING_STATUSES = "final,sent,awaiting_payment,partial"
+        _PAID_STATUSES = "paid"
+        _ALL_ISSUED_STATUSES = "final,sent,awaiting_payment,paid,partial"
+
         draft_cnt      = _cbs.get("draft", 0)
-        all_issued     = _sm.get("all_issued_count", _sm.get("non_void_count", 0))
+        all_issued_cnt = _sm.get("all_issued_count", 0)
         awaiting       = _sm.get("awaiting_payment_count", 0)
         overdue        = _sm.get("overdue_count", 0)
+        unfulfilled    = _sm.get("unfulfilled_count", 0)
         paid_cnt       = _cbs.get("paid", 0)
-        sent_cnt       = _cbs.get("sent", 0)
         void_cnt       = _cbs.get("void", 0)
 
-        # Per-bucket totals - all calculated server-side
         draft_total      = _sm.get("draft_total", 0.0)
         all_issued_total = _sm.get("all_issued_total", _sm.get("ar_total", 0.0))
-        sent_total       = _sm.get("sent_total", 0.0)
         awaiting_total   = _sm.get("awaiting_payment_total", 0.0)
         overdue_total    = _sm.get("overdue_total", 0.0)
+        unfulfilled_total = _sm.get("unfulfilled_total", 0.0)
         paid_total       = _sm.get("paid_total", 0.0)
         void_total       = _sm.get("void_total", 0.0)
 
-        # Awaiting Payment covers every issued-but-not-fully-paid status
-        _AWAITING_STATUSES = "final,sent,awaiting_payment,partial"
-        _PAID_STATUSES     = "paid"
-
-        # Resolve which virtual card is active
+        # Resolve active key for invoice virtual cards
         if active_status == "draft":
             _active_key = "draft"
-        elif status_in == _ALL_ISSUED_STATUSES:
+        elif all_issued or status_in == _ALL_ISSUED_STATUSES:
             _active_key = "all_issued"
-        elif status_in == _AWAITING_STATUSES and overdue_only:
+        elif overdue_only:
             _active_key = "overdue"
+        elif unfulfilled_only:
+            _active_key = "unfulfilled"
         elif status_in == _AWAITING_STATUSES:
             _active_key = "awaiting_payment"
         elif status_in == _PAID_STATUSES or active_status == "paid":
             _active_key = "paid"
+        elif active_status == "void":
+            _active_key = "void"
         else:
             _active_key = active_status or ""
 
-        invoice_cards = [
-            {"label": t("status.pro_forma", lang),        "count": draft_cnt,  "total": draft_total,      "status": "draft",            "color": "gray"},
-            {"label": t("status.all_issued", lang),       "count": all_issued, "total": all_issued_total, "status": "all_issued",       "color": "blue",   "_url": f"{base_url}&status_in={_ALL_ISSUED_STATUSES}", "_active_key": "all_issued"},
-            {"label": t("doc.sent", lang),                "count": sent_cnt,   "total": sent_total,       "status": "sent",             "color": "blue"},
-            {"label": t("status.awaiting_payment", lang), "count": awaiting,   "total": awaiting_total,   "status": "awaiting_payment", "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES}",                       "_active_key": "awaiting_payment"},
-            {"label": t("status.overdue", lang),          "count": overdue,    "total": overdue_total,    "status": "overdue",          "color": "red",    "_url": f"{base_url}&status_in={_AWAITING_STATUSES}&overdue_only=1",         "_active_key": "overdue"},
-            {"label": t("label.paid", lang),              "count": paid_cnt,   "total": paid_total,       "status": "paid",             "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",                           "_active_key": "paid"},
-            {"label": t("btn.void", lang),                "count": void_cnt,   "total": void_total,       "status": "void",             "color": "gray"},
+        cards = [
+            {"label": t("status.pro_forma", lang),        "count": draft_cnt,      "total": draft_total,      "status": "draft",            "color": "gray"},
+            {"label": t("status.all_issued", lang),       "count": all_issued_cnt, "total": all_issued_total, "status": "all_issued",       "color": "blue",   "_url": f"{base_url}&all_issued=1",                                      "_active_key": "all_issued"},
+            {"label": t("status.awaiting_payment", lang), "count": awaiting,       "total": awaiting_total,   "status": "awaiting_payment", "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES}",                    "_active_key": "awaiting_payment"},
+            {"label": t("status.overdue", lang),          "count": overdue,        "total": overdue_total,    "status": "overdue",          "color": "red",    "_url": f"{base_url}&overdue_only=1",                                    "_active_key": "overdue"},
+            {"label": t("status.unfulfilled", lang),      "count": unfulfilled,    "total": unfulfilled_total,"status": "unfulfilled",      "color": "orange", "_url": f"{base_url}&unfulfilled_only=1",                                "_active_key": "unfulfilled"},
+            {"label": t("label.paid", lang),              "count": paid_cnt,       "total": paid_total,       "status": "paid",             "color": "green",  "_url": f"{base_url}&status_in={_PAID_STATUSES}",                        "_active_key": "paid"},
+            {"label": t("btn.void", lang),                "count": void_cnt,       "total": void_total,       "status": "void",             "color": "gray"},
         ]
-        # total_override=all_issued prevents the "All" card from summing sub-cards.
-        # Sub-cards overlap (e.g. a paid invoice is counted in both All Issued and Paid),
-        # so summing them would produce a number larger than the real invoice count.
-        return status_cards(invoice_cards, base_url, _active_key or None, total_override=all_issued, currency=currency)
+        return status_cards(cards, base_url, _active_key or None, total_override=all_issued_cnt, currency=currency, show_all_card=False)
 
-    # ------------------------------------------------------------------
-    # All other doc types: simple per-status cards
-    # ------------------------------------------------------------------
-    _CARDS_BY_TYPE: dict[str, list[tuple[str, str, str]]] = {
-        "purchase_order": [
-            ("draft", t("status.purchase_order", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "bill": [
-            ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
-            ("paid", t("label.paid", lang), "green"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "credit_note": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "memo": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("final", t("status.issued", lang), "blue"),
-            ("converted", t("status.converted", lang), "green"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "consignment_in": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("final", t("status.issued", lang), "blue"),
-            ("converted", t("status.converted", lang), "green"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "receipt": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-        "list": [
-            ("draft", t("status.draft", lang), "gray"),
-            ("sent", t("doc.sent", lang), "blue"),
-            ("accepted", t("status.accepted", lang), "yellow"),
-            ("completed", t("status.completed", lang), "green"),
-            ("void", t("btn.void", lang), "gray"),
-        ],
-    }
+    if doc_type == "memo":
+        draft_cnt      = _cbs.get("draft", 0)
+        all_issued_cnt = _sm.get("all_issued_count", 0)
+        overdue        = _sm.get("overdue_count", 0)
+        converted_cnt  = _cbs.get("converted", 0)
+        void_cnt       = _cbs.get("void", 0)
+
+        if all_issued or active_status == "" and not overdue_only:
+            _active_key = _active_key or ""
+        if active_status == "draft":
+            _active_key = "draft"
+        elif all_issued:
+            _active_key = "all_issued"
+        elif overdue_only:
+            _active_key = "overdue"
+        elif active_status == "converted":
+            _active_key = "converted"
+        elif active_status == "void":
+            _active_key = "void"
+
+        cards = [
+            {"label": t("status.draft", lang),       "count": draft_cnt,      "total": None, "status": "draft",      "color": "gray"},
+            {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
+            {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
+            {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
+            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
+
+    if doc_type == "credit_note":
+        draft_cnt       = _cbs.get("draft", 0)
+        all_issued_cnt  = _sm.get("all_issued_count", 0)
+        not_restocked_cnt = _sm.get("not_restocked_count", 0)
+        void_cnt        = _cbs.get("void", 0)
+
+        if active_status == "draft":
+            _active_key = "draft"
+        elif all_issued:
+            _active_key = "all_issued"
+        elif not_restocked:
+            _active_key = "not_restocked"
+        elif active_status == "void":
+            _active_key = "void"
+
+        cards = [
+            {"label": t("status.draft", lang),       "count": draft_cnt,         "total": None, "status": "draft",        "color": "gray"},
+            {"label": t("status.all_issued", lang),  "count": all_issued_cnt,    "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
+            {"label": "Not Restocked",               "count": not_restocked_cnt, "total": None, "status": "not_restocked","color": "orange", "_url": f"{base_url}&not_restocked=1","_active_key": "not_restocked"},
+            {"label": t("btn.void", lang),           "count": void_cnt,          "total": None, "status": "void",         "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
+
+    if doc_type == "bill":
+        all_issued_cnt  = _sm.get("all_issued_count", 0)
+        not_stocked_cnt = _sm.get("not_stocked_count", 0)
+        awaiting        = _sm.get("awaiting_payment_count", 0)
+        overdue         = _sm.get("overdue_count", 0)
+        paid_cnt        = _cbs.get("paid", 0)
+        void_cnt        = _cbs.get("void", 0)
+
+        if all_issued:
+            _active_key = "all_issued"
+        elif not_stocked:
+            _active_key = "not_stocked"
+        elif overdue_only:
+            _active_key = "overdue"
+        elif active_status:
+            _active_key = active_status
+
+        _AWAITING_STATUSES_BILL = "final,sent,awaiting_payment,partial"
+        cards = [
+            {"label": t("status.all_issued", lang),   "count": all_issued_cnt,  "total": None, "status": "all_issued",  "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
+            {"label": "Not Stocked Goods",            "count": not_stocked_cnt, "total": None, "status": "not_stocked", "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
+            {"label": t("status.awaiting_payment", lang), "count": awaiting,    "total": None, "status": "awaiting_payment", "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}", "_active_key": "awaiting_payment"},
+            {"label": t("status.overdue", lang),      "count": overdue,         "total": None, "status": "overdue",     "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
+            {"label": t("label.paid", lang),          "count": paid_cnt,        "total": None, "status": "paid",        "color": "green"},
+            {"label": t("btn.void", lang),            "count": void_cnt,        "total": None, "status": "void",        "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
+
+    if doc_type == "consignment_in":
+        draft_cnt      = _cbs.get("draft", 0)
+        all_issued_cnt = _sm.get("all_issued_count", 0)
+        overdue        = _sm.get("overdue_count", 0)
+        converted_cnt  = _cbs.get("converted", 0)
+        void_cnt       = _cbs.get("void", 0)
+
+        if active_status == "draft":
+            _active_key = "draft"
+        elif all_issued:
+            _active_key = "all_issued"
+        elif overdue_only:
+            _active_key = "overdue"
+        elif active_status == "converted":
+            _active_key = "converted"
+        elif active_status == "void":
+            _active_key = "void"
+
+        cards = [
+            {"label": t("status.draft", lang),       "count": draft_cnt,      "total": None, "status": "draft",      "color": "gray"},
+            {"label": t("status.all_issued", lang),  "count": all_issued_cnt, "total": None, "status": "all_issued", "color": "blue",  "_url": f"{base_url}&all_issued=1",   "_active_key": "all_issued"},
+            {"label": t("status.overdue", lang),     "count": overdue,        "total": None, "status": "overdue",    "color": "red",   "_url": f"{base_url}&overdue_only=1", "_active_key": "overdue"},
+            {"label": t("status.converted", lang),   "count": converted_cnt,  "total": None, "status": "converted",  "color": "green"},
+            {"label": t("btn.void", lang),           "count": void_cnt,       "total": None, "status": "void",       "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
+
+    # Purchase order: keep as-is
+    if doc_type == "purchase_order":
+        cards = [
+            {"label": t("status.purchase_order", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
+            {"label": t("doc.sent", lang),              "count": _cbs.get("sent", 0),  "total": None, "status": "sent",  "color": "blue"},
+            {"label": t("btn.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
+
+    # Generic fallback for remaining doc types (receipt, etc.)
     _DEFAULT_CARDS = [
         ("draft", t("status.draft", lang), "gray"),
         ("awaiting_payment", t("status.awaiting_payment", lang), "yellow"),
@@ -4585,10 +5165,8 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         ("overdue", t("status.overdue", lang), "red"),
         ("void", t("btn.void", lang), "gray"),
     ]
-    card_defs = _CARDS_BY_TYPE.get(doc_type, _DEFAULT_CARDS)
-
-    # Use API-level counts from summary when available (full dataset, not just current page)
-    api_counts = (_sm).get("count_by_status", {})
+    card_defs = _DEFAULT_CARDS
+    api_counts = _cbs
     counts: dict[str, int] = {s: api_counts.get(s, 0) for s, _, _ in card_defs}
     totals: dict[str, float] = {s: 0.0 for s, _, _ in card_defs}
     for d in docs:
@@ -4690,21 +5268,31 @@ def _list_table(lists: list[dict], lang: str = "en") -> FT:
     )
 
 
-def _list_status_cards(summary: dict, active_status: str = "") -> FT:
-    _CARD_DEFS = [
-        ("draft", "Draft", "gray"),
-        ("sent", "Sent", "blue"),
-        ("accepted", "Accepted", "yellow"),
-        ("completed", "Completed", "green"),
-        ("void", "Void", "gray"),
-    ]
+def _list_status_cards(summary: dict, active_status: str = "", converted_to_type: str = "") -> FT:
     count_by_status = summary.get("count_by_status", {})
-    all_total = summary.get("total_count", sum(count_by_status.values()))
+    draft_cnt          = count_by_status.get("draft", 0)
+    all_issued_cnt     = summary.get("all_issued_count", 0)
+    memo_cnt           = summary.get("converted_to_memo_count", 0)
+    invoice_cnt        = summary.get("converted_to_invoice_count", 0)
+    void_cnt           = count_by_status.get("void", 0)
+
+    if converted_to_type == "memo":
+        _active_key = "converted_to_memo"
+    elif converted_to_type == "invoice":
+        _active_key = "converted_to_invoice"
+    elif active_status == "all_issued":
+        _active_key = "all_issued"
+    else:
+        _active_key = active_status or ""
+
     cards = [
-        {"label": label, "count": count_by_status.get(s, 0), "total": None, "status": s, "color": color}
-        for s, label, color in _CARD_DEFS
+        {"label": "Draft",                "count": draft_cnt,      "total": None, "status": "draft",            "color": "gray"},
+        {"label": "All Issued",           "count": all_issued_cnt, "total": None, "status": "all_issued",       "color": "blue",  "_url": "/lists?all_issued=1",              "_active_key": "all_issued"},
+        {"label": "Converted to Memo",    "count": memo_cnt,       "total": None, "status": "converted_to_memo","color": "green", "_url": "/lists?converted_to_type=memo",    "_active_key": "converted_to_memo"},
+        {"label": "Converted to Invoice", "count": invoice_cnt,    "total": None, "status": "converted_to_invoice","color": "green","_url": "/lists?converted_to_type=invoice","_active_key": "converted_to_invoice"},
+        {"label": "Void",                 "count": void_cnt,       "total": None, "status": "void",             "color": "gray"},
     ]
-    return status_cards(cards, "/lists", active_status or None, total_override=all_total)
+    return status_cards(cards, "/lists", _active_key or None, show_all_card=False)
 
 
 def _list_type_tabs(active: str) -> FT:
