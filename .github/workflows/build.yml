@@ -106,7 +106,8 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
 
-      - name: Build
+      - name: Build (macOS - with signing)
+        if: matrix.os == 'macos-latest'
         working-directory: electron
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -114,6 +115,13 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_LINK: ${{ env.CERT_PATH }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: ${{ matrix.build_cmd }}
+
+      - name: Build (Windows / Linux - no signing)
+        if: matrix.os != 'macos-latest'
+        working-directory: electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: ${{ matrix.build_cmd }}
 
       - name: Normalize artifact names
