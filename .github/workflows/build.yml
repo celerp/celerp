@@ -49,27 +49,6 @@ jobs:
         working-directory: electron
         run: pnpm install --frozen-lockfile
 
-      - name: Import Apple Developer certificate (macOS only)
-        if: matrix.os == 'macos-latest'
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
-          CERT_PATH="$RUNNER_TEMP/certificate.p12"
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
-          security create-keychain -p "temp-password" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "temp-password" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security list-keychain -d user -s "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple: -s -k "temp-password" "$KEYCHAIN_PATH"
-          # Verify the cert loaded correctly - must show "Developer ID Application"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
-          # Keep CERT_PATH alive for CSC_LINK (ephemeral runner - safe)
-          echo "CERT_PATH=$CERT_PATH" >> "$GITHUB_ENV"
-          echo "KEYCHAIN_PASSWORD=temp-password" >> "$GITHUB_ENV"
-
       - name: Set Electron version from git tag
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
@@ -113,9 +92,23 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_LINK: ${{ env.CERT_PATH }}
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: ${{ matrix.build_cmd }}
+
+      - name: Verify Mac app is signed (fail build if not)
+        if: matrix.os == 'macos-latest'
+        run: |
+          APP_PATH="electron/dist/mac-arm64/Celerp.app"
+          echo "Verifying signature on $APP_PATH..."
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          # Confirm it's signed with a real Developer ID (not ad-hoc)
+          TEAM=$(codesign -dv "$APP_PATH" 2>&1 | grep TeamIdentifier | cut -d= -f2)
+          if [ -z "$TEAM" ] || [ "$TEAM" = "not set" ]; then
+            echo "ERROR: App is not signed with a Developer ID certificate."
+            exit 1
+          fi
+          echo "Signed OK. TeamIdentifier=$TEAM"
 
       - name: Build (Windows / Linux - no signing)
         if: matrix.os != 'macos-latest'
