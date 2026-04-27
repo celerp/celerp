@@ -536,6 +536,8 @@ async def receive_goods(token: str, entity_id: str, line_items: list[dict], loca
                 "unit_price": float(li.get("unit_price", 0) or 0),
                 "cost_price": float(li.get("cost_price") or li.get("unit_price", 0) or 0),
                 "receive_as": li.get("receive_as", "stock"),
+                **({"category": li["category"]} if li.get("category") else {}),
+                **({"attributes": li["attributes"]} if li.get("attributes") else {}),
             }
             for li in line_items
         ],

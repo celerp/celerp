@@ -1435,3 +1435,60 @@ async def test_bill_category_and_receive_as_preserved_after_finalize(client, ses
     line = doc["line_items"][0]
     assert line.get("category") == "Electronics", f"category lost after finalize: {line}"
     assert line.get("receive_as") == "stock", f"receive_as lost after finalize: {line}"
+
+
+@pytest.mark.anyio
+async def test_receive_goods_uses_bill_line_category_and_attributes(client, session):
+    """Receive Goods must copy category and attributes from the bill line item.
+
+    This covers the case where a brand-new SKU is received (no existing inventory item),
+    so sku_ref lookup returns nothing. The bill line item is the authoritative source.
+
+    Priority order: bill line item > sku_ref (existing inventory).
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Create and finalize a bill with category + attributes on the line item (new SKU, no prior inventory)
+    bill_r = await client.post("/docs", headers=h, json={
+        "doc_type": "bill",
+        "line_items": [
+            {
+                "name": "Emerald Stone",
+                "sku": "GEM-EM-001",
+                "quantity": 5,
+                "unit_price": 200.0,
+                "category": "Gemstones",
+                "attributes": {"color": "green", "shape": "oval", "measurements (mm)": "10x8"},
+            }
+        ],
+        "subtotal": 1000, "tax": 0, "total": 1000,
+    })
+    assert bill_r.status_code == 200, bill_r.text
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=h)
+
+    receive_r = await client.post(f"/docs/{bill_id}/receive", headers=h, json={
+        "received_items": [
+            {
+                "sku": "GEM-EM-001",
+                "name": "Emerald Stone",
+                "quantity_received": 5.0,
+                "category": "Gemstones",
+                "attributes": {"color": "green", "shape": "oval", "measurements (mm)": "10x8"},
+            }
+        ],
+        "location_id": "",
+    })
+    assert receive_r.status_code == 200, receive_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert created_ids, "Expected inventory items to be created"
+
+    new_item = (await client.get(f"/items/{created_ids[0]}", headers=h)).json()
+    assert new_item.get("category") == "Gemstones", f"category not set from bill line: {new_item}"
+    # Dynamic attributes are flattened to top-level by the GET endpoint
+    assert new_item.get("color") == "green", f"attributes.color not set: {new_item}"
+    assert new_item.get("shape") == "oval", f"attributes.shape not set: {new_item}"
+    assert new_item.get("measurements (mm)") == "10x8", f"attributes.measurements not set: {new_item}"

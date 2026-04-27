@@ -124,6 +124,8 @@ class ReceivedItem(BaseModel):
     name: str | None = None
     cost_price: float | None = None
     receive_as: str = "stock"
+    category: str | None = None
+    attributes: dict | None = None
 
 
 class ReceiveBody(BaseModel):
@@ -1133,6 +1135,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                     sku_ref = ref_proj.state
                     break
 
+            # Bill line item: explicit user-set fields take highest priority over sku_ref
+            doc_line: dict = next(
+                (li for li in row.state.get("line_items", [])
+                 if str(li.get("sku") or "").strip() == it.sku.strip()),
+                {},
+            )
+
             # Fields to inherit from existing item; barcode excluded (unique per physical item)
             _INHERIT = (
                 "category", "unit", "sell_by", "description",
@@ -1145,6 +1154,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             # Copy dynamic category-specific attributes (measurements, shape/cut, etc.)
             if sku_ref.get("attributes"):
                 item_data["attributes"] = dict(sku_ref["attributes"])
+            # Bill line item fields override sku_ref (user explicitly set these on the bill)
+            for _f in ("category", "attributes"):
+                _doc_val = doc_line.get(_f)
+                _payload_val = getattr(it, _f, None)
+                _v = _doc_val or _payload_val
+                if _v:
+                    item_data[_f] = _v
             # Payload values always take precedence for the fields below
             item_data.update({
                 "sku": it.sku,
