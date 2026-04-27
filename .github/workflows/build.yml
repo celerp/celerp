@@ -124,34 +124,6 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: ${{ matrix.build_cmd }}
 
-      - name: Re-sign Electron helpers with secure timestamp
-        if: matrix.os == 'macos-latest'
-        env:
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          # electron-builder signs helpers without --timestamp; Apple requires it for notarization.
-          # Re-sign all helper .app bundles (and the main app) with --timestamp.
-          IDENTITY="EEC6C15E6827071A403257986E6379A650C62AFB"
-          APP_PATH="electron/dist/mac-arm64/Celerp.app"
-
-          # Re-sign helpers first (deepest first so parent signatures stay valid)
-          find "$APP_PATH/Contents/Frameworks" -name "*.app" | sort -r | while read HELPER; do
-            echo "Re-signing: $HELPER"
-            codesign --force --sign "$IDENTITY" \
-              --timestamp --options runtime \
-              --entitlements electron/build/entitlements.mac.plist \
-              "$HELPER"
-          done
-
-          # Re-sign the main app bundle
-          echo "Re-signing main app..."
-          codesign --force --sign "$IDENTITY" \
-            --timestamp --options runtime \
-            --entitlements electron/build/entitlements.mac.plist \
-            "$APP_PATH"
-          echo "Re-signing complete."
-
       - name: Verify Mac app is signed (fail build if not)
         if: matrix.os == 'macos-latest'
         run: |
