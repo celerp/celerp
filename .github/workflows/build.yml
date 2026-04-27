@@ -105,22 +105,25 @@ jobs:
 
           IDENTITY="EEC6C15E6827071A403257986E6379A650C62AFB"
           PYTHON_DIR="electron/python-standalone/mac-arm64/python"
+          POSTGRES_DIR="electron/node_modules/@embedded-postgres/darwin-arm64"
 
-          echo "Pre-signing all Python Mach-O binaries in parallel..."
-          # Must cover ALL Mach-O binaries - not just .so/.dylib.
-          # Plain executables (python3.12, sqlite3_diff, sqlite3_showwal, etc.)
-          # ship with no extension and also require Developer ID + --timestamp
-          # + hardened runtime for notarization to pass.
-          find "$PYTHON_DIR" -type f -print0 | \
-            xargs -0 -P 8 sh -c '
-              for f do
-                if file "$f" | grep -q "Mach-O"; then
-                  codesign --force --sign "'"$IDENTITY"'" \
-                    --timestamp --options runtime \
-                    --keychain "'"$KEYCHAIN_PATH"'" "$f" 2>&1
-                fi
-              done
-            ' _
+          sign_macho_in_dir() {
+            local dir="$1"
+            echo "Pre-signing Mach-O binaries in: $dir"
+            find "$dir" -type f -print0 | \
+              xargs -0 -P 8 sh -c '
+                for f do
+                  if file "$f" | grep -q "Mach-O"; then
+                    codesign --force --sign "'"$IDENTITY"'" \
+                      --timestamp --options runtime \
+                      --keychain "'"$KEYCHAIN_PATH"'" "$f" 2>&1
+                  fi
+                done
+              ' _
+          }
+
+          sign_macho_in_dir "$PYTHON_DIR"
+          sign_macho_in_dir "$POSTGRES_DIR"
           echo "Pre-signing complete."
 
           # Remove presign keychain from search list so it doesn't interfere

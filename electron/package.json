@@ -31,7 +31,9 @@
     "directories": {
       "output": "dist"
     },
+    "asar": true,
     "asarUnpack": [
+      "**/*.node",
       "node_modules/@embedded-postgres/**"
     ],
     "files": [
@@ -98,7 +100,8 @@
         }
       ],
       "signIgnore": [
-        "Contents/Resources/python/"
+        "Contents/Resources/python/",
+        "Contents/Resources/app.asar.unpacked/node_modules/@embedded-postgres/"
       ]
     },
     "linux": {
