@@ -89,9 +89,10 @@ jobs:
         if: matrix.os == 'macos-latest'
         working-directory: electron
         env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Pass only signing credentials - NOT notarization credentials.
+          # Passing APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD causes electron-builder
+          # to notarize internally before our post-sign step runs, which fails
+          # because python and postgres binaries aren't signed yet.
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: ${{ matrix.build_cmd }}
