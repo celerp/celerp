@@ -85,17 +85,16 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
 
-      - name: Build (macOS - with signing)
+      - name: Build (macOS - app bundle only, no DMG yet)
         if: matrix.os == 'macos-latest'
         working-directory: electron
         env:
           # Pass only signing credentials - NOT notarization credentials.
-          # Passing APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD causes electron-builder
-          # to notarize internally before our post-sign step runs, which fails
-          # because python and postgres binaries aren't signed yet.
+          # We build only the .app bundle here (target=dir); the DMG is created
+          # after post-signing so all binaries are properly signed before packaging.
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: ${{ matrix.build_cmd }}
+        run: pnpm run build:mac -- --dir
 
       - name: Post-sign Python and PostgreSQL binaries in parallel
         if: matrix.os == 'macos-latest'
@@ -147,6 +146,17 @@ jobs:
             --keychain "$KEYCHAIN_PATH" \
             "$APP_PATH"
           echo "Post-signing complete."
+
+      - name: Package DMG (after post-signing)
+        if: matrix.os == 'macos-latest'
+        working-directory: electron
+        env:
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          # Build only the DMG from the already-signed .app bundle.
+          # electron-builder will re-use the existing dist/mac-arm64/Celerp.app.
+          pnpm run build:mac -- --prepackaged dist/mac-arm64/Celerp.app
 
       - name: Verify Mac app is signed (fail build if not)
         if: matrix.os == 'macos-latest'
