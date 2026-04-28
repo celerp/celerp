@@ -32,7 +32,7 @@ jobs:
             pbs_triple: aarch64-apple-darwin
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 180
 
     steps:
       - uses: actions/checkout@v4
@@ -144,7 +144,7 @@ jobs:
 
       - name: Notarize Mac DMG
         if: matrix.os == 'macos-latest'
-        timeout-minutes: 30
+        timeout-minutes: 130
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -157,7 +157,7 @@ jobs:
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait \
-            --timeout 25m \
+            --timeout 2h \
             --verbose
           echo "Stapling notarization ticket..."
           xcrun stapler staple "$DMG_PATH"
