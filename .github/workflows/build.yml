@@ -85,31 +85,44 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
 
-      - name: Pre-sign Python binaries (macOS - parallel to speed up signing)
+      - name: Build (macOS - with signing)
+        if: matrix.os == 'macos-latest'
+        working-directory: electron
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: ${{ matrix.build_cmd }}
+
+      - name: Post-sign Python and PostgreSQL binaries in parallel
         if: matrix.os == 'macos-latest'
         env:
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: |
-          # Decode cert for codesign
-          CERT_PATH="$RUNNER_TEMP/certificate.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/presign.keychain"
+          # electron-builder signed the Electron framework files and skipped python/ and
+          # embedded-postgres/ via signIgnore. Now sign those two directories in parallel
+          # (8 workers) then re-sign the main .app bundle to seal the updated signatures.
+          APP_PATH="electron/dist/mac-arm64/Celerp.app"
+          IDENTITY="EEC6C15E6827071A403257986E6379A650C62AFB"
+
+          # Set up a short-lived keychain for codesign
+          CERT_PATH="$RUNNER_TEMP/postsign.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/postsign.keychain"
           echo "$CSC_LINK" | base64 --decode > "$CERT_PATH"
-          security create-keychain -p "presign" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "presign" "$KEYCHAIN_PATH"
+          security create-keychain -p "postsign" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "postsign" "$KEYCHAIN_PATH"
           security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
           security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
-          security set-key-partition-list -S apple-tool:,apple: -s -k "presign" "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "postsign" "$KEYCHAIN_PATH"
           rm -f "$CERT_PATH"
-
-          IDENTITY="EEC6C15E6827071A403257986E6379A650C62AFB"
-          PYTHON_DIR="electron/python-standalone/mac-arm64/python"
-          POSTGRES_DIR="electron/node_modules/@embedded-postgres/darwin-arm64"
 
           sign_macho_in_dir() {
             local dir="$1"
-            echo "Pre-signing Mach-O binaries in: $dir"
+            echo "Signing Mach-O binaries in: $dir"
             find "$dir" -type f -print0 | \
               xargs -0 -P 8 sh -c '
                 for f do
@@ -122,16 +135,17 @@ jobs:
               ' _
           }
 
-          sign_macho_in_dir "$PYTHON_DIR"
-          sign_macho_in_dir "$POSTGRES_DIR"
-          echo "Pre-signing complete."
+          sign_macho_in_dir "$APP_PATH/Contents/Resources/python"
+          sign_macho_in_dir "$APP_PATH/Contents/Resources/app.asar.unpacked/node_modules/@embedded-postgres"
 
-          # Remove presign keychain from search list so it doesn't interfere
-          # with electron-builder's own keychain setup during the build step.
-          security list-keychain -d user -s $(security list-keychain -d user | tr -d '"' | grep -v presign) || true
-          security delete-keychain "$KEYCHAIN_PATH" || true
-
-      - name: Build (macOS - with signing)
+          # Re-sign the top-level .app to incorporate the updated inner signatures
+          echo "Re-sealing main app bundle..."
+          codesign --force --sign "$IDENTITY" \
+            --timestamp --options runtime \
+            --entitlements electron/build/entitlements.mac.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            "$APP_PATH"
+          echo "Post-signing complete."
         if: matrix.os == 'macos-latest'
         working-directory: electron
         env:
