@@ -146,15 +146,6 @@ jobs:
             --keychain "$KEYCHAIN_PATH" \
             "$APP_PATH"
           echo "Post-signing complete."
-        if: matrix.os == 'macos-latest'
-        working-directory: electron
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
-          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: ${{ matrix.build_cmd }}
 
       - name: Verify Mac app is signed (fail build if not)
         if: matrix.os == 'macos-latest'
