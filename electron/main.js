@@ -22,12 +22,11 @@ const { execFileSync } = childProcess;
 const net = require("net");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
-// ── Asar path fixes for embedded-postgres ────────────────────────────────────
-// Electron does not reliably patch child_process.spawn() or fs.promises.chmod()
-// for asar paths. embedded-postgres resolves binary paths via __dirname inside
-// app.asar, then calls both on those paths. Both fail with ENOTDIR because the
-// OS sees app.asar as a file, not a directory.
-// Fix: rewrite .asar/ → .asar.unpacked/ before either operation hits the OS.
+// ── Asar path fix for embedded-postgres ─────────────────────────────────────
+// embedded-postgres resolves binary paths via __dirname inside app.asar, then
+// calls child_process.spawn() on those paths. This fails with ENOTDIR because
+// the OS sees app.asar as a file, not a directory.
+// Fix: rewrite .asar/ → .asar.unpacked/ before the spawn hits the OS.
 
 function rewriteAsarPath(p) {
   if (typeof p === "string" && p.includes("app.asar") && !p.includes("app.asar.unpacked")) {
@@ -43,11 +42,6 @@ childProcess.spawn = function spawn(cmd, args, opts) {
   return _spawn(rewriteAsarPath(cmd), args, opts);
 };
 const spawn = childProcess.spawn;
-
-// Patch fs.promises.chmod globally — same reason as spawn above.
-const fsPromises = require("fs").promises;
-const _chmod = fsPromises.chmod.bind(fsPromises);
-fsPromises.chmod = (p, mode) => _chmod(rewriteAsarPath(p), mode);
 
 // Patch async-exit-hook before embedded-postgres loads so gracefulShutdown(done)
 // always receives a callable done. In some Electron exit paths async-exit-hook

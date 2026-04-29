@@ -10085,26 +10085,44 @@ class TestBuildWorkflowVersioning:
         assert 'Celerp.AppImage' in workflow
         assert 'Celerp-${VERSION}-arm64.dmg' not in workflow
 
-    def test_build_workflow_notarize_step_present(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
-        assert 'Notarize Mac DMG' in workflow
-        assert 'xcrun notarytool submit' in workflow
-        assert '--timeout 2h' in workflow
+    def test_build_workflow_notarize_via_after_sign(self):
+        # Notarization is handled by electron-builder's afterSign hook,
+        # not by a separate xcrun step in the workflow.
+        pkg = Path('electron/package.json').read_text()
+        assert 'afterSign' in pkg
+        assert 'scripts/notarize.js' in pkg
+        notarize_js = Path('electron/scripts/notarize.js').read_text()
+        assert 'notarytool' in notarize_js
 
-    def test_build_workflow_notarize_timeout(self):
+    def test_build_workflow_mac_build_timeout(self):
+        # Mac build step has timeout covering sign + notarize time
         workflow = Path('.github/workflows/build.yml').read_text()
         assert 'timeout-minutes: 130' in workflow
-        assert 'timeout-minutes: 180' in workflow
+
+    def test_build_workflow_mac_has_apple_secrets(self):
+        # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID must be present
+        # in the Mac build step env for notarize.js to pick them up.
+        workflow = Path('.github/workflows/build.yml').read_text()
+        assert 'APPLE_ID' in workflow
+        assert 'APPLE_APP_SPECIFIC_PASSWORD' in workflow
+        assert 'APPLE_TEAM_ID' in workflow
+
+    def test_build_workflow_no_presign_step(self):
+        # Pre-signing is no longer needed; electron-builder handles all signing.
+        workflow = Path('.github/workflows/build.yml').read_text()
+        assert 'Pre-sign' not in workflow
+        assert 'xcrun notarytool' not in workflow
+
+    def test_build_workflow_no_sign_ignore(self):
+        # signIgnore was the workaround for the pre-sign approach; now removed.
+        pkg = Path('electron/package.json').read_text()
+        assert 'signIgnore' not in pkg
 
     def test_build_workflow_dev_pipeline_trigger(self):
         workflow = Path('.github/workflows/build.yml').read_text()
         assert 'develop' in workflow
         assert 'dev-latest' in workflow
         assert 'prerelease: true' in workflow
-
-    def test_build_workflow_no_notarize_for_dev(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
-        assert "startsWith(github.ref, 'refs/tags/v')" in workflow
 
     def test_electron_main_disallows_prerelease(self):
         main_js = Path('electron/main.js').read_text()

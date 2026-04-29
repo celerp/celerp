@@ -5,7 +5,7 @@
 const { notarize } = require('@electron/notarize');
 const { execSync } = require('child_process');
 
-const NOTARIZE_TIMEOUT_MS = 20 * 60 * 1000; // 20 minutes
+const NOTARIZE_TIMEOUT_MS = 120 * 60 * 1000; // 120 minutes (matches CI step timeout)
 
 exports.default = async function notarizing(context) {
   const { electronPlatformName, appOutDir } = context;

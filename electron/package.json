@@ -98,10 +98,6 @@
             "arm64"
           ]
         }
-      ],
-      "signIgnore": [
-        "Contents/Resources/python/",
-        "Contents/Resources/app.asar.unpacked/node_modules/@embedded-postgres/"
       ]
     },
     "linux": {
@@ -120,7 +116,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
-    }
+    },
+    "afterSign": "scripts/notarize.js"
   },
   "jest": {
     "testEnvironment": "node",
