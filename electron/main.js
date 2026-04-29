@@ -43,23 +43,6 @@ childProcess.spawn = function spawn(cmd, args, opts) {
 };
 const spawn = childProcess.spawn;
 
-// Patch fs.promises.chmod — embedded-postgres calls chmod on its binary paths
-// which it resolves via __dirname inside app.asar. The OS sees app.asar as a
-// file, not a directory, so chmod throws ENOTDIR. Rewrite asar paths to
-// asar.unpacked before the syscall; silently skip EPERM (hardened runtime on
-// signed builds already has correct permissions).
-const fsPromises = fs.promises;
-const _chmod = fsPromises.chmod.bind(fsPromises);
-fsPromises.chmod = async function chmod(p, mode) {
-  const fixed = rewriteAsarPath(p);
-  try {
-    return await _chmod(fixed, mode);
-  } catch (err) {
-    if (err.code === "EPERM") return; // signed binary already has correct perms
-    throw err;
-  }
-};
-
 // Patch async-exit-hook before embedded-postgres loads so gracefulShutdown(done)
 // always receives a callable done. In some Electron exit paths async-exit-hook
 // calls hooks without the done callback, causing "TypeError: done is not a function".
