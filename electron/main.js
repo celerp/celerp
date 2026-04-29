@@ -43,6 +43,20 @@ childProcess.spawn = function spawn(cmd, args, opts) {
 };
 const spawn = childProcess.spawn;
 
+// Suppress fs.promises.chmod for embedded-postgres binary paths.
+// embedded-postgres calls chmod to ensure its binaries are executable, but:
+//   1. The afterPack hook already set +x before signing, so the bits are correct.
+//   2. The path it passes is the virtual app.asar path (not app.asar.unpacked),
+//      which the OS cannot chmod — it would throw ENOTDIR.
+//   3. On a signed/notarized build the OS would throw EPERM anyway.
+// Making chmod a no-op is safe: the binaries already have the right permissions.
+const _fsPromises = fs.promises;
+const _chmod = _fsPromises.chmod.bind(_fsPromises);
+_fsPromises.chmod = async function chmod(p, mode) {
+  if (typeof p === "string" && p.includes("@embedded-postgres")) return;
+  return _chmod(p, mode);
+};
+
 // Patch async-exit-hook before embedded-postgres loads so gracefulShutdown(done)
 // always receives a callable done. In some Electron exit paths async-exit-hook
 // calls hooks without the done callback, causing "TypeError: done is not a function".
