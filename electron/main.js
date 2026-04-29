@@ -283,6 +283,7 @@ function startApi(dbUrl, cfg) {
       CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
       CELERP_DATA_DIR: DATA_DIR,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
+      CELERP_INSTALL_CHANNEL: "electron",
       ...resolveStorageEnv(cfg),
     };
     apiProcess = spawn(
@@ -410,32 +411,28 @@ function resolveStorageEnv(cfg) {
 /**
  * Auto-update via GitHub Releases (electron-updater).
  *
- * Guard: only active when CELERP_UPDATE_ENABLED=true (set at public launch).
- * This keeps the updater a no-op during private dev / pre-release builds so
- * a missing GitHub release file doesn't throw noise at the user.
+ * Guard: only active in packaged builds. Dev mode skips the updater so
+ * a missing GitHub release file doesn't throw noise at the developer.
  *
  * When active:
  *   - Checks for updates silently on launch
  *   - Downloads in background
- *   - Shows a non-blocking dialog when ready to install
+ *   - Forwards update events to the renderer via IPC
  *   - Errors are logged only — never surfaced as crashes
  */
 function setupAutoUpdater() {
-  if (process.env.CELERP_UPDATE_ENABLED !== "true") return;
+  if (!app.isPackaged) return;
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.allowPrerelease = false;
+
+  autoUpdater.on("update-available", (info) => {
+    if (mainWindow) mainWindow.webContents.send("update-available", info);
+  });
 
   autoUpdater.on("update-downloaded", (info) => {
-    dialog.showMessageBox(mainWindow, {
-      type: "info",
-      title: "Update ready",
-      message: `Celerp ${info.version} has been downloaded. It will be installed when you quit.`,
-      buttons: ["Restart now", "Later"],
-      defaultId: 0,
-    }).then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall();
-    });
+    if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
   });
 
   autoUpdater.on("error", (err) => {
@@ -495,6 +492,19 @@ function createWindow() {
 }
 
 // ── IPC handlers ─────────────────────────────────────────────────────────────
+
+// check-for-updates: renderer triggers a manual update check via window.celerp.checkForUpdates()
+ipcMain.handle("check-for-updates", () => {
+  if (app.isPackaged) autoUpdater.checkForUpdates();
+});
+
+// install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
+ipcMain.on("install-update", () => {
+  autoUpdater.quitAndInstall();
+});
+
+// get-version: renderer fetches the current app version
+ipcMain.handle("get-version", () => app.getVersion());
 
 // show-confirm: renderer calls window.celerp.showConfirm(message) for hx-confirm
 // dialogs. window.confirm() is silently stubbed to false in Electron's renderer,

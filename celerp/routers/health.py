@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,7 +18,11 @@ router = APIRouter()
 
 @router.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "version": __version__}
+    return {
+        "status": "ok",
+        "version": __version__,
+        "install_channel": os.environ.get("CELERP_INSTALL_CHANNEL", "pypi"),
+    }
 
 
 @router.get("/health/ready")
