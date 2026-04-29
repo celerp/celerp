@@ -19,7 +19,6 @@
     "embedded-postgres": "^17.9.0-beta.16"
   },
   "devDependencies": {
-    "@electron/notarize": "^2.5.0",
     "electron": "^30.0.0",
     "electron-builder": "^25.0.0",
     "jest": "^30.3.0"
@@ -116,8 +115,7 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
-    },
-    "afterSign": "scripts/notarize.js"
+    }
   },
   "jest": {
     "testEnvironment": "node",
