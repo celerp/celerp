@@ -488,7 +488,7 @@ function setupAutoUpdater() {
     if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 
-  autoUpdater.checkForUpdates();
+  autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event above
 }
 
 function createWindow() {
@@ -543,7 +543,7 @@ function createWindow() {
 
 // check-for-updates: renderer triggers a manual update check via window.celerp.checkForUpdates()
 ipcMain.handle("check-for-updates", () => {
-  if (app.isPackaged) autoUpdater.checkForUpdates();
+  if (app.isPackaged) autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event
 });
 
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
