@@ -6,6 +6,8 @@ import platform
 import sys
 from pathlib import Path
 
+from pydantic import Field
+from pydantic.aliases import AliasChoices
 from pydantic_settings import BaseSettings
 
 _DEFAULT_JWT_SECRET = "dev-secret"
@@ -50,8 +52,12 @@ class Settings(BaseSettings):
     storage_s3_access_key: str = ""
     storage_s3_secret_key: str = ""
     # Data directory for runtime artifacts (uploads, caches).
-    # Defaults to ./data (relative to CWD); set DATA_DIR in production.
-    data_dir: Path = Path("data")
+    # Accepts CELERP_DATA_DIR (Electron) or DATA_DIR (legacy). Defaults to ./data.
+    data_dir: Path = Field(
+        default=Path("data"),
+        validation_alias=AliasChoices("CELERP_DATA_DIR", "DATA_DIR", "data_dir"),
+    )
+
     # Cookie security — set True in prod (HTTPS); False allows HTTP in dev/CI
     cookie_secure: bool = False
     # Redis URL for distributed rate limiting; empty = per-process only

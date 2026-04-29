@@ -108,7 +108,7 @@ async def lifespan(_app: FastAPI):
     import os
     import uuid
     from pathlib import Path
-    Path("static/attachments").mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -258,4 +258,4 @@ app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
 app.include_router(notifications.router)
-app.mount("/static", StaticFiles(directory="static", check_dir=False), name="static")
+app.mount("/static", StaticFiles(directory=str(settings.data_dir / "static"), check_dir=False), name="static")
