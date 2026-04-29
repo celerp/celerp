@@ -299,8 +299,16 @@ function startApi(dbUrl, cfg) {
       ["-m", "uvicorn", "celerp.main:app", "--host", "127.0.0.1", "--port", String(apiPort), "--timeout-graceful-shutdown", "3"],
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
+    let stderr = "";
+    apiProcess.stderr.on("data", (d) => { stderr += d.toString(); });
+    apiProcess.stdout.on("data", (d) => { stderr += d.toString(); });
     apiProcess.on("error", reject);
-    waitForPort(apiPort).then(resolve).catch(reject);
+    apiProcess.on("exit", (code) => {
+      if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}):\n${stderr.slice(-2000)}`));
+    });
+    waitForPort(apiPort).then(resolve).catch(() =>
+      reject(new Error(`API port ${apiPort} never opened:\n${stderr.slice(-2000)}`))
+    );
   });
 }
 
@@ -323,8 +331,16 @@ function startUi(dbUrl, cfg) {
       ["-m", "uvicorn", "ui.app:app", "--host", "127.0.0.1", "--port", String(uiPort), "--timeout-graceful-shutdown", "3"],
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
+    let stderr = "";
+    uiProcess.stderr.on("data", (d) => { stderr += d.toString(); });
+    uiProcess.stdout.on("data", (d) => { stderr += d.toString(); });
     uiProcess.on("error", reject);
-    waitForPort(uiPort).then(resolve).catch(reject);
+    uiProcess.on("exit", (code) => {
+      if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}):\n${stderr.slice(-2000)}`));
+    });
+    waitForPort(uiPort).then(resolve).catch(() =>
+      reject(new Error(`UI port ${uiPort} never opened:\n${stderr.slice(-2000)}`))
+    );
   });
 }
 
