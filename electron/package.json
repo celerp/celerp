@@ -115,7 +115,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
-    }
+    },
+    "afterPack": "scripts/after-pack.js"
   },
   "jest": {
     "testEnvironment": "node",
