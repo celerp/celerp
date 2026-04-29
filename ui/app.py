@@ -142,6 +142,7 @@ class TokenRefreshMiddleware(BaseHTTPMiddleware):
 
 app = FastHTML(
     before=Beforeware(_auth_guard, skip=[r"/login", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
+    secret_key=os.environ.get("JWT_SECRET", "dev-secret"),
 )
 
 app.add_middleware(TokenRefreshMiddleware)
