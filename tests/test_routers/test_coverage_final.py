@@ -824,3 +824,37 @@ async def test_manufacturing_complete_step(client):
     })
     assert r2.status_code == 200
     assert "event_id" in r2.json()
+
+
+# ---------------------------------------------------------------------------
+# health.py: install_channel and version fields
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_health_returns_version(client):
+    """GET /health returns 200 with status ok and a non-empty version string."""
+    r = await client.get("/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "ok"
+    assert isinstance(data.get("version"), str) and data["version"] != ""
+
+
+@pytest.mark.asyncio
+async def test_health_returns_install_channel_pypi(client):
+    """GET /health returns install_channel='pypi' when env var is absent."""
+    import os
+    os.environ.pop("CELERP_INSTALL_CHANNEL", None)
+    r = await client.get("/health")
+    assert r.status_code == 200
+    assert r.json()["install_channel"] == "pypi"
+
+
+@pytest.mark.asyncio
+async def test_health_returns_install_channel_electron(client, monkeypatch):
+    """GET /health returns install_channel='electron' when env var is set."""
+    import os
+    monkeypatch.setitem(os.environ, "CELERP_INSTALL_CHANNEL", "electron")
+    r = await client.get("/health")
+    assert r.status_code == 200
+    assert r.json()["install_channel"] == "electron"

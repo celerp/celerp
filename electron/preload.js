@@ -16,4 +16,19 @@ contextBridge.exposeInMainWorld("celerp", {
   // Synchronous round-trip via ipcRenderer.sendSync so the htmx confirm handler
   // can return a plain boolean without needing async/await.
   showConfirm: (message) => ipcRenderer.sendSync("show-confirm", message),
+
+  // Returns the current app version string.
+  getVersion: () => ipcRenderer.invoke("get-version"),
+
+  // Register a callback for when an update is available.
+  onUpdateAvailable: (cb) => ipcRenderer.on("update-available", (_event, info) => cb(info)),
+
+  // Register a callback for when an update has been downloaded and is ready to install.
+  onUpdateDownloaded: (cb) => ipcRenderer.on("update-downloaded", (_event, info) => cb(info)),
+
+  // Trigger a manual update check.
+  checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
+
+  // Quit and install the downloaded update immediately.
+  installUpdate: () => ipcRenderer.send("install-update"),
 });

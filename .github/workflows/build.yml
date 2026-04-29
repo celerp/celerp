@@ -3,6 +3,7 @@ name: Build Binaries
 on:
   push:
     tags: ["v*"]
+    branches: ["develop"]
   workflow_dispatch:
 
 permissions:
@@ -32,7 +33,7 @@ jobs:
             pbs_triple: aarch64-apple-darwin
 
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 180
 
     steps:
       - uses: actions/checkout@v4
@@ -149,6 +150,21 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: ${{ matrix.build_cmd }}
 
+      - name: Notarize Mac DMG
+        if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 130
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          xcrun notarytool submit electron/dist/Celerp-mac.dmg \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait --timeout 2h
+          xcrun stapler staple electron/dist/Celerp-mac.dmg
+
       - name: Normalize artifact names
         shell: bash
         run: |
@@ -169,8 +185,8 @@ jobs:
             electron/dist/Celerp.AppImage
           if-no-files-found: warn
 
-      - name: Release (tags only)
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Release (version tag)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -178,3 +194,17 @@ jobs:
             electron/dist/Celerp-mac.dmg
             electron/dist/Celerp.AppImage
           draft: false
+          prerelease: false
+
+      - name: Release (dev build)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev-latest
+          name: "Dev Build (latest)"
+          files: |
+            electron/dist/Celerp-Setup.exe
+            electron/dist/Celerp-mac.dmg
+            electron/dist/Celerp.AppImage
+          draft: false
+          prerelease: true

@@ -10085,6 +10085,31 @@ class TestBuildWorkflowVersioning:
         assert 'Celerp.AppImage' in workflow
         assert 'Celerp-${VERSION}-arm64.dmg' not in workflow
 
+    def test_build_workflow_notarize_step_present(self):
+        workflow = Path('.github/workflows/build.yml').read_text()
+        assert 'Notarize Mac DMG' in workflow
+        assert 'xcrun notarytool submit' in workflow
+        assert '--timeout 2h' in workflow
+
+    def test_build_workflow_notarize_timeout(self):
+        workflow = Path('.github/workflows/build.yml').read_text()
+        assert 'timeout-minutes: 130' in workflow
+        assert 'timeout-minutes: 180' in workflow
+
+    def test_build_workflow_dev_pipeline_trigger(self):
+        workflow = Path('.github/workflows/build.yml').read_text()
+        assert 'develop' in workflow
+        assert 'dev-latest' in workflow
+        assert 'prerelease: true' in workflow
+
+    def test_build_workflow_no_notarize_for_dev(self):
+        workflow = Path('.github/workflows/build.yml').read_text()
+        assert "startsWith(github.ref, 'refs/tags/v')" in workflow
+
+    def test_electron_main_disallows_prerelease(self):
+        main_js = Path('electron/main.js').read_text()
+        assert 'allowPrerelease = false' in main_js
+
 
 class TestInventoryUXFixes:
     """Tests for the 5-fix inventory UX improvements (2026-03-25)."""
