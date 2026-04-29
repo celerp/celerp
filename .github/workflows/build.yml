@@ -158,12 +158,19 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          xcrun notarytool submit electron/dist/Celerp-mac.dmg \
+          # electron-builder produces a versioned filename (e.g. Celerp-1.0.9-arm64.dmg).
+          # The normalize step runs after this one, so we find the DMG dynamically.
+          DMG=$(find electron/dist -name "*.dmg" | head -1)
+          if [ -z "$DMG" ]; then
+            echo "ERROR: no DMG found in electron/dist" && ls electron/dist && exit 1
+          fi
+          echo "Notarizing: $DMG"
+          xcrun notarytool submit "$DMG" \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_SPECIFIC_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
             --wait --timeout 2h
-          xcrun stapler staple electron/dist/Celerp-mac.dmg
+          xcrun stapler staple "$DMG"
 
       - name: Normalize artifact names
         shell: bash
