@@ -281,6 +281,17 @@ function startApi(dbUrl, cfg) {
     apiPort = await getFreePort();
     const env = {
       ...process.env,
+      // Scrub Python environment variables that the user's shell may have set
+      // (pyenv, conda, Homebrew, virtualenv). If inherited, they redirect the
+      // bundled standalone Python to the wrong stdlib and crash uvicorn before
+      // it ever binds a port. This is the cause of "Port N never opened" when
+      // launching a notarized app from the terminal (Finder launch gets a clean
+      // environment and never triggers this).
+      PYTHONHOME: undefined,
+      PYTHONSTARTUP: undefined,
+      VIRTUAL_ENV: undefined,
+      CONDA_PREFIX: undefined,
+      CONDA_DEFAULT_ENV: undefined,
       DATABASE_URL: dbUrl,
       JWT_SECRET: getOrCreateJwtSecret(),
       PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
@@ -317,6 +328,13 @@ function startUi(dbUrl, cfg) {
     uiPort = await getFreePort();
     const env = {
       ...process.env,
+      // Scrub Python environment variables that the user's shell may have set.
+      // See startApi comment for full explanation.
+      PYTHONHOME: undefined,
+      PYTHONSTARTUP: undefined,
+      VIRTUAL_ENV: undefined,
+      CONDA_PREFIX: undefined,
+      CONDA_DEFAULT_ENV: undefined,
       API_URL: `http://127.0.0.1:${apiPort}`,
       DATABASE_URL: dbUrl,
       JWT_SECRET: getOrCreateJwtSecret(),
