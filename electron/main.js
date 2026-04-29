@@ -45,15 +45,9 @@ childProcess.spawn = function spawn(cmd, args, opts) {
 const spawn = childProcess.spawn;
 
 // Patch fs.promises.chmod globally — same reason as spawn above.
-// On notarized builds macOS protects signed binaries from chmod (EPERM when
-// launched outside LaunchServices, e.g. from Terminal). Binaries are already
-// executable after signing, so EPERM here is safe to ignore.
 const fsPromises = require("fs").promises;
 const _chmod = fsPromises.chmod.bind(fsPromises);
-fsPromises.chmod = (p, mode) =>
-  _chmod(rewriteAsarPath(p), mode).catch((err) => {
-    if (err.code !== "EPERM") throw err;
-  });
+fsPromises.chmod = (p, mode) => _chmod(rewriteAsarPath(p), mode);
 
 // Patch async-exit-hook before embedded-postgres loads so gracefulShutdown(done)
 // always receives a callable done. In some Electron exit paths async-exit-hook
