@@ -15,9 +15,6 @@ importers:
         specifier: ^17.9.0-beta.16
         version: 17.9.0-beta.16
     devDependencies:
-      '@electron/notarize':
-        specifier: ^2.5.0
-        version: 2.5.0
       electron:
         specifier: ^30.0.0
         version: 30.5.1
