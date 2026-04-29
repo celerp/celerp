@@ -10110,6 +10110,19 @@ class TestBuildWorkflowVersioning:
         main_js = Path('electron/main.js').read_text()
         assert 'allowPrerelease = false' in main_js
 
+    def test_update_card_uses_correct_releases_url(self):
+        shell = Path('ui/components/shell.py').read_text()
+        assert 'https://github.com/celerp/celerp/releases' in shell
+        assert 'Data-Universal-Limited' not in shell
+
+    def test_electron_main_wires_update_not_available(self):
+        main_js = Path('electron/main.js').read_text()
+        assert 'update-not-available' in main_js
+
+    def test_preload_exposes_on_update_not_available(self):
+        preload = Path('electron/preload.js').read_text()
+        assert 'onUpdateNotAvailable' in preload
+
 
 class TestInventoryUXFixes:
     """Tests for the 5-fix inventory UX improvements (2026-03-25)."""

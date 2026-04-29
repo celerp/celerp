@@ -26,6 +26,9 @@ contextBridge.exposeInMainWorld("celerp", {
   // Register a callback for when an update has been downloaded and is ready to install.
   onUpdateDownloaded: (cb) => ipcRenderer.on("update-downloaded", (_event, info) => cb(info)),
 
+  // Register a callback for when no update is available (or an error occurred).
+  onUpdateNotAvailable: (cb) => ipcRenderer.on("update-not-available", () => cb()),
+
   // Trigger a manual update check.
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
 

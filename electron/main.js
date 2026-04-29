@@ -431,13 +431,19 @@ function setupAutoUpdater() {
     if (mainWindow) mainWindow.webContents.send("update-available", info);
   });
 
+  autoUpdater.on("update-not-available", () => {
+    if (mainWindow) mainWindow.webContents.send("update-not-available");
+  });
+
   autoUpdater.on("update-downloaded", (info) => {
     if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
   });
 
   autoUpdater.on("error", (err) => {
-    // Log only — update failures must never interrupt the user's work
+    // Log only — update failures must never interrupt the user's work.
+    // Also notify renderer so the UI can reset from "Checking..." state.
     console.error("[updater] error:", err?.message ?? String(err));
+    if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 
   autoUpdater.checkForUpdates();

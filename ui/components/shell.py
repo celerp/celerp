@@ -398,12 +398,26 @@ document.addEventListener('DOMContentLoaded', function() {
 
       setState('Up to date', false);
 
+      function resetCheckBtn() {
+        if (checkBtn) {
+          checkBtn.disabled = false;
+          checkBtn.textContent = 'Check for updates';
+        }
+      }
+
       window.celerp.onUpdateAvailable(function() {
         setState('Update available - downloading...', false);
+        resetCheckBtn();
+      });
+
+      window.celerp.onUpdateNotAvailable(function() {
+        setState('Up to date', false);
+        resetCheckBtn();
       });
 
       window.celerp.onUpdateDownloaded(function(info) {
         setState('Restart to install v' + info.version, true);
+        resetCheckBtn();
       });
 
       if (checkBtn) {
@@ -411,13 +425,10 @@ document.addEventListener('DOMContentLoaded', function() {
           checkBtn.disabled = true;
           checkBtn.textContent = '...';
           setState('Checking...', false);
-          window.celerp.checkForUpdates().then(function() {
-            checkBtn.disabled = false;
-            checkBtn.textContent = 'Check for updates';
-          }).catch(function() {
-            checkBtn.disabled = false;
-            checkBtn.textContent = 'Check for updates';
+          // Button re-enabled by onUpdateAvailable / onUpdateNotAvailable / error path
+          window.celerp.checkForUpdates().catch(function() {
             setState('Up to date', false);
+            resetCheckBtn();
           });
         });
       }
@@ -575,7 +586,7 @@ def _topbar(companies: list[dict], lang: str = "en") -> FT:
                     Div(
                         Span("", cls="update-card__version"),
                         Span("", cls="update-card__state"),
-                        A("Releases", href="https://github.com/Data-Universal-Limited/celerp/releases",
+                        A("Releases", href="https://github.com/celerp/celerp/releases",
                           target="_blank", rel="noopener noreferrer", cls="update-card__releases-link"),
                         cls="update-card__info",
                     ),
