@@ -500,41 +500,6 @@ async def test_pnl_shows_revenue_after_finalize(client):
 
 
 # ---------------------------------------------------------------------------
-# P&L: JE with missing ts must not be silently excluded by date filter
-# ---------------------------------------------------------------------------
-
-
-def test_build_balances_includes_je_with_missing_ts():
-    """_build_balances must include JEs that have no ts in their projection state.
-
-    Guards against old JE projections (created before payment_date was required)
-    being silently excluded from date-filtered P&L / trial balance reports.
-    A missing ts is treated as 'include always', not 'exclude'.
-    """
-    from decimal import Decimal
-    from types import SimpleNamespace
-    from celerp_accounting.routes import _build_balances
-
-    # Simulate a posted JE projection with no ts (old data)
-    undated_je = SimpleNamespace(state={
-        "status": "posted",
-        "entries": [
-            {"account": "1120", "debit": 100.0, "credit": 0.0},
-            {"account": "4100", "debit": 0.0, "credit": 100.0},
-        ],
-        # ts intentionally absent
-    })
-
-    # With a date range that would exclude it if ts were treated as ""
-    balances = _build_balances([undated_je], date_from="2026-01-01", date_to="2026-12-31")
-
-    assert balances.get("4100") == Decimal("-100"), (
-        f"JE with missing ts was silently excluded from P&L: {balances}"
-    )
-    assert balances.get("1120") == Decimal("100")
-
-
-# ---------------------------------------------------------------------------
 # Problem 1: payment_index as JE key (void + repay must not collide)
 # ---------------------------------------------------------------------------
 

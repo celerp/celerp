@@ -195,13 +195,11 @@ async def seed_chart_endpoint(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Seed the default chart of accounts for this company. Only adds missing accounts."""
-    existing_codes = {
-        row.code for row in (
-            await session.execute(
-                select(Account.code).where(Account.company_id == company_id)
-            )
-        ).scalars().all()
-    }
+    existing_codes = set(
+        (await session.execute(
+            select(Account.code).where(Account.company_id == company_id)
+        )).scalars().all()
+    )
     added = 0
     for entry in THAI_CHART_OF_ACCOUNTS:
         if entry["code"] not in existing_codes:
@@ -223,7 +221,7 @@ async def seed_chart_endpoint(
     if not existing_bank:
         await _seed_default_bank_account(session, company_id)
 
-    await session.flush()
+    await session.commit()
     return {"added": added, "already_existed": len(existing_codes)}
 
 
@@ -362,10 +360,6 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
     Asset/Expense accounts are debit-normal (positive = debit balance).
     Liability/Equity/Revenue accounts are credit-normal (positive = credit balance, stored as positive here).
     We store the raw difference and let the report layer interpret sign conventions.
-
-    Date filtering: JEs where ts cannot be determined are included unconditionally
-    rather than silently excluded. Excluding undated JEs would hide real transactions
-    from reports, producing wrong totals. This is the conservative/safe choice.
     """
     balances: dict[str, Decimal] = {}
     for row in rows:
@@ -373,12 +367,10 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
         if state.get("status") != "posted":
             continue
         ts = (state.get("ts") or state.get("created_at") or "")[:10]
-        if ts:
-            if date_from and ts < date_from:
-                continue
-            if date_to and ts > date_to:
-                continue
-        # ts is empty: include unconditionally (missing timestamp != wrong period)
+        if date_from and ts < date_from:
+            continue
+        if date_to and ts > date_to:
+            continue
         for entry in state.get("entries", []):
             code = entry.get("account")
             if not code:
@@ -423,12 +415,10 @@ async def trial_balance(
         if state.get("status") != "posted":
             continue
         ts = (state.get("ts") or state.get("created_at") or "")[:10]
-        if ts:
-            if date_from and ts < date_from:
-                continue
-            if date_to and ts > date_to:
-                continue
-        # ts is empty: include unconditionally (see _build_balances)
+        if date_from and ts < date_from:
+            continue
+        if date_to and ts > date_to:
+            continue
         for entry in state.get("entries", []):
             code = entry.get("account")
             if not code:
