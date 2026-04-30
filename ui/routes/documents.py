@@ -1869,12 +1869,15 @@ def setup_routes(app):
             method = str(form.get("method", "")).strip() or None
             reference = str(form.get("reference", "")).strip() or None
             bank_account = str(form.get("bank_account", "")).strip() or None
+            conversion_rate_str = str(form.get("conversion_rate", "")).strip()
+            conversion_rate = float(conversion_rate_str) if conversion_rate_str else None
             await api.record_payment(token, entity_id, {
                 "amount": amount,
                 "method": method,
                 "reference": reference,
                 "payment_date": payment_date,
                 "bank_account": bank_account,
+                "conversion_rate": conversion_rate,
             })
         except APIError as e:
             if e.status == 401:
@@ -2113,9 +2116,7 @@ def setup_routes(app):
         today = _d.today().isoformat()
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
-        _bank_opts = _bank_account_options(bank_accounts)
-
-        hidden_ids = [Input(type="hidden", name="doc_ids", value=d.get("entity_id") or d.get("id", "")) for d in payable]
+        _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
 
         panel = Div(
             H3(f"Bulk Payment — {contact_name} ({len(payable)} document{'s' if len(payable) != 1 else ''})", cls="section-title"),
@@ -3146,17 +3147,19 @@ def _tc_dropdown(entity_id: str, doc: dict, tc_templates: list[dict], doc_type: 
     ]
 
 
-def _bank_account_options(bank_accounts: list[dict] | None) -> list:
+def _bank_account_options(bank_accounts: list[dict] | None, default_code: str | None = None) -> list:
     """Return Option elements for every active bank account.
 
     DRY: used in _payment_section (invoice/bill/credit-note forms) and the
     bulk-pay modal. Key names match _bank_to_dict in celerp-accounting routes:
     chart_account_code and bank_name.
+    default_code: pre-selects the matching option (pass first account's code).
     """
     return [
         Option(
             f"{ba.get('chart_account_code', '')} - {ba.get('bank_name', '')}",
             value=ba.get("chart_account_code", ""),
+            selected=(ba.get("chart_account_code") == default_code),
         )
         for ba in (bank_accounts or [])
     ]
@@ -3282,10 +3285,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
     if outstanding > 0.005:
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
-        _bank_opts = _bank_account_options(bank_accounts)
+        _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
 
         if is_credit_note:
-            # Two forms: Apply to Invoice + Refund to Customer
             add_form = Div(
                 # Apply to Invoice form
                 Div(
@@ -3324,6 +3326,12 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
                                 Select(*_methods, name="method", cls="form-input"), cls="form-group"),
                             Div(Label(t("label.bank_account"), cls="form-label"),
                                 Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
+                            Div(Label("Conversion rate", cls="form-label"),
+                                Input(type="number", name="conversion_rate", value="1.0000",
+                                      step="0.0001", min="0.0001", cls="form-input"),
+                                P("Rate at which refund was issued (1.0 if no conversion). FX entries require the Multi-Currency Module.",
+                                  cls="form-hint"),
+                                cls="form-group"),
                             Div(Label(t("label.reference"), cls="form-label"),
                                 Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                             cls="form-row",
@@ -3376,6 +3384,12 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
                             Select(*_methods, name="method", cls="form-input"), cls="form-group"),
                         Div(Label(t("label.bank_account"), cls="form-label"),
                             Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
+                        Div(Label("Conversion rate", cls="form-label"),
+                            Input(type="number", name="conversion_rate", value="1.0000",
+                                  step="0.0001", min="0.0001", cls="form-input"),
+                            P("Rate at which payment was received (1.0 if no conversion). FX gain/loss entries require the Multi-Currency Module.",
+                              cls="form-hint"),
+                            cls="form-group"),
                         Div(Label(t("label.reference"), cls="form-label"),
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                         cls="form-row",

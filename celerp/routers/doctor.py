@@ -380,52 +380,21 @@ async def _emit_payment_je(
     *,
     cumulative_paid: float | None = None,
 ) -> None:
-    ts = state.get("issue_date") or state.get("created_at")
-    paid_key = str(int(round((cumulative_paid or amount) * 100)))
-    je_id = f"je:auto:{doc_id}:pay:{paid_key}"
+    """Delegate to auto_je.create_for_doc_payment for DRY compliance.
 
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=je_id,
-        entity_type="journal_entry",
-        event_type="acc.journal_entry.created",
-        data={
-            "memo": f"Auto JE for {doc_id} payment",
-            "entries": [
-                {"account": "1110", "debit": amount, "credit": 0.0},
-                {"account": "1120", "debit": 0.0, "credit": amount},
-            ],
-            "ts": ts,
-        },
-        actor_id=user_id,
-        location_id=None,
-        source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "invoice.paid", "c"),
-        metadata_={
-            "trigger": "doc.payment.received",
-            "doc_id": doc_id,
-            "payment_key": paid_key,
-            "cumulative_paid": cumulative_paid,
-        },
-    )
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=je_id,
-        entity_type="journal_entry",
-        event_type="acc.journal_entry.posted",
-        data={},
-        actor_id=user_id,
-        location_id=None,
-        source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "invoice.paid", "p"),
-        metadata_={
-            "trigger": "doc.payment.received",
-            "doc_id": doc_id,
-            "payment_key": paid_key,
-            "cumulative_paid": cumulative_paid,
-        },
+    Doctor repair: uses the first recorded bank_account from state, falling back to
+    "1111" (the default bank account that always exists) when original is unknown.
+    This is the one legitimate fallback - historical repair where real bank is unknowable.
+    """
+    from celerp.services import auto_je as _auto_je
+    bank_code = (state.get("payments") or [{}])[0].get("bank_account") or "1111"  # Doctor fallback: default bank always exists
+    ts = state.get("issue_date") or state.get("created_at") or __import__("datetime").date.today().isoformat()
+    await _auto_je.create_for_doc_payment(
+        session, company_id=company_id, user_id=user_id, doc_id=doc_id,
+        amount=amount, cumulative_paid=cumulative_paid,
+        bank_account_code=bank_code,
+        doc_type=state.get("doc_type", "invoice"),
+        payment_date=ts,
     )
 
 

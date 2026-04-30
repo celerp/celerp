@@ -94,7 +94,7 @@ async def test_void_payment_already_voided(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token)
 
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50.0, "bank_account": "1111"})
     await client.post(f"/docs/{inv}/void-payment", headers=_h(token), json={"payment_index": 0})
 
     r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token), json={"payment_index": 0})
@@ -107,8 +107,8 @@ async def test_void_payment_partial_to_paid_lifecycle(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
 
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 60.0})
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 40.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 60.0, "bank_account": "1111"})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 40.0, "bank_account": "1111"})
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert doc["status"] == "paid"
@@ -287,7 +287,7 @@ async def test_bulk_payment_skips_non_payable(client):
     inv = await _create_and_finalize_invoice(client, token, 100.0, contact_id="contact:c")
 
     r = await client.post("/docs/bulk-payment", headers=_h(token), json={"payment_date": "2026-01-15", 
-        "doc_ids": [draft_id, inv], "amount": 100.0,
+        "doc_ids": [draft_id, inv], "amount": 100.0, "bank_account": "1111",
     })
     assert r.status_code == 200
     result = r.json()
@@ -330,7 +330,7 @@ async def test_void_blocked_with_active_payments(client):
     """Cannot void a doc that has active payments."""
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50.0, "bank_account": "1111"})
 
     r = await client.post(f"/docs/{inv}/void", headers=_h(token), json={})
     assert r.status_code == 409
@@ -342,7 +342,7 @@ async def test_void_allowed_after_all_payments_voided(client):
     """After voiding all payments, doc can be voided."""
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 100.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
 
     # Void the payment
     await client.post(f"/docs/{inv}/void-payment", headers=_h(token), json={"payment_index": 0})
@@ -352,3 +352,85 @@ async def test_void_allowed_after_all_payments_voided(client):
 
     r = await client.post(f"/docs/{inv}/void", headers=_h(token), json={})
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Issue 1: bank_account required on all payment endpoints
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_payment_requires_bank_account(client):
+    """record_payment must reject missing bank_account."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0})
+    assert r.status_code == 422
+    assert "bank_account" in r.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_bulk_payment_requires_bank_account(client):
+    """bulk_payment must reject missing bank_account."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post("/docs/bulk-payment", headers=_h(token),
+                          json={"doc_ids": [inv], "amount": 100.0, "payment_date": "2026-01-15"})
+    assert r.status_code == 422
+    assert "bank_account" in r.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_cn_refund_requires_bank_account(client):
+    """cn-refund must reject missing bank_account."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 200.0)
+    cn = await _create_and_finalize_cn(client, token, inv, 50.0)
+    r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token),
+                          json={"date": "2026-01-15", "amount": 50.0})
+    assert r.status_code == 422
+    assert "bank_account" in r.json().get("detail", "").lower()
+
+
+@pytest.mark.asyncio
+async def test_payment_projection_stores_bank_account_not_default(client):
+    """Payment projection must store exactly the specified account, never fall back to 1110."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["payments"][0]["bank_account"] == "1111"
+    assert doc["payments"][0]["bank_account"] != "1110"
+
+
+# ---------------------------------------------------------------------------
+# Issue 3: conversion_rate stored on payment
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_payment_conversion_rate_stored(client):
+    """conversion_rate is persisted in the payment projection."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0,
+                                "bank_account": "1111", "conversion_rate": 35.5})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["payments"][0]["conversion_rate"] == 35.5
+
+
+@pytest.mark.asyncio
+async def test_payment_conversion_rate_optional(client):
+    """Omitting conversion_rate succeeds and stores None."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["payments"][0].get("conversion_rate") is None

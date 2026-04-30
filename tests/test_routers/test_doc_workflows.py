@@ -107,7 +107,7 @@ async def test_invoice_partial_then_full_payment_with_je(client, session):
     inv = await _create_invoice(client, token)
 
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
-    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 40})
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 40, "bank_account": "1111"})
     assert r.status_code == 200
 
     partial = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
@@ -117,8 +117,8 @@ async def test_invoice_partial_then_full_payment_with_je(client, session):
 
     je1 = await _find_je(client, token, "doc.payment.received", inv)
     e1 = je1["data"]["entries"]
-    assert {x["account"] for x in e1} == {"1110", "1120"}
-    assert any(x["account"] == "1110" and float(x["debit"]) == 40 for x in e1)
+    assert {x["account"] for x in e1} == {"1111", "1120"}
+    assert any(x["account"] == "1111" and float(x["debit"]) == 40 for x in e1)
     assert any(x["account"] == "1120" and float(x["credit"]) == 40 for x in e1)
     _assert_balanced(e1)
 
@@ -126,7 +126,7 @@ async def test_invoice_partial_then_full_payment_with_je(client, session):
     assert je_row.metadata_["trigger"] == "doc.payment.received"
     assert je_row.metadata_["doc_id"] == inv
 
-    r2 = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 67})
+    r2 = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 67, "bank_account": "1111"})
     assert r2.status_code == 200
     paid = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert paid["status"] == "paid"
@@ -139,7 +139,7 @@ async def test_invoice_guards_void_edit_pay_and_overpayment(client):
     inv = await _create_invoice(client, token)
 
     # pay draft
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 1})).status_code == 409
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 1, "bank_account": "1111"})).status_code == 409
 
     # edit finalized
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
@@ -152,10 +152,10 @@ async def test_invoice_guards_void_edit_pay_and_overpayment(client):
     ).status_code == 409
 
     # overpayment
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 108})).status_code == 409
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 108, "bank_account": "1111"})).status_code == 409
 
     # paid then void forbidden
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 107})).status_code == 200
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 107, "bank_account": "1111"})).status_code == 200
     assert (await client.post(f"/docs/{inv}/void", headers=_h(token), json={"reason": "x"})).status_code == 409
 
     # draft can be voided
@@ -567,7 +567,7 @@ async def test_summary_partial_invoice_in_awaiting_not_paid(client, session):
     # Record a partial payment (500 out of 1000)
     await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
                       json={"amount": 500, "method": "transfer", "reference": "PART-1",
-                            "payment_date": "2026-04-25", "bank_account": "1110"})
+                            "payment_date": "2026-04-25", "bank_account": "1111"})
     r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
@@ -589,7 +589,7 @@ async def test_summary_all_count_not_doubled(client, session):
     # Pay in full
     await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
                       json={"amount": 200, "method": "cash", "reference": "FULL-1",
-                            "payment_date": "2026-04-25", "bank_account": "1110"})
+                            "payment_date": "2026-04-25", "bank_account": "1111"})
     r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
@@ -607,7 +607,7 @@ async def test_summary_awaiting_payment_total_is_outstanding(client, session):
     # Partial payment of 300 -> outstanding = 500
     await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
                       json={"amount": 300, "method": "cash", "reference": "P1",
-                            "payment_date": "2026-04-25", "bank_account": "1110"})
+                            "payment_date": "2026-04-25", "bank_account": "1111"})
     r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
@@ -626,7 +626,7 @@ async def _pay(client, token: str, doc_id: str, amount: float, reference: str = 
         f"/docs/{doc_id}/payment",
         headers=_h(token),
         json={"amount": amount, "method": "transfer", "reference": reference,
-              "payment_date": "2026-04-25", "bank_account": "1110"},
+              "payment_date": "2026-04-25", "bank_account": "1111"},
     )
     assert r.status_code == 200, f"Payment failed: {r.json()}"
 

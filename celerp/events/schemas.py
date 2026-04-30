@@ -354,6 +354,7 @@ class DocPaymentReceived(BaseModel):
     remaining_balance: float | None = None
     payment_date: str
     bank_account: str | None = None
+    conversion_rate: float | None = None  # pass-through for premium multicurrency module
     source_doc_id: str | None = None
     target_doc_id: str | None = None
 

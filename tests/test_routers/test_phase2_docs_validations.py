@@ -32,7 +32,7 @@ async def test_docs_validation_guards_and_edge_cases(client):
 
     # payment on draft rejected
     inv = await _create_invoice(client, token)
-    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 1})
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 1, "bank_account": "1111"})
     assert r.status_code == 409
 
     # finalize then edit rejected
@@ -42,11 +42,11 @@ async def test_docs_validation_guards_and_edge_cases(client):
     assert r.status_code == 409
 
     # payment exceeding outstanding rejected
-    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 108})
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 108, "bank_account": "1111"})
     assert r.status_code == 409
 
     # valid payment then void after paid rejected
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 107})).status_code == 200
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 107, "bank_account": "1111"})).status_code == 200
     r = await client.post(f"/docs/{inv}/void", headers=_h(token), json={"reason": "x"})
     assert r.status_code == 409
 
@@ -112,7 +112,7 @@ async def test_auto_je_entries_balanced_and_account_codes(client):
     inv = await _create_invoice(client, token, total=107)
     await client.post(f"/docs/{inv}/send", headers=_h(token), json={})
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 107})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 107, "bank_account": "1111"})
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     assert len(ledger) >= 2
@@ -129,7 +129,7 @@ async def test_auto_je_entries_balanced_and_account_codes(client):
     fin_accounts = {x["account"] for x in finalize["data"]["entries"]}
     pay_accounts = {x["account"] for x in payment["data"]["entries"]}
     assert fin_accounts == {"1120", "4100", "2120"}
-    assert pay_accounts == {"1110", "1120"}
+    assert pay_accounts == {"1111", "1120"}
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager
@@ -705,6 +706,9 @@ async def create_bank_account(
 ) -> dict:
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=f"bank_type must be one of {sorted(_BANK_TYPES)}")
+    currency = payload.currency.upper()
+    if currency not in ISO_4217_CURRENCIES:
+        raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
 
     # Resolve or auto-assign chart account code
     code = payload.account_code or await _next_bank_account_code(session, company_id)
@@ -734,7 +738,7 @@ async def create_bank_account(
         bank_name=payload.bank_name,
         account_number=payload.account_number,
         bank_type=payload.bank_type,
-        currency=payload.currency,
+        currency=currency,
         opening_balance=payload.opening_balance,
     )
     session.add(bank)
@@ -813,7 +817,10 @@ async def patch_bank_account(
     if payload.bank_type is not None:
         b.bank_type = payload.bank_type
     if payload.currency is not None:
-        b.currency = payload.currency
+        normed = payload.currency.upper()
+        if normed not in ISO_4217_CURRENCIES:
+            raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
+        b.currency = normed
     if payload.is_active is not None:
         b.is_active = payload.is_active
 

@@ -110,6 +110,7 @@ class DocPaymentBody(BaseModel):
     method: str | None = None
     reference: str | None = None
     bank_account: str | None = None
+    conversion_rate: float | None = None  # pass-through for premium multicurrency module
     source_doc_id: str | None = None
     target_doc_id: str | None = None
     idempotency_key: str | None = None
@@ -765,13 +766,15 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     body = payload.model_dump(exclude_none=True)
     body.setdefault("currency", row.state.get("currency", "USD"))
     body["remaining_balance"] = max(0.0, outstanding - payload.amount)
+    if not payload.bank_account:
+        raise HTTPException(status_code=422, detail="bank_account is required")
+    bank_code = payload.bank_account
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
         data=body, actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     cumulative_paid = float(row.state.get("amount_paid", 0) or 0) + payload.amount
-    bank_code = payload.bank_account or "1110"
     doc_type = row.state.get("doc_type", "invoice")
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
@@ -840,9 +843,10 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # Reverse the payment JE
+    # Reverse the payment JE - use stored bank_account; fall back to "1111" (default account that always exists)
+    # for historical payments recorded before bank_account was required.
     doc_type = row.state.get("doc_type", "invoice")
-    bank_code = payment.get("bank_account", "1110")
+    bank_code = payment.get("bank_account") or "1111"
     await auto_je.void_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         payment_index=payload.payment_index, amount=payment["amount"],
@@ -979,7 +983,9 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         raise HTTPException(status_code=409, detail="Refund amount exceeds credit note balance")
 
     payment_date = payload.date
-    bank_code = payload.bank_account or "1110"
+    if not payload.bank_account:
+        raise HTTPException(status_code=422, detail="bank_account is required")
+    bank_code = payload.bank_account
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -1052,7 +1058,9 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     remaining = payload.amount
     allocations = []
     payment_date = payload.payment_date
-    bank_code = payload.bank_account or "1110"
+    if not payload.bank_account:
+        raise HTTPException(status_code=422, detail="bank_account is required")
+    bank_code = payload.bank_account
 
     for doc_id, state in payable:
         if remaining <= 0.005:
@@ -1439,7 +1447,16 @@ async def import_doc(
 
 
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict) -> None:
-    """Create auto-JEs for imported docs that arrive in a final state.
+    """Create finalization JEs for imported docs that arrive in a non-draft state.
+
+    IMPORTANT: We never synthesize payment JEs from snapshot imports.
+    - The finalization JE (Dr AR / Cr Revenue) is correct to create from a snapshot:
+      it records historical revenue and the accounts receivable balance accurately.
+    - A payment JE requires a real payment_date and bank_account. Importers who have
+      payment history must emit explicit doc.payment.received events (Option A import).
+    - The doc projection reflects amount_paid / amount_outstanding from the snapshot
+      payload directly, so the UI shows correct paid/partial/unpaid status without
+      requiring a synthetic accounting entry.
 
     Uses doc-scoped idempotency keys - safe to call multiple times.
     """
@@ -1454,14 +1471,6 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
         await auto_je.create_for_doc_finalized(
             session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data,
         )
-        amount_paid = float(data.get("amount_paid", 0) or 0)
-        if amount_paid > 0:
-            from datetime import date as _date
-            await auto_je.create_for_doc_payment(
-                session, company_id=company_id, user_id=user_id, doc_id=entity_id,
-                amount=amount_paid, cumulative_paid=amount_paid,
-                payment_date=data.get("issue_date") or _date.today().isoformat(),
-            )
 
     elif doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
         await auto_je.create_for_po_received(

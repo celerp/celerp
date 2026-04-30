@@ -29,7 +29,7 @@ async def test_invoice_lifecycle_with_payment_and_je(client):
 
     assert (await client.post(f"/docs/{doc_id}/send", headers=_auth(token), json={})).status_code == 200
     assert (await client.post(f"/docs/{doc_id}/finalize", headers=_auth(token))).status_code == 200
-    assert (await client.post(f"/docs/{doc_id}/payment", headers=_auth(token), json={"payment_date": "2026-01-15", "amount": 107})).status_code == 200
+    assert (await client.post(f"/docs/{doc_id}/payment", headers=_auth(token), json={"payment_date": "2026-01-15", "amount": 107, "bank_account": "1111"})).status_code == 200
 
     doc = (await client.get(f"/docs/{doc_id}", headers=_auth(token))).json()
     assert doc["status"] == "paid"

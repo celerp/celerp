@@ -49,7 +49,7 @@ async def test_doc_summary_invoice_branch(client):
     inv_id = await _doc(client, tok, total=100)
     await client.post(f"/docs/{inv_id}/send", headers=_h(tok), json={})
     await client.post(f"/docs/{inv_id}/finalize", headers=_h(tok))
-    await client.post(f"/docs/{inv_id}/payment", headers=_h(tok), json={"payment_date": "2026-01-15", "amount": 40})
+    await client.post(f"/docs/{inv_id}/payment", headers=_h(tok), json={"payment_date": "2026-01-15", "amount": 40, "bank_account": "1111"})
 
     r = await client.get("/docs/summary", headers=_h(tok))
     assert r.status_code == 200
@@ -71,9 +71,9 @@ async def test_doc_refund_success(client):
     inv_id = await _doc(client, tok, total=50)
     await client.post(f"/docs/{inv_id}/send", headers=_h(tok), json={})
     await client.post(f"/docs/{inv_id}/finalize", headers=_h(tok))
-    await client.post(f"/docs/{inv_id}/payment", headers=_h(tok), json={"payment_date": "2026-01-15", "amount": 30})
+    await client.post(f"/docs/{inv_id}/payment", headers=_h(tok), json={"payment_date": "2026-01-15", "amount": 30, "bank_account": "1111"})
 
-    r = await client.post(f"/docs/{inv_id}/refund", headers=_h(tok), json={"payment_date": "2026-01-15", "amount": 20})
+    r = await client.post(f"/docs/{inv_id}/refund", headers=_h(tok), json={"payment_date": "2026-01-15", "amount": 20, "bank_account": "1111"})
     assert r.status_code == 200
     assert "event_id" in r.json()
 

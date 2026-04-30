@@ -13,6 +13,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.config import COOKIE_NAME
+from celerp.constants import ISO_4217_CURRENCIES as _ISO_CURRENCIES
 from ui.components.table import EMPTY, add_new_option
 
 from ui.routes.settings import _token, _check_role
@@ -391,8 +392,13 @@ def setup_routes(app):
                             ),
                             Tr(
                                 Td(t("th.currency"), cls="detail-label"),
-                                Td(Input(type="text", name="currency", value=currency,
-                                         maxlength="8", cls="cell-input", required=True)),
+                                Td(
+                                    Select(
+                                        *[Option(c, value=c, selected=(c == currency)) for c in sorted(_ISO_CURRENCIES)],
+                                        name="currency", cls="cell-input cell-input--select", required=True,
+                                    ),
+                                    P("Using a foreign-currency account? The Multi-Currency Module handles FX gain/loss journal entries automatically.", cls="form-hint"),
+                                ),
                             ),
                             Tr(
                                 Td(t("acct.opening_balance"), cls="detail-label"),
@@ -492,8 +498,10 @@ def setup_routes(app):
                             ),
                             Tr(
                                 Td(t("th.currency"), cls="detail-label"),
-                                Td(Input(type="text", name="currency", value=b.get("currency", ""),
-                                         maxlength="8", cls="cell-input", required=True)),
+                                Td(Select(
+                                    *[Option(c, value=c, selected=(c == b.get("currency", ""))) for c in sorted(_ISO_CURRENCIES)],
+                                    name="currency", cls="cell-input cell-input--select", required=True,
+                                )),
                             ),
                             cls="detail-table",
                         ),

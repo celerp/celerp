@@ -198,10 +198,10 @@ async def test_import_paid_invoice_creates_jes(client, session):
     # Check JE projections were created
     r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
     jes = r.json()["items"]
-    # Should have 4 events: fin:created, fin:posted, pay:created, pay:posted
+    # Only finalization JE is created on import (no synthetic payment JE)
     je_types = [e["event_type"] for e in jes]
-    assert je_types.count("acc.journal_entry.created") == 2
-    assert je_types.count("acc.journal_entry.posted") == 2
+    assert je_types.count("acc.journal_entry.created") == 1
+    assert je_types.count("acc.journal_entry.posted") == 1
 
     # Trial balance should show data
     r = await client.get("/accounting/trial-balance", headers=_h(token))
@@ -327,7 +327,7 @@ async def test_batch_import_paid_invoices_create_jes(client, session):
     r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
     jes = r.json()["items"]
     created = [e for e in jes if e["event_type"] == "acc.journal_entry.created"]
-    assert len(created) == 6  # 3 fin + 3 pay
+    assert len(created) == 3  # 3 finalization only; no synthetic payment JEs on import
 
 
 # --- Doctor fix mode ---

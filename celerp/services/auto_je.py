@@ -84,11 +84,11 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, cumulative_paid: float | None = None, bank_account_code: str = "1110", doc_type: str = "invoice", payment_date: str) -> None:
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, cumulative_paid: float | None = None, bank_account_code: str, doc_type: str = "invoice", payment_date: str) -> None:
     """Create JE for a payment.
 
-    bank_account_code: chart account to debit (defaults to "1110" generic cash).
-    Pass the specific bank sub-account (e.g. "1111") when the user selects a bank.
+    bank_account_code: chart account to debit. Required - no default. Always pass the
+        specific bank sub-account (e.g. "1111"). Omitting raises TypeError at call time.
     doc_type: 'invoice' debits bank/credits AR; 'bill' debits AP/credits bank.
     payment_date: ISO date string (YYYY-MM-DD). Always required.
     """
@@ -117,7 +117,7 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str = "1110", doc_type: str = "invoice") -> None:
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice") -> None:
     """Reverse a payment JE by creating a counter-entry."""
     void_key = f"void_{payment_index}"
     if doc_type in ("bill", "purchase_order"):
