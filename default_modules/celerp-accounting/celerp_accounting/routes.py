@@ -362,6 +362,10 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
     Asset/Expense accounts are debit-normal (positive = debit balance).
     Liability/Equity/Revenue accounts are credit-normal (positive = credit balance, stored as positive here).
     We store the raw difference and let the report layer interpret sign conventions.
+
+    Date filtering: JEs where ts cannot be determined are included unconditionally
+    rather than silently excluded. Excluding undated JEs would hide real transactions
+    from reports, producing wrong totals. This is the conservative/safe choice.
     """
     balances: dict[str, Decimal] = {}
     for row in rows:
@@ -369,10 +373,12 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
         if state.get("status") != "posted":
             continue
         ts = (state.get("ts") or state.get("created_at") or "")[:10]
-        if date_from and ts < date_from:
-            continue
-        if date_to and ts > date_to:
-            continue
+        if ts:
+            if date_from and ts < date_from:
+                continue
+            if date_to and ts > date_to:
+                continue
+        # ts is empty: include unconditionally (missing timestamp != wrong period)
         for entry in state.get("entries", []):
             code = entry.get("account")
             if not code:
@@ -417,10 +423,12 @@ async def trial_balance(
         if state.get("status") != "posted":
             continue
         ts = (state.get("ts") or state.get("created_at") or "")[:10]
-        if date_from and ts < date_from:
-            continue
-        if date_to and ts > date_to:
-            continue
+        if ts:
+            if date_from and ts < date_from:
+                continue
+            if date_to and ts > date_to:
+                continue
+        # ts is empty: include unconditionally (see _build_balances)
         for entry in state.get("entries", []):
             code = entry.get("account")
             if not code:
