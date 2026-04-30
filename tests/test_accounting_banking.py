@@ -162,3 +162,53 @@ async def test_reconciliation_lifecycle(client):
     assert r3.status_code == 200
     recon = r3.json()
     assert recon.get("status") in ("open", "pending", "active")
+
+
+@pytest.mark.asyncio
+async def test_bank_account_list_response_shape(client):
+    """List endpoint returns 'items' key with chart_account_code and bank_name.
+
+    Regression: UI dropdown previously used 'accounts', 'account_code', 'name'
+    which are all wrong keys. This test locks in the correct shape so the bug
+    cannot silently re-appear.
+    """
+    headers = await _headers(client)
+    r = await client.get("/accounting/bank-accounts", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    # Envelope shape — must be 'items', not 'accounts' or 'data'
+    assert "items" in body, "response must use 'items' key, not 'accounts' or 'data'"
+    assert "total" in body
+    # Every item must have the fields the payment dropdown depends on
+    for item in body["items"]:
+        assert "chart_account_code" in item, "missing chart_account_code (UI dropdown uses this as option value)"
+        assert "bank_name" in item, "missing bank_name (UI dropdown uses this as option label)"
+        assert "id" in item
+
+
+@pytest.mark.asyncio
+async def test_multiple_bank_accounts_all_in_list(client):
+    """Creating two bank accounts — both appear in the list response.
+
+    Regression: payment dropdown only showed 'Default' because the UI read
+    the wrong key ('accounts' instead of 'items') and fell back to a hardcoded
+    option. Verify all created accounts are present.
+    """
+    headers = await _headers(client)
+    names = ["Kasikorn Bank", "SCB Savings"]
+    ids = []
+    for name in names:
+        r = await client.post(
+            "/accounting/bank-accounts",
+            json={"bank_name": name, "account_number": "0000000001",
+                  "currency": "THB", "bank_type": "savings"},
+            headers=headers,
+        )
+        assert r.status_code == 200
+        ids.append(r.json()["id"])
+
+    r2 = await client.get("/accounting/bank-accounts", headers=headers)
+    assert r2.status_code == 200
+    listed_ids = {b["id"] for b in r2.json()["items"]}
+    for bank_id in ids:
+        assert bank_id in listed_ids, f"bank account {bank_id} missing from list"

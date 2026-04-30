@@ -1265,7 +1265,7 @@ def setup_routes(app):
         if doc_type in ("invoice", "bill", "credit_note"):
             try:
                 ba_resp = await api.get_bank_accounts(token)
-                bank_accounts = ba_resp.get("accounts", []) if isinstance(ba_resp, dict) else ba_resp
+                bank_accounts = ba_resp.get("items", []) if isinstance(ba_resp, dict) else ba_resp
                 if not isinstance(bank_accounts, list):
                     bank_accounts = []
             except Exception:
@@ -2080,7 +2080,7 @@ def setup_routes(app):
         # Fetch bank accounts for dropdown
         bank_accounts = []
         try:
-            bank_accounts = (await api.get_bank_accounts(token)).get("accounts", [])
+            bank_accounts = (await api.get_bank_accounts(token)).get("items", [])
         except Exception:
             pass
 
@@ -2113,10 +2113,7 @@ def setup_routes(app):
         today = _d.today().isoformat()
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
-        _bank_opts = [Option(f"{ba.get('account_code', '')} - {ba.get('name', '')}", value=ba.get("account_code", ""))
-                      for ba in bank_accounts]
-        if not _bank_opts:
-            _bank_opts = [Option("1110 - Default", value="1110")]
+        _bank_opts = _bank_account_options(bank_accounts)
 
         hidden_ids = [Input(type="hidden", name="doc_ids", value=d.get("entity_id") or d.get("id", "")) for d in payable]
 
@@ -3149,6 +3146,22 @@ def _tc_dropdown(entity_id: str, doc: dict, tc_templates: list[dict], doc_type: 
     ]
 
 
+def _bank_account_options(bank_accounts: list[dict] | None) -> list:
+    """Return Option elements for every active bank account.
+
+    DRY: used in _payment_section (invoice/bill/credit-note forms) and the
+    bulk-pay modal. Key names match _bank_to_dict in celerp-accounting routes:
+    chart_account_code and bank_name.
+    """
+    return [
+        Option(
+            f"{ba.get('chart_account_code', '')} - {ba.get('bank_name', '')}",
+            value=ba.get("chart_account_code", ""),
+        )
+        for ba in (bank_accounts or [])
+    ]
+
+
 def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_manager: bool = True) -> FT:
     """Shared payment/credit section for invoices, bills, and credit notes.
 
@@ -3269,10 +3282,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
     if outstanding > 0.005:
         _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
                     Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
-        _bank_opts = [Option(f"{ba.get('account_code', '')} - {ba.get('name', '')}", value=ba.get("account_code", ""))
-                      for ba in (bank_accounts or [])]
-        if not _bank_opts:
-            _bank_opts = [Option("1110 - Default", value="1110")]
+        _bank_opts = _bank_account_options(bank_accounts)
 
         if is_credit_note:
             # Two forms: Apply to Invoice + Refund to Customer
