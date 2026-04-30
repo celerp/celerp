@@ -143,6 +143,14 @@ async def lifespan(_app: FastAPI):
             # Run create_all again so module tables are created (idempotent).
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+            # Allow modules to backfill data for existing companies (e.g. seed
+            # chart of accounts when accounting module is first enabled on an
+            # instance that already has companies).
+            from celerp.modules.slots import fire_lifecycle as _fire
+            from celerp.db import SessionLocal as _SessionLocal
+            async with _SessionLocal() as _sess:
+                await _fire("on_modules_ready", session=_sess)
+                await _sess.commit()
 
     # Register kernel projection handler for sys.* events (not module-owned)
     from celerp.modules.slots import register as register_slot

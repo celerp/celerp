@@ -163,6 +163,27 @@ async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid
     await _seed_default_bank_account(session, company_id)
 
 
+async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
+    """Lifecycle hook called via on_modules_ready slot.
+
+    Seeds the chart of accounts for any existing company that has none yet.
+    This handles the case where accounting is enabled after the company was
+    already created (e.g. first-run with no modules, then preset applied).
+    """
+    from celerp.models.company import Company
+    from sqlalchemy import select as _select
+
+    companies = (await session.execute(_select(Company))).scalars().all()
+    for company in companies:
+        has_accounts = (await session.execute(
+            _select(Account.id).where(Account.company_id == company.id).limit(1)
+        )).scalar_one_or_none()
+        if has_accounts:
+            continue
+        await seed_chart_of_accounts(session, company.id)
+        await _seed_default_bank_account(session, company.id)
+
+
 def _account_to_dict(acc: Account) -> dict:
     return {
         "id": str(acc.id),
