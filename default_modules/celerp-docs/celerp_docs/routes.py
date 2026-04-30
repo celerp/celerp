@@ -777,6 +777,7 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         amount=payload.amount, cumulative_paid=cumulative_paid,
         bank_account_code=bank_code, doc_type=doc_type,
+        payment_date=payload.payment_date,
     )
     # Lifecycle hook for modules (e.g. multicurrency FX gain/loss)
     from celerp.modules.slots import fire_lifecycle
@@ -997,6 +998,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         amount=payload.amount, cumulative_paid=cumulative,
         bank_account_code=bank_code, doc_type="invoice",
+        payment_date=payment_date,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -1081,6 +1083,7 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             session, company_id=company_id, user_id=user.id, doc_id=doc_id,
             amount=alloc, cumulative_paid=cumulative,
             bank_account_code=bank_code, doc_type=doc_type,
+            payment_date=payment_date,
         )
         allocations.append({"doc_id": doc_id, "amount": alloc})
         remaining -= alloc
@@ -1456,6 +1459,7 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
             await auto_je.create_for_doc_payment(
                 session, company_id=company_id, user_id=user_id, doc_id=entity_id,
                 amount=amount_paid, cumulative_paid=amount_paid,
+                payment_date=data.get("issue_date"),
             )
 
     elif doc_type == "purchase_order" and status in ("received", "partially_received", "final"):

@@ -380,3 +380,94 @@ async def test_period_lock_invalid_date(client):
     tok = await _reg(client)
     r = await client.post("/accounting/period-lock", json={"lock_date": "not-a-date"}, headers=_h(tok))
     assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# P&L zero-balance regression tests (Bug A: missing ts; Bug B: datetime vs date)
+# ---------------------------------------------------------------------------
+
+async def _finalize_invoice(client, tok: str, amount: float = 100.0, issue_date: str = "2026-01-15") -> str:
+    """Create and finalize an invoice; return entity_id."""
+    r = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice",
+        "issue_date": issue_date,
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": amount}],
+    })
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    r2 = await client.post(f"/docs/{doc_id}/finalize", headers=_h(tok))
+    assert r2.status_code == 200, r2.text
+    return doc_id
+
+
+@pytest.mark.asyncio
+async def test_pnl_payment_visible_after_receiving(client):
+    """Bug A regression: payment JE must appear in P&L date-filtered report.
+
+    Before the fix, payment JEs had no ts in their projection state, causing
+    _build_balances to treat them as pre-epoch and filter them out for any
+    date_from filter (which is always present in the default fiscal-year view).
+    """
+    tok = await _reg(client)
+    doc_id = await _finalize_invoice(client, tok, amount=200.0, issue_date="2026-01-15")
+
+    # Record payment with explicit date inside the filter window
+    r = await client.post(f"/docs/{doc_id}/payment", headers=_h(tok), json={
+        "amount": 200.0,
+        "payment_date": "2026-01-20",
+    })
+    assert r.status_code == 200, r.text
+
+    # P&L for the window that contains the payment - bank account line should be non-zero
+    r2 = await client.get("/accounting/pnl", headers=_h(tok), params={
+        "date_from": "2026-01-01", "date_to": "2026-12-31"
+    })
+    assert r2.status_code == 200, r2.text
+    data = r2.json()
+    # Revenue line (4100) should show revenue, and trial balance should have bank debit
+    assert data["revenue"]["total"] > 0, "Revenue must be non-zero after payment recorded in window"
+    assert data["net_profit"] > 0, "Net profit must be positive with no expenses recorded"
+
+
+@pytest.mark.asyncio
+async def test_pnl_payment_excluded_outside_date_range(client):
+    """Payment JE with date outside filter window must NOT appear in P&L."""
+    tok = await _reg(client)
+    doc_id = await _finalize_invoice(client, tok, amount=150.0, issue_date="2025-06-01")
+
+    r = await client.post(f"/docs/{doc_id}/payment", headers=_h(tok), json={
+        "amount": 150.0,
+        "payment_date": "2025-06-10",
+    })
+    assert r.status_code == 200, r.text
+
+    # Query a window that does NOT include the payment date
+    r2 = await client.get("/accounting/pnl", headers=_h(tok), params={
+        "date_from": "2026-01-01", "date_to": "2026-12-31"
+    })
+    assert r2.status_code == 200, r2.text
+    data = r2.json()
+    # Revenue (finalization) is in 2025, payment is in 2025 - both outside 2026 window
+    assert data["revenue"]["total"] == 0.0
+    assert data["net_profit"] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_pnl_finalization_visible_on_same_day(client):
+    """Bug B regression: invoice finalized today must appear in P&L with date_to=today.
+
+    Before the fix, finalized_at was a full ISO datetime (e.g. '2026-04-30T10:00:00+00:00')
+    and date_to was a date string ('2026-04-30'). Lexicographic comparison caused
+    'T...' > '' to be True, so same-day finalizations were excluded.
+    """
+    from datetime import date
+    today = date.today().isoformat()
+    tok = await _reg(client)
+    await _finalize_invoice(client, tok, amount=300.0, issue_date=today)
+
+    r = await client.get("/accounting/pnl", headers=_h(tok), params={
+        "date_from": today, "date_to": today
+    })
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["revenue"]["total"] > 0, "Same-day finalized invoice must appear in P&L with date_to=today"

@@ -367,7 +367,7 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = state.get("ts") or state.get("created_at") or ""
+        ts = (state.get("ts") or state.get("created_at") or "")[:10]
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
@@ -415,7 +415,7 @@ async def trial_balance(
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = state.get("ts") or state.get("created_at") or ""
+        ts = (state.get("ts") or state.get("created_at") or "")[:10]
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
