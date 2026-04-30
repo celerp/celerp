@@ -434,3 +434,66 @@ async def test_payment_conversion_rate_optional(client):
     assert r.status_code == 200
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert doc["payments"][0].get("conversion_rate") is None
+
+
+# ---------------------------------------------------------------------------
+# Bug: MissingGreenlet on void-then-repay (row.state accessed after flush)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_void_then_repay_no_greenlet_error(client):
+    """Voiding a payment and then recording a new one must not raise MissingGreenlet.
+
+    Previously, record_payment accessed row.state *after* emit_event() which
+    flushes the session and expires the ORM object, causing a synchronous
+    lazy-load in an async context (sqlalchemy.exc.MissingGreenlet).
+    """
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    # First payment
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    # Void it
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": 0})
+    assert r.status_code == 200
+
+    # Re-pay - this is what was crashing with MissingGreenlet
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-16", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200, r.text
+
+
+# ---------------------------------------------------------------------------
+# P&L: revenue must appear after invoice finalization
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pnl_shows_revenue_after_finalize(client):
+    """Profit & Loss must include revenue from a finalized invoice.
+
+    Tests the full stack: finalize -> auto JE created -> P&L query returns
+    non-zero revenue. Guards against ts-missing JE projections being excluded
+    by the date filter in _build_balances.
+    """
+    from datetime import date as _date
+    token = await _register(client)
+    await _create_and_finalize_invoice(client, token, 150.0)
+
+    today = _date.today().isoformat()
+    r = await client.get(
+        f"/accounting/pnl?date_from=2000-01-01&date_to={today}",
+        headers=_h(token),
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["revenue"]["total"] == pytest.approx(150.0, abs=0.01), (
+        f"Expected revenue=150 but got {data['revenue']['total']}. "
+        "Finalization JE may be missing ts or account 4100 not in report."
+    )
+    assert data["net_profit"] > 0

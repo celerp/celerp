@@ -755,29 +755,33 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
 @router.post("/{entity_id}/payment")
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    if row.state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
+    # Snapshot scalar values before any flush() to avoid SQLAlchemy lazy-load expiry
+    # (emit_event -> flush() -> ORM expires row -> MissingGreenlet on subsequent row.state access).
+    _doc_state = dict(row.state)
+    _user_id = user.id
+    if _doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
         raise HTTPException(status_code=409, detail="Cannot record payment in current status")
-    outstanding = float(row.state.get("amount_outstanding", row.state.get("total", 0)) or 0)
+    outstanding = float(_doc_state.get("amount_outstanding", _doc_state.get("total", 0)) or 0)
     if outstanding <= 0:
         raise HTTPException(status_code=409, detail="Invoice already fully paid")
     if payload.amount > outstanding + 1e-9:
         raise HTTPException(status_code=409, detail="Payment exceeds amount outstanding")
 
     body = payload.model_dump(exclude_none=True)
-    body.setdefault("currency", row.state.get("currency", "USD"))
+    body.setdefault("currency", _doc_state.get("currency", "USD"))
     body["remaining_balance"] = max(0.0, outstanding - payload.amount)
     if not payload.bank_account:
         raise HTTPException(status_code=422, detail="bank_account is required")
     bank_code = payload.bank_account
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
-        data=body, actor_id=user.id, location_id=None, source="api",
+        data=body, actor_id=_user_id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    cumulative_paid = float(row.state.get("amount_paid", 0) or 0) + payload.amount
-    doc_type = row.state.get("doc_type", "invoice")
+    cumulative_paid = float(_doc_state.get("amount_paid", 0) or 0) + payload.amount
+    doc_type = _doc_state.get("doc_type", "invoice")
     await auto_je.create_for_doc_payment(
-        session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+        session, company_id=company_id, user_id=_user_id, doc_id=entity_id,
         amount=payload.amount, cumulative_paid=cumulative_paid,
         bank_account_code=bank_code, doc_type=doc_type,
         payment_date=payload.payment_date,
@@ -788,9 +792,9 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
         "on_doc_payment",
         session=session,
         company_id=company_id,
-        user_id=user.id,
+        user_id=_user_id,
         doc_id=entity_id,
-        doc=row.state,
+        doc=_doc_state,
         amount=payload.amount,
         bank_account_code=bank_code,
     )
