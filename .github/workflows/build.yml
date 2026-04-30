@@ -86,8 +86,8 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
 
-      - name: Build (macOS)
-        if: matrix.os == 'macos-latest'
+      - name: Build macOS (production - signed + notarized)
+        if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 130
         working-directory: electron
         env:
@@ -96,6 +96,15 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm run build:mac
+
+      - name: Build macOS (dev - signed only, no notarization)
+        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 60
+        working-directory: electron
+        env:
+          CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
+          CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: pnpm run build:mac
 
       - name: Build (Windows / Linux - no signing)
