@@ -28,8 +28,8 @@ async def test_docs_list_filters_and_refund_guard_and_import_paths(client):
 
     await client.post(f"/docs/{inv}/send", headers=_h(token), json={})
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 4})
-    bad_refund = await client.post(f"/docs/{inv}/refund", headers=_h(token), json={"amount": 5})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 4})
+    bad_refund = await client.post(f"/docs/{inv}/refund", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 5})
     assert bad_refund.status_code == 409
 
     # import single + batch (skip existing key)

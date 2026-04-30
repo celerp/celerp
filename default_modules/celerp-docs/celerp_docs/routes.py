@@ -105,10 +105,10 @@ class DocUnvoidBody(BaseModel):
 
 class DocPaymentBody(BaseModel):
     amount: float
+    payment_date: str  # ISO date (YYYY-MM-DD), always required
     currency: str | None = None
     method: str | None = None
     reference: str | None = None
-    payment_date: str | None = None
     bank_account: str | None = None
     source_doc_id: str | None = None
     target_doc_id: str | None = None
@@ -959,7 +959,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
 
 class CnRefundBody(BaseModel):
     amount: float
-    date: str | None = None
+    date: str  # ISO date (YYYY-MM-DD), always required
     method: str | None = None
     bank_account: str | None = None
     reference: str | None = None
@@ -978,7 +978,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     if payload.amount > cn_outstanding + 1e-9:
         raise HTTPException(status_code=409, detail="Refund amount exceeds credit note balance")
 
-    payment_date = payload.date or datetime.now(UTC).date().isoformat()
+    payment_date = payload.date
     bank_code = payload.bank_account or "1110"
 
     entry = await emit_event(
@@ -1012,7 +1012,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
 class BulkPaymentBody(BaseModel):
     doc_ids: list[str]
     amount: float
-    payment_date: str | None = None
+    payment_date: str  # ISO date (YYYY-MM-DD), always required
     method: str | None = None
     bank_account: str | None = None
     reference: str | None = None
@@ -1051,7 +1051,7 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     # Allocate amount oldest-first
     remaining = payload.amount
     allocations = []
-    payment_date = payload.date if hasattr(payload, 'date') else payload.payment_date
+    payment_date = payload.payment_date
     bank_code = payload.bank_account or "1110"
 
     for doc_id, state in payable:
@@ -1456,10 +1456,11 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
         )
         amount_paid = float(data.get("amount_paid", 0) or 0)
         if amount_paid > 0:
+            from datetime import date as _date
             await auto_je.create_for_doc_payment(
                 session, company_id=company_id, user_id=user_id, doc_id=entity_id,
                 amount=amount_paid, cumulative_paid=amount_paid,
-                payment_date=data.get("issue_date"),
+                payment_date=data.get("issue_date") or _date.today().isoformat(),
             )
 
     elif doc_type == "purchase_order" and status in ("received", "partially_received", "final"):

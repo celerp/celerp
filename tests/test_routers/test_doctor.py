@@ -541,7 +541,7 @@ async def test_doctor_fix_missing_payment_je(client, session):
     # Mark as paid via a subsequent event (but no auto-JE hook for this path)
     r = await client.post("/docs/import", headers=_h(token), json={
         "entity_id": entity_id, "event_type": "doc.payment.received",
-        "data": {"amount": 600.0, "amount_paid": 600, "amount_outstanding": 0, "status": "paid"},
+        "data": {"amount": 600.0, "amount_paid": 600, "amount_outstanding": 0, "status": "paid", "payment_date": "2026-01-15"},
         "source": "import:test",
         "idempotency_key": f"idem-pf-pay-{uuid.uuid4().hex[:8]}",
     })

@@ -412,7 +412,7 @@ async def test_pnl_payment_visible_after_receiving(client):
     doc_id = await _finalize_invoice(client, tok, amount=200.0, issue_date="2026-01-15")
 
     # Record payment with explicit date inside the filter window
-    r = await client.post(f"/docs/{doc_id}/payment", headers=_h(tok), json={
+    r = await client.post(f"/docs/{doc_id}/payment", headers=_h(tok), json={"payment_date": "2026-01-15", 
         "amount": 200.0,
         "payment_date": "2026-01-20",
     })
@@ -435,7 +435,7 @@ async def test_pnl_payment_excluded_outside_date_range(client):
     tok = await _reg(client)
     doc_id = await _finalize_invoice(client, tok, amount=150.0, issue_date="2025-06-01")
 
-    r = await client.post(f"/docs/{doc_id}/payment", headers=_h(tok), json={
+    r = await client.post(f"/docs/{doc_id}/payment", headers=_h(tok), json={"payment_date": "2026-01-15", 
         "amount": 150.0,
         "payment_date": "2025-06-10",
     })

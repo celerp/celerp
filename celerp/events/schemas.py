@@ -352,7 +352,7 @@ class DocPaymentReceived(BaseModel):
     method: str | None = None
     reference: str | None = None
     remaining_balance: float | None = None
-    payment_date: str | None = None
+    payment_date: str
     bank_account: str | None = None
     source_doc_id: str | None = None
     target_doc_id: str | None = None

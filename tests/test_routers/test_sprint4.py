@@ -186,7 +186,7 @@ async def test_void_paid_doc_rejected(client):
     await client.post(f"/docs/{eid}/send", headers=_h(token), json={})
     # Record full payment
     await client.post(f"/docs/{eid}/payment", headers=_h(token),
-                      json={"amount": 100, "method": "cash"})
+                      json={"payment_date": "2026-01-15", "amount": 100, "method": "cash"})
     doc = (await client.get(f"/docs/{eid}", headers=_h(token))).json()
     assert doc["status"] == "paid"
     r = await client.post(f"/docs/{eid}/void", headers=_h(token), json={})
@@ -226,7 +226,7 @@ async def test_record_payment_reduces_outstanding(client):
     # Must be in sent/final status
     await client.post(f"/docs/{eid}/send", headers=_h(token), json={})
     r = await client.post(f"/docs/{eid}/payment", headers=_h(token),
-                           json={"amount": 4000, "method": "transfer", "reference": "TXN-001"})
+                           json={"payment_date": "2026-01-15", "amount": 4000, "method": "transfer", "reference": "TXN-001"})
     assert r.status_code == 200
     doc = (await client.get(f"/docs/{eid}", headers=_h(token))).json()
     assert doc["amount_paid"] == 4000.0
@@ -241,7 +241,7 @@ async def test_full_payment_marks_paid(client):
     eid = await _create_invoice(client, token, total=5000)
     await client.post(f"/docs/{eid}/send", headers=_h(token), json={})
     r = await client.post(f"/docs/{eid}/payment", headers=_h(token),
-                           json={"amount": 5000, "method": "cash"})
+                           json={"payment_date": "2026-01-15", "amount": 5000, "method": "cash"})
     assert r.status_code == 200
     doc = (await client.get(f"/docs/{eid}", headers=_h(token))).json()
     assert doc["status"] == "paid"
@@ -255,7 +255,7 @@ async def test_overpayment_rejected(client):
     eid = await _create_invoice(client, token, total=1000)
     await client.post(f"/docs/{eid}/send", headers=_h(token), json={})
     r = await client.post(f"/docs/{eid}/payment", headers=_h(token),
-                           json={"amount": 9999, "method": "cash"})
+                           json={"payment_date": "2026-01-15", "amount": 9999, "method": "cash"})
     assert r.status_code == 409
 
 
@@ -265,7 +265,7 @@ async def test_payment_on_draft_rejected(client):
     token = await _register(client)
     eid = await _create_invoice(client, token, total=500)
     r = await client.post(f"/docs/{eid}/payment", headers=_h(token),
-                           json={"amount": 500, "method": "cash"})
+                           json={"payment_date": "2026-01-15", "amount": 500, "method": "cash"})
     assert r.status_code == 409
 
 

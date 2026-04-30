@@ -107,7 +107,7 @@ async def test_invoice_partial_then_full_payment_with_je(client, session):
     inv = await _create_invoice(client, token)
 
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
-    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 40})
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 40})
     assert r.status_code == 200
 
     partial = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
@@ -126,7 +126,7 @@ async def test_invoice_partial_then_full_payment_with_je(client, session):
     assert je_row.metadata_["trigger"] == "doc.payment.received"
     assert je_row.metadata_["doc_id"] == inv
 
-    r2 = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 67})
+    r2 = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 67})
     assert r2.status_code == 200
     paid = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert paid["status"] == "paid"
@@ -139,7 +139,7 @@ async def test_invoice_guards_void_edit_pay_and_overpayment(client):
     inv = await _create_invoice(client, token)
 
     # pay draft
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 1})).status_code == 409
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 1})).status_code == 409
 
     # edit finalized
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
@@ -152,10 +152,10 @@ async def test_invoice_guards_void_edit_pay_and_overpayment(client):
     ).status_code == 409
 
     # overpayment
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 108})).status_code == 409
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 108})).status_code == 409
 
     # paid then void forbidden
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 107})).status_code == 200
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 107})).status_code == 200
     assert (await client.post(f"/docs/{inv}/void", headers=_h(token), json={"reason": "x"})).status_code == 409
 
     # draft can be voided

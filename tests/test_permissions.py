@@ -310,7 +310,7 @@ class TestManagerRequiredDocOps:
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/payment",
-            json={"amount": 100.0, "method": "cash", "reference": "REF1"},
+            json={"payment_date": "2026-01-15", "amount": 100.0, "method": "cash", "reference": "REF1"},
             headers=ctx["staff_h"],
         )
         assert r.status_code == 403
@@ -925,7 +925,7 @@ class TestManagerRequiredDocOps:
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/payment",
-            json={"amount": 100.0, "method": "cash", "reference": "REF1"},
+            json={"payment_date": "2026-01-15", "amount": 100.0, "method": "cash", "reference": "REF1"},
             headers=ctx["staff_h"],
         )
         assert r.status_code == 403

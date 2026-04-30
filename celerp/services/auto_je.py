@@ -84,16 +84,14 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, cumulative_paid: float | None = None, bank_account_code: str = "1110", doc_type: str = "invoice", payment_date: str | None = None) -> None:
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, cumulative_paid: float | None = None, bank_account_code: str = "1110", doc_type: str = "invoice", payment_date: str) -> None:
     """Create JE for a payment.
 
     bank_account_code: chart account to debit (defaults to "1110" generic cash).
     Pass the specific bank sub-account (e.g. "1111") when the user selects a bank.
     doc_type: 'invoice' debits bank/credits AR; 'bill' debits AP/credits bank.
-    payment_date: ISO date string (YYYY-MM-DD). Defaults to today if not provided.
+    payment_date: ISO date string (YYYY-MM-DD). Always required.
     """
-    from datetime import date as _date
-    ts = payment_date or _date.today().isoformat()
     paid_key = str(int(round((cumulative_paid or amount) * 100)))  # cents, avoids float key issues
     if doc_type in ("bill", "purchase_order"):
         entries = [
@@ -113,7 +111,7 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         idem_create=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "p"),
         memo=f"Auto JE for {doc_id} payment",
-        ts=ts,
+        ts=payment_date,
         entries=entries,
         metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "cumulative_paid": cumulative_paid},
     )

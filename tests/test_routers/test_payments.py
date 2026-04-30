@@ -59,7 +59,7 @@ async def test_void_payment_restores_outstanding(client):
     inv = await _create_and_finalize_invoice(client, token, 200.0)
 
     # Record payment
-    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 80.0, "method": "transfer", "bank_account": "1111"})
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 80.0, "method": "transfer", "bank_account": "1111"})
     assert r.status_code == 200
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
@@ -94,7 +94,7 @@ async def test_void_payment_already_voided(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token)
 
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 50.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50.0})
     await client.post(f"/docs/{inv}/void-payment", headers=_h(token), json={"payment_index": 0})
 
     r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token), json={"payment_index": 0})
@@ -107,8 +107,8 @@ async def test_void_payment_partial_to_paid_lifecycle(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
 
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 60.0})
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 40.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 60.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 40.0})
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert doc["status"] == "paid"
@@ -206,7 +206,7 @@ async def test_cn_refund(client):
     cn = await _create_and_finalize_cn(client, token, inv, 50.0)
 
     r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={
-        "amount": 50.0, "method": "transfer", "bank_account": "1111", "reference": "REF-001",
+        "date": "2026-01-15", "amount": 50.0, "method": "transfer", "bank_account": "1111", "reference": "REF-001",
     })
     assert r.status_code == 200
 
@@ -222,7 +222,7 @@ async def test_cn_refund_exceeds_balance(client):
     inv = await _create_and_finalize_invoice(client, token, 200.0)
     cn = await _create_and_finalize_cn(client, token, inv, 50.0)
 
-    r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={"amount": 100.0})
+    r = await client.post(f"/docs/{cn}/cn-refund", headers=_h(token), json={"date": "2026-01-15", "amount": 100.0})
     assert r.status_code == 409
 
 
@@ -241,7 +241,7 @@ async def test_bulk_payment_allocates_oldest_first(client):
     await client.patch(f"/docs/{inv1}", headers=_h(token), json={"fields_changed": {"due_date": {"old": None, "new": "2026-03-01"}}})
     await client.patch(f"/docs/{inv2}", headers=_h(token), json={"fields_changed": {"due_date": {"old": None, "new": "2026-03-15"}}})
 
-    r = await client.post("/docs/bulk-payment", headers=_h(token), json={
+    r = await client.post("/docs/bulk-payment", headers=_h(token), json={"payment_date": "2026-01-15", 
         "doc_ids": [inv1, inv2],
         "amount": 150.0,
         "method": "transfer",
@@ -268,7 +268,7 @@ async def test_bulk_payment_different_contacts_rejected(client):
     inv1 = await _create_and_finalize_invoice(client, token, 100.0, contact_id="contact:a")
     inv2 = await _create_and_finalize_invoice(client, token, 100.0, contact_id="contact:b")
 
-    r = await client.post("/docs/bulk-payment", headers=_h(token), json={
+    r = await client.post("/docs/bulk-payment", headers=_h(token), json={"payment_date": "2026-01-15", 
         "doc_ids": [inv1, inv2], "amount": 100.0,
     })
     assert r.status_code == 422
@@ -286,7 +286,7 @@ async def test_bulk_payment_skips_non_payable(client):
 
     inv = await _create_and_finalize_invoice(client, token, 100.0, contact_id="contact:c")
 
-    r = await client.post("/docs/bulk-payment", headers=_h(token), json={
+    r = await client.post("/docs/bulk-payment", headers=_h(token), json={"payment_date": "2026-01-15", 
         "doc_ids": [draft_id, inv], "amount": 100.0,
     })
     assert r.status_code == 200
@@ -305,7 +305,7 @@ async def test_payment_stores_new_fields(client):
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
 
-    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", 
         "amount": 50.0, "method": "transfer", "bank_account": "1111",
         "payment_date": "2026-03-28", "reference": "TRF-001",
     })
@@ -330,7 +330,7 @@ async def test_void_blocked_with_active_payments(client):
     """Cannot void a doc that has active payments."""
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 50.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50.0})
 
     r = await client.post(f"/docs/{inv}/void", headers=_h(token), json={})
     assert r.status_code == 409
@@ -342,7 +342,7 @@ async def test_void_allowed_after_all_payments_voided(client):
     """After voiding all payments, doc can be voided."""
     token = await _register(client)
     inv = await _create_and_finalize_invoice(client, token, 100.0)
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 100.0})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 100.0})
 
     # Void the payment
     await client.post(f"/docs/{inv}/void-payment", headers=_h(token), json={"payment_index": 0})
