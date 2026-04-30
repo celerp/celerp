@@ -368,6 +368,12 @@ class DocPaymentRefunded(BaseModel):
 class DocPaymentVoided(BaseModel):
     payment_index: int
     void_reason: str | None = None
+    refund_date: str | None = None  # ISO date for the reversal JE; defaults to today if absent
+
+
+class DocPaymentDeleted(BaseModel):
+    payment_index: int
+    delete_reason: str | None = None
 
 
 class DocConverted(BaseModel):
@@ -758,6 +764,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
     "doc.payment.voided": DocPaymentVoided,
+    "doc.payment.deleted": DocPaymentDeleted,
     "doc.converted": DocConverted,
     "doc.received": DocReceived,
     "doc.shared_import": DocSharedImport,

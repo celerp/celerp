@@ -532,3 +532,209 @@ def test_build_balances_includes_je_with_missing_ts():
         f"JE with missing ts was silently excluded from P&L: {balances}"
     )
     assert balances.get("1120") == Decimal("100")
+
+
+# ---------------------------------------------------------------------------
+# Problem 1: payment_index as JE key (void + repay must not collide)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_void_and_repay_creates_distinct_je_ids(client):
+    """After voiding payment[0] and recording a new payment, the new payment
+    must use je:auto:{doc}:pay:1 (index=1), NOT je:auto:{doc}:pay:0 (index=0).
+    This means the idempotency key no longer collides with the original payment.
+    """
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    # First payment -> should create JE with index=0
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    # Void payment[0]
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": 0})
+    assert r.status_code == 200
+
+    # Second payment -> must succeed (previously would 409 due to idempotency collision on cumulative cents)
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-20", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200, f"Second payment after void failed: {r.text}"
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["status"] == "paid"
+    assert doc["amount_paid"] == pytest.approx(100.0, abs=0.01)
+    # Two payment rows: index 0 voided, index 1 active
+    assert len(doc["payments"]) == 2
+    assert doc["payments"][0]["status"] == "voided"
+    assert doc["payments"][1]["status"] == "active"
+    assert doc["payments"][1]["index"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Problem 2: refund_date stored on voided payment
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_void_payment_stores_refund_date(client):
+    """Voiding with a refund_date must store it on the payment row."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": 0, "void_reason": "Customer refund", "refund_date": "2026-02-01"})
+    assert r.status_code == 200
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    p = doc["payments"][0]
+    assert p["status"] == "voided"
+    assert p["void_reason"] == "Customer refund"
+    assert p["refund_date"] == "2026-02-01"
+
+
+@pytest.mark.asyncio
+async def test_void_payment_without_refund_date_works(client):
+    """Voiding without a refund_date must still work (refund_date is optional)."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": 0})
+    assert r.status_code == 200
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["payments"][0]["status"] == "voided"
+    assert doc["payments"][0].get("refund_date") is None
+
+
+# ---------------------------------------------------------------------------
+# Problem 3: delete-payment
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_delete_payment_removes_row_and_voids_je(client):
+    """DELETE /docs/{id}/payments/{index} removes the payment row entirely
+    and restores amount_outstanding to its pre-payment value."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert doc["status"] == "paid"
+    assert len(doc["payments"]) == 1
+
+    # Delete the payment (no body needed - delete_reason is optional)
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
+    assert r.status_code == 200, r.text
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert len(doc["payments"]) == 0
+    assert doc["amount_paid"] == 0.0
+    assert doc["amount_outstanding"] == pytest.approx(100.0, abs=0.01)
+    assert doc["status"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_delete_payment_reindexes_remaining(client):
+    """After deleting payment[0] from a two-payment doc, payment[1] becomes index=0."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 200.0)
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 80.0, "bank_account": "1111"})
+    assert r.status_code == 200
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-20", "amount": 60.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    # Delete the first payment
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
+    assert r.status_code == 200
+
+    doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
+    assert len(doc["payments"]) == 1
+    assert doc["payments"][0]["index"] == 0
+    assert doc["payments"][0]["amount"] == pytest.approx(60.0, abs=0.01)
+    assert doc["amount_paid"] == pytest.approx(60.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_delete_payment_invalid_index(client):
+    """DELETE with an out-of-range index returns 422."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_delete_payment_already_voided_returns_409(client):
+    """Deleting a voided payment must return 409 (only active payments can be deleted)."""
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    # Void it first
+    r = await client.post(f"/docs/{inv}/void-payment", headers=_h(token),
+                          json={"payment_index": 0})
+    assert r.status_code == 200
+
+    # Now try to delete the already-voided payment
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_payment_blocked_by_closed_reconciliation(client, session):
+    """DELETE must return 409 when the payment JE is in a closed reconciliation session."""
+    import uuid as _uuid
+    from celerp_accounting.models import ReconciliationSession, BankAccount
+    from sqlalchemy import select as _select
+
+    token = await _register(client)
+    inv = await _create_and_finalize_invoice(client, token, 100.0)
+
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token),
+                          json={"payment_date": "2026-01-15", "amount": 100.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    je_id = f"je:auto:{inv}:pay:0"
+
+    # Use the conftest session (same transaction the app uses in tests)
+    ba = (await session.execute(_select(BankAccount).limit(1))).scalar_one_or_none()
+    if ba is None:
+        pytest.skip("No bank account seeded - cannot create reconciliation session")
+    recon = ReconciliationSession(
+        id=_uuid.uuid4(),
+        company_id=ba.company_id,
+        bank_account_id=ba.id,
+        statement_date="2026-01-31",
+        statement_balance=0.0,
+        status="closed",
+        reconciled_je_ids=[je_id],
+    )
+    session.add(recon)
+    await session.flush()
+
+    r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
+    assert r.status_code == 409
+    assert "closed period" in r.json()["detail"].lower()

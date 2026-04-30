@@ -84,15 +84,17 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, cumulative_paid: float | None = None, bank_account_code: str, doc_type: str = "invoice", payment_date: str) -> None:
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str, doc_type: str = "invoice", payment_date: str) -> None:
     """Create JE for a payment.
 
     bank_account_code: chart account to debit. Required - no default. Always pass the
         specific bank sub-account (e.g. "1111"). Omitting raises TypeError at call time.
     doc_type: 'invoice' debits bank/credits AR; 'bill' debits AP/credits bank.
     payment_date: ISO date string (YYYY-MM-DD). Always required.
+    payment_index: position of this payment in the payments list (0-based). Used as the
+        idempotency key suffix so voiding and re-paying at the same amount never collides.
     """
-    paid_key = str(int(round((cumulative_paid or amount) * 100)))  # cents, avoids float key issues
+    paid_key = str(payment_index)
     if doc_type in ("bill", "purchase_order"):
         entries = [
             {"account": "2110", "debit": float(amount), "credit": 0.0},
@@ -113,12 +115,16 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         memo=f"Auto JE for {doc_id} payment",
         ts=payment_date,
         entries=entries,
-        metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "cumulative_paid": cumulative_paid},
+        metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": payment_index},
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice") -> None:
-    """Reverse a payment JE by creating a counter-entry."""
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None) -> None:
+    """Reverse a payment JE by creating a counter-entry.
+
+    refund_date: ISO date for the reversal JE (defaults to today if None). Used when
+        void is actually a refund - the date affects bank ledger position.
+    """
     void_key = f"void_{payment_index}"
     if doc_type in ("bill", "purchase_order"):
         entries = [
@@ -138,6 +144,7 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         idem_create=je_idempotency_key(doc_id, f"payment.voided:{void_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"payment.voided:{void_key}", "p"),
         memo=f"Auto JE for {doc_id} payment void (index {payment_index})",
+        ts=refund_date,
         entries=entries,
         metadata_={"trigger": "doc.payment.voided", "doc_id": doc_id, "payment_index": payment_index},
     )

@@ -128,7 +128,21 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if 0 <= idx < len(payments):
             payments[idx]["status"] = "voided"
             payments[idx]["void_reason"] = data.get("void_reason")
+            payments[idx]["refund_date"] = data.get("refund_date")
             # Recalculate totals from active payments only
+            active_total = sum(p["amount"] for p in payments if p["status"] == "active")
+            total = float(current.get("total", 0) or 0)
+            current["amount_paid"] = active_total
+            current["amount_outstanding"] = max(0.0, total - active_total)
+            current["status"] = "paid" if current["amount_outstanding"] <= 0.005 else ("partial" if active_total > 0 else "final")
+    elif event_type == "doc.payment.deleted":
+        idx = data["payment_index"]
+        payments = current.get("payments", [])
+        if 0 <= idx < len(payments):
+            # Remove the payment row entirely and re-index remaining payments
+            del payments[idx]
+            for i, p in enumerate(payments):
+                p["index"] = i
             active_total = sum(p["amount"] for p in payments if p["status"] == "active")
             total = float(current.get("total", 0) or 0)
             current["amount_paid"] = active_total

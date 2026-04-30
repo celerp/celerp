@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -773,16 +774,17 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     if not payload.bank_account:
         raise HTTPException(status_code=422, detail="bank_account is required")
     bank_code = payload.bank_account
+    # Compute payment_index BEFORE appending (len of current active+voided list = next index)
+    payment_index = len(_doc_state.get("payments", []))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
         data=body, actor_id=_user_id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    cumulative_paid = float(_doc_state.get("amount_paid", 0) or 0) + payload.amount
     doc_type = _doc_state.get("doc_type", "invoice")
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=_user_id, doc_id=entity_id,
-        amount=payload.amount, cumulative_paid=cumulative_paid,
+        amount=payload.amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type=doc_type,
         payment_date=payload.payment_date,
     )
@@ -827,6 +829,7 @@ async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 class VoidPaymentBody(BaseModel):
     payment_index: int
     void_reason: str | None = None
+    refund_date: str | None = None  # ISO date for the reversal JE (defaults to today)
     idempotency_key: str | None = None
 
 
@@ -843,7 +846,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.voided",
-        data={"payment_index": payload.payment_index, "void_reason": payload.void_reason},
+        data={"payment_index": payload.payment_index, "void_reason": payload.void_reason, "refund_date": payload.refund_date},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
@@ -855,6 +858,7 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         payment_index=payload.payment_index, amount=payment["amount"],
         bank_account_code=bank_code, doc_type=doc_type,
+        refund_date=payload.refund_date,
     )
 
     # If this was a credit_note application (paired payment), void the other side too
@@ -880,6 +884,102 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                         idempotency_key=str(uuid.uuid4()), metadata_={},
                     )
                     break
+
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+# ---------------------------------------------------------------------------
+# Delete individual payment (data-entry error correction)
+# ---------------------------------------------------------------------------
+
+class DeletePaymentBody(BaseModel):
+    delete_reason: str | None = None
+    idempotency_key: str | None = None
+
+
+@router.delete("/{entity_id}/payments/{payment_index}")
+async def delete_payment(
+    entity_id: str,
+    payment_index: int,
+    payload: DeletePaymentBody = DeletePaymentBody(),
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete a payment entirely (data-entry error correction).
+
+    Unlike void-payment (which creates a reversal JE visible in the bank ledger as a
+    refund), delete removes the payment from the doc projection and voids the original
+    JE so it disappears from all reports. Use only for payments that were never real.
+
+    Blocked if the payment JE has been reconciled in a closed reconciliation session.
+    If reconciled in an open session, the JE is automatically un-matched first.
+    """
+    from celerp_accounting.models import ReconciliationSession, BankStatementLine  # noqa: PLC0415
+
+    row = await _get_doc(session, company_id, entity_id)
+    payments = row.state.get("payments", [])
+    if payment_index < 0 or payment_index >= len(payments):
+        raise HTTPException(status_code=422, detail="Invalid payment index")
+    payment = payments[payment_index]
+    if payment.get("status") != "active":
+        raise HTTPException(status_code=409, detail="Only active payments can be deleted")
+
+    # Determine the JE id for this payment
+    je_id = f"je:auto:{entity_id}:pay:{payment_index}"
+
+    # Check reconciliation status - query all sessions that include this JE
+    recon_result = await session.execute(
+        _sa.select(ReconciliationSession).where(
+            ReconciliationSession.company_id == company_id,
+        )
+    )
+    recon_sessions = recon_result.scalars().all()
+
+    for recon in recon_sessions:
+        if je_id in (recon.reconciled_je_ids or []):
+            if recon.status == "closed":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
+                )
+            # Open session - auto-unmatch
+            updated_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
+            recon.reconciled_je_ids = updated_ids
+            # Clear matched_je_id on any statement line pointing to this JE
+            sl_result = await session.execute(
+                _sa.select(BankStatementLine).where(
+                    BankStatementLine.reconciliation_session_id == recon.id,
+                    BankStatementLine.matched_je_id == je_id,
+                )
+            )
+            for sl in sl_result.scalars().all():
+                sl.matched_je_id = None
+                sl.status = "unmatched"
+
+    # Emit doc.payment.deleted - projection removes the row and re-indexes
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.payment.deleted",
+        data={"payment_index": payment_index, "delete_reason": payload.delete_reason},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+
+    # Void the original payment JE so it disappears from bank ledger + reports
+    je_row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if je_row is not None and je_row.state.get("status") == "posted":
+        from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa: PLC0415
+        await emit_event(
+            session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data={"reason": f"Deleted: payment {payment_index} on {entity_id}. {payload.delete_reason or ''}".strip()},
+            actor_id=user.id, location_id=None, source="auto_je",
+            idempotency_key=_je_key(entity_id, f"payment.deleted:{payment_index}", "void"),
+            metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
+        )
 
     await session.commit()
     return {"event_id": entry.id}
@@ -1003,10 +1103,10 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     # JE: debit AR, credit bank
-    cumulative = float(cn.get("amount_paid", 0) or 0) + payload.amount
+    payment_index = len(cn.get("payments", []))
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        amount=payload.amount, cumulative_paid=cumulative,
+        amount=payload.amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type="invoice",
         payment_date=payment_date,
     )
@@ -1089,11 +1189,11 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
-        cumulative = float(state.get("amount_paid", 0) or 0) + alloc
+        payment_index = len(state.get("payments", []))
         doc_type = state.get("doc_type", "invoice")
         await auto_je.create_for_doc_payment(
             session, company_id=company_id, user_id=user.id, doc_id=doc_id,
-            amount=alloc, cumulative_paid=cumulative,
+            amount=alloc, payment_index=payment_index,
             bank_account_code=bank_code, doc_type=doc_type,
             payment_date=payment_date,
         )

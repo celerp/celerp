@@ -91,15 +91,14 @@ async def _check_missing_jes(
                     existing_keys.add(fin_key)
                     fixed += 1
 
-            # Check payment JE (payment keys are cumulative-paid scoped)
+            # Check payment JE (payment keys are payment-index scoped)
             amount_paid = float(state.get("amount_paid", 0) or 0)
             if amount_paid > 0:
-                paid_key = str(int(round(amount_paid * 100)))
-                pay_key = je_idempotency_key(entity_id, "invoice.paid", "c")
+                pay_key = je_idempotency_key(entity_id, "invoice.paid:0", "c")
                 if pay_key not in existing_keys:
                     missing.append({"doc_id": entity_id, "trigger": "payment", "amount": amount_paid})
                     if fix:
-                        await _emit_payment_je(session, company_id, user_id, entity_id, amount_paid, state, cumulative_paid=amount_paid)
+                        await _emit_payment_je(session, company_id, user_id, entity_id, amount_paid, state, payment_index=len(state.get("payments", [])) - 1 if state.get("payments") else 0)
                         existing_keys.add(pay_key)
                         fixed += 1
 
@@ -378,10 +377,10 @@ async def _emit_payment_je(
     amount: float,
     state: dict,
     *,
-    cumulative_paid: float | None = None,
+    payment_index: int = 0,
 ) -> None:
     ts = state.get("issue_date") or state.get("created_at")
-    paid_key = str(int(round((cumulative_paid or amount) * 100)))
+    paid_key = str(payment_index)
     je_id = f"je:auto:{doc_id}:pay:{paid_key}"
 
     await emit_event(
@@ -401,12 +400,11 @@ async def _emit_payment_je(
         actor_id=user_id,
         location_id=None,
         source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "invoice.paid", "c"),
+        idempotency_key=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "c"),
         metadata_={
             "trigger": "doc.payment.received",
             "doc_id": doc_id,
-            "payment_key": paid_key,
-            "cumulative_paid": cumulative_paid,
+            "payment_index": payment_index,
         },
     )
     await emit_event(
@@ -419,12 +417,11 @@ async def _emit_payment_je(
         actor_id=user_id,
         location_id=None,
         source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "invoice.paid", "p"),
+        idempotency_key=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "p"),
         metadata_={
             "trigger": "doc.payment.received",
             "doc_id": doc_id,
-            "payment_key": paid_key,
-            "cumulative_paid": cumulative_paid,
+            "payment_index": payment_index,
         },
     )
 

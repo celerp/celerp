@@ -99,7 +99,7 @@ async def _check_missing_jes(
                 if pay_key not in existing_keys:
                     missing.append({"doc_id": entity_id, "trigger": "payment", "amount": amount_paid})
                     if fix:
-                        await _emit_payment_je(session, company_id, user_id, entity_id, amount_paid, state, cumulative_paid=amount_paid)
+                        await _emit_payment_je(session, company_id, user_id, entity_id, amount_paid, state, payment_index=len(state.get("payments", [])) - 1 if state.get("payments") else 0)
                         existing_keys.add(pay_key)
                         fixed += 1
 
@@ -378,7 +378,7 @@ async def _emit_payment_je(
     amount: float,
     state: dict,
     *,
-    cumulative_paid: float | None = None,
+    payment_index: int = 0,
 ) -> None:
     """Delegate to auto_je.create_for_doc_payment for DRY compliance.
 
@@ -391,7 +391,7 @@ async def _emit_payment_je(
     ts = state.get("issue_date") or state.get("created_at") or __import__("datetime").date.today().isoformat()
     await _auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user_id, doc_id=doc_id,
-        amount=amount, cumulative_paid=cumulative_paid,
+        amount=amount, payment_index=payment_index,
         bank_account_code=bank_code,
         doc_type=state.get("doc_type", "invoice"),
         payment_date=ts,
