@@ -3575,8 +3575,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         finalize_label = _finalize_labels.get(doc_type, "Finalize")
         if _is_manager:
             action_btns_left.append(
-                Button(finalize_label, hx_post=f"/docs/{entity_id}/action/finalize",
-                       hx_swap="none", cls="btn btn--primary")
+                Button(finalize_label,
+                       onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','{entity_id}/action/finalize',{{swap:'none'}});}})();",
+                       cls="btn btn--primary")
             )
     if status == "draft" and not is_list:
         # --- Send form (inline email composition) ---
