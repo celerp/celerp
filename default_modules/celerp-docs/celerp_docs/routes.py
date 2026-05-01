@@ -189,6 +189,28 @@ async def _get_unit_map(session: AsyncSession, company_id: str) -> dict[str, dic
     return build_unit_map(units if units else DEFAULT_UNITS)
 
 
+async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[str, str]:
+    """Return a SKU -> sell_by mapping for all inventory items in the company.
+
+    Used to resolve sell_by when it is not present on a document line item.
+    """
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )
+    ).scalars().all()
+    result: dict[str, str] = {}
+    for row in rows:
+        sku = row.state.get("sku")
+        sell_by = row.state.get("sell_by")
+        if sku and sell_by:
+            result[sku] = sell_by
+    return result
+
+
 @router.get("")
 async def list_docs(
     doc_type: str | None = None,
@@ -453,8 +475,10 @@ async def create_doc(
     # Validate line item quantities against sell_by unit precision
     if payload.line_items:
         unit_map = await _get_unit_map(session, company_id)
+        sell_by_map = await _get_item_sell_by_map(session, company_id)
         for li in payload.line_items:
-            validate_line_quantity(li.quantity, li.sell_by, unit_map, label=li.name or "Line item")
+            resolved_sell_by = li.sell_by or (sell_by_map.get(li.sku) if li.sku else None)
+            validate_line_quantity(li.quantity, resolved_sell_by, unit_map, label=li.name or li.sku or "Line item")
 
     company = await session.get(Company, company_id)
     # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
@@ -575,12 +599,15 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     new_line_items = (payload.fields_changed.get("line_items") or {}).get("new")
     if new_line_items and isinstance(new_line_items, list):
         unit_map = await _get_unit_map(session, company_id)
+        sell_by_map = await _get_item_sell_by_map(session, company_id)
         for li in new_line_items:
+            sku = li.get("sku")
+            resolved_sell_by = li.get("sell_by") or (sell_by_map.get(sku) if sku else None)
             validate_line_quantity(
                 float(li.get("quantity", 0) or 0),
-                li.get("sell_by"),
+                resolved_sell_by,
                 unit_map,
-                label=li.get("name") or "Line item",
+                label=li.get("name") or sku or "Line item",
             )
 
     entry = await emit_event(
@@ -1278,7 +1305,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     is_consignment = doc_type == "consignment_in"
     created_item_ids: list[str] = []
 
-    # Build sell_by lookup from doc line items for quantity precision validation
+    # Build sell_by lookup: item projections are authoritative; doc line items as fallback
+    sell_by_map = await _get_item_sell_by_map(session, company_id)
     doc_line_sell_by: dict[str, str] = {
         li.get("sku", ""): li.get("sell_by") or ""
         for li in (row.state.get("line_items") or [])
@@ -1286,7 +1314,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     }
     unit_map = await _get_unit_map(session, company_id)
     for it in payload.received_items:
-        sell_by = doc_line_sell_by.get(it.sku or "", "") or None
+        sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
 
     for it in payload.received_items:
@@ -2325,10 +2353,12 @@ async def fulfill_doc(
 
     # Validate line quantities against unit precision (catches data saved before this rule existed)
     unit_map = await _get_unit_map(session, company_id)
+    sell_by_map = await _get_item_sell_by_map(session, company_id)
     for li in line_items_all:
-        sell_by = li.get("sell_by") or None
+        sku = li.get("sku") or ""
+        sell_by = li.get("sell_by") or (sell_by_map.get(sku) if sku else None)
         qty = float(li.get("quantity", 0) or 0)
-        validate_line_quantity(qty, sell_by, unit_map, label=li.get("name") or "Line item")
+        validate_line_quantity(qty, sell_by, unit_map, label=li.get("name") or sku or "Line item")
 
     # Inbound docs (e.g. consignment_in): skip pick plan - no deduction needed.
     # Goods arrived at receive time; fulfillment just marks the doc complete.
@@ -2467,6 +2497,7 @@ async def receive_return(
         raise HTTPException(status_code=422, detail="At least one item is required")
 
     # Validate return quantities against CN line item sell_by precision
+    sell_by_map = await _get_item_sell_by_map(session, company_id)
     cn_line_sell_by: dict[str, str] = {
         li.get("sku", ""): li.get("sell_by") or ""
         for li in (state.get("line_items") or [])
@@ -2474,7 +2505,7 @@ async def receive_return(
     }
     unit_map = await _get_unit_map(session, company_id)
     for it in payload.items:
-        sell_by = cn_line_sell_by.get(it.sku) or None
+        sell_by = sell_by_map.get(it.sku or "") or cn_line_sell_by.get(it.sku or "") or None
         validate_line_quantity(it.quantity, sell_by, unit_map, label=it.sku)
 
     # --- Resolve item metadata ---
