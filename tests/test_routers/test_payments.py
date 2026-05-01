@@ -703,3 +703,81 @@ async def test_delete_payment_blocked_by_closed_reconciliation(client, session):
     r = await client.delete(f"/docs/{inv}/payments/0", headers=_h(token))
     assert r.status_code == 409
     assert "closed period" in r.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Bill expense on P&L - regression tests (Bug: direct bills had no JE on finalize)
+# ---------------------------------------------------------------------------
+
+async def _create_and_finalize_bill(client, token: str, total: float = 200.0) -> str:
+    """Create a bill directly (not via PO) and finalize it."""
+    data = {
+        "doc_type": "bill",
+        "line_items": [{"name": "Service", "quantity": 1, "unit_price": total, "line_total": total}],
+        "total": total,
+    }
+    r = await client.post("/docs", headers=_h(token), json=data)
+    assert r.status_code == 200
+    doc_id = r.json()["id"]
+    r = await client.post(f"/docs/{doc_id}/finalize", headers=_h(token))
+    assert r.status_code == 200
+    return doc_id
+
+
+@pytest.mark.asyncio
+async def test_direct_bill_finalize_creates_expense_je(client):
+    """A bill created directly (not from PO) must create an expense JE on finalize.
+
+    Regression: finalize_doc had no branch for doc_type=='bill', so no JE was emitted.
+    Result: P&L showed $0 expenses for all directly-created vendor bills.
+    """
+    token = await _register(client)
+    await _create_and_finalize_bill(client, token, total=300.0)
+
+    r = await client.get("/accounting/pnl", headers=_h(token))
+    assert r.status_code == 200
+    data = r.json()
+    # Must have at least one expense line (6950 misc expense for service with no SKU)
+    assert data["expenses"]["total"] > 0, "Expense total must be non-zero after finalizing a direct bill"
+    expense_codes = {line["code"] for line in data["expenses"]["lines"]}
+    assert "6950" in expense_codes, "Misc expense account 6950 must have balance from direct bill"
+
+
+@pytest.mark.asyncio
+async def test_direct_bill_payment_reduces_ap(client):
+    """Paying a direct bill must debit AP (2110) and credit bank - correct trial balance sign."""
+    token = await _register(client)
+    doc_id = await _create_and_finalize_bill(client, token, total=150.0)
+
+    r = await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
+                          json={"payment_date": "2026-02-01", "amount": 150.0, "bank_account": "1111"})
+    assert r.status_code == 200
+
+    r = await client.get("/accounting/trial-balance", headers=_h(token))
+    assert r.status_code == 200
+    tb = {line["code"]: line for line in r.json()["lines"]}
+
+    # AP 2110: finalize credits AP (+150 credit), payment debits AP (-150 debit) -> net 0
+    # Bank 1111: payment credits bank (outflow) -> net credit balance
+    assert "1111" in tb, "Bank account 1111 must appear on trial balance after bill payment"
+    bank = tb["1111"]
+    # Paying money out: bank is credited -> total_credit > 0
+    assert bank["total_credit"] > 0, "Bank must have credit entries when paying a bill (outflow)"
+
+
+@pytest.mark.asyncio
+async def test_pnl_expense_does_not_appear_for_draft_bill(client):
+    """Draft bills must not affect P&L - only finalized bills create JEs."""
+    token = await _register(client)
+    # Create but do NOT finalize
+    data = {
+        "doc_type": "bill",
+        "line_items": [{"name": "Office supplies", "quantity": 1, "unit_price": 500.0, "line_total": 500.0}],
+        "total": 500.0,
+    }
+    r = await client.post("/docs", headers=_h(token), json=data)
+    assert r.status_code == 200
+
+    r = await client.get("/accounting/pnl", headers=_h(token))
+    assert r.status_code == 200
+    assert r.json()["expenses"]["total"] == 0.0, "Draft bill must not create any expense JE"

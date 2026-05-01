@@ -623,11 +623,12 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
         data=finalize_data,
         actor_id=_user_id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
-    # Auto-JE on finalize (invoices) or convert to bill (POs)
+    # Auto-JE on finalize (invoices, direct bills, or convert to bill (POs))
     if doc_type == "invoice":
         await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state)
-    elif doc_type == "purchase_order":
+    elif doc_type in ("purchase_order", "bill"):
         # Bill conversion JE: debit expense/inventory accounts, credit AP (2110)
+        # Covers both PO->bill conversion and directly-created bills finalized directly.
         await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state)
     # Fire doc_finalize_hook for modules (e.g. warehousing) to react — before commit.
     await fire_lifecycle(
@@ -1455,7 +1456,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
                 for li in state.get("line_items", [])
             )
         await auto_je.create_for_bill_conversion(
-            session, company_id=company_id, user_id=user.id, po_id=new_doc_id, doc=state, total=bill_total,
+            session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc=state,
         )
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
@@ -1579,6 +1580,11 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
     elif doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
         await auto_je.create_for_po_received(
             session, company_id=company_id, user_id=user_id, po_id=entity_id, doc=data, total=total,
+        )
+
+    elif doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
+        await auto_je.create_for_bill_conversion(
+            session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data,
         )
 
 

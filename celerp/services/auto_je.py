@@ -214,7 +214,7 @@ async def create_for_bill_conversion(
     doc_id: str,
     doc: dict,
 ) -> None:
-    """Create JE when a PO is converted to a bill.
+    """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
 
     Debit per-line expense/inventory accounts, credit AP (2110).
     Line-level account_code takes priority; otherwise defaults to 1130 (inventory)
