@@ -268,6 +268,7 @@ async def create_for_bill_conversion(
         idem_create=je_idempotency_key(doc_id, "po.converted_to_bill", "c"),
         idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
+        ts=doc.get("issue_date") or doc.get("finalized_at"),
         entries=entries,
         metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id},
     )
@@ -363,6 +364,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
             idem_create=je_idempotency_key(doc_id, "po.converted_to_bill.unvoid", "c"),
             idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill.unvoid", "p"),
             memo=f"Auto JE for {doc_id} unvoided (restore bill conversion)",
+            ts=doc.get("issue_date") or doc.get("finalized_at"),
             entries=entries,
             metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
         )
