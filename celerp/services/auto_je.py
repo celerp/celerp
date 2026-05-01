@@ -222,7 +222,7 @@ async def create_for_bill_conversion(
     """
     total = float(doc.get("total", 0) or 0)
     line_items = doc.get("line_items", [])
-    entries: list[dict] = []
+    debit_entries: list[dict] = []
 
     if line_items:
         for li in line_items:
@@ -232,16 +232,16 @@ async def create_for_bill_conversion(
             if line_total <= 0:
                 continue
             account = li.get("account_code") or ("1130" if li.get("sku") else "6950")
-            entries.append({"account": account, "debit": line_total, "credit": 0.0})
-    else:
-        # No line items - single debit to misc expense
-        entries.append({"account": "6950", "debit": total, "credit": 0.0})
+            debit_entries.append({"account": account, "debit": line_total, "credit": 0.0})
 
-    if total > 0:
-        entries.append({"account": "2110", "debit": 0.0, "credit": total})
+    # If line items present but all had zero totals (e.g. stripped from payload),
+    # fall back to doc total against misc expense rather than emitting a one-sided JE.
+    if not debit_entries:
+        if total <= 0:
+            return
+        debit_entries.append({"account": "6950", "debit": total, "credit": 0.0})
 
-    if not entries:
-        return
+    entries = debit_entries + [{"account": "2110", "debit": 0.0, "credit": total}]
 
     await _emit_auto_posted_je(
         session,
@@ -309,7 +309,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
         )
     elif doc_type in ("bill", "purchase_order"):
         line_items = doc.get("line_items", [])
-        entries: list[dict] = []
+        debit_entries: list[dict] = []
         if line_items:
             for li in line_items:
                 line_total = float(li.get("line_total", 0) or 0) or (
@@ -318,10 +318,12 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 if line_total <= 0:
                     continue
                 account = li.get("account_code") or ("1130" if li.get("sku") else "6950")
-                entries.append({"account": account, "debit": line_total, "credit": 0.0})
-        else:
-            entries.append({"account": "6950", "debit": total, "credit": 0.0})
-        entries.append({"account": "2110", "debit": 0.0, "credit": total})
+                debit_entries.append({"account": account, "debit": line_total, "credit": 0.0})
+        if not debit_entries:
+            if total <= 0:
+                return
+            debit_entries.append({"account": "6950", "debit": total, "credit": 0.0})
+        entries = debit_entries + [{"account": "2110", "debit": 0.0, "credit": total}]
         await _emit_auto_posted_je(
             session,
             company_id=company_id,

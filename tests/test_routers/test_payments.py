@@ -781,3 +781,53 @@ async def test_pnl_expense_does_not_appear_for_draft_bill(client):
     r = await client.get("/accounting/pnl", headers=_h(token))
     assert r.status_code == 200
     assert r.json()["expenses"]["total"] == 0.0, "Draft bill must not create any expense JE"
+
+
+@pytest.mark.asyncio
+async def test_bill_real_world_flow_blank_create_then_patch_lines(client):
+    """Reproduce Nikolai's exact flow: blank bill -> patch lines -> finalize -> check P&L.
+
+    The UI always creates a blank doc first (POST /docs with no line_items),
+    then the JS line editor saves lines via PATCH with fields_changed.
+    This test ensures the expense JE is emitted correctly in that flow.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    # Step 1: Create blank bill (exactly as create_blank_doc UI route does)
+    r = await client.post("/docs", headers=h, json={"doc_type": "bill", "status": "draft"})
+    assert r.status_code == 200
+    bill_id = r.json()["id"]
+
+    # Step 2: Patch line items (exactly as _celerpPersist JS does via /docs/{id}/lines UI route)
+    lines = [{"description": "Service fee", "quantity": 1, "unit_price": 5885.0, "line_total": 5885.0}]
+    r = await client.patch(f"/docs/{bill_id}", headers=h, json={
+        "fields_changed": {
+            "line_items": {"old": None, "new": lines},
+            "subtotal": {"old": None, "new": 5885.0},
+            "total": {"old": None, "new": 5885.0},
+        }
+    })
+    assert r.status_code == 200
+
+    # Verify state has line_items with line_total before finalize
+    doc = (await client.get(f"/docs/{bill_id}", headers=h)).json()
+    assert doc["line_items"][0]["line_total"] == 5885.0
+
+    # Step 3: Finalize
+    r = await client.post(f"/docs/{bill_id}/finalize", headers=h)
+    assert r.status_code == 200
+
+    # Step 4: P&L must show the expense
+    pnl = (await client.get("/accounting/pnl", headers=h)).json()
+    assert pnl["expenses"]["total"] > 0, "Expense must appear on P&L after finalizing blank-created bill"
+
+    # Step 5: Trial balance - 6950 must have a debit entry
+    tb = (await client.get("/accounting/trial-balance", headers=h)).json()
+    tb_map = {line["code"]: line for line in tb["lines"]}
+    assert "6950" in tb_map, "Misc expense account 6950 must have a balance"
+    assert tb_map["6950"]["total_debit"] > 0, "6950 must have debit entries from bill finalization"
+
+    # Step 6: AP must be balanced (finalize credits AP, payment would debit it)
+    assert "2110" in tb_map
+    assert tb_map["2110"]["total_credit"] == pytest.approx(5885.0, abs=0.01)
