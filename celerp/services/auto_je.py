@@ -223,6 +223,7 @@ async def create_for_bill_conversion(
     total = float(doc.get("total", 0) or 0)
     line_items = doc.get("line_items", [])
     debit_entries: list[dict] = []
+    tax_total = 0.0
 
     if line_items:
         for li in line_items:
@@ -231,8 +232,24 @@ async def create_for_bill_conversion(
             )
             if line_total <= 0:
                 continue
-            account = li.get("account_code") or ("1130" if li.get("sku") else "6950")
+            # Per-line tax: collect to Input VAT (1150), not folded into expense/inventory.
+            tax_rate = float(li.get("tax_rate", 0) or 0)
+            line_tax = round(line_total * tax_rate / 100, 2)
+            tax_total += line_tax
+            # receive_as overrides SKU-based account selection for bills.
+            receive_as = (li.get("receive_as") or "").strip().lower()
+            if li.get("account_code"):
+                account = li["account_code"]
+            elif receive_as == "expense":
+                account = "6950"
+            elif receive_as == "asset":
+                account = "1210"
+            else:
+                # "stock" or default: use 1130 if SKU present, else 6950
+                account = "1130" if li.get("sku") else "6950"
             debit_entries.append({"account": account, "debit": line_total, "credit": 0.0})
+        if tax_total > 0:
+            debit_entries.append({"account": "1150", "debit": round(tax_total, 2), "credit": 0.0})
 
     # If line items present but all had zero totals (e.g. stripped from payload),
     # fall back to doc total against misc expense rather than emitting a one-sided JE.
@@ -310,6 +327,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
     elif doc_type in ("bill", "purchase_order"):
         line_items = doc.get("line_items", [])
         debit_entries: list[dict] = []
+        tax_total = 0.0
         if line_items:
             for li in line_items:
                 line_total = float(li.get("line_total", 0) or 0) or (
@@ -317,8 +335,21 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 )
                 if line_total <= 0:
                     continue
-                account = li.get("account_code") or ("1130" if li.get("sku") else "6950")
+                tax_rate = float(li.get("tax_rate", 0) or 0)
+                line_tax = round(line_total * tax_rate / 100, 2)
+                tax_total += line_tax
+                receive_as = (li.get("receive_as") or "").strip().lower()
+                if li.get("account_code"):
+                    account = li["account_code"]
+                elif receive_as == "expense":
+                    account = "6950"
+                elif receive_as == "asset":
+                    account = "1210"
+                else:
+                    account = "1130" if li.get("sku") else "6950"
                 debit_entries.append({"account": account, "debit": line_total, "credit": 0.0})
+            if tax_total > 0:
+                debit_entries.append({"account": "1150", "debit": round(tax_total, 2), "credit": 0.0})
         if not debit_entries:
             if total <= 0:
                 return
