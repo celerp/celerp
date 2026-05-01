@@ -40,15 +40,27 @@ async def test_dashboard_kpis_shape(client):
 async def test_dashboard_kpis_inventory_values_computed_correctly(client):
     """Regression: Cost Value and Retail Value showed 0 even with priced items.
 
-    Root cause: /dashboard/kpis used sum(retail_price) - a per-unit price never
-    multiplied by quantity - and sum(total_cost) which is only written on merges.
-    Both were always 0 for normally-created items.
+    Root cause: demo seeder stored prices inside item attributes dict instead of
+    emitting item.pricing.set events. The valuation stats read top-level state
+    fields (cost_price, retail_price) directly, so buried prices were invisible.
 
-    Fix: compute total_value_cost = sum(qty * cost_price) and
-    total_value_retail = sum(qty * retail_price) directly in /dashboard/kpis,
-    excluding archived/deleted/consignment-in items (same exclusions as /items/valuation).
+    Fix: demo seeder now emits item.pricing.set events (same path as the API),
+    so prices always land at top-level in projection state.
+
+    Registration seeds 1 demo item so we capture baseline and assert the delta.
+    The baseline itself must be non-zero (verifies seeder fix).
     """
     token = await _register(client)
+
+    # Baseline includes the demo-seeded item; must be non-zero after seeder fix.
+    r0 = await client.get("/dashboard/kpis", headers=_h(token))
+    assert r0.status_code == 200
+    inv0 = r0.json()["inventory"]
+    base_cost = inv0.get("total_value_cost", 0)
+    base_retail = inv0.get("total_value_retail", 0)
+    assert base_cost > 0, "demo item cost should be non-zero after seeder fix"
+    assert base_retail > 0, "demo item retail should be non-zero after seeder fix"
+
     r1 = await client.post("/items", headers=_h(token), json={
         "sku": "VAL-A", "name": "Priced Item A", "quantity": 5,
         "sell_by": "piece", "cost_price": 10.0, "retail_price": 20.0,
@@ -63,17 +75,28 @@ async def test_dashboard_kpis_inventory_values_computed_correctly(client):
     r = await client.get("/dashboard/kpis", headers=_h(token))
     assert r.status_code == 200
     inv = r.json()["inventory"]
-    # 5*10 + 3*5 = 65 cost; 5*20 + 3*15 = 145 retail
-    assert inv["total_value_cost"] == pytest.approx(65.0, abs=0.01), \
-        f"total_value_cost should be 65.0 but got {inv.get('total_value_cost')}"
-    assert inv["total_value_retail"] == pytest.approx(145.0, abs=0.01), \
-        f"total_value_retail should be 145.0 but got {inv.get('total_value_retail')}"
+    # 5*10 + 3*5 = 65 cost added; 5*20 + 3*15 = 145 retail added
+    delta_cost = inv["total_value_cost"] - base_cost
+    delta_retail = inv["total_value_retail"] - base_retail
+    assert delta_cost == pytest.approx(65.0, abs=0.01), \
+        f"cost delta should be 65.0 but got {delta_cost}"
+    assert delta_retail == pytest.approx(145.0, abs=0.01), \
+        f"retail delta should be 145.0 but got {delta_retail}"
 
 
 @pytest.mark.asyncio
 async def test_dashboard_inventory_valuation_non_zero_with_priced_items(client):
-    """Verify /items/valuation also returns correct cost_total and retail_total."""
+    """Verify /items/valuation returns correct cost_total and retail_total.
+
+    Uses delta approach since registration seeds a demo item.
+    """
     token = await _register(client)
+
+    r0 = await client.get("/items/valuation", headers=_h(token))
+    assert r0.status_code == 200
+    base_cost = r0.json()["cost_total"]
+    base_retail = r0.json()["retail_total"]
+
     r1 = await client.post("/items", headers=_h(token), json={
         "sku": "VAL-C", "name": "Priced Item C", "quantity": 5,
         "sell_by": "piece", "cost_price": 10.0, "retail_price": 20.0,
@@ -88,11 +111,13 @@ async def test_dashboard_inventory_valuation_non_zero_with_priced_items(client):
     r = await client.get("/items/valuation", headers=_h(token))
     assert r.status_code == 200
     val = r.json()
-    # 5*10 + 3*5 = 65 cost; 5*20 + 3*15 = 145 retail
-    assert val["cost_total"] == pytest.approx(65.0, abs=0.01), \
-        f"cost_total should be 65.0 but got {val['cost_total']}"
-    assert val["retail_total"] == pytest.approx(145.0, abs=0.01), \
-        f"retail_total should be 145.0 but got {val['retail_total']}"
+    # 5*10 + 3*5 = 65 cost added; 5*20 + 3*15 = 145 retail added
+    delta_cost = val["cost_total"] - base_cost
+    delta_retail = val["retail_total"] - base_retail
+    assert delta_cost == pytest.approx(65.0, abs=0.01), \
+        f"cost delta should be 65.0 but got {delta_cost}"
+    assert delta_retail == pytest.approx(145.0, abs=0.01), \
+        f"retail delta should be 145.0 but got {delta_retail}"
 
 
 @pytest.mark.asyncio
