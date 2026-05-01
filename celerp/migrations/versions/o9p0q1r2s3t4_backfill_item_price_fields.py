@@ -56,20 +56,19 @@ def upgrade() -> None:
     if dialect == "postgresql":
         # For each affected item projection, set state[price_type] = new_price.
         # price_type is a string like "cost_price"; new_price is a numeric JSON value.
-        # We use jsonb_set with the price_type value as the path element.
-        # The sub-select identifies rows where state->price_type is null/missing.
+        # Cast new_price to jsonb explicitly - jsonb_set requires jsonb for the value arg.
         conn.execute(sa.text("""
             UPDATE projections
             SET state = jsonb_set(
                 state::jsonb,
                 ARRAY[state->>'price_type'],
-                (state->'new_price'),
+                (state->'new_price')::jsonb,
                 true
             )
             WHERE entity_type = 'item'
               AND state->>'price_type' IS NOT NULL
               AND state->>'new_price' IS NOT NULL
-              AND state->(state->>'price_type') IS NULL
+              AND (state::jsonb)->(state->>'price_type') IS NULL
         """))
     else:
         # SQLite / test environments: Python-level update
