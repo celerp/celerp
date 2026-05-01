@@ -374,8 +374,20 @@ async def get_item(token: str, entity_id: str) -> dict:
 
 
 async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
-    """Patch item fields. Pass a flat {field: value} dict; wraps into {field: {old, new}} format."""
-    wrapped = {k: (v if isinstance(v, dict) and "new" in v else {"old": None, "new": v}) for k, v in fields_changed.items()}
+    """Patch item fields. Pass a flat {field: value} dict; wraps into {field: {old, new}} format.
+
+    Numeric fields (quantity, *_price) are coerced to float so projection state
+    never receives string values from inline edits.
+    """
+    _NUMERIC = lambda k: k == "quantity" or k.endswith("_price")
+    def _coerce(k, v):
+        if _NUMERIC(k) and v is not None:
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                pass
+        return v
+    wrapped = {k: (v if isinstance(v, dict) and "new" in v else {"old": None, "new": _coerce(k, v)}) for k, v in fields_changed.items()}
     async with _client(token) as c:
         return _raise(await c.patch(f"/items/{entity_id}", json={"fields_changed": wrapped})).json()
 

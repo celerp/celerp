@@ -919,11 +919,17 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
-        value: str | bool = str(form.get("value", ""))
+        value: str | float | bool = str(form.get("value", ""))
 
         # Convert bool fields from string to proper bool
         if field == "allow_splitting":
             value = value.lower() in ("true", "1", "yes")
+        # Convert numeric fields from string to float
+        elif field == "quantity" or field.endswith("_price"):
+            try:
+                value = float(value)
+            except (ValueError, TypeError):
+                return P(t("error.invalid_number"), cls="cell-error")
 
         try:
             if field == "location_name":
