@@ -45,6 +45,7 @@ ALL_CHECKS = [
     "unbalanced_jes",
     "zero_amount_jes",
     "legacy_item_prices",
+    "inverted_doc_dates",
 ]
 
 
@@ -473,6 +474,57 @@ async def _emit_po_received_je(
     )
 
 
+async def _check_inverted_doc_dates(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find docs where due_date is set and is earlier than issue_date.
+
+    These can occur from data imported before backend validation was added (v1.0.10).
+    Fix: set due_date = issue_date (the user almost certainly only checked the
+    issue date field, so this is the least-surprising repair).
+    """
+    docs = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "doc",
+        )
+    )).scalars().all()
+
+    affected = []
+    fixed = 0
+    for doc in docs:
+        state = doc.state
+        issue = (state.get("issue_date") or "")[:10]
+        due = (state.get("due_date") or "")[:10]
+        if not (issue and due):
+            continue
+        if due >= issue:
+            continue
+        affected.append({
+            "entity_id": doc.entity_id,
+            "issue_date": issue,
+            "due_date": due,
+            "doc_type": state.get("doc_type"),
+            "ref_id": state.get("ref_id"),
+        })
+        if fix:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=doc.entity_id,
+                entity_type="doc",
+                event_type="doc.updated",
+                data={"fields_changed": {"due_date": {"old": due, "new": issue}}},
+                actor_id=user_id,
+                location_id=None,
+                source="doctor",
+                idempotency_key=f"doctor:inverted-due-date:{doc.entity_id}",
+            )
+            fixed += 1
+
+    return {"check": "inverted_doc_dates", "found": len(affected), "fixed": fixed, "details": affected[:50]}
+
+
 # --- Check dispatcher ---
 
 _CHECK_FNS = {
@@ -484,6 +536,7 @@ _CHECK_FNS = {
     "unbalanced_jes": _check_unbalanced_jes,
     "zero_amount_jes": _check_zero_amount_jes,
     "legacy_item_prices": _check_legacy_item_prices,
+    "inverted_doc_dates": _check_inverted_doc_dates,
 }
 
 

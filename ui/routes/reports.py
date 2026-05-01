@@ -261,7 +261,11 @@ def _resolve_preset(preset: str, fiscal_year_start: str = "01-01") -> tuple[str,
 
 
 def _parse_dates(request: Request, fiscal_year_start: str = "01-01") -> tuple[str, str, str]:
-    """Extract date_from, date_to, preset from request. Returns (from, to, preset)."""
+    """Extract date_from, date_to, preset from request. Returns (from, to, preset).
+
+    If both dates are present and date_from > date_to the values are swapped so
+    that callers never receive an inverted range (e.g. from a bad URL).
+    """
     preset = request.query_params.get("preset", "")
     if preset and preset != "custom":
         date_from, date_to = _resolve_preset(preset, fiscal_year_start)
@@ -269,6 +273,8 @@ def _parse_dates(request: Request, fiscal_year_start: str = "01-01") -> tuple[st
     date_from = request.query_params.get("from", "")
     date_to = request.query_params.get("to", "")
     if date_from or date_to:
+        if date_from and date_to and date_from > date_to:
+            date_from, date_to = date_to, date_from
         return date_from, date_to, "custom"
     # Default: this fiscal year
     dflt_from, dflt_to = _resolve_preset("this_fy", fiscal_year_start)
@@ -287,11 +293,21 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
             A(label, href=href, cls=f"preset-btn {'preset-btn--active' if key == active_preset else ''}"),
         )
 
+    # max/min keep the browser picker constrained; the inline script keeps them
+    # in sync as the user picks so from can never exceed to and vice-versa.
     custom_form = Form(
-        Input(type="date", name="from", value=date_from, cls="date-input"),
+        Input(type="date", name="from", value=date_from, max=date_to or "", cls="date-input", id="dfb-from"),
         Span("–", cls="date-sep"),
-        Input(type="date", name="to", value=date_to, cls="date-input"),
+        Input(type="date", name="to", value=date_to, min=date_from or "", cls="date-input", id="dfb-to"),
         Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
+        Script(
+            "(function(){"
+            "var f=document.getElementById('dfb-from'),t=document.getElementById('dfb-to');"
+            "if(!f||!t)return;"
+            "f.addEventListener('change',function(){if(f.value)t.min=f.value;});"
+            "t.addEventListener('change',function(){if(t.value)f.max=t.value;});"
+            "})();"
+        ),
         action=base_url,
         method="get",
         cls="date-custom-form",

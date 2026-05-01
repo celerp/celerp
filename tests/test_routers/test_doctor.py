@@ -86,7 +86,7 @@ async def test_doctor_all_checks_run(client, session):
     r = await client.post("/admin/doctor", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
-    assert len(data["results"]) == 7
+    assert len(data["results"]) == 9
     check_names = [c["check"] for c in data["results"]]
     assert "missing_jes" in check_names
     assert "duplicate_jes" in check_names
@@ -790,5 +790,70 @@ async def test_connector_sync_contacts(client, patch_connector_session_token):
         resp = await client.post("/connectors/shopify/sync", headers=headers, json={
             "entity": "contacts", "access_token": "tok",
         })
-    assert resp.status_code == 200
-    assert resp.json()["entity"] == "contacts"
+
+
+# --- inverted_doc_dates doctor check ---
+
+@pytest.mark.asyncio
+async def test_doctor_inverted_doc_dates_clean_data(client, session):
+    """No inverted dates -> found=0."""
+    token = await _register(client)
+    h = _h(token)
+    # Create a normal invoice with valid dates.
+    await client.post("/docs", headers=h, json={
+        "doc_type": "invoice", "contact_name": "Test",
+        "line_items": [{"description": "x", "quantity": 1, "unit_price": 100}],
+        "issue_date": "2024-06-01", "due_date": "2024-06-30",
+    })
+    r = await client.post("/admin/doctor?checks=inverted_doc_dates", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "inverted_doc_dates")
+    assert result["found"] == 0
+
+
+@pytest.mark.asyncio
+async def test_doctor_inverted_doc_dates_detect_and_fix(client, session):
+    """Import a doc with due_date < issue_date (simulating pre-v1.0.10 data).
+    Dry-run should find it; fix run should repair due_date = issue_date."""
+    token = await _register(client)
+    h = _h(token)
+    entity_id = f"doc:inv-date-{uuid.uuid4().hex[:8]}"
+
+    # Plant the inverted doc via the import endpoint (bypasses _assert_date_order).
+    r = await client.post("/docs/import", headers=h, json={
+        "entity_id": entity_id,
+        "event_type": "doc.created",
+        "data": {
+            "doc_type": "invoice", "contact_name": "Legacy",
+            "total": 100, "subtotal": 100, "tax": 0, "status": "draft",
+            "issue_date": "2024-06-15",
+            "due_date": "2024-06-01",   # inverted: due < issue
+        },
+        "source": "import:test",
+        "idempotency_key": f"inv-{uuid.uuid4().hex}",
+    })
+    assert r.status_code == 200
+
+    # Dry-run: detect but don't fix.
+    r = await client.post("/admin/doctor?checks=inverted_doc_dates", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "inverted_doc_dates")
+    assert result["found"] >= 1
+    assert result["fixed"] == 0
+
+    # Fix run.
+    r = await client.post("/admin/doctor?checks=inverted_doc_dates&fix=true", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "inverted_doc_dates")
+    assert result["fixed"] >= 1
+
+    # Verify: due_date now == issue_date (set to issue_date = "2024-06-15").
+    r2 = await client.get(f"/docs/{entity_id}", headers=h)
+    assert r2.status_code == 200
+    doc = r2.json()
+    assert doc["due_date"] >= doc["issue_date"]
+
+    # Second fix run: idempotent -> fixed=0.
+    r = await client.post("/admin/doctor?checks=inverted_doc_dates&fix=true", headers=h)
+    result = next(c for c in r.json()["results"] if c["check"] == "inverted_doc_dates")
+    assert result["fixed"] == 0

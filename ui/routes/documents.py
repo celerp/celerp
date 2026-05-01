@@ -1367,6 +1367,14 @@ def setup_routes(app):
             if not display_value and field == "issue_date":
                 from datetime import date
                 display_value = date.today().isoformat()
+            # Constrain pickers to prevent inverted issue/due date.
+            # issue_date max = due_date (if set); due_date min = issue_date (if set).
+            date_min = ""
+            date_max = ""
+            if field == "due_date":
+                date_min = (doc.get("issue_date") or "")[:10]
+            elif field == "issue_date":
+                date_max = (doc.get("due_date") or "")[:10]
             input_el = Input(
                 type="date", name="value", value=display_value,
                 hx_patch=f"/docs/{entity_id}/field/{field}",
@@ -1376,6 +1384,8 @@ def setup_routes(app):
                 onblur=f"if(!this.value.trim() && !this.dataset.dirty){{{blur_restore}}}",
                 oninput="this.dataset.dirty='1'",
                 data_orig=value,
+                **({} if not date_min else {"min": date_min}),
+                **({} if not date_max else {"max": date_max}),
             )
         elif field == "price_list":
             # Searchable dropdown of company price lists

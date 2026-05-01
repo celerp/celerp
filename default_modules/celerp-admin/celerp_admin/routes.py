@@ -44,6 +44,8 @@ ALL_CHECKS = [
     "stale_projections",
     "unbalanced_jes",
     "zero_amount_jes",
+    "legacy_item_prices",
+    "inverted_doc_dates",
 ]
 
 
@@ -457,6 +459,98 @@ async def _emit_po_received_je(
 
 # --- Check dispatcher ---
 
+async def _check_legacy_item_prices(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find items where prices were stored as price_type/new_price (old seeder format)
+    instead of top-level cost_price/retail_price fields. Dashboard shows 0 for these.
+
+    Fix: emit item.pricing.set to map new_price -> the named price field.
+    """
+    items = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+
+    affected = []
+    fixed = 0
+    for item in items:
+        state = item.state
+        price_type = state.get("price_type")
+        new_price = state.get("new_price")
+        if price_type and new_price is not None and state.get(price_type) is None:
+            affected.append({"entity_id": item.entity_id, "price_type": price_type, "new_price": new_price})
+            if fix:
+                await emit_event(
+                    session,
+                    company_id=company_id,
+                    entity_id=item.entity_id,
+                    entity_type="item",
+                    event_type="item.pricing.set",
+                    data={"price_type": price_type, "new_price": float(new_price)},
+                    actor_id=user_id,
+                    location_id=None,
+                    source="doctor",
+                    idempotency_key=f"doctor:legacy-price:{item.entity_id}:{price_type}",
+                )
+                fixed += 1
+
+    return {"check": "legacy_item_prices", "found": len(affected), "fixed": fixed, "details": affected[:50]}
+
+
+async def _check_inverted_doc_dates(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find docs where due_date is set and is earlier than issue_date.
+
+    These can occur from data imported before backend validation was added (v1.0.10).
+    Fix: set due_date = issue_date (the user almost certainly only checked the
+    issue date field, so this is the least-surprising repair).
+    """
+    docs = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "doc",
+        )
+    )).scalars().all()
+
+    affected = []
+    fixed = 0
+    for doc in docs:
+        state = doc.state
+        issue = (state.get("issue_date") or "")[:10]
+        due = (state.get("due_date") or "")[:10]
+        if not (issue and due):
+            continue
+        if due >= issue:
+            continue
+        affected.append({
+            "entity_id": doc.entity_id,
+            "issue_date": issue,
+            "due_date": due,
+            "doc_type": state.get("doc_type"),
+            "ref_id": state.get("ref_id"),
+        })
+        if fix:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=doc.entity_id,
+                entity_type="doc",
+                event_type="doc.updated",
+                data={"fields_changed": {"due_date": {"old": due, "new": issue}}},
+                actor_id=user_id,
+                location_id=None,
+                source="doctor",
+                idempotency_key=f"doctor:inverted-due-date:{doc.entity_id}",
+            )
+            fixed += 1
+
+    return {"check": "inverted_doc_dates", "found": len(affected), "fixed": fixed, "details": affected[:50]}
+
+
 _CHECK_FNS = {
     "missing_jes": _check_missing_jes,
     "duplicate_jes": _check_duplicate_jes,
@@ -465,6 +559,8 @@ _CHECK_FNS = {
     "stale_projections": _check_stale_projections,
     "unbalanced_jes": _check_unbalanced_jes,
     "zero_amount_jes": _check_zero_amount_jes,
+    "legacy_item_prices": _check_legacy_item_prices,
+    "inverted_doc_dates": _check_inverted_doc_dates,
 }
 
 

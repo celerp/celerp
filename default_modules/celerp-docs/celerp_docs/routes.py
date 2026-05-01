@@ -158,6 +158,22 @@ class DocBatchImportRequest(BaseModel):
     upsert: bool = False
 
 
+def _assert_date_order(patch: dict, current: dict | None = None) -> None:
+    """Raise 422 if due_date is set and earlier than issue_date.
+
+    Merges patch over current so partial updates are validated against the full
+    resulting state, not just the fields being changed.
+    """
+    merged = {**(current or {}), **patch}
+    issue = merged.get("issue_date") or ""
+    due = merged.get("due_date") or ""
+    if issue and due and due < issue:
+        raise HTTPException(
+            status_code=422,
+            detail="due_date cannot be earlier than issue_date",
+        )
+
+
 async def _get_doc(session: AsyncSession, company_id, entity_id: str) -> Projection:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "doc":
@@ -424,6 +440,8 @@ async def create_doc(
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
+    _assert_date_order(payload.model_dump(exclude_none=True))
+
     company = await session.get(Company, company_id)
     # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
     seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
@@ -535,6 +553,9 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
             )
             if existing.scalar_one_or_none():
                 raise HTTPException(status_code=409, detail=f"Document number '{new_ref}' already exists")
+    # Validate issue/due date ordering against the merged resulting state
+    patch_flat = {k: v.get("new") for k, v in payload.fields_changed.items() if v.get("new") is not None}
+    _assert_date_order(patch_flat, row.state)
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
