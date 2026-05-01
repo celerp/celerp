@@ -93,6 +93,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]
             current["doc_number"] = data["ref_id"]
+        # Track how many times this doc has been reverted so re-finalization
+        # uses a distinct JE id and idempotency key each cycle.
+        current["revert_count"] = int(current.get("revert_count", 0)) + 1
         # Fulfillment state is independent of doc status - do not clear it here.
         # Use the /unfulfill endpoint to explicitly revert fulfillment.
     elif event_type == "doc.unvoided":

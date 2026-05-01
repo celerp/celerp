@@ -66,13 +66,18 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     tax = float(doc.get("tax", 0) or 0)
     total = float(doc.get("total", 0) or 0)
     revenue = total - tax  # net revenue (after discount, before tax)
+    # Use a cycle-aware suffix so re-finalize after revert creates a fresh JE entity
+    # rather than hitting the dedup guard on the voided JE from the previous cycle.
+    cycle = int(doc.get("revert_count", 0))
+    cycle_suffix = f"fin:{cycle}" if cycle else "fin"
+    je_type_key = f"invoice.finalized:{cycle}" if cycle else "invoice.finalized"
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:fin",
-        idem_create=je_idempotency_key(doc_id, "invoice.finalized", "c"),
-        idem_posted=je_idempotency_key(doc_id, "invoice.finalized", "p"),
+        je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+        idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
+        idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for {doc_id} finalized",
         ts=doc.get("finalized_at") or doc.get("issue_date"),
         entries=[
@@ -274,12 +279,21 @@ async def create_for_bill_conversion(
     )
 
 
-async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str) -> None:
-    """Void the auto-JE that was created when a doc was finalized (invoice or bill)."""
-    for je_suffix in ("fin", "bill"):
+async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
+    """Void the auto-JE that was created when a doc was finalized (invoice or bill).
+
+    revert_count: the current revert_count from doc state (before this revert increments it).
+    Used to derive the correct JE entity id for cycle-aware invoice JEs.
+    """
+    # Cycle-aware invoice JE id (matches create_for_doc_finalized logic).
+    cycle = revert_count
+    fin_suffix = f"fin:{cycle}" if cycle else "fin"
+    for je_suffix in (fin_suffix, "bill"):
         je_id = f"je:auto:{doc_id}:{je_suffix}"
         row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
         if row is not None and row.state.get("status") == "posted":
+            # Void idempotency key is cycle-aware to allow multiple revert cycles.
+            void_cycle_key = f"revert_to_draft:{revert_count}"
             await emit_event(
                 session,
                 company_id=company_id,
@@ -290,7 +304,7 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str) -
                 actor_id=user_id,
                 location_id=None,
                 source="auto_je",
-                idempotency_key=je_idempotency_key(doc_id, "revert_to_draft", "void"),
+                idempotency_key=je_idempotency_key(doc_id, void_cycle_key, "void"),
                 metadata_={"trigger": "doc.reverted_to_draft", "doc_id": doc_id},
             )
             return  # void the first found; at most one exists per doc

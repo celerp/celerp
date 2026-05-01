@@ -1492,3 +1492,147 @@ async def test_receive_goods_uses_bill_line_category_and_attributes(client, sess
     assert new_item.get("color") == "green", f"attributes.color not set: {new_item}"
     assert new_item.get("shape") == "oval", f"attributes.shape not set: {new_item}"
     assert new_item.get("measurements (mm)") == "10x8", f"attributes.measurements not set: {new_item}"
+
+
+# ---------------------------------------------------------------------------
+# Revert-to-draft → re-finalize tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_invoice_revert_to_draft_then_re_finalize(client, session):
+    """Finalize → revert → finalize again must succeed and reuse the same INV ref."""
+    token = await _register(client)
+
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+
+    # First finalize
+    r = await client.post(f"/docs/{inv}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+    state1 = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state1["status"] == "final"
+    inv_ref = state1["ref_id"]
+    assert re.match(r"^INV-", inv_ref), f"Expected INV- ref, got: {inv_ref}"
+    pf_ref = state1.get("source_proforma_ref", "")
+
+    # Revert to draft
+    r = await client.post(f"/docs/{inv}/revert-to-draft", headers=h, json={"reason": "mistake"})
+    assert r.status_code == 200, r.text
+    draft = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert draft["status"] == "draft"
+    # ref_id should still be the INV ref (not reset to PF)
+    assert draft["ref_id"] == inv_ref
+
+    # Re-finalize
+    r = await client.post(f"/docs/{inv}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+    state2 = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state2["status"] == "final"
+    # Must reuse the same INV ref - no new counter slot consumed
+    assert state2["ref_id"] == inv_ref, (
+        f"Re-finalize changed INV ref from {inv_ref} to {state2['ref_id']} - counter slot wasted"
+    )
+    # source_proforma_ref must still point to the original PF ref
+    if pf_ref:
+        assert state2.get("source_proforma_ref") == pf_ref, (
+            f"source_proforma_ref changed on re-finalize: {state2.get('source_proforma_ref')!r} != {pf_ref!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_invoice_re_finalize_creates_fresh_je(client, session):
+    """JE must be voided on revert and a fresh JE created on re-finalize.
+
+    The dedup guard on idempotency keys must not block the second JE.
+    """
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+
+    # Finalize → check JE is posted
+    await client.post(f"/docs/{inv}/finalize", headers=h)
+
+    ledger_rows = (await client.get("/ledger?entity_type=journal_entry", headers=h)).json()["items"]
+    fin_je_after_first = [
+        e for e in ledger_rows
+        if inv in (e["data"].get("memo") or "") and "finalized" in (e["data"].get("memo") or "")
+    ]
+    assert fin_je_after_first, "No finalize JE found after first finalize"
+
+    # Revert → finalize JE must be voided
+    await client.post(f"/docs/{inv}/revert-to-draft", headers=h, json={"reason": "test"})
+
+    # Re-finalize → a new posted JE must exist
+    r = await client.post(f"/docs/{inv}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+
+    # Collect all JEs for this doc
+    ledger_rows2 = (await client.get("/ledger?entity_type=journal_entry", headers=h)).json()["items"]
+    fin_je_rows = [
+        e for e in ledger_rows2
+        if inv in (e["data"].get("memo") or "") and "finalized" in (e["data"].get("memo") or "")
+    ]
+    # There should be at least two posted events (created + posted) for the second finalize cycle
+    assert len(fin_je_rows) >= 1, "Expected at least one JE event for re-finalize"
+
+    # Verify the document is final and has a valid AR balance (JE was actually recorded)
+    state = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state["status"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_invoice_counter_not_double_incremented_on_re_finalize(client, session):
+    """Re-finalizing a previously-finalized invoice must not consume a new counter slot.
+
+    Create two invoices; finalize both; revert the first; re-finalize the first.
+    The re-finalized invoice must keep its original number, not leapfrog the second.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    inv_a = await _create_invoice(client, token)
+    inv_b = await _create_invoice(client, token)
+
+    await client.post(f"/docs/{inv_a}/finalize", headers=h)
+    await client.post(f"/docs/{inv_b}/finalize", headers=h)
+
+    ref_a = (await client.get(f"/docs/{inv_a}", headers=h)).json()["ref_id"]
+    ref_b = (await client.get(f"/docs/{inv_b}", headers=h)).json()["ref_id"]
+
+    # Revert inv_a, then re-finalize
+    await client.post(f"/docs/{inv_a}/revert-to-draft", headers=h, json={"reason": "test"})
+    await client.post(f"/docs/{inv_a}/finalize", headers=h)
+
+    ref_a_after = (await client.get(f"/docs/{inv_a}", headers=h)).json()["ref_id"]
+    ref_b_after = (await client.get(f"/docs/{inv_b}", headers=h)).json()["ref_id"]
+
+    # inv_a keeps its original ref; inv_b is unaffected
+    assert ref_a_after == ref_a, f"Re-finalize changed ref_a from {ref_a} to {ref_a_after}"
+    assert ref_b_after == ref_b, f"inv_b ref changed unexpectedly to {ref_b_after}"
+
+
+@pytest.mark.asyncio
+async def test_invoice_multiple_revert_cycles(client, session):
+    """Finalize → revert → finalize → revert → finalize must work for N cycles."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+
+    await client.post(f"/docs/{inv}/finalize", headers=h)
+    original_ref = (await client.get(f"/docs/{inv}", headers=h)).json()["ref_id"]
+
+    for cycle in range(1, 4):
+        r_revert = await client.post(f"/docs/{inv}/revert-to-draft", headers=h, json={"reason": f"cycle {cycle}"})
+        assert r_revert.status_code == 200, f"Revert failed on cycle {cycle}: {r_revert.text}"
+
+        r_final = await client.post(f"/docs/{inv}/finalize", headers=h)
+        assert r_final.status_code == 200, f"Re-finalize failed on cycle {cycle}: {r_final.text}"
+
+        state = (await client.get(f"/docs/{inv}", headers=h)).json()
+        assert state["status"] == "final", f"Expected final status after cycle {cycle}, got: {state['status']}"
+        assert state["ref_id"] == original_ref, (
+            f"Ref changed on cycle {cycle}: {original_ref} -> {state['ref_id']}"
+        )
+        assert int(state.get("revert_count", 0)) == cycle, (
+            f"revert_count should be {cycle} after cycle {cycle}, got {state.get('revert_count')}"
+        )

@@ -621,13 +621,22 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     finalize_data: dict = {}
     event_type = "doc.finalized"
 
-    # Invoices: assign real INV number on finalize, preserving PF ref
+    # Invoices: assign real INV number on finalize, preserving PF ref.
+    # On re-finalize (after revert-to-draft) the doc already holds the INV ref
+    # and the original source_proforma_ref — reuse both so no counter slot is wasted
+    # and the proforma link stays intact.
     if doc_type == "invoice":
-        company = await session.get(Company, company_id)
-        inv_ref = next_doc_ref(company, "invoice")
-        finalize_data["ref_id"] = inv_ref
-        finalize_data["source_proforma_ref"] = _initial_doc_state.get("ref_id", "")
-        await session.flush()
+        existing_inv_ref = _initial_doc_state.get("ref_id", "")
+        is_re_finalize = bool(_initial_doc_state.get("revert_count", 0))
+        if is_re_finalize and existing_inv_ref and not existing_inv_ref.startswith("PF-"):
+            # Reuse existing INV ref; keep existing source_proforma_ref untouched.
+            finalize_data["ref_id"] = existing_inv_ref
+        else:
+            company = await session.get(Company, company_id)
+            inv_ref = next_doc_ref(company, "invoice")
+            finalize_data["ref_id"] = inv_ref
+            finalize_data["source_proforma_ref"] = existing_inv_ref
+            await session.flush()
 
     # Purchase Orders: "Convert to Bill" - assign BILL number, change doc_type
     elif doc_type == "purchase_order":
@@ -714,8 +723,9 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # Void the finalize JE
-    await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
+    # Void the finalize JE - pass current revert_count (before this revert increments it)
+    current_revert_count = int(state.get("revert_count", 0))
+    await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id, revert_count=current_revert_count)
     await session.commit()
     return {"event_id": entry.id}
 
