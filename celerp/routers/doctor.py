@@ -44,6 +44,7 @@ ALL_CHECKS = [
     "stale_projections",
     "unbalanced_jes",
     "zero_amount_jes",
+    "legacy_item_prices",
 ]
 
 
@@ -335,6 +336,51 @@ async def _check_zero_amount_jes(
     return {"check": "zero_amount_jes", "found": len(zeros), "fixed": fixed, "details": zeros[:50]}
 
 
+async def _check_legacy_item_prices(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find items where prices were stored as price_type/new_price in event payload
+    (old seeder format) instead of top-level cost_price/retail_price fields.
+
+    These items show price_type/new_price at top-level in their projection state
+    but have no cost_price or retail_price, so dashboard valuation shows 0.
+
+    Fix: emit item.pricing.set events mapping new_price -> cost_price (best-effort
+    recovery; retail_price cannot be recovered from this format).
+    """
+    items = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+
+    affected = []
+    fixed = 0
+    for item in items:
+        state = item.state
+        price_type = state.get("price_type")
+        new_price = state.get("new_price")
+        if price_type and new_price is not None and state.get(price_type) is None:
+            affected.append({"entity_id": item.entity_id, "price_type": price_type, "new_price": new_price})
+            if fix:
+                await emit_event(
+                    session,
+                    company_id=company_id,
+                    entity_id=item.entity_id,
+                    entity_type="item",
+                    event_type="item.pricing.set",
+                    data={"price_type": price_type, "new_price": float(new_price)},
+                    actor_id=user_id,
+                    location_id=None,
+                    source="doctor",
+                    idempotency_key=f"doctor:legacy-price:{item.entity_id}:{price_type}",
+                )
+                fixed += 1
+
+    return {"check": "legacy_item_prices", "found": len(affected), "fixed": fixed, "details": affected[:50]}
+
+
 # --- JE emission helpers (shared with import hook) ---
 
 async def _emit_finalize_je(
@@ -437,6 +483,7 @@ _CHECK_FNS = {
     "stale_projections": _check_stale_projections,
     "unbalanced_jes": _check_unbalanced_jes,
     "zero_amount_jes": _check_zero_amount_jes,
+    "legacy_item_prices": _check_legacy_item_prices,
 }
 
 
