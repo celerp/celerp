@@ -402,6 +402,25 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
     return balances
 
 
+@router.get("/journal-entries")
+async def list_journal_entries(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """List all journal entry projections - for debugging and audit."""
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "journal_entry",
+            )
+        )
+    ).scalars().all()
+    items = [{"entity_id": r.entity_id, **r.state} for r in rows]
+    return {"items": items, "total": len(items)}
+
+
 @router.get("/trial-balance")
 async def trial_balance(
     date_from: str | None = None,
