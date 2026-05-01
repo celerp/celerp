@@ -61,14 +61,6 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("status", "available")
         current = _migrate_sell_by(current)
         current = _sync_expiry_from_attributes(current)
-        # Promote any _price fields from attributes to top-level so that
-        # stats/valuation queries can always read them from state directly.
-        # This normalises items seeded via demo (which stored prices in attributes)
-        # with items created via the API (which emits item.pricing.set events).
-        _attrs = current.get("attributes") or {}
-        for _k in list(_attrs):
-            if _k.endswith("_price") and _k not in current:
-                current[_k] = _attrs[_k]
     elif event_type == "item.updated":
         for field, change in data["fields_changed"].items():
             current[field] = change.get("new")
