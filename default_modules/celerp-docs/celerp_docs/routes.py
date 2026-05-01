@@ -26,8 +26,8 @@ from celerp.services import auto_je
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
-from celerp.services.pick import compute_pick_plan
-from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
+from celerp.services.pick import PickResult, compute_pick_plan
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, UNFULFILLABLE_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -2250,9 +2250,14 @@ async def fulfill_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Fulfill a document: compute pick plan and deduct inventory."""
+    """Fulfill a document: compute pick plan and deduct inventory.
+
+    For inbound doc types (e.g. consignment_in) the pick plan is skipped -
+    goods already arrived at receive time; fulfillment only closes the doc.
+    """
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
+    doc_type = state.get("doc_type", "")
     if state.get("status") in UNFULFILLABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Cannot fulfill a draft or voided document")
     if state.get("fulfillment_status") == "fulfilled":
@@ -2270,55 +2275,59 @@ async def fulfill_doc(
             detail="This document contains no stocked goods. Only service or non-SKU items are present - there is nothing to fulfill from inventory.",
         )
 
-    # Gather available inventory for SKUs in line items
-    skus: set[str] = set()
-    for li in state.get("line_items", []):
-        sku = li.get("sku") or ""
-        if sku and (li.get("sell_by") or "") not in ("service", "hour"):
-            skus.add(sku)
+    # Inbound docs (e.g. consignment_in): skip pick plan - no deduction needed.
+    # Goods arrived at receive time; fulfillment just marks the doc complete.
+    if doc_type in INBOUND_DOC_TYPES:
+        pick_result = PickResult(picks=[], unfulfilled=[], strategy="inbound")
+    else:
+        # Gather available inventory for SKUs in line items
+        skus: set[str] = set()
+        for li in state.get("line_items", []):
+            sku = li.get("sku") or ""
+            if sku and (li.get("sell_by") or "") not in ("service", "hour"):
+                skus.add(sku)
 
-    available_inv: list[dict] = []
-    if skus:
-        from sqlalchemy import select as _sel
-        rows = (await session.execute(
-            _sel(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
+        available_inv: list[dict] = []
+        if skus:
+            from sqlalchemy import select as _sel
+            rows = (await session.execute(
+                _sel(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                )
+            )).scalars().all()
+            for r in rows:
+                s = r.state
+                qty = float(s.get("quantity") or 0)
+                item_sku = s.get("sku") or ""
+                if qty <= 0 or not item_sku:
+                    continue
+                # Match exact or child prefix
+                matched = any(item_sku == sku or item_sku.startswith(f"{sku}.") for sku in skus)
+                if matched:
+                    available_inv.append({
+                        "entity_id": r.entity_id,
+                        "sku": item_sku,
+                        "quantity": qty,
+                        "created_at": s.get("created_at") or "",
+                        "expires_at": s.get("expires_at"),
+                        "cost_price": float(s.get("cost_price") or 0),
+                        "allow_splitting": bool(s.get("allow_splitting", True)),
+                    })
+
+        pick_result = compute_pick_plan(state.get("line_items", []), available_inv)
+
+        if pick_result.unfulfilled:
+            sku_to_name = {li.get("sku", ""): li.get("name", "Unknown") for li in state.get("line_items", [])}
+            shortages = []
+            for sh in pick_result.unfulfilled:
+                sku = sh.get("sku", "")
+                name = sku_to_name.get(sku, "Unknown")
+                shortages.append(f"  \u2022 {name} (SKU: {sku}): short by {sh.get('short_qty', 0)}")
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot fulfill: insufficient stock for the following items:\n" + "\n".join(shortages),
             )
-        )).scalars().all()
-        for r in rows:
-            s = r.state
-            qty = float(s.get("quantity") or 0)
-            item_sku = s.get("sku") or ""
-            if qty <= 0 or not item_sku:
-                continue
-            # Match exact or child prefix
-            matched = any(item_sku == sku or item_sku.startswith(f"{sku}.") for sku in skus)
-            if matched:
-                available_inv.append({
-                    "entity_id": r.entity_id,
-                    "sku": item_sku,
-                    "quantity": qty,
-                    "created_at": s.get("created_at") or "",
-                    "expires_at": s.get("expires_at"),
-                    "cost_price": float(s.get("cost_price") or 0),
-                    "allow_splitting": bool(s.get("allow_splitting", True)),
-                })
-
-    pick_result = compute_pick_plan(state.get("line_items", []), available_inv)
-
-    if pick_result.unfulfilled:
-        # Build a name lookup from line items for better error messages
-        sku_to_name = {li.get("sku", ""): li.get("name", "Unknown") for li in state.get("line_items", [])}
-        shortages = []
-        for sh in pick_result.unfulfilled:
-            sku = sh.get("sku", "")
-            name = sku_to_name.get(sku, "Unknown")
-            shortages.append(f"  \u2022 {name} (SKU: {sku}): short by {sh.get('short_qty', 0)}")
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot fulfill: insufficient stock for the following items:\n" + "\n".join(shortages),
-        )
 
     from celerp.modules.slots import fire_lifecycle_strict
     await fire_lifecycle_strict("pre_fulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
@@ -2329,6 +2338,7 @@ async def fulfill_doc(
         pick_result=pick_result,
         company_id=company_id,
         user_id=user.id,
+        doc_type=doc_type,
     )
     await session.commit()
     return result
