@@ -27,6 +27,7 @@ from celerp.services.auth import get_current_company_id, get_current_user, requi
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import PickResult, compute_pick_plan
+from celerp.services.units import DEFAULT_UNITS, build_unit_map, validate_line_quantity
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, UNFULFILLABLE_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -179,6 +180,13 @@ async def _get_doc(session: AsyncSession, company_id, entity_id: str) -> Project
     if row is None or row.entity_type != "doc":
         raise HTTPException(status_code=404, detail="Document not found")
     return row
+
+
+async def _get_unit_map(session: AsyncSession, company_id: str) -> dict[str, dict]:
+    """Return a name-keyed unit map for the company (falls back to DEFAULT_UNITS)."""
+    company = await session.get(Company, company_id)
+    units = (company.settings or {}).get("units") if company else None
+    return build_unit_map(units if units else DEFAULT_UNITS)
 
 
 @router.get("")
@@ -442,6 +450,12 @@ async def create_doc(
 
     _assert_date_order(payload.model_dump(exclude_none=True))
 
+    # Validate line item quantities against sell_by unit precision
+    if payload.line_items:
+        unit_map = await _get_unit_map(session, company_id)
+        for li in payload.line_items:
+            validate_line_quantity(li.quantity, li.sell_by, unit_map, label=li.name or "Line item")
+
     company = await session.get(Company, company_id)
     # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
     seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
@@ -556,6 +570,19 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     # Validate issue/due date ordering against the merged resulting state
     patch_flat = {k: v.get("new") for k, v in payload.fields_changed.items() if v.get("new") is not None}
     _assert_date_order(patch_flat, row.state)
+
+    # Validate patched line items when present
+    new_line_items = (payload.fields_changed.get("line_items") or {}).get("new")
+    if new_line_items and isinstance(new_line_items, list):
+        unit_map = await _get_unit_map(session, company_id)
+        for li in new_line_items:
+            validate_line_quantity(
+                float(li.get("quantity", 0) or 0),
+                li.get("sell_by"),
+                unit_map,
+                label=li.get("name") or "Line item",
+            )
+
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
@@ -1250,6 +1277,17 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
 
     is_consignment = doc_type == "consignment_in"
     created_item_ids: list[str] = []
+
+    # Build sell_by lookup from doc line items for quantity precision validation
+    doc_line_sell_by: dict[str, str] = {
+        li.get("sku", ""): li.get("sell_by") or ""
+        for li in (row.state.get("line_items") or [])
+        if li.get("sku")
+    }
+    unit_map = await _get_unit_map(session, company_id)
+    for it in payload.received_items:
+        sell_by = doc_line_sell_by.get(it.sku or "", "") or None
+        validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
 
     for it in payload.received_items:
         if it.item_id:
@@ -2285,6 +2323,13 @@ async def fulfill_doc(
             detail="This document contains no stocked goods. Only service or non-SKU items are present - there is nothing to fulfill from inventory.",
         )
 
+    # Validate line quantities against unit precision (catches data saved before this rule existed)
+    unit_map = await _get_unit_map(session, company_id)
+    for li in line_items_all:
+        sell_by = li.get("sell_by") or None
+        qty = float(li.get("quantity", 0) or 0)
+        validate_line_quantity(qty, sell_by, unit_map, label=li.get("name") or "Line item")
+
     # Inbound docs (e.g. consignment_in): skip pick plan - no deduction needed.
     # Goods arrived at receive time; fulfillment just marks the doc complete.
     if doc_type in INBOUND_DOC_TYPES:
@@ -2420,6 +2465,17 @@ async def receive_return(
         raise HTTPException(status_code=409, detail="Cannot receive return on a draft or voided credit note")
     if not payload.items:
         raise HTTPException(status_code=422, detail="At least one item is required")
+
+    # Validate return quantities against CN line item sell_by precision
+    cn_line_sell_by: dict[str, str] = {
+        li.get("sku", ""): li.get("sell_by") or ""
+        for li in (state.get("line_items") or [])
+        if li.get("sku")
+    }
+    unit_map = await _get_unit_map(session, company_id)
+    for it in payload.items:
+        sell_by = cn_line_sell_by.get(it.sku) or None
+        validate_line_quantity(it.quantity, sell_by, unit_map, label=it.sku)
 
     # --- Resolve item metadata ---
     # Priority: sold inventory records (most authoritative - have cost_price + full attributes).
