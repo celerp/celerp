@@ -567,14 +567,30 @@ def setup_routes(app):
                 params["date_from"] = date_from
             if date_to and not is_drafts_view:
                 params["date_to"] = date_to
-            docs_resp = await api.list_docs(token, params)
-            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-            # Fetch draft count for the badge (always unfiltered)
+            docs_resp = None
+            if is_drafts_view and doc_type == "purchase_order":
+                # PO drafts view: fetch both purchase_order and bill drafts combined.
+                bill_params = {**params, "doc_type": "bill"}
+                po_resp = await api.list_docs(token, params)
+                bill_resp = await api.list_docs(token, bill_params)
+                po_items = po_resp.get("items", []) if isinstance(po_resp, dict) else po_resp
+                bill_items = bill_resp.get("items", []) if isinstance(bill_resp, dict) else bill_resp
+                docs = po_items + bill_items
+            else:
+                docs_resp = await api.list_docs(token, params)
+                docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+            # Fetch draft count for the badge (always unfiltered).
+            # For purchase_order pages, also include bill drafts so users can
+            # find bills they started and closed without finalizing.
             draft_params = {"status": "draft", "limit": 1}
             if doc_type:
                 draft_params["doc_type"] = doc_type
             draft_resp = await api.list_docs(token, {**draft_params, "limit": 250})
             draft_count = draft_resp.get("total", 0) if isinstance(draft_resp, dict) else len(draft_resp)
+            if doc_type == "purchase_order":
+                bill_draft_resp = await api.list_docs(token, {"status": "draft", "doc_type": "bill", "limit": 250})
+                bill_draft_count = bill_draft_resp.get("total", 0) if isinstance(bill_draft_resp, dict) else len(bill_draft_resp)
+                draft_count += bill_draft_count
             summary = await api.get_doc_summary(token, doc_type=doc_type)
         except APIError as e:
             if e.status == 401:

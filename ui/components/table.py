@@ -1045,13 +1045,16 @@ def pagination(page: int, total: int, per_page: int, base_url: str, extra_params
 
 def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> FT:
     options = [25, 50, 100, 250, 500]
+    # Swap only the content fragment (avoids double shell render).
+    # base_url is e.g. "/inventory"; content endpoint is "/inventory/content".
+    content_url = base_url.rstrip("/") + "/content"
     return Select(
         *[Option(f"{n} per page", value=str(n), selected=(n == current)) for n in options],
         name="per_page",
-        hx_get=base_url,
+        hx_get=content_url,
         hx_trigger="change",
-        hx_target="#main-content",
-        hx_swap="innerHTML",
+        hx_target="#inventory-content",
+        hx_swap="outerHTML",
         hx_include="[name='q'],[name='status'],[name='category'],[name='cols']",
         hx_push_url="true",
         cls="filter-select per-page-select",
