@@ -1238,6 +1238,16 @@ async def seed_demo_items(
         entity_id = f"item:demo-{uuid.uuid4()}"
         sku = data.get("sku", f"DEMO-{i:03d}")
         prices = data.get("prices") or {}
+        # Build price fields keyed by lowercase price list name + "_price".
+        # These go directly into the item.created payload so they land at top-level
+        # in projection state even when the inventory module (and its item.pricing.set
+        # handler) is not yet loaded - which is always the case during initial
+        # registration (modules are enabled after the setup wizard completes).
+        price_fields = {
+            f"{pl_name.lower()}_price": float(pv)
+            for pl_name, pv in prices.items()
+            if pv is not None
+        }
         payload = {
             "sku": sku,
             "name": data.get("name", f"[DEMO] Item {i}"),
@@ -1251,6 +1261,7 @@ async def seed_demo_items(
             "barcode": data.get("barcode"),
             "allow_splitting": data.get("allow_splitting", True),
             "attributes": data.get("attributes") or {},
+            **price_fields,
         }
         # Strip None values to keep event data clean
         payload = {k: v for k, v in payload.items() if v is not None}
@@ -1266,22 +1277,3 @@ async def seed_demo_items(
             source="demo",
             idempotency_key=f"demo:item:{company_id}:{sku}",
         )
-        # Emit pricing events via item.pricing.set - same path as the API route.
-        # Prices must NOT be stored in attributes; they live at top-level in
-        # projection state, written by the item.pricing.set handler.
-        for pl_name, pv in prices.items():
-            if pv is None:
-                continue
-            price_type = f"{pl_name.lower()}_price"
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=entity_id,
-                entity_type="item",
-                event_type="item.pricing.set",
-                data={"price_type": price_type, "new_price": float(pv)},
-                actor_id=actor_id,
-                location_id=None,
-                source="demo",
-                idempotency_key=f"demo:item:{company_id}:{sku}:{price_type}",
-            )

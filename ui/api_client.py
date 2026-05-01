@@ -1095,6 +1095,12 @@ async def transfer_item(token: str, entity_id: str, location_id: str) -> dict:
 
 
 async def set_item_price(token: str, entity_id: str, price_type: str, new_price: float) -> dict:
+    # Normalize price_type: accept either raw price list name ("Retail") or
+    # conventional key ("retail_price"). Always emit the conventional key so
+    # projection state is consistent with the item.pricing.set handler which
+    # writes current[price_type] directly.
+    if not price_type.endswith("_price"):
+        price_type = f"{price_type.lower()}_price"
     async with _client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/price", json={"price_type": price_type, "new_price": new_price})).json()
 
