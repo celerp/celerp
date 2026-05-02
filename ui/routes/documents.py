@@ -1606,7 +1606,11 @@ def setup_routes(app):
                         patch["commission_contact_name"] = name
                 except APIError:
                     pass
-            await api.patch_doc(token, entity_id, patch)
+            # ref_id edits go through /renumber (works on finalized docs; patch_doc rejects them)
+            if field == "ref_id":
+                await api.renumber_doc(token, entity_id, value)
+            else:
+                await api.patch_doc(token, entity_id, patch)
             # Reprice line items when price_list changed
             new_pl = patch.get("price_list")
             if new_pl:

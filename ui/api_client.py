@@ -473,6 +473,12 @@ async def patch_doc(token: str, entity_id: str, data: dict) -> dict:
         return _raise(await c.patch(f"/docs/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
+async def renumber_doc(token: str, entity_id: str, ref_id: str) -> dict:
+    """Change the display number (ref_id) of any non-void document via /renumber endpoint."""
+    async with _client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/renumber", json={"ref_id": ref_id})).json()
+
+
 async def create_doc(token: str, data: dict) -> dict:
     async with _client(token) as c:
         return _raise(await c.post("/docs", json=data)).json()
