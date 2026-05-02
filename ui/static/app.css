@@ -266,6 +266,9 @@ a:hover { text-decoration: underline; }
 .error-banner { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.25); color: var(--c-red); padding: 10px 14px; border-radius: var(--radius); margin-bottom: 12px; font-size: 12px; }
 
 /* ─── Data table ──────────────────────────────────────────────────────── */
+/* Scroll wrapper enables horizontal scroll when many columns are visible.
+   The inner table keeps overflow:visible so autocomplete dropdowns can escape. */
+.table-scroll-wrap { overflow-x: auto; width: 100%; }
 /* Catalog autocomplete dropdowns must escape table overflow */
 .data-table {
   width: 100%;

@@ -924,7 +924,14 @@ function sendToTypeChanged(docType){
     scripts = [Script(_js)]
     if show_checkboxes:
         scripts.append(Script(_bulk_js))
-    return Div(Table(header, Tbody(*[_row(r) for r in rows]), cls="data-table", id="data-table"), *scripts, id="data-table-wrap")
+    return Div(
+        Div(
+            Table(header, Tbody(*[_row(r) for r in rows]), cls="data-table", id="data-table"),
+            cls="table-scroll-wrap",
+        ),
+        *scripts,
+        id="data-table-wrap",
+    )
 
 
 def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str] | None = None) -> FT:

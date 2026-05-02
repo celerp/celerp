@@ -363,9 +363,23 @@ async def global_search(token: str, q: str) -> dict:
 # Items
 # ---------------------------------------------------------------------------
 
+def _flatten_item_attrs(item: dict) -> dict:
+    """Promote item.attributes keys to the top level so data_table can read them directly.
+
+    Attribute keys never conflict with core item fields (they are schema-defined separately).
+    The original ``attributes`` key is preserved for callers that need the nested form.
+    """
+    attrs = item.get("attributes") or {}
+    if not attrs:
+        return item
+    return {**item, **attrs}
+
+
 async def list_items(token: str, params: dict | None = None) -> dict:
     async with _client(token) as c:
-        return _raise(await c.get("/items", params=params or {})).json()
+        raw = _raise(await c.get("/items", params=params or {})).json()
+    items = raw.get("items") or []
+    return {**raw, "items": [_flatten_item_attrs(i) for i in items]}
 
 
 async def get_item(token: str, entity_id: str) -> dict:
