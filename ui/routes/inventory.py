@@ -2283,6 +2283,20 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
         Div(
             *checkboxes,
+            Button(
+                t("btn.reset_columns"),
+                id="col-mgr-reset",
+                cls="btn btn--sm btn--ghost col-mgr-reset-btn",
+                type="button",
+                onclick=(
+                    f"localStorage.removeItem('celerp_cols_inventory');"
+                    f"localStorage.removeItem('celerp_col_order_inventory');"
+                    f"localStorage.removeItem('celerp_col_widths_inventory');"
+                    f"fetch('/inventory/columns',{{method:'POST',body:new FormData()}});"
+                    f"location.reload();"
+                ),
+                title=t("btn.reset_columns_title"),
+            ),
             Form(
                 *hidden_inputs,
                 id="col-mgr-form",

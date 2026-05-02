@@ -1145,5 +1145,7 @@
   "settings.password_changed": "Kata sandi berhasil diubah",
   "btn.change_password": "Ganti Kata Sandi",
   "status.all_issued": "Semua Diterbitkan",
-  "nav.credit_notes": "Nota Kredit"
+  "nav.credit_notes": "Nota Kredit",
+  "btn.reset_columns": "Atur ulang",
+  "btn.reset_columns_title": "Atur ulang kolom ke default"
 }

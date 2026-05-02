@@ -1375,6 +1375,11 @@ def setup_ui_routes(app) -> None:
     log.info("celerp-labels: UI routes registered")
 
 
+# Alias so kernel app.py (_CONDITIONAL_UI via setup_routes) and the external
+# module loader (setup_ui_routes) both work from the single definition above.
+setup_routes = setup_ui_routes
+
+
 def _parse_float(val) -> float | None:
     if val is None or str(val).strip() == "":
         return None

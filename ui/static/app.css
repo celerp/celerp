@@ -278,6 +278,7 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius);
   overflow: visible;
   border: 1px solid var(--c-border);
+  table-layout: fixed;
 }
 .data-table thead { background: var(--c-bg3); }
 .data-table th {
@@ -569,6 +570,7 @@ a:hover { text-decoration: underline; }
   user-select: none;
 }
 .column-option input[type="checkbox"] { cursor: pointer; accent-color: var(--c-accent); }
+.col-mgr-reset-btn { margin-top: 6px; font-size: 11px; width: 100%; justify-content: center; }
 
 /* ─── Searchable combobox dropdown ───────────────────────────────────── */
 .combobox-wrap { position: relative; display: inline-block; width: 100%; }

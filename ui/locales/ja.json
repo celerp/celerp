@@ -1145,5 +1145,7 @@
   "settings.password_changed": "パスワードが正常に変更されました",
   "btn.change_password": "パスワードを変更",
   "status.all_issued": "発行済み一覧",
-  "nav.credit_notes": "クレジットノート"
+  "nav.credit_notes": "クレジットノート",
+  "btn.reset_columns": "リセット",
+  "btn.reset_columns_title": "列をデフォルトにリセット"
 }

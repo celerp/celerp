@@ -1145,5 +1145,7 @@
   "settings.password_changed": "Password modificata con successo",
   "btn.change_password": "Cambia password",
   "status.all_issued": "Tutte le emesse",
-  "nav.credit_notes": "Note di Credito"
+  "nav.credit_notes": "Note di Credito",
+  "btn.reset_columns": "Ripristina",
+  "btn.reset_columns_title": "Ripristina le colonne ai valori predefiniti"
 }

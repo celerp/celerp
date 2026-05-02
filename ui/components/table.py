@@ -599,7 +599,21 @@ def data_table(
   }}
   applyVis();
 
-  // Drag-to-resize column headers
+  // Drag-to-resize column headers — persist widths to localStorage
+  var WIDTH_KEY = 'celerp_col_widths_{entity_type}';
+  function loadWidths() {{
+    try {{ return JSON.parse(localStorage.getItem(WIDTH_KEY) || 'null'); }} catch(e) {{ return null; }}
+  }}
+  function saveWidths() {{
+    var w = {{}};
+    ths.forEach(function(th) {{ if (th.style.width) w[th.dataset.key] = th.style.width; }});
+    localStorage.setItem(WIDTH_KEY, JSON.stringify(w));
+  }}
+  // Restore persisted widths on load
+  (function() {{
+    var saved = loadWidths();
+    if (saved) ths.forEach(function(th) {{ if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; }});
+  }})();
   ths.forEach(function(th) {{
     var handle = document.createElement('div');
     handle.className = 'col-resize-handle';
@@ -615,6 +629,7 @@ def data_table(
       function onUp() {{
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        saveWidths();
       }}
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);

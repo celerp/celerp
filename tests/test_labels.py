@@ -342,3 +342,86 @@ async def test_barcode_field_renders_larger_pdf(client: AsyncClient):
     assert pdf_bc[:4] == b"%PDF"
     # Barcode PDF should be noticeably bigger than plain-text PDF
     assert len(pdf_bc) > len(pdf_text)
+
+
+# ── UI route registration checks ──────────────────────────────────────────────
+
+class TestLabelsUiRoutes:
+    """Verify that label UI routes are registered and reachable (no 404)."""
+
+    def test_setup_routes_alias_exists(self):
+        """celerp_labels.ui_routes must expose setup_routes (kernel app.py convention)."""
+        from celerp_labels import ui_routes
+        assert callable(getattr(ui_routes, "setup_routes", None)), (
+            "setup_routes alias missing from celerp_labels.ui_routes; "
+            "kernel _CONDITIONAL_UI cannot register label routes"
+        )
+
+    def test_setup_ui_routes_still_exists(self):
+        """setup_ui_routes must still exist for the module loader (loader.py convention)."""
+        from celerp_labels import ui_routes
+        assert callable(getattr(ui_routes, "setup_ui_routes", None))
+
+    def test_both_names_are_same_function(self):
+        """setup_routes and setup_ui_routes must be the same callable (DRY - single def)."""
+        from celerp_labels import ui_routes
+        assert ui_routes.setup_routes is ui_routes.setup_ui_routes
+
+
+# ── Column manager UI checks ───────────────────────────────────────────────────
+
+class TestColumnManagerUi:
+    """Verify column manager HTML and CSS contain required elements."""
+
+    def test_reset_button_rendered_in_column_manager(self):
+        """_column_manager() must render a reset button inside the column menu."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from fasthtml.common import to_xml
+        from ui.routes.inventory import _column_manager
+        schema = [
+            {"key": "name", "label": "Name", "show_in_table": True},
+            {"key": "sku", "label": "SKU", "show_in_table": True},
+        ]
+        html = to_xml(_column_manager(schema, {}, "", ["name", "sku"]))
+        assert "col-mgr-reset-btn" in html, "Reset button CSS class missing from column manager"
+
+    def test_reset_button_clears_all_three_ls_keys(self):
+        """Reset button JS must clear visibility, order, AND widths from localStorage."""
+        from fasthtml.common import to_xml
+        from ui.routes.inventory import _column_manager
+        schema = [{"key": "name", "label": "Name", "show_in_table": True}]
+        html = to_xml(_column_manager(schema, {}, "", ["name"]))
+        assert "celerp_cols_inventory" in html
+        assert "celerp_col_order_inventory" in html
+        assert "celerp_col_widths_inventory" in html
+
+    def test_css_table_layout_fixed(self):
+        """app.css must set table-layout: fixed on .data-table for resize to work."""
+        import os
+        css_path = os.path.join(os.path.dirname(__file__), "../ui/static/app.css")
+        css = open(css_path).read()
+        assert "table-layout: fixed" in css, (
+            "table-layout: fixed missing from app.css; column resize will not work"
+        )
+
+    def test_css_table_scroll_wrap(self):
+        """app.css must define .table-scroll-wrap with overflow-x: auto."""
+        import os
+        css_path = os.path.join(os.path.dirname(__file__), "../ui/static/app.css")
+        css = open(css_path).read()
+        assert "table-scroll-wrap" in css
+        assert "overflow-x: auto" in css
+
+    def test_resize_widths_persisted_to_localstorage(self):
+        """data_table JS must reference WIDTH_KEY for persisting column widths."""
+        from fasthtml.common import to_xml
+        from ui.components.table import data_table
+        schema = [
+            {"key": "name", "label": "Name", "show_in_table": True, "type": "text", "editable": True},
+        ]
+        rows = [{"id": "item:1", "name": "Ruby"}]
+        html = to_xml(data_table(schema, rows, entity_type="inventory"))
+        assert "celerp_col_widths_inventory" in html, (
+            "WIDTH_KEY for inventory not found in data_table JS output"
+        )

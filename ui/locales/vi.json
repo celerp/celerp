@@ -1145,5 +1145,7 @@
   "settings.password_changed": "Đổi mật khẩu thành công",
   "btn.change_password": "Đổi mật khẩu",
   "status.all_issued": "Tất cả đã phát hành",
-  "nav.credit_notes": "Phiếu Ghi Có"
+  "nav.credit_notes": "Phiếu Ghi Có",
+  "btn.reset_columns": "Đặt lại",
+  "btn.reset_columns_title": "Đặt lại các cột về mặc định"
 }

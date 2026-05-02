@@ -1145,5 +1145,7 @@
   "settings.password_changed": "Passwort erfolgreich geändert",
   "btn.change_password": "Passwort ändern",
   "status.all_issued": "Alle ausgestellten",
-  "nav.credit_notes": "Gutschriften"
+  "nav.credit_notes": "Gutschriften",
+  "btn.reset_columns": "Zurücksetzen",
+  "btn.reset_columns_title": "Spalten auf Standard zurücksetzen"
 }

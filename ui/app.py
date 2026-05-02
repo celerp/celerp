@@ -215,6 +215,17 @@ async def proxy_attachment(request: Request, path: str) -> Response:
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
+# In dev mode (MODULE_DIR not set), default_modules live next to the repo root.
+# Add each default module package dir to sys.path so _CONDITIONAL_UI imports work.
+# In production, the module loader (load_all) handles sys.path itself.
+_DEFAULT_MODULES_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "default_modules")
+if not os.environ.get("MODULE_DIR") and os.path.isdir(_DEFAULT_MODULES_DIR):
+    import sys as _sys
+    for _dm in os.listdir(_DEFAULT_MODULES_DIR):
+        _dm_path = os.path.join(_DEFAULT_MODULES_DIR, _dm)
+        if os.path.isdir(_dm_path) and _dm_path not in _sys.path:
+            _sys.path.insert(0, _dm_path)
+
 # Determine enabled modules from env (set by cli.py _config_to_env).
 # Fall back to config.toml when env is absent (e.g. Electron binary restart).
 _ENABLED_MODULES: set[str] = set(
@@ -244,6 +255,7 @@ _CONDITIONAL_UI: list[tuple[str, str]] = [
     ("celerp-docs",        "ui.routes.documents"),
     # ui.routes.lists omitted: list routes are registered by ui.routes.documents
     ("celerp-inventory",   "ui.routes.inventory"),
+    ("celerp-labels",      "celerp_labels.ui_routes"),
     ("celerp-contacts",    "ui.routes.contacts"),
     ("celerp-accounting",  "ui.routes.accounting"),
     ("celerp-accounting",  "ui.routes.reconciliation"),

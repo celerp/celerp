@@ -1145,5 +1145,7 @@
   "settings.password_changed": "Mot de passe modifié avec succès",
   "btn.change_password": "Changer le mot de passe",
   "status.all_issued": "Toutes émises",
-  "nav.credit_notes": "Avoirs"
+  "nav.credit_notes": "Avoirs",
+  "btn.reset_columns": "Réinitialiser",
+  "btn.reset_columns_title": "Réinitialiser les colonnes aux valeurs par défaut"
 }

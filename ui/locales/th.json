@@ -1145,5 +1145,7 @@
   "settings.password_changed": "เปลี่ยนรหัสผ่านเรียบร้อยแล้ว",
   "btn.change_password": "เปลี่ยนรหัสผ่าน",
   "status.all_issued": "ออกใบแจ้งหนี้แล้วทั้งหมด",
-  "nav.credit_notes": "ใบลดหนี้"
+  "nav.credit_notes": "ใบลดหนี้",
+  "btn.reset_columns": "รีเซ็ต",
+  "btn.reset_columns_title": "รีเซ็ตคอลัมน์เป็นค่าเริ่มต้น"
 }
