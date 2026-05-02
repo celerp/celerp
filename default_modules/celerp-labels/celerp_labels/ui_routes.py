@@ -988,12 +988,39 @@ def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_b
 
 def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
     """Return a minimal printable HTML page that auto-triggers window.print()."""
+    import base64
+
     if not template:
         fields = [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
     else:
         fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
 
     from starlette.responses import HTMLResponse
+    from celerp_labels.service import _make_barcode_image, _make_qr_image
+
+    def _barcode_img_tag(val: str) -> str:
+        buf = _make_barcode_image(val)
+        if buf:
+            b64 = base64.b64encode(buf.read()).decode()
+            return (
+                f'<div class="label-field label-field--barcode">'
+                f'<img src="data:image/png;base64,{b64}" alt="{val}" style="width:100%;height:auto;display:block;">'
+                f'<span class="bc-human">{val}</span>'
+                f'</div>'
+            )
+        # Fallback: plain text if python-barcode not installed
+        return f'<div class="label-field label-field--barcode">{val}</div>'
+
+    def _qr_img_tag(val: str) -> str:
+        buf = _make_qr_image(val)
+        if buf:
+            b64 = base64.b64encode(buf.read()).decode()
+            return (
+                f'<div class="label-field label-field--qr">'
+                f'<img src="data:image/png;base64,{b64}" alt="{val}" style="width:40px;height:40px;display:block;">'
+                f'</div>'
+            )
+        return f'<div class="label-field label-field--qr">{val}</div>'
 
     label_rows = []
     for item in items:
@@ -1006,9 +1033,9 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
             if not val:
                 continue
             if ftype == "barcode":
-                field_lines.append(f'<div class="label-field label-field--barcode">{val}</div>')
+                field_lines.append(_barcode_img_tag(val))
             elif ftype == "qr":
-                field_lines.append(f'<div class="label-field label-field--qr">{val}</div>')
+                field_lines.append(_qr_img_tag(val))
             else:
                 display = f"{field_label}: {val}" if field_label else val
                 field_lines.append(f'<div class="label-field">{display}</div>')
@@ -1024,7 +1051,10 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 .label-sheet {{ display: flex; flex-wrap: wrap; gap: 8px; }}
 .label-item {{ border: 1px solid #999; padding: 6px 8px; min-width: 80px; font-size: 11px; break-inside: avoid; }}
 .label-field {{ margin-bottom: 2px; }}
-.label-field--barcode, .label-field--qr {{ font-family: monospace; font-size: 10px; }}
+.label-field--barcode {{ margin-bottom: 3px; }}
+.label-field--barcode img {{ max-width: 100%; height: auto; display: block; }}
+.bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; margin-top: 1px; }}
+.label-field--qr {{ margin-bottom: 3px; }}
 .no-print {{ margin-bottom: 1rem; }}
 @media print {{ .no-print {{ display: none; }} }}
 </style>

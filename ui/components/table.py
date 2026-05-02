@@ -434,9 +434,16 @@ def data_table(
     delete_url_tpl: URL template for row-menu delete, with ``{entity_id}`` placeholder
                     (e.g. ``"/api/items/{entity_id}"``). Defaults to ``/api/items/{entity_id}``.
     """
-    visible = [f for f in schema if show_cols is None or f["key"] in show_cols]
+    # Render ALL schema columns server-side.
+    # show_cols only controls the INITIAL JS visibility state (not what HTML is rendered).
+    # This ensures the column manager can show any column without a round-trip,
+    # and page 2 / HTMX navigation retains all columns.
+    visible = list(schema)
+    # If show_cols provided, put those first (in declared order), extras follow
     if show_cols:
-        visible.sort(key=lambda f: show_cols.index(f["key"]) if f["key"] in show_cols else 999)
+        ordered = [f for key in show_cols for f in schema if f["key"] == key]
+        rest = [f for f in schema if f["key"] not in show_cols]
+        visible = ordered + rest
 
     if not rows:
         if q and q.strip():
@@ -533,9 +540,12 @@ def data_table(
     # JS: smart column defaults + localStorage persistence + drag-to-resize
     import json as _json
     page_key = f"celerp_cols_{entity_type}"
-    # Build default visibility from show_in_table so columns hidden by schema stay hidden
-    # until the user explicitly toggles them via the column manager.
-    _schema_defaults = {f["key"]: f.get("show_in_table", True) for f in visible}
+    # Default visibility: show_cols if provided (user/saved selection), else schema show_in_table.
+    # Columns not in show_cols start hidden but are fully rendered in DOM so JS can toggle them.
+    if show_cols:
+        _schema_defaults = {f["key"]: (f["key"] in show_cols) for f in visible}
+    else:
+        _schema_defaults = {f["key"]: f.get("show_in_table", True) for f in visible}
     _js = f"""
 (function(){{
   var PAGE_KEY = '{page_key}';
