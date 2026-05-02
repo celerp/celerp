@@ -594,3 +594,52 @@ def test_css_table_uses_max_content_width():
         ".data-table must have width: max-content so column resize expands the table, "
         "enabling the .table-scroll-wrap horizontal scrollbar"
     )
+
+
+def test_barcode_show_text_true_includes_human_readable():
+    """_printable_label_sheet: show_text=True (default) renders bc-human span with barcode value."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"sku": "TEST123", "name": "Test"}
+    template = {"fields": [{"key": "sku", "type": "barcode", "label": "SKU", "show_text": True}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "bc-human" in html
+    assert "TEST123" in html
+
+
+def test_barcode_show_text_false_omits_human_readable():
+    """_printable_label_sheet: show_text=False suppresses bc-human span."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"sku": "TEST123", "name": "Test"}
+    template = {"fields": [{"key": "sku", "type": "barcode", "label": "SKU", "show_text": False}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    # CSS defines the class in <style>; verify the actual <span> element is absent
+    assert '<span class="bc-human">' not in html
+
+
+def test_extract_fields_show_text_checkbox_checked():
+    """_extract_fields_from_form: hidden=false + checkbox=true → show_text=True."""
+    from starlette.datastructures import ImmutableMultiDict
+    form = ImmutableMultiDict([
+        ("fields[0][key]", "sku"),
+        ("fields[0][type]", "barcode"),
+        ("fields[0][label]", "SKU"),
+        ("fields[0][show_text]", "false"),   # hidden sentinel
+        ("fields[0][show_text]", "true"),    # checkbox (checked)
+    ])
+    from celerp_labels.ui_routes import _extract_fields_from_form
+    fields = _extract_fields_from_form(form)
+    assert fields[0]["show_text"] is True
+
+
+def test_extract_fields_show_text_checkbox_unchecked():
+    """_extract_fields_from_form: only hidden=false submitted (unchecked) → show_text=False."""
+    from starlette.datastructures import ImmutableMultiDict
+    form = ImmutableMultiDict([
+        ("fields[0][key]", "sku"),
+        ("fields[0][type]", "barcode"),
+        ("fields[0][label]", "SKU"),
+        ("fields[0][show_text]", "false"),   # hidden sentinel only (checkbox unchecked)
+    ])
+    from celerp_labels.ui_routes import _extract_fields_from_form
+    fields = _extract_fields_from_form(form)
+    assert fields[0]["show_text"] is False

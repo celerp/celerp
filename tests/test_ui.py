@@ -1387,12 +1387,24 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
         ):
-            r = await ui_client.get("/inventory/content", cookies=_authed())
+            r = await ui_client.get("/inventory/content", cookies=_authed(), headers={"HX-Request": "true"})
         assert r.status_code == 200
         # The #inventory-content div must be present for HTMX outerHTML swap
         assert b"inventory-content" in r.content
         # Must contain status cards (not status-tabs - those were removed in UX cleanup)
         assert b"status-card" in r.content
+
+    @pytest.mark.asyncio
+    async def test_inventory_content_direct_nav_redirects(self, ui_client):
+        """GET /inventory/content without HX-Request header redirects to /inventory (preserving QS)."""
+        r = await ui_client.get(
+            "/inventory/content?sort=name&dir=desc&q=ruby",
+            cookies=_authed(),
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/inventory")
+        assert "sort=name" in r.headers["location"]
 
     @pytest.mark.asyncio
     async def test_category_tabs_target_inventory_content(self, ui_client):

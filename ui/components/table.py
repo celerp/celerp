@@ -634,10 +634,29 @@ def data_table(
       startW = th.offsetWidth;
       e.preventDefault();
       e.stopPropagation();
-      function onMove(e2) {{ th.style.width = Math.max(40, startW + e2.pageX - startX) + 'px'; }}
+      var scrollWrap = table.closest('.table-scroll-wrap');
+      var autoScrollRaf = null;
+      function onMove(e2) {{
+        e2.preventDefault();
+        th.style.width = Math.max(40, startW + e2.pageX - startX) + 'px';
+        // Auto-scroll the container when dragging near the right edge
+        if (scrollWrap) {{
+          var rect = scrollWrap.getBoundingClientRect();
+          var ZONE = 48; // px from edge to trigger auto-scroll
+          if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
+          if (e2.clientX > rect.right - ZONE) {{
+            var speed = Math.round((e2.clientX - (rect.right - ZONE)) / ZONE * 12) + 2;
+            (function scroll() {{
+              scrollWrap.scrollLeft += speed;
+              autoScrollRaf = requestAnimationFrame(scroll);
+            }})();
+          }}
+        }}
+      }}
       function onUp() {{
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
         saveWidths();
       }}
       document.addEventListener('mousemove', onMove);

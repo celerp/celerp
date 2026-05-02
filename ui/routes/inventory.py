@@ -189,7 +189,12 @@ def setup_routes(app):
         """HTMX partial: returns #inventory-content fragment (tabs + cards + valuation + table).
 
         Used by category tabs, status tabs, search, sort, and pagination so all state stays consistent.
+        Direct (non-HTMX) navigation to this URL redirects to the full inventory page so users
+        can bookmark/refresh sort/filter URLs without getting a bare HTML fragment.
         """
+        if not request.headers.get("HX-Request"):
+            qs = request.url.query
+            return RedirectResponse(f"/inventory{'?' + qs if qs else ''}", status_code=302)
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
