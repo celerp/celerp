@@ -31,6 +31,7 @@ log = logging.getLogger(__name__)
 
 _COMMON_FIELDS = [
     ("barcode", "Barcode (bars)", "barcode"),
+    ("barcode_text", "Barcode (number)", "barcode_text"),
     ("qr", "QR Code", "qr"),
     ("name", "Name", "text"),
     ("sku", "SKU", "text"),
@@ -61,6 +62,7 @@ _SAMPLE_DATA = {
     "name": "Sample Item",
     "sku": "SKU-001",
     "barcode": "123456789",
+    "barcode_text": "123456789",
     "qr": "123456789",
     "category": "General",
     "status": "Available",
@@ -396,8 +398,6 @@ def _field_row_compact(
     y_val = field.get("y", "")
     font_size = field.get("fontSize", "")
     barcode_height = field.get("barcode_height", "")
-    show_text = field.get("show_text", True)
-    show_text_checked = "checked" if show_text is not False and str(show_text).lower() not in ("false", "0") else ""
 
     # Build option groups as JSON for the searchable-select component
     options_js = _build_field_options_js(key, global_extra, category_attrs)
@@ -437,11 +437,6 @@ def _field_row_compact(
             f' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"'
             f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
             f' oninput="labelEditorUpdatePreview()">'
-            f'<label class="fld-bt-wrap" title="Show human-readable number below bars"'
-            f' style="display:{("inline-flex" if ftype == "barcode" else "none")};align-items:center;gap:3px;font-size:11px;white-space:nowrap;">'
-            f'<input type="hidden" name="fields[{idx}][show_text]" value="false" class="fld-bt-hidden">'
-            f'<input type="checkbox" name="fields[{idx}][show_text]" value="true" class="fld-bt" {show_text_checked}'
-            f' onchange="this.previousElementSibling.disabled=this.checked; labelEditorUpdatePreview()">Num</label>'
         ),
         cls="field-row-compact",
         data_idx=str(idx),
@@ -626,8 +621,6 @@ def _editor_panel(
         if (labelIn && !labelIn._userEdited) labelIn.value = v || k;
         var bhIn = row.querySelector('.fld-bh');
         if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
-        var btWrap = row.querySelector('.fld-bt-wrap');
-        if (btWrap) btWrap.style.display = ft === 'barcode' ? 'inline-flex' : 'none';
       }}
       closeDropdown();
       labelEditorUpdatePreview();
@@ -703,12 +696,7 @@ def _editor_panel(
         '<input type="hidden" name="fields[' + idx + '][fontSize]" value="" class="fld-fs">' +
         '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +
         ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
-        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">' +
-        '<label class="fld-bt-wrap" title="Show human-readable number below bars"' +
-        ' style="display:none;align-items:center;gap:3px;font-size:11px;white-space:nowrap;">' +
-        '<input type="hidden" name="fields[' + idx + '][show_text]" value="false" class="fld-bt-hidden">' +
-        '<input type="checkbox" name="fields[' + idx + '][show_text]" value="true" class="fld-bt" checked' +
-        ' onchange="this.previousElementSibling.disabled=this.checked; labelEditorUpdatePreview()">Num</label>';
+        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">';
       list.appendChild(row);
       initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
       labelEditorUpdatePreview();
@@ -818,14 +806,12 @@ def _editor_panel(
         img.style.width = bcWPx + 'px';
         img.style.height = bcHPx + 'px';
         img.alt = 'barcode';
-        var btEl = row.querySelector('.fld-bt');
-        var showNum = !btEl || btEl.checked;
-        var txt = document.createElement('span');
-        txt.className = 'bc-text';
-        txt.textContent = sample;
-        txt.style.display = showNum ? '' : 'none';
         block.appendChild(img);
-        block.appendChild(txt);
+      }} else if (ftype === 'barcode_text') {{
+        block.className = 'label-field-block label-field-block--barcode-text';
+        block.style.fontFamily = 'monospace';
+        block.style.fontSize = '11px';
+        block.textContent = sample;
       }} else if (ftype === 'qr') {{
         block.className = 'label-field-block label-field-block--qr';
         // QR is always exactly 10mm
@@ -1028,22 +1014,17 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
     from starlette.responses import HTMLResponse
     from celerp_labels.service import _make_barcode_image, _make_qr_image
 
-    def _barcode_img_tag(val: str, module_height: int = 8, show_text: bool = True) -> str:
+    def _barcode_img_tag(val: str, module_height: int = 8) -> str:
         buf = _make_barcode_image(val, module_height=module_height)
-        # Height in pixels: 4px per module_height unit so height=1 is visibly short,
-        # height=8 (default) is ~32px. Always at least 4px.
         h_px = max(4, int(module_height) * 4)
         if buf:
             b64 = base64.b64encode(buf.read()).decode()
-            human = f'<span class="bc-human">{val}</span>' if show_text else ''
             return (
                 f'<div class="label-field label-field--barcode">'
                 f'<img src="data:image/png;base64,{b64}" alt="{val}"'
                 f' style="max-width:100%;height:{h_px}px;display:block;">'
-                f'{human}'
                 f'</div>'
             )
-        # Fallback: plain text if python-barcode not installed
         return f'<div class="label-field label-field--barcode">{val}</div>'
 
     def _qr_img_tag(val: str) -> str:
@@ -1064,8 +1045,8 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
             key = f.get("key", "")
             ftype = f.get("type", "text")
             field_label = str(f.get("label", "") or key).strip()
-            # qr/barcode fields: fall back to item's barcode field then sku (mirrors PDF service logic)
-            if key in ("qr", "barcode"):
+            # qr/barcode/barcode_text fields: fall back to item's barcode field then sku
+            if key in ("qr", "barcode", "barcode_text"):
                 val = str(item.get("barcode", "") or item.get("sku", "") or "")
             else:
                 val = str(item.get(key, "") or (item.get("attributes") or {}).get(key, "") or "")
@@ -1073,8 +1054,9 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
                 continue
             if ftype == "barcode":
                 bc_height = int(f.get("barcode_height") or 8)
-                bc_show_text = f.get("show_text", True) is not False and str(f.get("show_text", "true")).lower() not in ("false", "0")
-                field_lines.append(_barcode_img_tag(val, module_height=bc_height, show_text=bc_show_text))
+                field_lines.append(_barcode_img_tag(val, module_height=bc_height))
+            elif ftype == "barcode_text":
+                field_lines.append(f'<div class="label-field label-field--barcode-text"><span class="bc-human">{val}</span></div>')
             elif ftype == "qr":
                 field_lines.append(_qr_img_tag(val))
             else:
@@ -1493,11 +1475,9 @@ def _parse_float(val) -> float | None:
 
 
 def _extract_fields_from_form(form) -> list[dict]:
-    """Parse fields[N][key/label/x/y/fontSize/bold/type/barcode_height/show_text] from multidict."""
+    """Parse fields[N][key/label/x/y/fontSize/bold/type/barcode_height] from multidict into ordered list."""
     import re
     buckets: dict[int, dict] = {}
-    # Multi-value fields (e.g. hidden+checkbox for show_text): keep last value so checkbox
-    # overrides hidden sentinel when checked (HTML form submit order: hidden first, checkbox second).
     for key, val in form.multi_items():
         m = re.match(r"^fields\[(\d+)\]\[(\w+)\]$", key)
         if m:
@@ -1521,9 +1501,5 @@ def _extract_fields_from_form(form) -> list[dict]:
                 field[num_attr] = v
         if row.get("bold") in ("true", "1", "on"):
             field["bold"] = True
-        if field["type"] == "barcode":
-            # show_text: checkbox submits "true" when checked; hidden sentinel submits "false".
-            # Last value wins (see multi_items loop above). Absent = default True.
-            field["show_text"] = row.get("show_text", "true") not in ("false", "0")
         result.append(field)
     return result

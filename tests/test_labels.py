@@ -596,50 +596,50 @@ def test_css_table_uses_max_content_width():
     )
 
 
-def test_barcode_show_text_true_includes_human_readable():
-    """_printable_label_sheet: show_text=True (default) renders bc-human span with barcode value."""
+def test_barcode_type_renders_bars_only():
+    """_printable_label_sheet: barcode type renders bars image with no bc-human span."""
     from celerp_labels.ui_routes import _printable_label_sheet
     item = {"sku": "TEST123", "name": "Test"}
-    template = {"fields": [{"key": "sku", "type": "barcode", "label": "SKU", "show_text": True}]}
+    template = {"fields": [{"key": "sku", "type": "barcode", "label": "SKU"}]}
     html = _printable_label_sheet([item], template).body.decode()
-    assert "bc-human" in html
-    assert "TEST123" in html
-
-
-def test_barcode_show_text_false_omits_human_readable():
-    """_printable_label_sheet: show_text=False suppresses bc-human span."""
-    from celerp_labels.ui_routes import _printable_label_sheet
-    item = {"sku": "TEST123", "name": "Test"}
-    template = {"fields": [{"key": "sku", "type": "barcode", "label": "SKU", "show_text": False}]}
-    html = _printable_label_sheet([item], template).body.decode()
-    # CSS defines the class in <style>; verify the actual <span> element is absent
+    # No human-readable number span for bars-only field
     assert '<span class="bc-human">' not in html
 
 
-def test_extract_fields_show_text_checkbox_checked():
-    """_extract_fields_from_form: hidden=false + checkbox=true → show_text=True."""
-    from starlette.datastructures import ImmutableMultiDict
-    form = ImmutableMultiDict([
-        ("fields[0][key]", "sku"),
-        ("fields[0][type]", "barcode"),
-        ("fields[0][label]", "SKU"),
-        ("fields[0][show_text]", "false"),   # hidden sentinel
-        ("fields[0][show_text]", "true"),    # checkbox (checked)
-    ])
-    from celerp_labels.ui_routes import _extract_fields_from_form
-    fields = _extract_fields_from_form(form)
-    assert fields[0]["show_text"] is True
+def test_barcode_text_type_renders_number_only():
+    """_printable_label_sheet: barcode_text type renders bc-human span with no image."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"sku": "TEST123", "name": "Test"}
+    template = {"fields": [{"key": "sku", "type": "barcode_text", "label": "SKU"}]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert '<span class="bc-human">TEST123</span>' in html
+    # No barcode image for text-only field
+    assert "label-field--barcode\"" not in html
 
 
-def test_extract_fields_show_text_checkbox_unchecked():
-    """_extract_fields_from_form: only hidden=false submitted (unchecked) → show_text=False."""
+def test_barcode_and_barcode_text_together():
+    """_printable_label_sheet: barcode + barcode_text fields can appear independently."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"sku": "TEST123", "barcode": "9876543210", "name": "Test"}
+    template = {"fields": [
+        {"key": "barcode", "type": "barcode", "label": "Bars"},
+        {"key": "name", "type": "text", "label": "Name"},
+        {"key": "barcode", "type": "barcode_text", "label": "Number"},
+    ]}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "label-field--barcode\"" in html          # bars rendered
+    assert "label-field--barcode-text" in html        # number rendered separately
+    assert '<span class="bc-human">9876543210</span>' in html
+
+
+def test_extract_fields_barcode_text_type_preserved():
+    """_extract_fields_from_form: barcode_text type round-trips correctly."""
     from starlette.datastructures import ImmutableMultiDict
-    form = ImmutableMultiDict([
-        ("fields[0][key]", "sku"),
-        ("fields[0][type]", "barcode"),
-        ("fields[0][label]", "SKU"),
-        ("fields[0][show_text]", "false"),   # hidden sentinel only (checkbox unchecked)
-    ])
     from celerp_labels.ui_routes import _extract_fields_from_form
+    form = ImmutableMultiDict([
+        ("fields[0][key]", "barcode"),
+        ("fields[0][type]", "barcode_text"),
+        ("fields[0][label]", "Number"),
+    ])
     fields = _extract_fields_from_form(form)
-    assert fields[0]["show_text"] is False
+    assert fields[0]["type"] == "barcode_text"
