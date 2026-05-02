@@ -694,9 +694,10 @@ def data_table(
         if (actionsTd) ordered.push(actionsTd);
         ordered.forEach(function(td) {{ tr.appendChild(td); }});
       }});
-      // Persist new order
+      // Persist new order and notify picker
       var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){{return h.dataset.key;}});
       try {{ localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); }} catch(e) {{}}
+      document.dispatchEvent(new CustomEvent('celerp:col-reorder', {{detail: {{order: newOrder}}}}));
       dragKey = null;
     }});
   }});

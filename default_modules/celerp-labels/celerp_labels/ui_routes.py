@@ -432,7 +432,7 @@ def _field_row_compact(
             f'<input type="hidden" name="fields[{idx}][y]" value="{y_val}" class="fld-y">'
             f'<input type="hidden" name="fields[{idx}][fontSize]" value="{font_size}" class="fld-fs">'
             f'<input type="number" name="fields[{idx}][barcode_height]" value="{barcode_height}" class="form-input form-input--sm fld-bh"'
-            f' min="4" max="30" placeholder="Bar H" title="Barcode bar height (4-30)"'
+            f' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"'
             f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
             f' oninput="labelEditorUpdatePreview()">'
         ),
@@ -693,7 +693,7 @@ def _editor_panel(
         '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
         '<input type="hidden" name="fields[' + idx + '][fontSize]" value="" class="fld-fs">' +
         '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +
-        ' min="4" max="30" placeholder="Bar H" title="Barcode bar height (4-30)"' +
+        ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
         ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">';
       list.appendChild(row);
       initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
@@ -1490,7 +1490,7 @@ def _extract_fields_from_form(form) -> list[dict]:
             "label": (row.get("label") or k).strip(),
             "type": row.get("type", "text"),
         }
-        for num_attr in ("x", "y", "fontSize"):
+        for num_attr in ("x", "y", "fontSize", "barcode_height"):
             v = _parse_float(row.get(num_attr))
             if v is not None:
                 field[num_attr] = v

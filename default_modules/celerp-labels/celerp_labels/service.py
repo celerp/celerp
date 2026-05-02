@@ -124,7 +124,7 @@ def _make_barcode_image(value: str, module_height: int = 8) -> io.BytesIO | None
         buf = io.BytesIO()
         code128 = barcode.get("code128", str(value or "0"), writer=ImageWriter())
         code128.write(buf, options={
-            "module_height": max(4, min(30, int(module_height))),
+            "module_height": max(1, min(30, int(module_height))),
             "font_size": 0,      # No text in barcode image
             "text_distance": 0,
             "quiet_zone": 1,

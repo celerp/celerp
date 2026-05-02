@@ -489,7 +489,7 @@ async def test_qr_field_resolves_barcode_key(client: AsyncClient):
 def test_make_barcode_image_module_height_param():
     """_make_barcode_image should accept module_height and return different-height images."""
     from celerp_labels.service import _make_barcode_image
-    buf_short = _make_barcode_image("TEST123", module_height=4)
+    buf_short = _make_barcode_image("TEST123", module_height=1)
     buf_tall = _make_barcode_image("TEST123", module_height=20)
     if buf_short is None or buf_tall is None:
         pytest.skip("python-barcode not installed")
@@ -500,5 +500,64 @@ def test_make_barcode_image_module_height_param():
     assert tall_bytes[:4] == b'\x89PNG'
     # Taller bar height produces a larger image
     assert len(tall_bytes) > len(short_bytes), (
-        "module_height=20 should produce a taller (larger) PNG than module_height=4"
+        "module_height=20 should produce a taller (larger) PNG than module_height=1"
+    )
+
+
+@pytest.mark.anyio
+async def test_barcode_height_saved_and_retrieved(client: AsyncClient):
+    """barcode_height set in template field must survive PUT and be returned on GET."""
+    headers = await _headers(client)
+
+    r = await client.post(
+        "/api/labels/templates",
+        json={
+            "name": "HeightTest",
+            "format": "40x30mm",
+            "fields": [{"key": "barcode", "type": "barcode", "label": "Barcode", "barcode_height": 3}],
+        },
+        headers=headers,
+    )
+    assert r.status_code == 201
+    tid = r.json()["id"]
+
+    # Update via PUT with a different height
+    r_put = await client.put(
+        f"/api/labels/templates/{tid}",
+        json={
+            "name": "HeightTest",
+            "format": "40x30mm",
+            "fields": [{"key": "barcode", "type": "barcode", "label": "Barcode", "barcode_height": 1}],
+        },
+        headers=headers,
+    )
+    assert r_put.status_code == 200
+
+    # Retrieve and check height persisted
+    r_get = await client.get(f"/api/labels/templates/{tid}", headers=headers)
+    assert r_get.status_code == 200
+    fields = r_get.json()["fields"]
+    assert len(fields) == 1
+    assert fields[0].get("barcode_height") == 1, (
+        f"barcode_height should be 1, got: {fields[0]}"
+    )
+
+
+def test_extract_fields_from_form_includes_barcode_height():
+    """_extract_fields_from_form must parse barcode_height from multidict form data."""
+    from celerp_labels.ui_routes import _extract_fields_from_form
+
+    class FakeForm:
+        def multi_items(self):
+            return [
+                ("fields[0][key]", "barcode"),
+                ("fields[0][type]", "barcode"),
+                ("fields[0][label]", "Barcode"),
+                ("fields[0][barcode_height]", "1"),
+            ]
+
+    fields = _extract_fields_from_form(FakeForm())
+    assert len(fields) == 1
+    assert fields[0].get("barcode_height") == 1, (
+        f"barcode_height not parsed from form, field: {fields[0]}"
     )

@@ -2280,6 +2280,12 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     }});
   }});
 
+  // Listen for table-header drag reorder (fired by data_table.py drag handler)
+  document.addEventListener('celerp:col-reorder', function(e) {{
+    if (!e.detail || !e.detail.order) return;
+    applyOrderToPicker(e.detail.order);
+  }});
+
   // Init: apply localStorage state on page load
   var storedVis = loadVis();
   if (storedVis) applyVisToTable(storedVis);
