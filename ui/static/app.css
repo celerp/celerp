@@ -271,14 +271,15 @@ a:hover { text-decoration: underline; }
 .table-scroll-wrap { overflow-x: auto; width: 100%; }
 /* Catalog autocomplete dropdowns must escape table overflow */
 .data-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
   font-size: 12px;
   background: var(--c-bg2);
   border-radius: var(--radius);
   overflow: visible;
   border: 1px solid var(--c-border);
-  table-layout: fixed;
+  table-layout: auto;
 }
 .data-table thead { background: var(--c-bg3); }
 .data-table th {

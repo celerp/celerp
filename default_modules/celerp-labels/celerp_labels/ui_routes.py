@@ -749,7 +749,7 @@ def _editor_panel(
   // Fixed QR size: always 10mm. Barcode: min 20mm wide, min 6mm tall.
   var QR_SIZE_MM = 10;
   var BC_MIN_W_MM = 20;
-  var BC_MIN_H_MM = 6;
+  var BC_PX_PER_H = 4;  // pixels per barcode_height unit (matches print sheet: 4px/unit)
 
   window.labelEditorUpdatePreview = function() {{
     var canvas = document.getElementById('preview-canvas');
@@ -797,7 +797,7 @@ def _editor_panel(
         var bcWPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(dims.wMm - xPos - 2, 30)) * dims.scale);
         var bhEl = row.querySelector('.fld-bh');
         var bcHeightVal = (bhEl && bhEl.value !== '') ? parseInt(bhEl.value) : 8;
-        var bcHPx = Math.round(Math.max(BC_MIN_H_MM, Math.min(bcHeightVal, dims.hMm / 4)) * dims.scale);
+        var bcHPx = Math.max(4, bcHeightVal * BC_PX_PER_H);
         block.style.width = bcWPx + 'px';
         var img = document.createElement('img');
         img.src = '/api/labels/preview/barcode?value=' + encodeURIComponent(sample) + '&height=' + bcHeightVal;
@@ -1013,11 +1013,15 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
 
     def _barcode_img_tag(val: str, module_height: int = 8) -> str:
         buf = _make_barcode_image(val, module_height=module_height)
+        # Height in pixels: 4px per module_height unit so height=1 is visibly short,
+        # height=8 (default) is ~32px. Always at least 4px.
+        h_px = max(4, int(module_height) * 4)
         if buf:
             b64 = base64.b64encode(buf.read()).decode()
             return (
                 f'<div class="label-field label-field--barcode">'
-                f'<img src="data:image/png;base64,{b64}" alt="{val}" style="width:100%;height:auto;display:block;">'
+                f'<img src="data:image/png;base64,{b64}" alt="{val}"'
+                f' style="max-width:100%;height:{h_px}px;display:block;">'
                 f'<span class="bc-human">{val}</span>'
                 f'</div>'
             )
@@ -1070,7 +1074,7 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 .label-item {{ border: 1px solid #999; padding: 6px 8px; min-width: 80px; font-size: 11px; break-inside: avoid; }}
 .label-field {{ margin-bottom: 2px; }}
 .label-field--barcode {{ margin-bottom: 3px; }}
-.label-field--barcode img {{ max-width: 100%; height: auto; display: block; }}
+.label-field--barcode img {{ max-width: 100%; display: block; }}
 .bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; margin-top: 1px; }}
 .label-field--qr {{ margin-bottom: 3px; }}
 .no-print {{ margin-bottom: 1rem; }}

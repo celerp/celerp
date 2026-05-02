@@ -397,12 +397,12 @@ class TestColumnManagerUi:
         assert "celerp_col_widths_inventory" in html
 
     def test_css_table_layout_fixed(self):
-        """app.css must set table-layout: fixed on .data-table for resize to work."""
+        """app.css must set table-layout: auto on .data-table so resize expands table, not shrinks other columns."""
         import os
         css_path = os.path.join(os.path.dirname(__file__), "../ui/static/app.css")
         css = open(css_path).read()
-        assert "table-layout: fixed" in css, (
-            "table-layout: fixed missing from app.css; column resize will not work"
+        assert "table-layout: auto" in css, (
+            "table-layout: auto missing from app.css; column resize must expand table width, not compress other columns"
         )
 
     def test_css_table_scroll_wrap(self):
@@ -560,4 +560,37 @@ def test_extract_fields_from_form_includes_barcode_height():
     assert len(fields) == 1
     assert fields[0].get("barcode_height") == 1, (
         f"barcode_height not parsed from form, field: {fields[0]}"
+    )
+
+
+def test_barcode_img_tag_height_proportional():
+    """_barcode_img_tag: height=1 must produce a shorter img than height=8 in the HTML."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    import re
+
+    item = {"entity_id": "x", "sku": "SKU1", "barcode": "1234567890128"}
+
+    def _get_height(module_height):
+        template = {"id": "t", "fields": [
+            {"key": "barcode", "type": "barcode", "label": "BC", "barcode_height": module_height}
+        ]}
+        html = _printable_label_sheet([item], template).body.decode()
+        m = re.search(r'height:(\d+)px', html)
+        return int(m.group(1)) if m else None
+
+    h1 = _get_height(1)
+    h8 = _get_height(8)
+    if h1 is None or h8 is None:
+        pytest.skip("python-barcode not installed; skipping height proportionality check")
+    assert h1 < h8, f"height=1 ({h1}px) should be shorter than height=8 ({h8}px)"
+
+
+def test_css_table_uses_max_content_width():
+    """app.css .data-table must use width: max-content so the table grows when columns are widened."""
+    import os
+    css_path = os.path.join(os.path.dirname(__file__), "../ui/static/app.css")
+    css = open(css_path).read()
+    assert "width: max-content" in css, (
+        ".data-table must have width: max-content so column resize expands the table, "
+        "enabling the .table-scroll-wrap horizontal scrollbar"
     )
