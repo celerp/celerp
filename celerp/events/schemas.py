@@ -308,6 +308,10 @@ class DocUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
 
 
+class DocRenumbered(BaseModel):
+    fields_changed: dict[str, dict[str, Any]]
+
+
 class DocPatched(BaseModel):
     """CSV upsert patch: accepts any doc data fields."""
     model_config = {"extra": "allow"}
@@ -753,6 +757,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     # Documents
     "doc.created": DocCreated,
     "doc.updated": DocUpdated,
+    "doc.renumbered": DocRenumbered,
     "doc.patched": DocPatched,
     "doc.linked": DocLinked,
     "doc.finalized": DocFinalized,

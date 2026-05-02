@@ -211,6 +211,32 @@ async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[
     return result
 
 
+async def _assert_ref_id_unique(
+    session: AsyncSession,
+    company_id: str,
+    ref_id: str,
+    *,
+    exclude_entity_id: str | None = None,
+) -> None:
+    """Raise HTTP 409 if any doc in the company already has the given ref_id in its state.
+
+    Uses a state JSON index scan (same pattern as SKU uniqueness in inventory).
+    exclude_entity_id: the doc being renamed - excluded so renaming to own current
+    number is treated as a no-op and does not raise.
+    """
+    existing = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "doc",
+                Projection.state["ref_id"].as_string() == ref_id,
+            )
+        )
+    ).scalars().first()
+    if existing and existing.entity_id != exclude_entity_id:
+        raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
+
+
 @router.get("")
 async def list_docs(
     doc_type: str | None = None,
@@ -584,13 +610,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     # Uniqueness check when ref_id is being changed
     new_ref = (payload.fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
-        new_eid = f"doc:{new_ref}"
-        if new_eid != entity_id:
-            existing = await session.execute(
-                select(Projection).where(Projection.company_id == company_id, Projection.entity_id == new_eid)
-            )
-            if existing.scalar_one_or_none():
-                raise HTTPException(status_code=409, detail=f"Document number '{new_ref}' already exists")
+        await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
     # Validate issue/due date ordering against the merged resulting state
     patch_flat = {k: v.get("new") for k, v in payload.fields_changed.items() if v.get("new") is not None}
     _assert_date_order(patch_flat, row.state)
@@ -782,6 +802,64 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id, revert_count=current_revert_count)
     await session.commit()
     return {"event_id": entry.id}
+
+
+class DocRenumberBody(BaseModel):
+    ref_id: str
+
+
+@router.post("/{entity_id}/renumber")
+async def renumber_doc(
+    entity_id: str,
+    payload: DocRenumberBody,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change the display number (ref_id / doc_number) of any non-void document.
+
+    The internal entity_id (storage key) is never changed. Only the ref_id field
+    in the document state is updated. Uniqueness is enforced across all doc
+    ref_ids in the company (state scan, not entity_id lookup).
+
+    Voided documents are immutable records and cannot be renumbered.
+    """
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("status") == "void":
+        raise HTTPException(status_code=409, detail="Voided documents cannot be renumbered")
+
+    new_ref = payload.ref_id.strip()
+    if not new_ref:
+        raise HTTPException(status_code=422, detail="ref_id must not be empty")
+
+    old_ref = state.get("ref_id") or ""
+    if new_ref == old_ref:
+        # No-op: return current state without emitting an event
+        return row.state | {"id": entity_id}
+
+    await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
+
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.renumbered",
+        data={"fields_changed": {
+            "ref_id": {"old": old_ref, "new": new_ref},
+            "doc_number": {"old": old_ref, "new": new_ref},
+        }},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=f"renumber:{entity_id}:{new_ref}",
+        metadata_={},
+    )
+    await session.commit()
+
+    updated = await _get_doc(session, company_id, entity_id)
+    return updated.state | {"id": entity_id}
 
 
 @router.post("/{entity_id}/unvoid")

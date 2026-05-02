@@ -51,6 +51,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             paid = float(current.get("amount_paid", 0) or 0)
             total = float(current.get("total", 0) or 0)
             current["amount_outstanding"] = max(0.0, total - paid)
+    elif event_type == "doc.renumbered":
+        # Narrow alias of doc.updated: only ref_id / doc_number may be changed.
+        for field, change in data["fields_changed"].items():
+            current[field] = change.get("new")
     elif event_type == "doc.linked":
         current.setdefault("linked", [])
         current["linked"].append({"entity_id": data["entity_id"], "entity_type": data["entity_type"]})

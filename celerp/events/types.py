@@ -55,6 +55,7 @@ class EventType(StrEnum):
     # Documents
     DOC_CREATED = "doc.created"
     DOC_UPDATED = "doc.updated"
+    DOC_RENUMBERED = "doc.renumbered"
     DOC_PATCHED = "doc.patched"
     DOC_LINKED = "doc.linked"
     DOC_FINALIZED = "doc.finalized"
