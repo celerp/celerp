@@ -2143,7 +2143,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
       rows.forEach(function(tr) {{
-        var td = tr.cells[colIdx];
+        var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
       }});
     }});
@@ -2185,6 +2185,24 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     }});
   }}
 
+  // Mirror the picker label order to match a given key array (picker is source of truth)
+  function applyOrderToPicker(order) {{
+    if (!order || !order.length) return;
+    var labels = menu.querySelectorAll('label[data-col]');
+    if (!labels.length) return;
+    var parent = labels[0].parentNode;
+    // Move labels into the declared order; unmentioned keys stay at end
+    order.forEach(function(key) {{
+      var lbl = menu.querySelector('label[data-col="' + key + '"]');
+      if (lbl) parent.appendChild(lbl);
+    }});
+  }}
+
+  // Get current picker order (label DOM order = source of truth)
+  function pickerOrder() {{
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
+  }}
+
   // Save cols to server (background, no page reload)
   function saveToServer(visibleKeys) {{
     var form = new FormData();
@@ -2210,7 +2228,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     }}
   }});
 
-  // Checkbox change: immediate column toggle
+  // Checkbox change: immediate column toggle + re-apply order so new column
+  // appears at its picker position rather than at the DOM end of the table.
   menu.addEventListener('change', function(e) {{
     if (e.target.type !== 'checkbox') return;
     var key = e.target.value;
@@ -2222,6 +2241,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     prefs[key] = e.target.checked;
     saveVis(prefs);
     applyVisToTable(prefs);
+    // Re-apply picker order so the newly-visible column lands in the right slot
+    applyOrderToTable(pickerOrder());
     // Save visible keys to server
     var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
     saveToServer(visibleKeys);
@@ -2246,14 +2267,14 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     lbl.addEventListener('drop', function(e) {{
       e.preventDefault();
       if (!dragSrc || dragSrc === lbl) return;
-      // Swap in DOM
+      // Swap in picker DOM
       var parent = lbl.parentNode;
       var srcNext = dragSrc.nextSibling;
       parent.insertBefore(dragSrc, lbl);
       if (srcNext) parent.insertBefore(lbl, srcNext); else parent.appendChild(lbl);
       dragSrc.style.opacity = '';
-      // Persist new order
-      var newOrder = Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){{return l.dataset.col;}});
+      // Persist new order and apply to table
+      var newOrder = pickerOrder();
       saveOrder(newOrder);
       applyOrderToTable(newOrder);
     }});
@@ -2263,7 +2284,10 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   var storedVis = loadVis();
   if (storedVis) applyVisToTable(storedVis);
   var storedOrder = loadOrder();
-  if (storedOrder) applyOrderToTable(storedOrder);
+  if (storedOrder) {{
+    applyOrderToPicker(storedOrder);
+    applyOrderToTable(storedOrder);
+  }}
 
   // Keep menu closed unless keep_open is set
   {'menu.style.display = "";' if keep_open else 'menu.style.display = "none";'}

@@ -465,3 +465,40 @@ class TestLabelPrintJsFlow:
         assert "fetch('/api/labels/print/" not in src, (
             "Old fetch+blob pattern still present; should be window.open"
         )
+
+
+# ── Bug-fix regression tests ──────────────────────────────────────────────────
+
+@pytest.mark.anyio
+async def test_qr_field_resolves_barcode_key(client: AsyncClient):
+    """QR/barcode fields in HTML print sheet must resolve item barcode/sku, not key 'qr'."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    item = {"entity_id": "abc", "sku": "SKU-TEST", "barcode": "1234567890128"}
+    template = {
+        "id": "t1",
+        "fields": [{"key": "qr", "type": "qr", "label": "QR"}],
+    }
+    resp = _printable_label_sheet([item], template)
+    html = resp.body.decode()
+    # Must contain a base64 image (QR rendered) or at minimum the barcode value in alt attr
+    assert "data:image/png;base64," in html or "1234567890128" in html, (
+        "QR field should resolve to item barcode value, not be silently skipped"
+    )
+
+
+def test_make_barcode_image_module_height_param():
+    """_make_barcode_image should accept module_height and return different-height images."""
+    from celerp_labels.service import _make_barcode_image
+    buf_short = _make_barcode_image("TEST123", module_height=4)
+    buf_tall = _make_barcode_image("TEST123", module_height=20)
+    if buf_short is None or buf_tall is None:
+        pytest.skip("python-barcode not installed")
+    short_bytes = buf_short.read()
+    tall_bytes = buf_tall.read()
+    # Both must be valid PNGs
+    assert short_bytes[:4] == b'\x89PNG'
+    assert tall_bytes[:4] == b'\x89PNG'
+    # Taller bar height produces a larger image
+    assert len(tall_bytes) > len(short_bytes), (
+        "module_height=20 should produce a taller (larger) PNG than module_height=4"
+    )

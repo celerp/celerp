@@ -395,6 +395,7 @@ def _field_row_compact(
     x_val = field.get("x", "")
     y_val = field.get("y", "")
     font_size = field.get("fontSize", "")
+    barcode_height = field.get("barcode_height", "")
 
     # Build option groups as JSON for the searchable-select component
     options_js = _build_field_options_js(key, global_extra, category_attrs)
@@ -430,6 +431,10 @@ def _field_row_compact(
             f'<input type="hidden" name="fields[{idx}][x]" value="{x_val}" class="fld-x">'
             f'<input type="hidden" name="fields[{idx}][y]" value="{y_val}" class="fld-y">'
             f'<input type="hidden" name="fields[{idx}][fontSize]" value="{font_size}" class="fld-fs">'
+            f'<input type="number" name="fields[{idx}][barcode_height]" value="{barcode_height}" class="form-input form-input--sm fld-bh"'
+            f' min="4" max="30" placeholder="Bar H" title="Barcode bar height (4-30)"'
+            f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
+            f' oninput="labelEditorUpdatePreview()">'
         ),
         cls="field-row-compact",
         data_idx=str(idx),
@@ -604,13 +609,16 @@ def _editor_panel(
       currentVal = k;
       display.value = v || '';
       if (hiddenIn) hiddenIn.value = k;
-      // Sync fld-type and fld-label hidden inputs in the parent row
+      // Sync fld-type, fld-label, and fld-bh visibility in the parent row
       var row = wrapper.closest('.field-row-compact');
       if (row) {{
         var typeIn = row.querySelector('.fld-type');
-        if (typeIn) typeIn.value = fieldType(k);
+        var ft = fieldType(k);
+        if (typeIn) typeIn.value = ft;
         var labelIn = row.querySelector('.fld-label');
         if (labelIn && !labelIn._userEdited) labelIn.value = v || k;
+        var bhIn = row.querySelector('.fld-bh');
+        if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
       }}
       closeDropdown();
       labelEditorUpdatePreview();
@@ -683,7 +691,10 @@ def _editor_panel(
         '<input type="hidden" name="fields[' + idx + '][type]" value="text" class="fld-type">' +
         '<input type="hidden" name="fields[' + idx + '][x]" value="" class="fld-x">' +
         '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
-        '<input type="hidden" name="fields[' + idx + '][fontSize]" value="" class="fld-fs">';
+        '<input type="hidden" name="fields[' + idx + '][fontSize]" value="" class="fld-fs">' +
+        '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +
+        ' min="4" max="30" placeholder="Bar H" title="Barcode bar height (4-30)"' +
+        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">';
       list.appendChild(row);
       initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
       labelEditorUpdatePreview();
@@ -784,10 +795,12 @@ def _editor_panel(
       if (ftype === 'barcode') {{
         block.className = 'label-field-block label-field-block--barcode';
         var bcWPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(dims.wMm - xPos - 2, 30)) * dims.scale);
-        var bcHPx = Math.round(Math.max(BC_MIN_H_MM, Math.min(8, dims.hMm / 4)) * dims.scale);
+        var bhEl = row.querySelector('.fld-bh');
+        var bcHeightVal = (bhEl && bhEl.value !== '') ? parseInt(bhEl.value) : 8;
+        var bcHPx = Math.round(Math.max(BC_MIN_H_MM, Math.min(bcHeightVal, dims.hMm / 4)) * dims.scale);
         block.style.width = bcWPx + 'px';
         var img = document.createElement('img');
-        img.src = '/api/labels/preview/barcode?value=' + encodeURIComponent(sample);
+        img.src = '/api/labels/preview/barcode?value=' + encodeURIComponent(sample) + '&height=' + bcHeightVal;
         img.style.width = bcWPx + 'px';
         img.style.height = bcHPx + 'px';
         img.alt = 'barcode';
@@ -998,8 +1011,8 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
     from starlette.responses import HTMLResponse
     from celerp_labels.service import _make_barcode_image, _make_qr_image
 
-    def _barcode_img_tag(val: str) -> str:
-        buf = _make_barcode_image(val)
+    def _barcode_img_tag(val: str, module_height: int = 8) -> str:
+        buf = _make_barcode_image(val, module_height=module_height)
         if buf:
             b64 = base64.b64encode(buf.read()).decode()
             return (
@@ -1029,11 +1042,16 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
             key = f.get("key", "")
             ftype = f.get("type", "text")
             field_label = str(f.get("label", "") or key).strip()
-            val = str(item.get(key, "") or (item.get("attributes") or {}).get(key, "") or "")
+            # qr/barcode fields: fall back to item's barcode field then sku (mirrors PDF service logic)
+            if key in ("qr", "barcode"):
+                val = str(item.get("barcode", "") or item.get("sku", "") or "")
+            else:
+                val = str(item.get(key, "") or (item.get("attributes") or {}).get(key, "") or "")
             if not val:
                 continue
             if ftype == "barcode":
-                field_lines.append(_barcode_img_tag(val))
+                bc_height = int(f.get("barcode_height") or 8)
+                field_lines.append(_barcode_img_tag(val, module_height=bc_height))
             elif ftype == "qr":
                 field_lines.append(_qr_img_tag(val))
             else:
@@ -1212,7 +1230,8 @@ def setup_ui_routes(app) -> None:
     async def barcode_preview(request: Request):
         from celerp_labels.service import _make_barcode_image
         value = request.query_params.get("value", "0000000")
-        buf = _make_barcode_image(value)
+        height = int(request.query_params.get("height", "8"))
+        buf = _make_barcode_image(value, module_height=height)
         if buf:
             return StarletteResponse(content=buf.read(), media_type="image/png",
                                      headers={"Cache-Control": "public, max-age=3600"})

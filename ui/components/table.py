@@ -593,15 +593,14 @@ def data_table(
     }});
   }}
 
-  // Apply visibility
+  // Apply visibility — use data-col attribute so order-independent
   function applyVis() {{
     ths.forEach(function(th) {{
       var key = th.dataset.key;
-      var col_idx = Array.from(th.parentNode.children).indexOf(th);
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
       rows.forEach(function(tr) {{
-        var td = tr.cells[col_idx];
+        var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
       }});
     }});
