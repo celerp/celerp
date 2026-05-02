@@ -333,9 +333,9 @@ async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _
     )
     await session.commit()
 
-    # Verify item is sold/qty=0 after fulfillment
+    # Verify item is sold and qty preserved (= fulfilled qty) after fulfillment
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 0
+    assert float(inv_row.state.get("quantity", 0)) == 10
 
     # Re-read doc state (now has fulfilled_items)
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
@@ -397,8 +397,10 @@ async def test_void_does_not_change_fulfillment_status(client, session, auth, _s
 
     # Stock must NOT be automatically restored (fulfillment is independent)
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 0, \
+    assert float(inv_row.state.get("quantity", 0)) > 0, \
         "Voiding must not auto-restore stock; use Revert Fulfillment for that"
+    assert inv_row.state.get("status") == "sold", \
+        "Voiding must not change item status back to available"
 
 
 @pytest.mark.asyncio
@@ -437,8 +439,10 @@ async def test_revert_to_draft_does_not_change_fulfillment_status(client, sessio
 
     # Stock must NOT be automatically restored
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 0, \
+    assert float(inv_row.state.get("quantity", 0)) > 0, \
         "Revert-to-draft must not auto-restore stock; use Revert Fulfillment for that"
+    assert inv_row.state.get("status") == "sold", \
+        "Revert-to-draft must not change item status back to available"
 
 
 @pytest.mark.asyncio
