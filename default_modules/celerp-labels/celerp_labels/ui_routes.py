@@ -1326,6 +1326,37 @@ def setup_ui_routes(app) -> None:
             "fields": fields, "width_mm": width_mm, "height_mm": height_mm,
         })
 
+    @app.get("/labels/print/{entity_id}")
+    async def labels_print_single(request: Request, entity_id: str):
+        """Printable HTML label page for a single item (GET - safe for window.open).
+
+        Fetches item data via internal API, renders _printable_label_sheet,
+        and auto-triggers window.print().  No PDF dependency on the UI layer.
+        """
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        template_id = request.query_params.get("template_id") or None
+        item_data: dict = {}
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(
+                    f"{_api_base(request)}/items/{entity_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if r.status_code == 200:
+                    item_data = r.json()
+        except Exception as exc:
+            log.warning("Could not fetch item %s for label print: %s", entity_id, exc)
+        template: dict | None = None
+        if template_id:
+            templates = await _fetch_templates(request)
+            template = next((tpl for tpl in templates if tpl["id"] == template_id), None)
+        if not template:
+            templates = await _seed_presets_if_empty(request)
+            template = templates[0] if templates else None
+        return _printable_label_sheet([item_data] if item_data else [], template)
+
     @app.post("/labels/print-bulk")
     async def labels_print_bulk(request: Request):
         """Bulk print preview: show template picker + print button for selected items."""

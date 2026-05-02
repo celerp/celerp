@@ -124,6 +124,7 @@ async def _inventory_content(
             extra_params=_base_state(p),
             currency=currency,
             sort_target="#inventory-content",
+            auto_hide_empty=False,
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
         Div(id="modal-container"),
@@ -846,18 +847,8 @@ def setup_routes(app):
             )
         print_js = """
 function celerpPrintLabel(entityId, templateId) {
-    var token = document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('celerp_token='));
-    token = token ? token.split('=')[1] : '';
-    fetch('/api/labels/print/' + entityId + '?template_id=' + templateId, {
-        method: 'POST',
-        headers: {'Authorization': 'Bearer ' + token}
-    })
-    .then(r => r.blob())
-    .then(blob => {
-        var url = URL.createObjectURL(blob);
-        var w = window.open(url);
-        if (w) w.addEventListener('load', function() { w.print(); });
-    });
+    // UI-layer GET route: no API auth needed, auto-triggers window.print()
+    window.open('/labels/print/' + encodeURIComponent(entityId) + '?template_id=' + encodeURIComponent(templateId));
 }
 """
         items = [

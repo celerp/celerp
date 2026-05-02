@@ -425,3 +425,43 @@ class TestColumnManagerUi:
         assert "celerp_col_widths_inventory" in html, (
             "WIDTH_KEY for inventory not found in data_table JS output"
         )
+
+
+@pytest.mark.asyncio
+async def test_labels_print_single_ui_route_reachable(client: AsyncClient):
+    """GET /labels/print/{entity_id} route must exist in the UI (FastHTML) app.
+
+    The conftest registers label UI routes onto _ui_app.  We verify the route
+    is present by inspecting the app's route table rather than doing an HTTP
+    round-trip (the test `client` fixture targets the FastAPI app, not the UI app).
+    """
+    from ui.app import app as _ui_app
+    routes = [getattr(r, "path", "") for r in _ui_app.routes]
+    assert any("/labels/print/{entity_id}" in p for p in routes), (
+        f"GET /labels/print/{{entity_id}} not registered in UI app. "
+        f"Registered paths: {[p for p in routes if 'label' in p.lower()]}"
+    )
+
+
+class TestLabelPrintJsFlow:
+    """Verify the JS print helper uses the UI GET route (no fetch/blob)."""
+
+    def test_print_js_uses_window_open_not_fetch(self):
+        """celerpPrintLabel must use window.open() pointing to /labels/print/."""
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        from fasthtml.common import to_xml
+        # Import the HTMX fragment builder by calling the relevant UI code.
+        # We check the generated HTML/JS emitted into item label dropdown.
+        # The print_js string is inside the HTMX fragment handler; easiest to
+        # check the source directly.
+        import inspect
+        from ui.routes import inventory
+        src = inspect.getsource(inventory)
+        assert "window.open('/labels/print/" in src, (
+            "celerpPrintLabel must use window.open('/labels/print/...') not fetch+blob; "
+            "the API /api/labels/print route is not available on the UI layer"
+        )
+        assert "fetch('/api/labels/print/" not in src, (
+            "Old fetch+blob pattern still present; should be window.open"
+        )

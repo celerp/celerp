@@ -746,3 +746,75 @@ async def test_list_item_categories_union_of_schema_and_items(client):
     cats = (await client.get("/items/categories", headers=h)).json()
     assert "Schema Cat" in cats, f"Schema category missing: {cats}"
     assert "Item Cat" in cats, f"Item category missing: {cats}"
+
+
+# ── Sort tests ────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_list_items_sort_by_name_asc(client):
+    """sort=name&dir=asc returns items in ascending name order."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    for name in ("Zebra", "Apple", "Mango"):
+        await client.post("/items", headers=h, json={"sku": f"SRT-{name[:3]}", "name": name, "sell_by": "piece"})
+
+    r = await client.get("/items?sort=name&dir=asc&status=all", headers=h)
+    assert r.status_code == 200, r.text
+    names = [i["name"] for i in r.json()["items"]]
+    assert names == sorted(names, key=str.lower), f"Not ascending: {names}"
+
+
+@pytest.mark.asyncio
+async def test_list_items_sort_by_name_desc(client):
+    """sort=name&dir=desc returns items in descending name order."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    for name in ("Alpha", "Gamma", "Beta"):
+        await client.post("/items", headers=h, json={"sku": f"DSC-{name[:3]}", "name": name, "sell_by": "piece"})
+
+    r = await client.get("/items?sort=name&dir=desc&status=all", headers=h)
+    assert r.status_code == 200, r.text
+    names = [i["name"] for i in r.json()["items"]]
+    assert names == sorted(names, key=str.lower, reverse=True), f"Not descending: {names}"
+
+
+@pytest.mark.asyncio
+async def test_list_items_sort_unknown_key_no_crash(client):
+    """Sorting by a non-existent key must not crash - nulls-last fallback applies."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    await client.post("/items", headers=h, json={"sku": "UNK-001", "name": "Item", "sell_by": "piece"})
+
+    r = await client.get("/items?sort=nonexistent_field&dir=desc&status=all", headers=h)
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_list_items_sort_is_global_before_pagination(client):
+    """Sorting applies to the full set before pagination, not just the current page."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Create 6 items with names that, if sorted only after slicing page 1 of 5,
+    # would produce wrong results on page 2.
+    names = ["F", "A", "E", "B", "D", "C"]
+    for n in names:
+        await client.post("/items", headers=h, json={"sku": f"PAG-{n}", "name": f"Item {n}", "sell_by": "piece"})
+
+    # Page 1 (first 4), page 2 (next 2) - globally sorted asc
+    r1 = await client.get("/items?sort=name&dir=asc&limit=4&offset=0&status=all", headers=h)
+    r2 = await client.get("/items?sort=name&dir=asc&limit=4&offset=4&status=all", headers=h)
+    assert r1.status_code == 200 and r2.status_code == 200
+
+    page1_names = [i["name"] for i in r1.json()["items"]]
+    page2_names = [i["name"] for i in r2.json()["items"]]
+
+    # All page1 names must be <= all page2 names (global sort)
+    if page1_names and page2_names:
+        assert page1_names[-1].lower() <= page2_names[0].lower(), (
+            f"Sort is not global: page1 ends with {page1_names[-1]!r}, "
+            f"page2 starts with {page2_names[0]!r}"
+        )

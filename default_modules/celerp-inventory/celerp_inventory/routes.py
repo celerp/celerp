@@ -175,6 +175,8 @@ async def list_items(
     barcode: str | None = None,
     status: str | None = None,
     category: str | None = None,
+    sort: str | None = None,
+    dir: str = "desc",
 ) -> dict:
     """List items with optional filters.
 
@@ -255,6 +257,24 @@ async def list_items(
             # Items without expiry float to the bottom; expired items sort before no-expiry
             return exp or "9999-99-99"
         result.sort(key=_fefo_key)
+
+    # User-requested column sort - applied AFTER all filtering so pagination is globally correct.
+    # FEFO overrides user sort for available items; explicit sort wins for all other statuses.
+    if sort and (not company or (company.settings or {}).get("inventory_method") != "fefo" or status not in (None, "available", "")):
+        reverse = dir.lower() != "asc"
+
+        def _sort_key(item: dict):
+            v = item.get(sort)
+            if v is None:
+                # Nulls always last regardless of direction
+                return (1, "")
+            if isinstance(v, (int, float)):
+                return (0, v)
+            s = str(v)
+            # ISO date/datetime strings sort correctly as strings
+            return (0, s.lower())
+
+        result.sort(key=_sort_key, reverse=reverse)
 
     total = len(result)
     return {"items": result[offset: offset + limit], "total": total}
