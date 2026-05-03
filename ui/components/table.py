@@ -805,7 +805,9 @@ function bulkActionChanged(action){
     _bulkImmediate('/api/items/bulk/delete',null,null);return;
   }
   // Context-driven actions - clone template (includes module actions via mod: prefix)
-  var tplId='tpl-'+action;
+  // mod: actions use tpl-mod-{action_id} where action_id strips the mod: prefix.
+  // The option value and template id must be derived the same way to stay in sync.
+  var tplId=action.startsWith('mod:')?'tpl-mod-'+action.slice(4):'tpl-'+action;
   if(action==='send_to') tplId='tpl-send-to';
   var tpl=document.getElementById(tplId);
   if(!tpl) return;

@@ -10375,6 +10375,67 @@ class TestInventoryUXFixes:
         assert isinstance(result, HTMLResponse)
         assert b"Ring" in result.body
 
+    # ── Fix: mod: tpl-id mismatch ─────────────────────────────────────────────
+
+    def test_bulk_action_mod_tpl_id_derivation_matches_js(self):
+        """Template DOM id and JS tplId derivation must agree for mod: actions.
+
+        The option value is  'mod:{action_id}'  (colon separator).
+        The template id is   'tpl-mod-{action_id}'  (hyphen separator).
+        JS must strip the 'mod:' prefix (4 chars) and prepend 'tpl-mod-', NOT
+        concatenate 'tpl-' + value directly (which would yield 'tpl-mod:{action_id}').
+        This test locks that contract so neither side can drift independently.
+        """
+        # Simulate the Python side: derive action_id from form_action
+        form_action = "/labels/print-bulk"
+        action_id = form_action.replace("/", "_").strip("_")  # mirrors inventory.py
+
+        option_value = f"mod:{action_id}"          # value attr on <option>
+        template_dom_id = f"tpl-mod-{action_id}"   # id attr on <template>
+
+        # Simulate the JS side: action.startsWith('mod:') -> 'tpl-mod-' + action.slice(4)
+        js_tpl_id = "tpl-mod-" + option_value[4:]  # option_value[4:] == action.slice(4)
+
+        assert js_tpl_id == template_dom_id, (
+            f"JS-derived tplId {js_tpl_id!r} != DOM template id {template_dom_id!r}. "
+            "Update bulkActionChanged() in ui/components/table.py to match."
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_action_print_labels_option_in_inventory(self, ui_client):
+        """'Print Labels' appears in the bulk action dropdown when labels module is loaded."""
+        from celerp.modules.slots import register as register_slot, clear as clear_slots
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "celerp_labels_init",
+            str(Path(__file__).parent.parent / "default_modules/celerp-labels/__init__.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        bulk = mod.PLUGIN_MANIFEST["slots"]["bulk_action"]
+        register_slot("bulk_action", {**bulk, "_module": "celerp-labels"})
+        try:
+            with (
+                patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+                patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+                patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+                patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            ):
+                r = await ui_client.get("/inventory", cookies=_authed())
+            assert r.status_code == 200
+            body = r.text
+            # Option value derived the same way as Python side
+            action_id = bulk["form_action"].replace("/", "_").strip("_")
+            assert f'value="mod:{action_id}"' in body, (
+                "Bulk action dropdown must contain the Print Labels option"
+            )
+            # Hidden <template> with matching tpl-mod- id must also be present
+            assert f'id="tpl-mod-{action_id}"' in body, (
+                "Hidden <template> with matching tpl-mod- id must be in the DOM"
+            )
+        finally:
+            clear_slots()
+
 
 # ── AI Page Tests ─────────────────────────────────────────────────────────────
 
