@@ -998,7 +998,7 @@ def _label_settings_root(
     )
 
 
-def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None) -> object:
+def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None, request: object = None) -> object:
     """Show template picker + confirm Print button for bulk label printing."""
     ft = _ft()
     Div, H2, Form, Label, Select, Option, Button, P, Input = (
@@ -1479,7 +1479,7 @@ def setup_ui_routes(app) -> None:
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
         templates = await _seed_presets_if_empty(request)
-        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token)
+        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
     @app.post("/labels/print-bulk/generate")
     async def labels_print_bulk_generate(request: Request):
