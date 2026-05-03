@@ -1227,11 +1227,43 @@ def setup_routes(app):
         )
 
         cid = contact.get("entity_id") or contact.get("id") or contact_id
+        is_deleted = bool(contact.get("deleted"))
+
+        delete_btn = "" if is_deleted else Script(f"""
+(function(){{
+  var btn = document.getElementById('contact-delete-btn');
+  if (!btn) return;
+  btn.addEventListener('click', function(){{
+    if (!confirm('Delete this contact? This cannot be undone if the contact has no associated documents.')) return;
+    fetch('/crm/contacts/bulk/delete', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{contact_ids: ['{cid}']}})
+    }}).then(function(r){{ return r.json(); }}).then(function(d){{
+      if (d.deleted !== undefined) {{
+        window.location.href = '{back_href}';
+      }} else {{
+        alert(d.detail || 'Delete failed.');
+      }}
+    }}).catch(function(err){{ alert('Delete failed: ' + err.message); }});
+  }});
+}})();
+""")
+
+        action_bar = Div(
+            Button("Delete Contact", id="contact-delete-btn", cls="btn btn--danger",
+                   type="button", style="margin-left:auto;") if not is_deleted else
+            Span("(deleted)", cls="status-badge status-badge--void"),
+            cls="action-bar",
+            style="display:flex; align-items:center; padding: 0.5rem 0;",
+        )
 
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (back_label, back_href), (contact_name, None)]),
             page_header(contact_name),
             autofocus_script,
+            action_bar,
+            delete_btn,
             _financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start),
             Div(
                 Div(

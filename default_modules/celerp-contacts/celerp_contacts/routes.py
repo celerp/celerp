@@ -185,6 +185,7 @@ async def list_contacts(
     limit: int = 50,
     offset: int = 0,
     contact_type: str | None = None,
+    include_deleted: bool = False,
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -192,6 +193,8 @@ async def list_contacts(
         await session.execute(select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "contact"))
     ).scalars().all()
     results = [r.state | {"id": r.entity_id} for r in rows]
+    if not include_deleted:
+        results = [c for c in results if not c.get("deleted")]
     if q:
         q_lower = q.lower()
         results = [c for c in results if q_lower in (c.get("name") or "").lower()
@@ -1104,7 +1107,8 @@ async def bulk_delete_contacts(
             raise HTTPException(status_code=404, detail=f"Contact '{cid}' not found.")
         contact_rows.append(row)
 
-    # Block deletion if any contact has open (non-void, non-draft) documents
+    # Block deletion if any contact has ANY documents (regardless of status).
+    # Provide a detailed breakdown by doc_type so the user knows exactly what's linked.
     doc_rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
@@ -1112,16 +1116,21 @@ async def bulk_delete_contacts(
         )
     )).scalars().all()
     contact_id_set = set(payload.contact_ids)
-    blocking: dict[str, int] = {}
+    # blocking: {contact_id: {doc_type: count}}
+    blocking: dict[str, dict[str, int]] = {}
     for dr in doc_rows:
-        if dr.state.get("contact_id") in contact_id_set and dr.state.get("status") not in ("void", "draft"):
-            cid = dr.state["contact_id"]
-            blocking[cid] = blocking.get(cid, 0) + 1
+        cid = dr.state.get("contact_id")
+        if cid in contact_id_set:
+            doc_type = dr.state.get("doc_type", "document")
+            blocking.setdefault(cid, {})
+            blocking[cid][doc_type] = blocking[cid].get(doc_type, 0) + 1
     if blocking:
         names = {r.entity_id: r.state.get("name", r.entity_id) for r in contact_rows}
-        detail = "Cannot delete: " + "; ".join(
-            f"{names.get(cid, cid)} has {n} open document(s)" for cid, n in blocking.items()
-        )
+        parts = []
+        for cid, type_counts in blocking.items():
+            summary = ", ".join(f"{n} {dt}(s)" for dt, n in sorted(type_counts.items()))
+            parts.append(f"{names.get(cid, cid)}: {summary}")
+        detail = "Cannot delete contact(s) with associated documents: " + "; ".join(parts)
         raise HTTPException(status_code=422, detail=detail)
 
     for row in contact_rows:

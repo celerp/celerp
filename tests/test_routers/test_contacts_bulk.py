@@ -102,21 +102,23 @@ async def test_bulk_delete_contacts_not_found(client):
 
 
 @pytest.mark.asyncio
-async def test_bulk_delete_contacts_blocked_by_open_doc(client):
+async def test_bulk_delete_contacts_blocked_by_any_doc(client):
+    """Any doc (even draft) blocks deletion - Noah's rule: block if any docs associated."""
     tok = await _register(client, "BulkDel4")
     c1 = await _contact(client, tok)
-    await _invoice(client, tok, c1)  # creates a finalized invoice - blocks deletion
+    await _invoice(client, tok, c1)  # finalized invoice
 
     r = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c1]})
     assert r.status_code == 422
-    assert "open document" in r.json()["detail"].lower()
+    assert "associated documents" in r.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
-async def test_bulk_delete_contacts_draft_doc_does_not_block(client):
+async def test_bulk_delete_contacts_draft_doc_blocks(client):
+    """Draft docs also block deletion."""
     tok = await _register(client, "BulkDel5")
     c1 = await _contact(client, tok)
-    # Create a draft invoice (not finalized) - should NOT block deletion
+    # Draft invoice (not finalized) - should ALSO block deletion
     r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "invoice",
         "contact_id": c1,
@@ -128,8 +130,87 @@ async def test_bulk_delete_contacts_draft_doc_does_not_block(client):
     assert r.status_code == 200
 
     r2 = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c1]})
-    assert r2.status_code == 200
-    assert r2.json()["deleted"] == 1
+    assert r2.status_code == 422
+    detail = r2.json()["detail"]
+    assert "invoice" in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_error_lists_doc_types(client):
+    """Error message names each doc type and count."""
+    tok = await _register(client, "BulkDelErr")
+    c1 = await _contact(client, tok, name="Detailed Co")
+    # Create invoice + bill
+    await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice", "contact_id": c1, "contact_name": "Detailed Co",
+        "total": 100, "issue_date": "2026-01-01", "currency": "USD",
+    })
+    await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "bill", "contact_id": c1, "contact_name": "Detailed Co",
+        "total": 50, "issue_date": "2026-01-01", "currency": "USD",
+    })
+
+    r = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c1]})
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert "invoice" in detail.lower()
+    assert "bill" in detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_list_contacts_excludes_deleted(client):
+    """Deleted contacts must not appear in list by default."""
+    tok = await _register(client, "ListDel")
+    c1 = await _contact(client, tok, name="Active Contact")
+    c2 = await _contact(client, tok, name="Soon Deleted")
+
+    # Delete c2
+    r = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c2]})
+    assert r.status_code == 200
+
+    # Default list should exclude deleted
+    r2 = await client.get("/crm/contacts", headers=_h(tok))
+    ids = [c.get("id") for c in r2.json().get("items", [])]
+    assert c1 in ids
+    assert c2 not in ids
+
+
+@pytest.mark.asyncio
+async def test_list_contacts_includes_deleted_when_requested(client):
+    """include_deleted=true returns all contacts including deleted ones."""
+    tok = await _register(client, "ListDelIncl")
+    c1 = await _contact(client, tok, name="Live One")
+    c2 = await _contact(client, tok, name="Dead One")
+
+    await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c2]})
+
+    r = await client.get("/crm/contacts?include_deleted=true", headers=_h(tok))
+    ids = [c.get("id") for c in r.json().get("items", [])]
+    assert c1 in ids
+    assert c2 in ids
+
+
+@pytest.mark.asyncio
+async def test_create_doc_with_deleted_contact_rejected(client):
+    """Cannot create a document for a deleted contact."""
+    tok = await _register(client, "DocDelContact")
+    c1 = await _contact(client, tok, name="Ghost Co")
+
+    # Delete the contact (no docs, so deletion succeeds)
+    r = await client.post("/crm/contacts/bulk/delete", headers=_h(tok), json={"contact_ids": [c1]})
+    assert r.status_code == 200
+
+    # Now try to create a doc with the deleted contact
+    r2 = await client.post("/docs", headers=_h(tok), json={
+        "doc_type": "invoice",
+        "contact_id": c1,
+        "contact_name": "Ghost Co",
+        "total": 100,
+        "issue_date": "2026-01-01",
+        "currency": "USD",
+    })
+    assert r2.status_code == 422
+    assert "deleted" in r2.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

@@ -496,6 +496,12 @@ async def create_doc(
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
+    # Reject if contact is deleted
+    if payload.contact_id:
+        contact_row = await session.get(Projection, {"company_id": company_id, "entity_id": payload.contact_id})
+        if contact_row is not None and contact_row.state.get("deleted"):
+            raise HTTPException(status_code=422, detail="This contact has been deleted and cannot be used on new documents.")
+
     _assert_date_order(payload.model_dump(exclude_none=True))
 
     # Validate line item quantities against sell_by unit precision
