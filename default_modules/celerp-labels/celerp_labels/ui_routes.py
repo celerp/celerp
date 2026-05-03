@@ -29,6 +29,42 @@ except ImportError:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
+# Named format → (width_mm, height_mm)
+_FORMAT_MM: dict[str, tuple[float, float]] = {
+    "24x24mm": (24.0, 24.0),
+    "29x29mm": (29.0, 29.0),
+    "34x34mm": (34.0, 34.0),
+    "40x30mm": (40.0, 30.0),
+    "62x29mm": (62.0, 29.0),
+    "100x50mm": (100.0, 50.0),
+    "A4": (210.0, 297.0),
+    "A5": (148.0, 210.0),
+    "letter": (216.0, 279.0),
+}
+_FORMAT_MM_DEFAULT = (40.0, 30.0)
+
+
+def _format_to_mm(
+    fmt: str | None,
+    width_mm: float | None,
+    height_mm: float | None,
+) -> tuple[float, float]:
+    """Return (width_mm, height_mm) for a template format string.
+
+    Priority: named format table > custom width_mm/height_mm > default 40x30.
+    """
+    if fmt and fmt != "custom":
+        if fmt in _FORMAT_MM:
+            return _FORMAT_MM[fmt]
+        # Try parsing "WxHmm" dynamically
+        import re
+        m = re.match(r"^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)mm$", fmt)
+        if m:
+            return (float(m.group(1)), float(m.group(2)))
+    if width_mm and height_mm:
+        return (float(width_mm), float(height_mm))
+    return _FORMAT_MM_DEFAULT
+
 _COMMON_FIELDS = [
     ("barcode", "Barcode (bars)", "barcode"),
     ("barcode_text", "Barcode (number)", "barcode_text"),
@@ -1008,8 +1044,14 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
 
     if not template:
         fields = [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
+        w_mm, h_mm = _FORMAT_MM_DEFAULT
     else:
         fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
+        w_mm, h_mm = _format_to_mm(
+            template.get("format"),
+            template.get("width_mm"),
+            template.get("height_mm"),
+        )
 
     from starlette.responses import HTMLResponse
     from celerp_labels.service import _make_barcode_image, _make_qr_image
@@ -1072,14 +1114,29 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
 <style>
 body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 .label-sheet {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-.label-item {{ border: 1px solid #999; padding: 6px 8px; min-width: 80px; font-size: 11px; break-inside: avoid; }}
-.label-field {{ margin-bottom: 2px; }}
+.label-item {{
+  border: 1px solid #999;
+  padding: 4px 6px;
+  font-size: 11px;
+  break-inside: avoid;
+  width: {w_mm}mm;
+  height: {h_mm}mm;
+  box-sizing: border-box;
+  overflow: hidden;
+  flex-shrink: 0;
+}}
+.label-field {{ margin-bottom: 2px; overflow: hidden; }}
 .label-field--barcode {{ margin-bottom: 3px; }}
 .label-field--barcode img {{ max-width: 100%; display: block; }}
-.bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; margin-top: 1px; }}
+.label-field--barcode-text {{ margin-bottom: 2px; }}
+.bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; }}
 .label-field--qr {{ margin-bottom: 3px; }}
 .no-print {{ margin-bottom: 1rem; }}
-@media print {{ .no-print {{ display: none; }} }}
+@media print {{
+  .no-print {{ display: none; }}
+  body {{ padding: 0; margin: 0; }}
+  .label-sheet {{ gap: 4px; padding: 4px; }}
+}}
 </style>
 </head>
 <body>

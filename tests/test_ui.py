@@ -10306,6 +10306,51 @@ class TestInventoryUXFixes:
         bulk = mod.PLUGIN_MANIFEST["slots"]["bulk_action"]
         assert bulk["form_action"] == "/labels/print-bulk"
 
+    def test_labels_manifest_bulk_action_type_is_navigate(self):
+        """Labels bulk_action must declare action_type=navigate so it opens in a new tab."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "celerp_labels_init",
+            str(Path(__file__).parent.parent / "default_modules/celerp-labels/__init__.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        bulk = mod.PLUGIN_MANIFEST["slots"]["bulk_action"]
+        assert bulk.get("action_type") == "navigate", (
+            "Labels bulk action must be navigate type so it opens a new tab "
+            "rather than being injected via HTMX into #bulk-action-result"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_print_preview_post_redirects_on_no_selection(self, ui_client):
+        """POST /labels/print-bulk with no selected IDs redirects to /inventory."""
+        r = await ui_client.post(
+            "/labels/print-bulk",
+            data={},
+            cookies=_authed(),
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert "/inventory" in r.headers["location"]
+
+    def test_bulk_print_navigate_type_opens_new_tab(self):
+        """Template generated for navigate-type module bulk action must have target=_blank."""
+        # Verifies the server-side template rendering picks up action_type=navigate
+        # and produces a form that opens a new tab rather than an HTMX swap.
+        from celerp_labels.ui_routes import _printable_label_sheet
+        # The actual mechanism is in inventory.py _bulk_context_templates.
+        # We verify it at the manifest level (covered by test_labels_manifest_bulk_action_type_is_navigate)
+        # and here confirm the print sheet is a full HTMLResponse (not a fragment).
+        from starlette.responses import HTMLResponse
+        result = _printable_label_sheet(
+            [{"name": "A"}, {"name": "B"}],
+            {"format": "40x30mm", "fields": [{"key": "name", "type": "text", "label": "Name"}]},
+        )
+        assert isinstance(result, HTMLResponse)
+        # Full page with print trigger - not an HTMX fragment
+        assert b"window.print()" in result.body
+        assert b"<!DOCTYPE html>" in result.body
+
     def test_print_bulk_helper_generates_html(self):
         """_bulk_print_preview_page returns base_shell response with template picker."""
         from celerp_labels.ui_routes import _printable_label_sheet

@@ -1699,11 +1699,14 @@ def _bulk_toolbar(locations: list[dict]) -> FT:
         for tgt in send_to_targets
     ]
 
-    # Module immediate actions (e.g. Print Labels)
+    # Module bulk actions - each shows a confirm button in the context area.
+    # action_type="navigate" → opens in new tab via native form submit.
+    # action_type="htmx" (default) → HTMX POST into #bulk-action-result.
     module_action_opts = []
     for action in get_slot("bulk_action"):
+        action_id = action["form_action"].replace("/", "_").strip("_")
         module_action_opts.append(
-            Option(action.get("label", "Action"), value=f"module:{action['form_action']}")
+            Option(action.get("label", "Action"), value=f"mod:{action_id}")
         )
 
     # Build the main Action dropdown options
@@ -1833,21 +1836,32 @@ def _bulk_context_templates(
         id="tpl-send-to",
     )
 
-    # Module action templates (immediate, e.g. Print Labels)
+    # Module action templates.
+    # navigate type: native form submit opening a new tab (for full-page responses).
+    # htmx type (default): HTMX POST into #bulk-action-result.
     module_tpls = []
     for action in module_actions:
         action_id = action["form_action"].replace("/", "_").strip("_")
-        module_tpls.append(Template(
-            Form(
+        is_navigate = action.get("action_type") == "navigate"
+        if is_navigate:
+            form = Form(
+                Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
+                action=action["form_action"],
+                method="post",
+                target="_blank",
+                onsubmit="submitBulkAction(this)",
+                cls="display-contents",
+            )
+        else:
+            form = Form(
                 Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
                 hx_post=action["form_action"],
                 hx_target="#bulk-action-result",
                 hx_swap="outerHTML",
                 onsubmit="submitBulkAction(this)",
                 cls="display-contents",
-            ),
-            id=f"tpl-module-{action_id}",
-        ))
+            )
+        module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
 
     return Div(
         transfer_tpl,

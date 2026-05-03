@@ -804,11 +804,7 @@ function bulkActionChanged(action){
     if(!confirm('Delete selected items? This cannot be undone.')) return;
     _bulkImmediate('/api/items/bulk/delete',null,null);return;
   }
-  // Module actions (immediate)
-  if(action.startsWith('module:')){
-    _bulkImmediate(action.slice(7),null,null);return;
-  }
-  // Context-driven actions - clone template
+  // Context-driven actions - clone template (includes module actions via mod: prefix)
   var tplId='tpl-'+action;
   if(action==='send_to') tplId='tpl-send-to';
   var tpl=document.getElementById(tplId);

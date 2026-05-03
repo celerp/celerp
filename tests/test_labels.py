@@ -643,3 +643,57 @@ def test_extract_fields_barcode_text_type_preserved():
     ])
     fields = _extract_fields_from_form(form)
     assert fields[0]["type"] == "barcode_text"
+
+
+# ---------------------------------------------------------------------------
+# Label size / fixed dimensions tests
+# ---------------------------------------------------------------------------
+
+def test_format_to_mm_named_square():
+    """_format_to_mm: named 24x24mm → (24.0, 24.0)."""
+    from celerp_labels.ui_routes import _format_to_mm
+    assert _format_to_mm("24x24mm", None, None) == (24.0, 24.0)
+
+
+def test_format_to_mm_named_rect():
+    """_format_to_mm: named 40x30mm → (40.0, 30.0)."""
+    from celerp_labels.ui_routes import _format_to_mm
+    assert _format_to_mm("40x30mm", None, None) == (40.0, 30.0)
+
+
+def test_format_to_mm_custom():
+    """_format_to_mm: custom format falls back to width_mm/height_mm."""
+    from celerp_labels.ui_routes import _format_to_mm
+    assert _format_to_mm("custom", 37.5, 22.0) == (37.5, 22.0)
+
+
+def test_format_to_mm_default_fallback():
+    """_format_to_mm: None/unknown format with no custom dims → default 40x30."""
+    from celerp_labels.ui_routes import _format_to_mm
+    assert _format_to_mm(None, None, None) == (40.0, 30.0)
+
+
+def test_label_sheet_fixed_dimensions():
+    """_printable_label_sheet: label-item has fixed width/height from template format."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    template = {"format": "24x24mm", "fields": [{"key": "name", "type": "text", "label": "Name"}]}
+    item = {"name": "Ruby"}
+    html = _printable_label_sheet([item], template).body.decode()
+    assert "width: 24.0mm" in html
+    assert "height: 24.0mm" in html
+
+
+def test_label_sheet_overflow_hidden():
+    """_printable_label_sheet: label-item clips overflowing content."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    template = {"format": "40x30mm", "fields": [{"key": "name", "type": "text", "label": "Name"}]}
+    html = _printable_label_sheet([{"name": "A" * 200}], template).body.decode()
+    assert "overflow: hidden" in html
+
+
+def test_label_sheet_no_template_uses_default_dims():
+    """_printable_label_sheet: no template → default 40x30mm dimensions."""
+    from celerp_labels.ui_routes import _printable_label_sheet
+    html = _printable_label_sheet([{"name": "Item"}], None).body.decode()
+    assert "width: 40.0mm" in html
+    assert "height: 30.0mm" in html
