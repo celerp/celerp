@@ -1494,6 +1494,7 @@ def setup_ui_routes(app) -> None:
         token = _token(request)
         is_list = request.query_params.get("list") == "1"
         entity_ids: list[str] = []
+        skus_to_resolve: list[str] = []
         try:
             async with httpx.AsyncClient(timeout=10) as c:
                 endpoint = f"{_api_base(request)}/lists/{doc_id}" if is_list else f"{_api_base(request)}/docs/{doc_id}"
@@ -1501,9 +1502,31 @@ def setup_ui_routes(app) -> None:
                 if r.status_code == 200:
                     doc = r.json()
                     for li in doc.get("line_items") or []:
-                        eid = li.get("entity_id") or li.get("item_entity_id")
+                        # entity_id stored by JS save; item_id stored by some import paths
+                        eid = li.get("entity_id") or li.get("item_entity_id") or li.get("item_id")
                         if eid:
                             entity_ids.append(eid)
+                        elif li.get("sku"):
+                            skus_to_resolve.append(li["sku"])
+                # SKU fallback: resolve any line items that had no entity_id stored
+                if skus_to_resolve:
+                    seen: set[str] = set(entity_ids)
+                    for sku in dict.fromkeys(skus_to_resolve):  # deduplicate, preserve order
+                        try:
+                            sr = await c.get(
+                                f"{_api_base(request)}/items",
+                                params={"sku": sku, "limit": 1, "status": "all"},
+                                headers={"Authorization": f"Bearer {token}"},
+                            )
+                            if sr.status_code == 200:
+                                items = sr.json().get("items", [])
+                                if items and items[0].get("entity_id"):
+                                    eid = items[0]["entity_id"]
+                                    if eid not in seen:
+                                        entity_ids.append(eid)
+                                        seen.add(eid)
+                        except Exception:
+                            pass
         except Exception:
             pass
         redirect = "/lists" if is_list else "/docs"

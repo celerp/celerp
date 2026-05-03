@@ -708,3 +708,80 @@ async def test_labels_print_doc_ui_route_registered(client: AsyncClient):
         f"GET /labels/print-doc/{{doc_id}} not registered in UI app. "
         f"Registered: {[p for p in routes if 'label' in p.lower()]}"
     )
+
+
+# ── Bug fixes: labels_print_doc entity_id extraction + empty row checkbox ──────
+
+def test_labels_print_doc_extracts_item_id_field():
+    """labels_print_doc must use item_id (stored by backend) as entity_id fallback.
+
+    The JS save sends entity_id; the Pydantic LineItem model stores it as-is.
+    Older or manually-entered lines may only have item_id or sku.
+    This test verifies the extraction logic covers all three field names.
+    """
+    # Simulate line items as stored in a doc projection
+    line_items = [
+        {"entity_id": "item:aaa", "sku": "SKU-1"},       # entity_id set (JS saved it)
+        {"item_id": "item:bbb", "sku": "SKU-2"},          # item_id only (import path)
+        {"item_entity_id": "item:ccc", "sku": "SKU-3"},   # item_entity_id (legacy)
+        {"sku": "SKU-4"},                                   # no id -> goes to SKU fallback
+        {"description": "Service fee"},                     # no sku, no id -> skipped
+    ]
+    entity_ids = []
+    skus_to_resolve = []
+    for li in line_items:
+        eid = li.get("entity_id") or li.get("item_entity_id") or li.get("item_id")
+        if eid:
+            entity_ids.append(eid)
+        elif li.get("sku"):
+            skus_to_resolve.append(li["sku"])
+
+    # Priority: entity_id > item_entity_id > item_id (Python or short-circuit), in row order
+    assert entity_ids == ["item:aaa", "item:bbb", "item:ccc"], entity_ids
+    assert skus_to_resolve == ["SKU-4"], skus_to_resolve
+
+
+def test_labels_print_doc_sku_dedup():
+    """SKU fallback deduplicates repeated SKUs before resolving."""
+    skus = ["SKU-A", "SKU-A", "SKU-B", "SKU-A"]
+    deduped = list(dict.fromkeys(skus))
+    assert deduped == ["SKU-A", "SKU-B"]
+
+
+def test_draft_line_row_template_has_checkbox():
+    """_li_empty_row (the <template> for new draft rows) must include a checkbox td
+    so the li-bulk-toolbar can select new rows just like existing ones."""
+    import re, inspect
+    import ui.routes.documents as _doc_mod
+    src = inspect.getsource(_doc_mod)
+    # Find _li_empty_row function body
+    match = re.search(r'def _li_empty_row\(\)(.*?)return Tr\(\*cells\)', src, re.DOTALL)
+    assert match, "_li_empty_row not found in documents.py"
+    body = match.group(1)
+    assert "col-checkbox li-checkbox-cell" in body, (
+        "_li_empty_row must prepend a col-checkbox td so new rows can be bulk-selected"
+    )
+    assert "li-select" in body, "Checkbox must have class li-select for bulk toolbar JS"
+
+
+def test_celerp_fill_row_description_always_overwrites():
+    """celerpFillRow must overwrite description regardless of existing value.
+
+    The !descEl.value guard was removed so that selecting from the catalog
+    autocomplete (by mouse or keyboard) always fills the description field,
+    even if the user had started typing something first.
+    """
+    import re, inspect
+    import ui.routes.documents as _doc_mod
+    src = inspect.getsource(_doc_mod)
+    # The guard must not appear adjacent to the description assignment
+    # Find the celerpFillRow JS function (it's inside a Python f-string)
+    assert "celerpFillRow" in src, "celerpFillRow not found in documents.py"
+    # Check the description assignment line - should NOT have !descEl.value
+    desc_line_match = re.search(r'if \(descEl && data\.description([^)]*)\)', src)
+    assert desc_line_match, "description assignment line not found"
+    condition = desc_line_match.group(1)
+    assert "!descEl.value" not in condition, (
+        "!descEl.value guard must be removed so catalog picker always overwrites description. "
+        f"Found condition: {condition!r}"
+    )

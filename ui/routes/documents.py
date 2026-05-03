@@ -4070,7 +4070,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             else:
                 _ra_cell = None
 
-            cells = [Td(_sku_input()), Td(_desc_input())]
+            cells = [
+                Td(Input(type="checkbox", cls="li-select", value=""), cls="col-checkbox li-checkbox-cell"),
+                Td(_sku_input()), Td(_desc_input()),
+            ]
             if _cat_cell:
                 cells.append(_cat_cell)
             if _ra_cell:
@@ -4246,7 +4249,7 @@ function celerpFillRow(row, data) {{
     const allowSplitEl = row.querySelector('[data-name="allow_splitting"]');
     const itemQtyEl = row.querySelector('[data-name="item_quantity"]');
     if (skuEl && data.sku) skuEl.value = data.sku;
-    if (descEl && data.description && !descEl.value) descEl.value = data.description;
+    if (descEl && data.description) descEl.value = data.description;
     if (hsCodeEl && data.hs_code) hsCodeEl.value = data.hs_code;
     if (priceEl && data.unit_price != null) priceEl.value = data.unit_price;
     if (unitEl && data.sell_by) unitEl.textContent = data.sell_by;
