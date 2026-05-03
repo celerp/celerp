@@ -1499,15 +1499,21 @@ def setup_ui_routes(app) -> None:
             async with httpx.AsyncClient(timeout=10) as c:
                 endpoint = f"{_api_base(request)}/lists/{doc_id}" if is_list else f"{_api_base(request)}/docs/{doc_id}"
                 r = await c.get(endpoint, headers={"Authorization": f"Bearer {token}"})
+                log.debug("labels_print_doc: GET %s -> %s", endpoint, r.status_code)
                 if r.status_code == 200:
                     doc = r.json()
-                    for li in doc.get("line_items") or []:
+                    line_items = doc.get("line_items") or []
+                    log.debug("labels_print_doc: %d line items in doc", len(line_items))
+                    for li in line_items:
                         # entity_id stored by JS save; item_id stored by some import paths
                         eid = li.get("entity_id") or li.get("item_entity_id") or li.get("item_id")
                         if eid:
                             entity_ids.append(eid)
                         elif li.get("sku"):
                             skus_to_resolve.append(li["sku"])
+                    log.debug("labels_print_doc: %d entity_ids direct, %d SKUs to resolve", len(entity_ids), len(skus_to_resolve))
+                else:
+                    log.warning("labels_print_doc: unexpected status %s from %s: %s", r.status_code, endpoint, r.text[:200])
                 # SKU fallback: resolve any line items that had no entity_id stored
                 if skus_to_resolve:
                     seen: set[str] = set(entity_ids)
@@ -1525,10 +1531,12 @@ def setup_ui_routes(app) -> None:
                                     if eid not in seen:
                                         entity_ids.append(eid)
                                         seen.add(eid)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
+                            else:
+                                log.warning("labels_print_doc: SKU lookup for %r -> %s", sku, sr.status_code)
+                        except Exception as exc:
+                            log.warning("labels_print_doc: SKU lookup for %r failed: %s", sku, exc)
+        except Exception as exc:
+            log.exception("labels_print_doc: failed to fetch doc %s: %s", doc_id, exc)
         redirect = "/lists" if is_list else "/docs"
         if not entity_ids:
             return RedirectResponse(redirect, status_code=302)
