@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -1055,12 +1055,16 @@ async def export_contacts_csv(
     company_id: str = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
     q: str | None = None,
+    selected: list[str] = Query(default=[]),
 ) -> StreamingResponse:
     rows = (await session.execute(
         select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "contact")
     )).scalars().all()
     contacts = [r.state | {"entity_id": r.entity_id} for r in rows]
-    if q:
+    if selected:
+        selected_set = set(selected)
+        contacts = [c for c in contacts if c.get("entity_id") in selected_set]
+    elif q:
         ql = q.lower()
         contacts = [c for c in contacts if ql in str(c.get("name", "")).lower() or ql in str(c.get("email", "")).lower()]
 
@@ -1076,6 +1080,272 @@ async def export_contacts_csv(
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=contacts.csv"},
     )
+
+
+class BulkContactDeleteBody(BaseModel):
+    contact_ids: list[str]
+
+
+@router.post("/contacts/bulk/delete")
+async def bulk_delete_contacts(
+    payload: BulkContactDeleteBody,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    if not payload.contact_ids:
+        raise HTTPException(status_code=422, detail="No contacts selected.")
+
+    # Validate all contacts exist and are not already deleted
+    contact_rows = []
+    for cid in payload.contact_ids:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": cid})
+        if row is None or row.state.get("deleted"):
+            raise HTTPException(status_code=404, detail=f"Contact '{cid}' not found.")
+        contact_rows.append(row)
+
+    # Block deletion if any contact has open (non-void, non-draft) documents
+    doc_rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "doc",
+        )
+    )).scalars().all()
+    contact_id_set = set(payload.contact_ids)
+    blocking: dict[str, int] = {}
+    for dr in doc_rows:
+        if dr.state.get("contact_id") in contact_id_set and dr.state.get("status") not in ("void", "draft"):
+            cid = dr.state["contact_id"]
+            blocking[cid] = blocking.get(cid, 0) + 1
+    if blocking:
+        names = {r.entity_id: r.state.get("name", r.entity_id) for r in contact_rows}
+        detail = "Cannot delete: " + "; ".join(
+            f"{names.get(cid, cid)} has {n} open document(s)" for cid, n in blocking.items()
+        )
+        raise HTTPException(status_code=422, detail=detail)
+
+    for row in contact_rows:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=row.entity_id,
+            entity_type="contact",
+            event_type="crm.contact.updated",
+            data={"fields_changed": {"deleted": {"new": True}}},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+    await session.commit()
+    return {"deleted": len(contact_rows)}
+
+
+class ContactMergeBody(BaseModel):
+    target_contact_id: str
+    source_contact_ids: list[str]
+
+
+@router.post("/contacts/merge")
+async def merge_contacts(
+    payload: ContactMergeBody,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    # 1. Validate inputs
+    if not payload.source_contact_ids:
+        raise HTTPException(status_code=422, detail="source_contact_ids must not be empty.")
+    if payload.target_contact_id in payload.source_contact_ids:
+        raise HTTPException(status_code=422, detail="target_contact_id must not be in source_contact_ids.")
+
+    # 2. Validate target
+    target_row = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_contact_id})
+    if target_row is None or target_row.state.get("entity_type") not in ("contact", None):
+        raise HTTPException(status_code=404, detail=f"Target contact '{payload.target_contact_id}' not found.")
+    if target_row.state.get("deleted"):
+        raise HTTPException(status_code=422, detail="Cannot merge into a deleted contact.")
+
+    # 3. Validate sources
+    source_rows = []
+    for sid in payload.source_contact_ids:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Source contact '{sid}' not found.")
+        if row.state.get("deleted"):
+            raise HTTPException(status_code=422, detail=f"Contact '{sid}' is already deleted.")
+        if row.state.get("merged_into"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Contact '{sid}' is already merged into '{row.state['merged_into']}'.",
+            )
+        source_rows.append(row)
+
+    warnings: list[str] = []
+    winner = target_row.state
+    winner_name = winner.get("name", "")
+
+    # Currency mismatch warning
+    winner_currency = winner.get("currency") or ""
+    for row in source_rows:
+        src_currency = row.state.get("currency") or ""
+        if src_currency and winner_currency and src_currency != winner_currency:
+            warnings.append(
+                f"Currency mismatch: winner currency '{winner_currency}' applies to contact record; "
+                "existing documents keep their own currencies."
+            )
+            break
+
+    # 4. Compute merged people (deduplicate by email, then by name)
+    def _email_key(p: dict) -> str:
+        return (p.get("email") or "").lower().strip()
+
+    def _name_key(p: dict) -> str:
+        return (p.get("name") or "").lower().strip()
+
+    merged_people = list(winner.get("people") or [])
+    existing_emails = {_email_key(p) for p in merged_people if _email_key(p)}
+    existing_names = {_name_key(p) for p in merged_people if not _email_key(p) and _name_key(p)}
+    for row in source_rows:
+        for p in (row.state.get("people") or []):
+            ek = _email_key(p)
+            nk = _name_key(p)
+            if ek:
+                if ek not in existing_emails:
+                    merged_people.append(p)
+                    existing_emails.add(ek)
+            elif nk and nk not in existing_names:
+                merged_people.append(p)
+                existing_names.add(nk)
+
+    # 5. Compute merged addresses (deduplicate by line1 + postcode)
+    def _addr_key(a: dict) -> tuple:
+        return (
+            (a.get("line1") or "").lower().strip(),
+            (a.get("postcode") or a.get("postal_code") or "").lower().strip(),
+        )
+
+    merged_addresses = list(winner.get("addresses") or [])
+    existing_addr_keys = {_addr_key(a) for a in merged_addresses}
+    for row in source_rows:
+        for a in (row.state.get("addresses") or []):
+            ak = _addr_key(a)
+            if ak not in existing_addr_keys:
+                merged_addresses.append(a)
+                existing_addr_keys.add(ak)
+
+    # 6. Compute merged tags
+    all_tags = list(set(winner.get("tags") or []))
+    for row in source_rows:
+        for tag in (row.state.get("tags") or []):
+            if tag not in all_tags:
+                all_tags.append(tag)
+    merged_tags = sorted(all_tags)
+
+    # 7. Emit single crm.contact.merged event on winner (carries all merged data)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=payload.target_contact_id,
+        entity_type="contact",
+        event_type="crm.contact.merged",
+        data={
+            "source_contact_ids": payload.source_contact_ids,
+            "merged_people": merged_people,
+            "merged_addresses": merged_addresses,
+            "merged_tags": merged_tags,
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    # 8. Tombstone sources
+    for row in source_rows:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=row.entity_id,
+            entity_type="contact",
+            event_type="crm.contact.updated",
+            data={"fields_changed": {
+                "deleted": {"new": True},
+                "merged_into": {"new": payload.target_contact_id},
+            }},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    # 9. Re-point documents (contact_id + contact_name, regardless of doc status)
+    source_ids = set(payload.source_contact_ids)
+    doc_rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "doc",
+        )
+    )).scalars().all()
+    docs_updated = 0
+    for dr in doc_rows:
+        if dr.state.get("contact_id") in source_ids:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=dr.entity_id,
+                entity_type="doc",
+                event_type="doc.updated",
+                data={"fields_changed": {
+                    "contact_id": {"old": dr.state["contact_id"], "new": payload.target_contact_id},
+                    "contact_name": {"old": dr.state.get("contact_name"), "new": winner_name},
+                }},
+                actor_id=user.id,
+                location_id=None,
+                source="api",
+                idempotency_key=str(uuid.uuid4()),
+                metadata_={},
+            )
+            docs_updated += 1
+
+    # 10. Re-point deals
+    deal_rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "deal",
+        )
+    )).scalars().all()
+    for dr in deal_rows:
+        if dr.state.get("contact_id") in source_ids:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=dr.entity_id,
+                entity_type="deal",
+                event_type="crm.deal.updated",
+                data={"fields_changed": {
+                    "contact_id": {"old": dr.state["contact_id"], "new": payload.target_contact_id},
+                }},
+                actor_id=user.id,
+                location_id=None,
+                source="api",
+                idempotency_key=str(uuid.uuid4()),
+                metadata_={},
+            )
+
+    # 11. Notes: NOT re-parented. Contact detail page queries merged_from IDs.
+    # No events emitted for notes.
+
+    await session.commit()
+    return {
+        "merged_into": payload.target_contact_id,
+        "sources_merged": len(source_rows),
+        "docs_updated": docs_updated,
+        "warnings": warnings,
+    }
 
 
 def setup_api_routes(app) -> None:

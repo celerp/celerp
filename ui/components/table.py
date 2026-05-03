@@ -411,6 +411,7 @@ def data_table(
     q: str | None = None,
     show_row_menu: bool = True,
     show_checkboxes: bool = True,
+    selection_key: str = "celerp_inv_selection",
     link_fn: dict[str, str] | None = None,
     auto_hide_empty: bool = True,
     edit_url_tpl: str | None = None,
@@ -965,7 +966,7 @@ function sendToTypeChanged(docType){
 """
     scripts = [Script(_js)]
     if show_checkboxes:
-        scripts.append(Script(_bulk_js))
+        scripts.append(Script(_bulk_js.replace("'celerp_inv_selection'", f"'{selection_key}'")))
     return Div(
         Div(
             Table(header, Tbody(*[_row(r) for r in rows]), cls="data-table", id="data-table"),

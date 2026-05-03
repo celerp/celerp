@@ -43,6 +43,12 @@ def apply_contact_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "crm.contact.merged":
         current.setdefault("merged_from", [])
         current["merged_from"] = sorted(set(current["merged_from"]) | set(data["source_contact_ids"]))
+        if data.get("merged_people") is not None:
+            current["people"] = data["merged_people"]
+        if data.get("merged_addresses") is not None:
+            current["addresses"] = data["merged_addresses"]
+        if data.get("merged_tags") is not None:
+            current["tags"] = data["merged_tags"]
     elif event_type == "crm.contact.tagged":
         current.setdefault("tags", [])
         current["tags"] = sorted(set(current["tags"]) | set(data["tags"]))

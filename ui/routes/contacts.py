@@ -565,6 +565,96 @@ def _contact_ledger_table(ledger: list[dict]) -> FT:
     return activity_table(ledger, max_display=10)
 
 
+def _contacts_bulk_toolbar(contact_type: str) -> FT:
+    """Sticky bulk action toolbar for the contacts list. Hidden until rows are selected."""
+    return Div(
+        Span("0 selected", id="contact-bulk-count", cls="bulk-count"),
+        Button(t("btn.clear"), id="contact-bulk-clear-btn", cls="btn btn--ghost btn--sm",
+               style="display:none",
+               onclick=(
+                   "CelerpSelection.clear();"
+                   "CelerpSelection.syncCheckboxes();"
+                   "document.getElementById('contact-bulk-count').textContent='0 selected';"
+                   "document.getElementById('contact-bulk-toolbar').classList.remove('is-active');"
+                   "document.getElementById('contact-bulk-clear-btn').style.display='none';"
+                   "_resetBulkActions();"
+               )),
+        Select(
+            Option(t("inv.action"), value="", disabled=True, selected=True),
+            Option(t("btn.export_csv") + " (selected)", value="contact-export"),
+            Option(t("inv.merge"), value="contact-merge"),
+            Option(t("btn.delete"), value="delete"),
+            id="contact-bulk-select", cls="form-input form-input--sm",
+            onchange="contactBulkChanged(this.value)",
+        ),
+        Div(id="contact-bulk-context"),
+        Div(id="bulk-action-result"),
+        _contact_bulk_templates(contact_type),
+        id="contact-bulk-toolbar",
+        cls="bulk-toolbar",
+    )
+
+
+def _contact_bulk_templates(contact_type: str) -> FT:
+    """Hidden <template> elements for contact bulk action context UI."""
+    from fasthtml.common import Template as _Tpl
+    merge_tpl = _Tpl(
+        Div(
+            P(f"Select the primary {contact_type} to keep. All others will be merged into it.",
+              cls="meta-value", style="margin-bottom:0.5rem;font-size:0.85rem;"),
+            Div(id="contact-merge-radio-list"),
+            Button("Confirm Merge", type="button", id="contact-merge-confirm-btn",
+                   cls="btn btn--primary btn--sm", style="margin-top:0.75rem;",
+                   disabled=True,
+                   onclick="contactMergeSubmit()"),
+            Script("""
+(function(){
+  var list = document.getElementById('contact-merge-radio-list');
+  if (!list) return;
+  var all = CelerpSelection.all();
+  Object.keys(all).forEach(function(id) {
+    var meta = all[id];
+    var label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0;font-size:0.85rem;cursor:pointer;';
+    var radio = document.createElement('input');
+    radio.type = 'radio'; radio.name = 'contact-merge-winner'; radio.value = id;
+    radio.addEventListener('change', function() {
+      document.getElementById('contact-merge-confirm-btn').disabled = false;
+    });
+    label.appendChild(radio);
+    label.appendChild(document.createTextNode((meta.name || id) + (meta.contact_type ? ' (' + meta.contact_type + ')' : '')));
+    list.appendChild(label);
+  });
+  window.contactMergeSubmit = function() {
+    var winner = document.querySelector('input[name="contact-merge-winner"]:checked');
+    if (!winner) return;
+    var sources = CelerpSelection.ids().filter(function(id) { return id !== winner.value; });
+    fetch('/crm/contacts/merge', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({target_contact_id: winner.value, source_contact_ids: sources})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.merged_into) {
+        window.location.href = '/contacts/' + d.merged_into;
+      } else {
+        var res = document.getElementById('bulk-action-result');
+        if (res) res.innerHTML = '<p class="flash flash--error">' + (d.detail || 'Merge failed') + '</p>';
+      }
+    }).catch(function(err) {
+      var res = document.getElementById('bulk-action-result');
+      if (res) res.innerHTML = '<p class="flash flash--error">Merge failed: ' + err.message + '</p>';
+    });
+  };
+  if (window.htmx) htmx.process(list.parentElement);
+})();
+"""),
+            cls="bulk-context",
+        ),
+        id="tpl-contact-merge",
+    )
+    return merge_tpl
+
+
 def _contacts_content(
     contact_type: str,
     contacts: list[dict],
@@ -606,7 +696,8 @@ def _contacts_content(
             currency=currency,
             sort_target="#contacts-content",
             show_row_menu=False,
-            show_checkboxes=False,
+            show_checkboxes=True,
+            selection_key="celerp_contact_selection",
             link_fn=link_fn,
             auto_hide_empty=False,
             edit_url_tpl="/contacts/{id}/field/{field}/edit",
@@ -638,7 +729,73 @@ def _contacts_page_shell(contact_type: str, contacts: list[dict], request: Reque
             A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary"),
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
+        _contacts_bulk_toolbar(contact_type),
         _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
+        Script(f"""
+(function(){{
+  function updateContactBulkToolbar(){{
+    var n = typeof CelerpSelection !== 'undefined' ? CelerpSelection.count() : 0;
+    var toolbar = document.getElementById('contact-bulk-toolbar');
+    var countEl = document.getElementById('contact-bulk-count');
+    var clearBtn = document.getElementById('contact-bulk-clear-btn');
+    if (countEl) countEl.textContent = n + ' selected';
+    if (toolbar) toolbar.classList.toggle('is-active', n > 0);
+    if (clearBtn) clearBtn.style.display = n > 0 ? '' : 'none';
+  }}
+  window.contactBulkChanged = function(action){{
+    var ctx = document.getElementById('contact-bulk-context');
+    if (ctx) ctx.innerHTML = '';
+    document.getElementById('bulk-action-result').innerHTML = '';
+    if (action === 'contact-export'){{
+      var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
+      if (!ids.length) return;
+      var qs = ids.map(function(id){{return 'selected=' + encodeURIComponent(id);}}).join('&');
+      window.location.href = '/contacts/{contact_type}s/export/csv?' + qs;
+      return;
+    }}
+    if (action === 'delete'){{
+      if (!confirm('Delete selected contacts? Contacts linked to open documents cannot be deleted.')) return;
+      var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
+      fetch('/crm/contacts/bulk/delete', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{contact_ids: ids}})
+      }}).then(function(r){{ return r.json(); }}).then(function(d){{
+        var res = document.getElementById('bulk-action-result');
+        if (d.deleted !== undefined){{
+          res.innerHTML = '<p class="flash flash--success">Deleted ' + d.deleted + ' contact(s).</p>';
+          setTimeout(function(){{ window.location.reload(); }}, 800);
+        }} else {{
+          res.innerHTML = '<p class="flash flash--error">' + (d.detail || 'Delete failed') + '</p>';
+        }}
+      }}).catch(function(err){{
+        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">Delete failed: ' + err.message + '</p>';
+      }});
+      return;
+    }}
+    if (action === 'contact-merge'){{
+      var tpl = document.getElementById('tpl-contact-merge');
+      if (!tpl || !ctx) return;
+      var clone = tpl.content.cloneNode(true);
+      ctx.appendChild(clone);
+      if (window.htmx) htmx.process(ctx);
+      return;
+    }}
+  }};
+  // Hook into CelerpSelection updates
+  document.body.addEventListener('htmx:afterSwap', function(e){{
+    if (e.detail && e.detail.target && e.detail.target.id === 'contacts-content'){{
+      if (typeof CelerpSelection !== 'undefined') CelerpSelection.syncCheckboxes();
+      updateContactBulkToolbar();
+    }}
+  }});
+  document.addEventListener('change', function(e){{
+    if (e.target && e.target.classList.contains('row-select')) updateContactBulkToolbar();
+  }});
+  document.body.addEventListener('celerpSelectionClear', updateContactBulkToolbar);
+  updateContactBulkToolbar();
+}})();
+"""),
         title=f"{label} - Celerp",
         nav_active=nav_key,
         request=request,
@@ -1745,11 +1902,17 @@ def setup_routes(app):
 
     @app.get("/contacts/customers/export/csv")
     async def customers_export_csv(request: Request):
-        return RedirectResponse("/crm/export/csv?contact_type=customer", status_code=302)
+        qs = request.query_params
+        selected_qs = "&".join(f"selected={v}" for v in qs.getlist("selected"))
+        base = "/crm/export/csv?contact_type=customer"
+        return RedirectResponse(base + ("&" + selected_qs if selected_qs else ""), status_code=302)
 
     @app.get("/contacts/vendors/export/csv")
     async def vendors_export_csv(request: Request):
-        return RedirectResponse("/crm/export/csv?contact_type=vendor", status_code=302)
+        qs = request.query_params
+        selected_qs = "&".join(f"selected={v}" for v in qs.getlist("selected"))
+        base = "/crm/export/csv?contact_type=vendor"
+        return RedirectResponse(base + ("&" + selected_qs if selected_qs else ""), status_code=302)
 
     # ── Backward compat: /crm redirects ──────────────────────────────────
 

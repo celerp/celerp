@@ -3485,6 +3485,32 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
+def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
+    """Bulk action toolbar for draft line items. Hidden until JS detects 1+ checked rows.
+    Print Labels option only appears when celerp-labels is installed (slot-driven, DRY)."""
+    from celerp.modules.slots import get as get_slot
+    labels_action = next(
+        (a for a in get_slot("bulk_action") if a.get("_module") == "celerp-labels"),
+        None,
+    )
+    options = [
+        Option("Action", value="", disabled=True, selected=True),
+        Option("Delete selected", value="li-delete"),
+        Option("Print selected", value="li-print"),
+    ]
+    if labels_action:
+        options.append(Option("Print Labels", value="mod:labels_print-bulk"))
+    return Div(
+        Span("0 rows selected", id="li-bulk-count", cls="bulk-count"),
+        Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
+               onchange="liActionChanged(this.value)"),
+        Div(id="li-bulk-context"),
+        id="li-bulk-toolbar",
+        cls="bulk-toolbar",
+        style="display:none",
+    )
+
+
 def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
@@ -3963,6 +3989,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 receive_as_cell = None
 
             cells = [
+                Td(Input(type="checkbox", cls="li-select", value=li_entity_id or ""), cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id)),
                 Td(_desc_input(li.get("description", "") or li.get("name", ""))),
             ]
@@ -4062,7 +4089,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if not rows:
             rows = [_li_empty_row()]
 
-        _line_headers = [Th(t("th.skuitem")), Th(t("th.description"))]
+        _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem")), Th(t("th.description"))]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th("Category"))
             _line_headers.append(Th("Type"))
@@ -4127,6 +4154,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _pl_bar,
                 cls="line-toolbar",
             ),
+            _li_bulk_toolbar(entity_id, is_list),
             Table(
                 Thead(Tr(*_line_headers)),
                 Tbody(*rows, id=line_body_id),
@@ -4648,6 +4676,54 @@ async function celerpCsvImport(input, entityId) {{
     }}
     input.value = '';
 }}
+/* ── Line-item bulk select ── */
+(function(){{
+  var table=document.querySelector('.doc-lines');
+  var toolbar=document.getElementById('li-bulk-toolbar');
+  var countEl=document.getElementById('li-bulk-count');
+  var sel=document.getElementById('li-bulk-select');
+  function _n(){{return table?table.querySelectorAll('tbody .li-select:checked').length:0;}}
+  function _update(){{
+    var n=_n();
+    if(countEl) countEl.textContent=n+' row'+(n===1?'':'s')+' selected';
+    if(toolbar) toolbar.style.display=n>0?'flex':'none';
+    if(sel&&n===0) sel.value='';
+  }}
+  if(table) table.addEventListener('change',function(e){{
+    if(e.target&&e.target.classList.contains('li-select')) _update();
+  }});
+  var sa=document.getElementById('li-select-all');
+  if(sa) sa.addEventListener('change',function(){{
+    if(table) table.querySelectorAll('tbody .li-select').forEach(function(cb){{cb.checked=sa.checked;}});
+    _update();
+  }});
+  window.liActionChanged=function(action){{
+    if(!action) return;
+    if(action==='li-delete'){{
+      if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
+      celerpUpdateTotals(); celerpAutoSave(); _update(); return;
+    }}
+    if(action==='li-print'){{
+      var hidden=[];
+      if(table) table.querySelectorAll('tbody tr').forEach(function(tr){{
+        var cb=tr.querySelector('.li-select');
+        if(cb&&!cb.checked){{tr.style.display='none';hidden.push(tr);}}
+      }});
+      document.body.classList.add('li-print-mode');
+      window.print();
+      document.body.classList.remove('li-print-mode');
+      hidden.forEach(function(tr){{tr.style.display='';}});
+      if(sel) sel.value=''; return;
+    }}
+    if(action.startsWith('mod:')){{
+      if(typeof CelerpSelection!=='undefined') CelerpSelection.clear();
+      if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
+        if(cb.value&&typeof CelerpSelection!=='undefined') CelerpSelection.add(cb.value,{{}});
+      }});
+      if(typeof bulkActionChanged==='function') bulkActionChanged(action);
+    }}
+  }};
+}})();
 """),
             cls="lines-section",
         )

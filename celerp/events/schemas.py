@@ -149,6 +149,9 @@ class CrmContactUpdated(BaseModel):
 
 class CrmContactMerged(BaseModel):
     source_contact_ids: list[str]
+    merged_people: list[dict] = Field(default_factory=list)
+    merged_addresses: list[dict] = Field(default_factory=list)
+    merged_tags: list[str] = Field(default_factory=list)
 
 
 class CrmContactTagged(BaseModel):

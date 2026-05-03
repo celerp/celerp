@@ -1704,3 +1704,16 @@ async def set_period_lock(token: str, lock_date: str | None) -> dict:
 async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post("/accounting/close-year", json={"fiscal_year_end": fiscal_year_end})).json()
+
+
+async def bulk_delete_contacts(token: str, contact_ids: list) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post("/crm/contacts/bulk/delete", json={"contact_ids": contact_ids})).json()
+
+
+async def merge_contacts(token: str, target_contact_id: str, source_contact_ids: list) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post("/crm/contacts/merge", json={
+            "target_contact_id": target_contact_id,
+            "source_contact_ids": source_contact_ids,
+        })).json()

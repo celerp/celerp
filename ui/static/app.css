@@ -966,7 +966,18 @@ a:hover { text-decoration: underline; }
   /* Keep branding visible in print */
   .doc-brand-footer { display: block !important; }
   .doc-brand-footer a { color: var(--c-text2) !important; opacity: 0.7 !important; }
+
+  /* Line-item selective print: hide unselected rows when in li-print-mode */
+  body.li-print-mode .doc-lines tbody tr { display: none !important; }
+  body.li-print-mode .doc-lines tbody tr:has(.li-select:checked) { display: table-row !important; }
+  /* Fallback for browsers without :has - rows hidden via JS inline style */
+
+  /* Always hide the bulk toolbar and checkboxes in print */
+  .li-bulk-toolbar, #li-bulk-toolbar, .li-checkbox-cell { display: none !important; }
 }
+
+/* Line item checkbox column */
+.li-checkbox-cell { width: 32px; text-align: center; }
 
 /* ─── Utility classes ─────────────────────────────────────────────────── */
 /* Spacing: margin */
