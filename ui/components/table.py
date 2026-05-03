@@ -978,14 +978,22 @@ function sendToTypeChanged(docType){
 
 
 def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str] | None = None) -> FT:
-    """Generic column manager dropdown. Toggles column visibility via localStorage.
+    """Generic column manager dropdown. Toggles column visibility and order via localStorage.
 
     Uses the same localStorage key as ``data_table`` (``celerp_cols_{entity_type}``),
     so visibility state is shared between the manager UI and the table's own JS.
+
+    Features:
+    - Checkbox toggle per column with immediate visibility apply
+    - Drag-and-drop reordering within the picker (source of truth for column order)
+    - Listens for ``celerp:col-reorder`` events fired by data_table header drag, keeping
+      the picker in sync when the user drags a table column header directly
+    - Reset to default button (clears all localStorage keys and reloads)
     """
     import json as _json
     selected = set(visible_cols) if visible_cols else {f["key"] for f in schema if f.get("show_in_table", True)}
     col_data = [{"key": f["key"], "label": f.get("label", f["key"])} for f in schema]
+    default_keys = _json.dumps([f["key"] for f in schema if f.get("show_in_table", True)])
 
     checkboxes = [
         Label(
@@ -1000,8 +1008,9 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
 
     _mgr_js = f"""
 (function(){{
-  var VIS_KEY='celerp_cols_{entity_type}',ORDER_KEY='celerp_col_order_{entity_type}';
+  var VIS_KEY='celerp_cols_{entity_type}',ORDER_KEY='celerp_col_order_{entity_type}',WIDTH_KEY='celerp_col_widths_{entity_type}';
   var ALL={_json.dumps(col_data)};
+  var DEFAULTS={default_keys};
   var btn=document.getElementById('col-mgr-btn'),menu=document.getElementById('col-mgr-menu');
   if(!btn||!menu) return;
   function loadVis(){{try{{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}}catch(e){{return null}}}}
@@ -1013,12 +1022,12 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     var ths=Array.from(t.querySelectorAll('thead th[data-key]'));
     var rows=Array.from(t.querySelectorAll('tbody tr.data-row'));
     ths.forEach(function(th){{
-      var k=th.dataset.key,ci=Array.from(th.parentNode.children).indexOf(th),show=prefs[k]!==false;
+      var k=th.dataset.key,show=prefs[k]!==false;
       th.style.display=show?'':'none';
-      rows.forEach(function(tr){{var td=tr.cells[ci];if(td)td.style.display=show?'':'none';}});
+      rows.forEach(function(tr){{var td=tr.querySelector('[data-col="'+k+'"]');if(td)td.style.display=show?'':'none';}});
     }});
   }}
-  function applyOrder(order){{
+  function applyOrderToTable(order){{
     if(!order||!order.length)return;
     var t=document.getElementById('data-table');if(!t)return;
     var htr=t.querySelector('thead tr');if(!htr)return;
@@ -1026,12 +1035,20 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     order.forEach(function(k){{var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);}});
     var allThs=Array.from(htr.querySelectorAll('th[data-key]'));
     t.querySelectorAll('tbody tr.data-row').forEach(function(tr){{
-      var cells=Array.from(tr.children);
       var cbTd=tr.querySelector('.col-checkbox'),aTd=tr.querySelector('.col-actions');
-      var data=allThs.map(function(h){{return cells.find(function(td){{return td.dataset.col===h.dataset.key}});}}).filter(Boolean);
+      var data=allThs.map(function(h){{return tr.querySelector('[data-col="'+h.dataset.key+'"]');}}).filter(Boolean);
       var out=[];if(cbTd)out.push(cbTd);out=out.concat(data);if(aTd)out.push(aTd);
       out.forEach(function(td){{tr.appendChild(td);}});
     }});
+  }}
+  function applyOrderToPicker(order){{
+    if(!order||!order.length)return;
+    var labels=menu.querySelectorAll('label[data-col]');if(!labels.length)return;
+    var parent=labels[0].parentNode;
+    order.forEach(function(key){{var lbl=menu.querySelector('label[data-col="'+key+'"]');if(lbl)parent.appendChild(lbl);}});
+  }}
+  function pickerOrder(){{
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){{return l.dataset.col;}});
   }}
   function syncCB(){{var p=loadVis()||{{}};menu.querySelectorAll('input[type=checkbox]').forEach(function(c){{c.checked=p[c.value]!==false;}});}}
   btn.addEventListener('click',function(e){{e.stopPropagation();var o=menu.style.display!=='none';menu.style.display=o?'none':'';if(!o)syncCB();}});
@@ -1039,8 +1056,9 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
   menu.addEventListener('change',function(e){{
     if(e.target.type!=='checkbox')return;
     var k=e.target.value,p=loadVis()||{{}};
-    if(!Object.keys(p).length)ALL.forEach(function(c){{p[c.key]={_json.dumps(sorted(selected))}.indexOf(c.key)!==-1;}});
+    if(!Object.keys(p).length)ALL.forEach(function(c){{p[c.key]=DEFAULTS.indexOf(c.key)!==-1;}});
     p[k]=e.target.checked;saveVis(p);applyVis(p);
+    applyOrderToTable(pickerOrder());
   }});
   var ds=null;
   menu.querySelectorAll('label[draggable]').forEach(function(l){{
@@ -1051,18 +1069,43 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
       e.preventDefault();if(!ds||ds===l)return;
       var par=l.parentNode,sn=ds.nextSibling;par.insertBefore(ds,l);if(sn)par.insertBefore(l,sn);else par.appendChild(l);
       ds.style.opacity='';
-      var no=Array.from(menu.querySelectorAll('label[data-col]')).map(function(x){{return x.dataset.col;}});
-      saveOrder(no);applyOrder(no);
+      var no=pickerOrder();saveOrder(no);applyOrderToTable(no);
     }});
   }});
+  // Sync picker when table header is dragged (data_table fires this event)
+  document.addEventListener('celerp:col-reorder',function(e){{
+    if(!e.detail||!e.detail.order)return;
+    applyOrderToPicker(e.detail.order);
+    saveOrder(e.detail.order);
+  }});
   var sv=loadVis();if(sv)applyVis(sv);
-  var so=loadOrder();if(so)applyOrder(so);
+  var so=loadOrder();
+  if(so){{applyOrderToPicker(so);applyOrderToTable(so);}}
   menu.style.display='none';
 }})();
 """
+    reset_onclick = (
+        f"localStorage.removeItem('celerp_cols_{entity_type}');"
+        f"localStorage.removeItem('celerp_col_order_{entity_type}');"
+        f"localStorage.removeItem('celerp_col_widths_{entity_type}');"
+        f"location.reload();"
+    )
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
-        Div(*checkboxes, cls="column-menu", id="col-mgr-menu", style="display:none"),
+        Div(
+            *checkboxes,
+            Button(
+                t("btn.reset_columns"),
+                id="col-mgr-reset",
+                cls="btn btn--sm btn--ghost col-mgr-reset-btn",
+                type="button",
+                onclick=reset_onclick,
+                title=t("btn.reset_columns_title"),
+            ),
+            cls="column-menu",
+            id="col-mgr-menu",
+            style="display:none",
+        ),
         Script(_mgr_js),
         cls="column-manager",
     )

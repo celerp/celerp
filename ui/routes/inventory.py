@@ -2534,10 +2534,11 @@ def _print_all_labels_link(p: dict, total: int) -> FT | None:
     return A(label, href=href, target="_blank", cls="btn btn--ghost btn--sm print-all-labels-btn")
 
 
+def _print_label_dropdown(entity_id: str) -> FT:
     """Print label icon button with HTMX-loaded template dropdown."""
     dropdown_id = f"print-label-dd-{entity_id.replace(':', '-')}"
     return Div(
-        Button(t("btn.u0001f5a8"),  # printer icon
+        Button("\U0001f5a8",  # printer icon
             cls="btn btn--secondary btn--icon",
             title="Print label",
             onclick=f"var dd=document.getElementById('{dropdown_id}');dd.classList.toggle('open');",

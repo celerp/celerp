@@ -764,7 +764,7 @@ def _contacts_page_shell(contact_type: str, contacts: list[dict], request: Reque
         var res = document.getElementById('bulk-action-result');
         if (d.deleted !== undefined){{
           res.innerHTML = '<p class="flash flash--success">Deleted ' + d.deleted + ' contact(s).</p>';
-          setTimeout(function(){{ window.location.reload(); }}, 800);
+          setTimeout(function(){{ sessionStorage.removeItem('celerp_contact_selection'); window.location.reload(); }}, 800);
         }} else {{
           res.innerHTML = '<p class="flash flash--error">' + (d.detail || 'Delete failed') + '</p>';
         }}
@@ -1241,6 +1241,7 @@ def setup_routes(app):
       body: JSON.stringify({{contact_ids: ['{cid}']}})
     }}).then(function(r){{ return r.json(); }}).then(function(d){{
       if (d.deleted !== undefined) {{
+        sessionStorage.removeItem('celerp_contact_selection');
         window.location.href = '{back_href}';
       }} else {{
         alert(d.detail || 'Delete failed.');
