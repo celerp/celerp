@@ -1935,7 +1935,12 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         q = request.query_params.get("q", "")
-        params = {"q": q} if q else {}
+        selected = request.query_params.getlist("selected")
+        params: dict = {}
+        if q:
+            params["q"] = q
+        if selected:
+            params["selected"] = selected
         try:
             data = await api.export_contacts_csv(token, params)
         except APIError as e:
@@ -2445,6 +2450,38 @@ def setup_routes(app):
         return _R("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{memo_id}"})
 
     # ── Backward compat: /crm/{contact_id:path} → /contacts/{contact_id} ──
+
+    @app.post("/crm/contacts/bulk/delete")
+    async def crm_bulk_delete_contacts(request: Request):
+        """Proxy: browser JS -> UI server -> backend API."""
+        from starlette.responses import JSONResponse
+        token = _token(request)
+        if not token:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+            result = await api.bulk_delete_contacts(token, body.get("contact_ids", []))
+            return JSONResponse(result)
+        except APIError as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
+
+    @app.post("/crm/contacts/merge")
+    async def crm_merge_contacts(request: Request):
+        """Proxy: browser JS -> UI server -> backend API."""
+        from starlette.responses import JSONResponse
+        token = _token(request)
+        if not token:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+            result = await api.merge_contacts(
+                token,
+                target_contact_id=body.get("target_contact_id", ""),
+                source_contact_ids=body.get("source_contact_ids", []),
+            )
+            return JSONResponse(result)
+        except APIError as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
 
     @app.get("/crm/{contact_id}")
     async def crm_detail_redirect(contact_id: str):
