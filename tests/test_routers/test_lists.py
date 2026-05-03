@@ -756,3 +756,40 @@ async def test_list_totals_correct_after_patch_with_per_line_tax(client):
     # Total must still be 220 - not inflated by treating 20 as a 20% rate
     assert detail2["total"] == 220, f"total wrong after patch: {detail2}"
     assert detail2["subtotal"] == 200, f"subtotal wrong after patch: {detail2}"
+
+
+# ---------------------------------------------------------------------------
+# Revert sent list to draft
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_list_revert_sent_to_draft(client):
+    """Sent list can be reverted to draft."""
+    token = await _register(client)
+    eid = await _create_list(client, token)
+    # Send it
+    r = await client.post(f"/lists/{eid}/send", headers=_h(token))
+    assert r.status_code == 200
+    assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["status"] == "sent"
+    # Revert
+    r = await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={"reason": "test"})
+    assert r.status_code == 200, r.text
+    detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+    assert detail["status"] == "draft"
+
+
+@pytest.mark.anyio
+async def test_list_revert_only_from_sent(client):
+    """Reverting a draft or completed list returns 409."""
+    token = await _register(client)
+    eid = await _create_list(client, token)
+    # Draft - cannot revert
+    r = await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})
+    assert r.status_code == 409
+
+    # Complete the list then try to revert (completed != sent)
+    await client.post(f"/lists/{eid}/send", headers=_h(token))
+    await client.post(f"/lists/{eid}/accept", headers=_h(token))
+    await client.post(f"/lists/{eid}/complete", headers=_h(token))
+    r = await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})
+    assert r.status_code == 409

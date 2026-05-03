@@ -2188,6 +2188,27 @@ async def void_list(
     return {"event_id": entry.id}
 
 
+@lists_router.post("/{entity_id}/revert-to-draft")
+async def revert_list_to_draft(
+    entity_id: str,
+    payload: DocRevertBody,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_list(session, company_id, entity_id)
+    if row.state.get("status") != "sent":
+        raise HTTPException(status_code=409, detail="Only sent lists can be reverted to draft")
+    event_data: dict = {"reverted_by": str(user.id), "previous_status": "sent"}
+    if payload.reason:
+        event_data["reason"] = payload.reason
+    entry = await _emit_list(session, company_id, entity_id, "list.patched",
+                             {"status": "draft", **event_data}, user)
+    await session.commit()
+    return {"event_id": entry.id}
+
+
 @lists_router.delete("/{entity_id}")
 async def delete_list(
     entity_id: str,

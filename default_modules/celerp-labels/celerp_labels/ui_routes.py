@@ -1481,6 +1481,37 @@ def setup_ui_routes(app) -> None:
         templates = await _seed_presets_if_empty(request)
         return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 
+    @app.get("/labels/print-doc/{doc_id}")
+    async def labels_print_doc(request: Request, doc_id: str):
+        """Print labels for all line items in a finalized/sent doc or list.
+
+        Fetches the doc (or list) by id, extracts item entity_ids from line_items,
+        and opens the bulk preview page. Opens in a new tab via the action bar button.
+        Query param ``list=1`` switches to the lists API endpoint.
+        """
+        if not _token(request):
+            return RedirectResponse("/login", status_code=302)
+        token = _token(request)
+        is_list = request.query_params.get("list") == "1"
+        entity_ids: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                endpoint = f"{_api_base(request)}/lists/{doc_id}" if is_list else f"{_api_base(request)}/docs/{doc_id}"
+                r = await c.get(endpoint, headers={"Authorization": f"Bearer {token}"})
+                if r.status_code == 200:
+                    doc = r.json()
+                    for li in doc.get("line_items") or []:
+                        eid = li.get("entity_id") or li.get("item_entity_id")
+                        if eid:
+                            entity_ids.append(eid)
+        except Exception:
+            pass
+        redirect = "/lists" if is_list else "/docs"
+        if not entity_ids:
+            return RedirectResponse(redirect, status_code=302)
+        templates = await _seed_presets_if_empty(request)
+        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+
     @app.get("/labels/print-list")
     async def labels_print_list(request: Request):
         """Print-all-labels for the current filtered inventory view.

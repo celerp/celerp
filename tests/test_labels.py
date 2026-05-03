@@ -697,3 +697,14 @@ def test_label_sheet_no_template_uses_default_dims():
     html = _printable_label_sheet([{"name": "Item"}], None).body.decode()
     assert "width: 40.0mm" in html
     assert "height: 30.0mm" in html
+
+
+@pytest.mark.asyncio
+async def test_labels_print_doc_ui_route_registered(client: AsyncClient):
+    """GET /labels/print-doc/{doc_id} must be registered in the UI app."""
+    from ui.app import app as _ui_app
+    routes = [getattr(r, "path", "") for r in _ui_app.routes]
+    assert any("/labels/print-doc/{doc_id}" in p for p in routes), (
+        f"GET /labels/print-doc/{{doc_id}} not registered in UI app. "
+        f"Registered: {[p for p in routes if 'label' in p.lower()]}"
+    )

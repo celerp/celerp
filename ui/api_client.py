@@ -528,6 +528,11 @@ async def revert_doc_to_draft(token: str, entity_id: str, reason: str | None = N
         return _raise(await c.post(f"/docs/{entity_id}/revert-to-draft", json={"reason": reason})).json()
 
 
+async def revert_list_to_draft(token: str, entity_id: str, reason: str | None = None) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/revert-to-draft", json={"reason": reason})).json()
+
+
 async def unvoid_doc(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/unvoid", json={})).json()

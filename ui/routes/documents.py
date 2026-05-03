@@ -2946,6 +2946,9 @@ celerpUpdateBulkAlloc();
             elif action == "void":
                 reason = str(form.get("reason", "")).strip() or None
                 await api.void_list(token, entity_id, reason)
+            elif action == "revert_to_draft":
+                reason = str(form.get("reason", "")).strip() or None
+                await api.revert_list_to_draft(token, entity_id, reason)
             elif action == "delete":
                 await api.delete_list(token, entity_id)
                 list_type = str(form.get("list_type", "")).strip() or "quotation"
@@ -3746,6 +3749,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
                    onclick="document.getElementById('csv-import-input').click()"),
         )
+    # Print Labels button — non-draft docs only, when celerp-labels is installed
+    if not is_draft:
+        from celerp.modules.slots import get as _get_slot_labels
+        _labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels("bulk_action"))
+        if _labels_active and line_items:
+            _labels_url = f"/labels/print-doc/{entity_id}{'?list=1' if is_list else ''}"
+            action_btns_print.append(
+                A("🏷 Labels", href=_labels_url, target="_blank", cls="btn btn--secondary",
+                  title="Print labels for all line items in this document"),
+            )
     action_btns_print.append(Span("", id="share-result"))
     action_btns_print.append(Span("", id="action-error"))
 
