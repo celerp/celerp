@@ -106,13 +106,19 @@ async def _inventory_content(
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
     extra_params = urlencode(_base_state(p))
+    total_items = valuation.get("item_count", 0)
+    print_all_link = _print_all_labels_link(p, total_items)
 
     return Div(
         _category_tabs(category_counts, p),
         _valuation_bar(valuation, currency, lang),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p),
         _bulk_toolbar(locations),
-        Div(_column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open), cls="column-manager-row"),
+        Div(
+            _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
+            print_all_link if print_all_link else "",
+            cls="column-manager-row",
+        ),
         data_table(
             eff_schema,
             items,
@@ -2500,7 +2506,34 @@ def _resolve_field_def(
     return f_def, f_def.get("type", "text"), f_def.get("options") or None, allow_custom
 
 
-def _print_label_dropdown(entity_id: str) -> FT:
+def _print_all_labels_link(p: dict, total: int) -> FT | None:
+    """Return a 'Print all labels (N)' link for the column-manager-row when labels module is loaded.
+
+    Only rendered when the celerp-labels bulk_action slot is registered.
+    Passes exact current filter state (q, status, category, sort, dir) as GET params.
+    Capped at 100 items; shows warning count when total exceeds cap.
+    Returns None when labels module is not loaded.
+    """
+    from celerp.modules.slots import get as get_slot
+    bulk_actions = get_slot("bulk_action")
+    labels_action = next((a for a in bulk_actions if a.get("_module") == "celerp-labels"), None)
+    if not labels_action:
+        return None
+
+    _LABEL_CAP = 100
+    count = min(total, _LABEL_CAP)
+    label = t("btn.print_all_labels_n").format(n=count) if count < total else t("btn.print_all_labels_n").format(n=count)
+    if total > _LABEL_CAP:
+        label = f"🖨 {t('btn.print_labels')} (first {_LABEL_CAP})"
+    else:
+        label = f"🖨 {t('btn.print_labels')} ({count})"
+
+    qs_params = {k: v for k, v in _base_state(p, include_page=False).items()
+                 if k in ("q", "status", "category", "sort", "dir") and v}
+    href = "/labels/print-list" + (f"?{urlencode(qs_params)}" if qs_params else "")
+    return A(label, href=href, target="_blank", cls="btn btn--ghost btn--sm print-all-labels-btn")
+
+
     """Print label icon button with HTMX-loaded template dropdown."""
     dropdown_id = f"print-label-dd-{entity_id.replace(':', '-')}"
     return Div(

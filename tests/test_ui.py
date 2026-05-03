@@ -10436,6 +10436,86 @@ class TestInventoryUXFixes:
         finally:
             clear_slots()
 
+    # ── Print-all-labels list route ───────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_print_list_redirects_on_empty_result(self, ui_client):
+        """GET /labels/print-list with no matching items redirects to /inventory."""
+        with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
+            mock_resp = AsyncMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"items": []}
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock(get=AsyncMock(return_value=mock_resp)))
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            r = await ui_client.get("/labels/print-list", cookies=_authed(), follow_redirects=False)
+        assert r.status_code == 302
+        assert "/inventory" in r.headers["location"]
+
+    @pytest.mark.asyncio
+    async def test_print_list_passes_filter_params_to_api(self, ui_client):
+        """GET /labels/print-list forwards q/status/category to the items API."""
+        captured_params = {}
+
+        async def fake_get(url, params=None, headers=None, **kw):
+            captured_params.update(params or {})
+            mock_resp = AsyncMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"items": [{"entity_id": "gc:abc"}]}
+            return mock_resp
+
+        with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.get = fake_get
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            # When one item is found but no templates, it still redirects (no templates = redirect)
+            r = await ui_client.get(
+                "/labels/print-list?q=ruby&status=available&category=gemstones",
+                cookies=_authed(),
+                follow_redirects=False,
+            )
+        # Params were forwarded to the API
+        assert captured_params.get("q") == "ruby"
+        assert captured_params.get("status") == "available"
+        assert captured_params.get("category") == "gemstones"
+        assert int(captured_params.get("limit", 0)) <= 100
+
+    @pytest.mark.asyncio
+    async def test_print_all_labels_link_appears_when_labels_loaded(self, ui_client):
+        """'Print all labels' link appears in inventory toolbar when labels module is loaded."""
+        from celerp.modules.slots import register as register_slot, clear as clear_slots
+        register_slot("bulk_action", {
+            "label": "Print Labels",
+            "form_action": "/labels/print-bulk",
+            "action_type": "navigate",
+            "_module": "celerp-labels",
+        })
+        try:
+            with (
+                patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+                patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+                patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+                patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            ):
+                r = await ui_client.get("/inventory", cookies=_authed())
+            assert r.status_code == 200
+            assert "/labels/print-list" in r.text
+        finally:
+            clear_slots()
+
+    @pytest.mark.asyncio
+    async def test_print_all_labels_link_absent_without_labels_module(self, ui_client):
+        """'Print all labels' link does NOT appear when labels module is not loaded."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        assert "/labels/print-list" not in r.text
+
 
 # ── AI Page Tests ─────────────────────────────────────────────────────────────
 
