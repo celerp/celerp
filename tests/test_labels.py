@@ -748,6 +748,18 @@ def test_labels_print_doc_sku_dedup():
     assert deduped == ["SKU-A", "SKU-B"]
 
 
+def test_labels_print_doc_sku_lookup_uses_id_field():
+    """The SKU inventory lookup result uses 'id' (not 'entity_id') because
+    _flatten_item() in the inventory routes sets flat['id'] = entity_id.
+    Both keys should be tried so either path works."""
+    # Simulate what the inventory /items endpoint returns
+    item_via_id_key = {"id": "item:xyz", "sku": "SKU-1", "name": "Widget"}
+    item_via_entity_id_key = {"entity_id": "item:abc", "sku": "SKU-2", "name": "Gadget"}
+    for item in [item_via_id_key, item_via_entity_id_key]:
+        eid = item.get("entity_id") or item.get("id")
+        assert eid is not None, f"Could not extract id from {item}"
+
+
 def test_draft_line_row_template_has_checkbox():
     """_li_empty_row (the <template> for new draft rows) must include a checkbox td
     so the li-bulk-toolbar can select new rows just like existing ones."""

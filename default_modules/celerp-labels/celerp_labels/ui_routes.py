@@ -1526,9 +1526,10 @@ def setup_ui_routes(app) -> None:
                             )
                             if sr.status_code == 200:
                                 items = sr.json().get("items", [])
-                                if items and items[0].get("entity_id"):
-                                    eid = items[0]["entity_id"]
-                                    if eid not in seen:
+                                if items:
+                                    # list_items uses "id", single item fetch uses "entity_id"
+                                    eid = items[0].get("entity_id") or items[0].get("id")
+                                    if eid and eid not in seen:
                                         entity_ids.append(eid)
                                         seen.add(eid)
                             else:
