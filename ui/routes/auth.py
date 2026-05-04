@@ -484,7 +484,7 @@ def _direct_connection_gate(email: str, password: str) -> FT:
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
-            H2("Direct connections are one at a time",
+            H2(t("page.direct_connections_are_one_at_a_time"),
                style="font-size:18px;"),
             P(
                 "Direct connections can only serve one authenticated user at a time. "
@@ -495,13 +495,13 @@ def _direct_connection_gate(email: str, password: str) -> FT:
                 style="text-align:left;",
             ),
             Div(
-                A("Get Celerp Cloud - USD $29/mo",
+                A(t("auth.get_celerp_cloud_usd_29mo"),
                   href=subscribe_url, target="_blank",
                   cls="btn btn--primary"),
                 Form(
                     Input(type="hidden", name="email", value=email),
                     Input(type="hidden", name="password", value=password),
-                    Button("Continue (sign out the other user)",
+                    Button(t("btn.continue_sign_out_the_other_user"),
                            type="submit",
                            cls="btn btn--secondary"),
                     action="/login-force",

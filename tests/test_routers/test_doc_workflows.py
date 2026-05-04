@@ -1636,3 +1636,85 @@ async def test_invoice_multiple_revert_cycles(client, session):
         assert int(state.get("revert_count", 0)) == cycle, (
             f"revert_count should be {cycle} after cycle {cycle}, got {state.get('revert_count')}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Status protection tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_patch_doc_status_rejected(client, session):
+    """PATCH /docs/{id} with status in fields_changed must return 422."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+    r = await client.patch(
+        f"/docs/{inv}",
+        headers=h,
+        json={"fields_changed": {"status": {"old": "draft", "new": "paid"}}},
+    )
+    assert r.status_code == 422, r.text
+    assert "status" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patch_doc_entity_type_rejected(client, session):
+    """PATCH /docs/{id} with entity_type in fields_changed must return 422."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+    r = await client.patch(
+        f"/docs/{inv}",
+        headers=h,
+        json={"fields_changed": {"entity_type": {"old": "doc", "new": "malicious"}}},
+    )
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_patch_doc_status_not_applied_via_projection(client, session):
+    """Projection ignores status even if somehow smuggled into fields_changed; safe data fields still apply."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+
+    # Confirm draft
+    state_before = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state_before["status"] == "draft"
+
+    # Patch a safe field to confirm the normal path still works
+    r = await client.patch(
+        f"/docs/{inv}",
+        headers=h,
+        json={"fields_changed": {"reference": {"old": None, "new": "TEST-REF"}}},
+    )
+    assert r.status_code == 200, r.text
+
+    state_after = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state_after["status"] == "draft"  # unchanged
+    assert state_after["reference"] == "TEST-REF"  # data field updated
+
+
+@pytest.mark.asyncio
+async def test_status_only_reachable_via_lifecycle(client, session):
+    """An invoice reaches 'paid' only after finalize + record_payment, never via patch."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
+    h = _h(token)
+
+    # Attempt direct patch to paid - must be blocked
+    r = await client.patch(
+        f"/docs/{inv}",
+        headers=h,
+        json={"fields_changed": {"status": {"old": "draft", "new": "paid"}}},
+    )
+    assert r.status_code == 422, r.text
+
+    # Status must still be draft
+    assert (await client.get(f"/docs/{inv}", headers=h)).json()["status"] == "draft"
+
+    # Now go through legitimate lifecycle
+    await client.post(f"/docs/{inv}/finalize", headers=h)
+    state = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state["status"] == "final"
+    # (full payment flow tested in test_payments.py)

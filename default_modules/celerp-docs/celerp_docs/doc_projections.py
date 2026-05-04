@@ -46,8 +46,10 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
     elif event_type == "doc.updated":
+        _PATCH_PROTECTED = {"status", "entity_type", "company_id"}
         for field, change in data["fields_changed"].items():
-            current[field] = change.get("new")
+            if field not in _PATCH_PROTECTED:
+                current[field] = change.get("new")
         # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
         # based on how much has already been paid - never let outstanding go negative.
         if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):

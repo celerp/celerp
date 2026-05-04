@@ -1614,8 +1614,7 @@ def setup_routes(app):
         display_url = public_url or t("settings.tab_cloud_relay")
         return Div(
             H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
-            P(
-                "This instance was previously connected to ",
+            P(t("settings.this_instance_was_previously_connected_to"),
                 B(display_url),
                 ". Reconnect to the same subscription?",
                 cls="settings-hint",
@@ -1631,8 +1630,7 @@ def setup_routes(app):
                     hx_target="#cloud-relay-tab",
                     hx_swap="outerHTML",
                 ),
-                Button(
-                    "Use a different subscription",
+                Button(t("btn.use_a_different_subscription"),
                     cls="btn btn--outline",
                     style="margin-left:8px;",
                     hx_post="/settings/cloud-disconnect",
@@ -1711,16 +1709,14 @@ def setup_routes(app):
         form_content = Form(
             Input(type="hidden", name="claim_email", value=email),
             *([] if otp_code is None else [Input(type="hidden", name="otp_code", value=otp_code)]),
-            P(
-                "Multiple subscriptions are associated with that email. Choose which one to connect:",
+            P(t("settings.multiple_subscriptions_are_associated_with_that_em"),
                 cls="settings-hint",
                 style="margin:0 0 12px;",
             ),
             Div(*radio_rows, style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;"),
             Div(
                 Button(t("btn.connect_to_cloud"), type="submit", cls="btn btn--sm btn--primary"),
-                Button(
-                    "← Back",
+                Button(t("btn.back_to_settings"),
                     type="button",
                     cls="btn btn--sm btn--outline",
                     hx_get="/settings/cloud-connect",
@@ -1744,7 +1740,7 @@ def setup_routes(app):
     def _cloud_claim_otp_form(email: str, iid: str, error: str | None = None) -> FT:
         """Render the OTP entry step after sending a verification code."""
         children: list = [
-            H3("Check your email", cls="settings-section-title"),
+            H3(t("page.check_your_email"), cls="settings-section-title"),
             P(
                 f"We sent a 6-digit code to {email}. Enter it below:",
                 cls="settings-hint",
@@ -1770,7 +1766,7 @@ def setup_routes(app):
                         cls="input input--sm",
                         style="width:120px;letter-spacing:4px;font-size:1.1em;",
                     ),
-                    Button("Verify & Connect", type="submit", cls="btn btn--sm btn--primary", style="margin-left:8px;"),
+                    Button(t("btn.verify_connect"), type="submit", cls="btn btn--sm btn--primary", style="margin-left:8px;"),
                     style="display:flex;align-items:center;",
                 ),
                 hx_post="/settings/cloud-claim",
@@ -1779,8 +1775,7 @@ def setup_routes(app):
                 style="margin-bottom:12px;",
             ),
             Div(
-                Button(
-                    "Resend code",
+                Button(t("btn.resend_code"),
                     type="button",
                     cls="btn btn--sm btn--outline",
                     hx_post="/settings/cloud-send-otp",
@@ -1788,8 +1783,7 @@ def setup_routes(app):
                     hx_swap="outerHTML",
                     hx_vals=f'{{"claim_email": "{email}"}}',
                 ),
-                Button(
-                    "← Back",
+                Button(t("btn.back_to_settings"),
                     type="button",
                     cls="btn btn--sm btn--outline",
                     hx_get="/settings/cloud-connect",

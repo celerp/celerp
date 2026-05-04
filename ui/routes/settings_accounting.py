@@ -397,7 +397,7 @@ def setup_routes(app):
                                         *[Option(c, value=c, selected=(c == currency)) for c in sorted(_ISO_CURRENCIES)],
                                         name="currency", cls="cell-input cell-input--select", required=True,
                                     ),
-                                    P("Using a foreign-currency account? The Multi-Currency Module handles FX gain/loss journal entries automatically.", cls="form-hint"),
+                                    P(t("acct.using_a_foreigncurrency_account_the_multicurrency"), cls="form-hint"),
                                 ),
                             ),
                             Tr(

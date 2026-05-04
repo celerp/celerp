@@ -513,7 +513,7 @@ def _contact_ledger_table(ledger: list[dict]) -> FT:
 def _contacts_bulk_toolbar(contact_type: str) -> FT:
     """Sticky bulk action toolbar for the contacts list. Hidden until rows are selected."""
     return Div(
-        Span("0 selected", id="contact-bulk-count", cls="bulk-count"),
+        Span(t("doc.0_selected"), id="contact-bulk-count", cls="bulk-count"),
         Button(t("btn.clear"), id="contact-bulk-clear-btn", cls="btn btn--ghost btn--sm",
                style="display:none",
                onclick=(
@@ -548,7 +548,7 @@ def _contact_bulk_templates(contact_type: str) -> FT:
             P(f"Select the primary {contact_type} to keep. All others will be merged into it.",
               cls="meta-value", style="margin-bottom:0.5rem;font-size:0.85rem;"),
             Div(id="contact-merge-radio-list"),
-            Button("Confirm Merge", type="button", id="contact-merge-confirm-btn",
+            Button(t("btn.confirm_merge"), type="button", id="contact-merge-confirm-btn",
                    cls="btn btn--primary btn--sm", style="margin-top:0.75rem;",
                    disabled=True,
                    onclick="contactMergeSubmit()"),
@@ -1197,9 +1197,9 @@ def setup_routes(app):
 """)
 
         action_bar = Div(
-            Button("Delete Contact", id="contact-delete-btn", cls="btn btn--danger",
+            Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
                    type="button", style="margin-left:auto;") if not is_deleted else
-            Span("(deleted)", cls="status-badge status-badge--void"),
+            Span(t("label.deleted"), cls="status-badge status-badge--void"),
             cls="action-bar",
             style="display:flex; align-items:center; padding: 0.5rem 0;",
         )

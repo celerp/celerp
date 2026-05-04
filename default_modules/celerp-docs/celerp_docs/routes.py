@@ -616,6 +616,13 @@ async def create_doc(
 
 @router.patch("/{entity_id}")
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _PROTECTED_FIELDS = {"status", "entity_type", "company_id"}
+    protected_attempted = _PROTECTED_FIELDS & set(payload.fields_changed)
+    if protected_attempted:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Fields {sorted(protected_attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
+        )
     row = await _get_doc(session, company_id, entity_id)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:

@@ -586,17 +586,17 @@ def _topbar(companies: list[dict], lang: str = "en") -> FT:
                     Div(
                         Span("", cls="update-card__version"),
                         Span("", cls="update-card__state"),
-                        A("Releases", href="https://github.com/celerp/celerp/releases",
+                        A(t("msg.releases"), href="https://github.com/celerp/celerp/releases",
                           target="_blank", rel="noopener noreferrer", cls="update-card__releases-link"),
                         cls="update-card__info",
                     ),
                     Div(
-                        Button("Check for updates", cls="update-card__check-btn", type="button"),
-                        Button("Restart to install", cls="update-card__restart-btn", type="button",
+                        Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
+                        Button(t("btn.restart_to_install"), cls="update-card__restart-btn", type="button",
                                style="display:none;"),
                         Div(
                             Code("pip install --upgrade celerp", cls="update-card__cmd"),
-                            Button("Copy", cls="update-card__copy-btn", type="button"),
+                            Button(t("btn.copy"), cls="update-card__copy-btn", type="button"),
                             cls="update-card__upgrade-cmd",
                             style="display:none;",
                         ),

@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from fasthtml.common import *
 from starlette.requests import Request
 
-from ui.i18n import t
+from ui.i18n import t, get_lang
 from ui.routes.settings import _check_role, _token
 
 from celerp.connectors.base import ConnectorCategory, SyncDirection, SyncFrequency
@@ -678,7 +678,7 @@ def setup_routes(app):
         if not RELAY_URL.startswith("https://"):
             if not os.environ.get("CELERP_ALLOW_HTTP_RELAY"):
                 return Div(
-                    Span("Relay URL must use HTTPS. Set CELERP_ALLOW_HTTP_RELAY=1 for development.",
+                    Span(t("settings.relay_url_must_use_https_set_celerpallowhttprelay1"),
                          cls="flash flash--warning"),
                     id=f"connector-card-{platform}",
                     cls="connector-card",

@@ -68,7 +68,7 @@ def notes_tab(
         Div(
             Textarea(
                 name="note",
-                placeholder=t("label.add_note_placeholder") if hasattr(t, "__call__") else "Add a note...",
+                placeholder=t("label.add_note_placeholder"),
                 rows="3",
                 cls="form-input",
                 style="width:100%",

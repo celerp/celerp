@@ -2006,14 +2006,15 @@ class TestDocumentPolish:
         assert b"badge--invoice" in r.content
 
     @pytest.mark.asyncio
-    async def test_doc_status_field_edit_returns_select(self, ui_client):
-        """Editing status field on doc detail → <select> not free text input."""
+    async def test_doc_status_field_edit_returns_readonly_badge(self, ui_client):
+        """Status field is a state-machine field; /edit endpoint must return a read-only badge, not a select."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
             r = await ui_client.get("/docs/d:1/field/status/edit", cookies=_authed())
         assert r.status_code == 200
-        assert b"<select" in r.content
-        assert b"paid" in r.content
-        assert b"awaiting_payment" in r.content
+        # Must NOT contain a select (that would allow direct status manipulation)
+        assert b"<select" not in r.content
+        # Must render the status badge
+        assert b"badge" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_table_awaiting_payment_status_uses_badge_class(self, ui_client):
