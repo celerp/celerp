@@ -28,7 +28,7 @@ import re
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from ui.routes.csv_import import _load_csv, MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC, _CORE_ITEM_COLS
@@ -303,6 +303,38 @@ class TestAuthRouting:
         assert r.status_code == 503
         data = r.json()
         assert data["overall"] == "degraded"
+
+    @pytest.mark.asyncio
+    async def test_health_proxy_returns_503_on_api_failure(self, ui_client):
+        """GET /health when API is unreachable → 503 with version key, not 404."""
+        import httpx
+        with patch("httpx.AsyncClient") as mock_cls:
+            instance = AsyncMock()
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            instance.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
+            mock_cls.return_value = instance
+            r = await ui_client.get("/health")
+        assert r.status_code == 503
+        data = r.json()
+        assert "version" in data
+
+    @pytest.mark.asyncio
+    async def test_health_proxy_forwards_api_response(self, ui_client):
+        """GET /health proxies API response including version field."""
+        import httpx
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"status": "ok", "version": "1.0.9"}
+        mock_response.status_code = 200
+        with patch("httpx.AsyncClient") as mock_cls:
+            instance = AsyncMock()
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            instance.get = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = instance
+            r = await ui_client.get("/health")
+        assert r.status_code == 200
+        assert r.json()["version"] == "1.0.9"
 
     @pytest.mark.asyncio
     async def test_attachment_proxy_requires_auth(self, ui_client):
@@ -10800,3 +10832,52 @@ class TestVendorDocReceiveAsColumn:
         # The JS includes data-name="receive_as" as code text, so check for the select element specifically
         assert '<select' not in html or 'data-name="receive_as"' not in html.split('<script')[0], \
             "receive_as select element must not appear in invoice markup (outside script)"
+
+
+# ── Issue fixes: document.body null + _safe_id + /health proxy ───────────────
+
+def test_client_js_uses_document_not_body_for_htmx_listeners():
+    """_CLIENT_JS must not use document.body.addEventListener for HTMX events.
+
+    _CLIENT_JS is injected in <head> where document.body is null, causing
+    'Cannot read properties of null (reading addEventListener)' at runtime.
+    All HTMX event listeners must be attached to document instead.
+    """
+    from ui.components.shell import _CLIENT_JS
+    assert "document.body.addEventListener" not in _CLIENT_JS, (
+        "_CLIENT_JS must not call document.body.addEventListener - "
+        "body is null when scripts run in <head>. Use document.addEventListener instead."
+    )
+
+
+def test_safe_id_makes_css_selector_safe_id():
+    """_safe_id must replace ':' so the result is valid in CSS selectors.
+
+    entity_ids like 'doc:PF-2605-0001' contain ':' which CSS parsers treat
+    as a pseudo-class separator, breaking querySelector('#doc:PF-...')
+    """
+    from ui.routes.documents import _safe_id
+    raw = "doc:PF-2605-0001"
+    safe = _safe_id(raw)
+    assert ":" not in safe, f"_safe_id must remove colons, got: {safe!r}"
+    # Must still be non-empty and usable as an HTML id
+    assert safe and safe[0].isalpha() or safe[0] in ("-", "_"), \
+        f"Result should start with a letter or - or _: {safe!r}"
+
+
+def test_internal_notes_ids_contain_no_colons():
+    """_internal_notes_section must produce HTML ids free of colons.
+
+    HTMX internally calls querySelectorAll with hx-target values. An id like
+    'note-form-doc:PF-2605-0001' causes a SyntaxError and silently prevents
+    the note from saving.
+    """
+    from ui.routes.documents import _internal_notes_section
+    from fasthtml.common import to_xml
+    html = to_xml(_internal_notes_section("doc:PF-2605-0001", {}, is_list=False))
+    import re
+    ids = re.findall(r'\bid="([^"]*)"', html)
+    for id_val in ids:
+        assert ":" not in id_val, (
+            f"HTML id {id_val!r} contains ':' which breaks CSS selectors / HTMX targeting"
+        )

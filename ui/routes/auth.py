@@ -277,6 +277,18 @@ def setup_routes(app):
         _clear_tokens(resp)
         return resp
 
+    @app.get("/health")
+    async def health_proxy():
+        """Proxy /health to the API so version checks work from the UI port."""
+        from starlette.responses import JSONResponse
+        import httpx
+        try:
+            async with httpx.AsyncClient(base_url=API_BASE, timeout=3.0) as c:
+                r = await c.get("/health")
+                return JSONResponse(r.json(), status_code=r.status_code)
+        except Exception:
+            return JSONResponse({"status": "degraded", "version": ""}, status_code=503)
+
     @app.get("/health/system")
     async def health_system_proxy():
         """Proxy /health/system to the API so the UI health banner works on any port."""

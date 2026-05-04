@@ -5016,6 +5016,16 @@ async function celerpCsvImport(input, entityId) {{
 
 
 
+def _safe_id(s: str) -> str:
+    """Return a CSS-selector-safe HTML id from an entity_id string.
+
+    Colons in entity_ids (e.g. 'doc:PF-2605-0001') are valid in HTML id
+    attributes but break CSS selectors like querySelector('#doc:PF-2605-0001')
+    because ':' is parsed as a pseudo-class separator.  Replace ':' with '-'.
+    """
+    return s.replace(":", "-")
+
+
 def _internal_notes_section(entity_id: str, doc: dict, is_list: bool, tz: str = "UTC") -> FT:
     """Render append-only internal notes timeline + add-note form."""
     from datetime import datetime, timezone as _tz
@@ -5067,9 +5077,10 @@ def _internal_notes_section(entity_id: str, doc: dict, is_list: bool, tz: str = 
             )
         )
 
-    note_input_id = f"note-input-{entity_id}"
-    form_id = f"note-form-{entity_id}"
-    add_btn_id = f"note-add-btn-{entity_id}"
+    note_input_id = f"note-input-{_safe_id(entity_id)}"
+    form_id = f"note-form-{_safe_id(entity_id)}"
+    add_btn_id = f"note-add-btn-{_safe_id(entity_id)}"
+    save_btn_id = f"save-btn-{_safe_id(entity_id)}"
 
     add_form = Form(
         Textarea(
@@ -5077,17 +5088,17 @@ def _internal_notes_section(entity_id: str, doc: dict, is_list: bool, tz: str = 
             id=note_input_id,
             style="display:none;width:100%;",
             **{
-                "onkeydown": f"if(event.key==='Escape'){{document.getElementById('{note_input_id}').style.display='none';document.getElementById('{add_btn_id}').style.display='';document.getElementById('save-btn-{entity_id}').style.display='none';}}",
+                "onkeydown": f"if(event.key==='Escape'){{document.getElementById('{note_input_id}').style.display='none';document.getElementById('{add_btn_id}').style.display='';document.getElementById('{save_btn_id}').style.display='none';}}",
             },
         ),
         Div(
             Button(t("btn.save_note"), type="submit", cls="btn btn--primary btn--sm",
-                style="display:none;", id=f"save-btn-{entity_id}",
+                style="display:none;", id=save_btn_id,
             ),
             style="margin-top:0.4rem;",
         ),
         Button(t("btn._add_note"), type="button", cls="btn btn--ghost btn--sm", id=add_btn_id,
-            onclick=f"document.getElementById('{note_input_id}').style.display='';document.getElementById('{note_input_id}').focus();document.getElementById('save-btn-{entity_id}').style.display='';this.style.display='none';",
+            onclick=f"document.getElementById('{note_input_id}').style.display='';document.getElementById('{note_input_id}').focus();document.getElementById('{save_btn_id}').style.display='';this.style.display='none';",
         ),
         hx_post=f"{_base}/notes",
         hx_target=f"#{form_id}",

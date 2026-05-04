@@ -188,13 +188,13 @@ document.addEventListener('htmx:afterSettle', function(e) {
   root.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
 
-document.body.addEventListener('htmx:responseError', function(e) {
+document.addEventListener('htmx:responseError', function(e) {
   var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
   var status = (e.detail && e.detail.xhr && e.detail.xhr.status) || 'error';
   showGlobalUiError('Request failed (' + status + '): ' + path);
 });
 
-document.body.addEventListener('htmx:sendError', function(e) {
+document.addEventListener('htmx:sendError', function(e) {
   var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
   showGlobalUiError('Network error while loading: ' + path);
 });
