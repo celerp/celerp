@@ -10866,15 +10866,26 @@ def test_safe_id_makes_css_selector_safe_id():
 
 
 def test_internal_notes_ids_contain_no_colons():
-    """_internal_notes_section must produce HTML ids free of colons.
+    """notes_tab must produce HTML ids free of colons.
 
     HTMX internally calls querySelectorAll with hx-target values. An id like
     'note-form-doc:PF-2605-0001' causes a SyntaxError and silently prevents
     the note from saving.
     """
-    from ui.routes.documents import _internal_notes_section
+    from ui.components.notes import notes_tab, _safe_id
     from fasthtml.common import to_xml
-    html = to_xml(_internal_notes_section("doc:PF-2605-0001", {}, is_list=False))
+    entity_id = "doc:PF-2605-0001"
+    html = to_xml(notes_tab(
+        entity_id=entity_id,
+        notes=[],
+        add_url=f"/docs/{entity_id}/notes",
+        edit_url=f"/docs/{entity_id}/notes/{{note_id}}/edit",
+        delete_url=f"/docs/{entity_id}/notes/{{note_id}}",
+        refresh_target=f"#notes-section-{_safe_id(entity_id)}",
+        note_field="note",
+        author_field="author_name",
+        tz="UTC",
+    ))
     import re
     ids = re.findall(r'\bid="([^"]*)"', html)
     for id_val in ids:

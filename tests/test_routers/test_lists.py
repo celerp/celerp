@@ -703,17 +703,17 @@ async def test_list_note_added(client):
     token = await _register(client)
     eid = (await client.post("/lists", headers=_h(token), json={"list_type": "quotation", "line_items": [], "currency": "USD"})).json()["id"]
 
-    # Add a note
-    r = await client.post(f"/lists/{eid}/notes", headers=_h(token), json={"text": "List note 1"})
+    # Add a note using new field name
+    r = await client.post(f"/lists/{eid}/notes", headers=_h(token), json={"note": "List note 1"})
     assert r.status_code == 200
+    assert r.json()["id"].startswith("note:")
 
-    lst = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
-    notes = lst.get("internal_notes", [])
+    notes = (await client.get(f"/lists/{eid}/notes", headers=_h(token))).json()
     assert len(notes) == 1
-    assert notes[0]["text"] == "List note 1"
+    assert notes[0]["note"] == "List note 1"
 
     # Empty note rejected
-    bad = await client.post(f"/lists/{eid}/notes", headers=_h(token), json={"text": ""})
+    bad = await client.post(f"/lists/{eid}/notes", headers=_h(token), json={"note": ""})
     assert bad.status_code == 422
 
 

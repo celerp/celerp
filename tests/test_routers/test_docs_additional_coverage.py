@@ -57,26 +57,26 @@ async def test_doc_note_added(client):
     token = await _register(client)
     doc_id = (await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "contact_id": "c", "line_items": [], "subtotal": 0, "tax": 0, "total": 0})).json()["id"]
 
-    # Add a note
-    r = await client.post(f"/docs/{doc_id}/notes", headers=_h(token), json={"text": "Test internal note"})
+    # Add a note using new field name
+    r = await client.post(f"/docs/{doc_id}/notes", headers=_h(token), json={"note": "Test internal note"})
     assert r.status_code == 200
+    note_id = r.json()["id"]
 
-    # Verify it's stored in projection
-    doc = (await client.get(f"/docs/{doc_id}", headers=_h(token))).json()
-    notes = doc.get("internal_notes", [])
+    # Verify via GET /docs/{id}/notes (first-class entities)
+    notes = (await client.get(f"/docs/{doc_id}/notes", headers=_h(token))).json()
     assert len(notes) == 1
-    assert notes[0]["text"] == "Test internal note"
+    assert notes[0]["note"] == "Test internal note"
     assert notes[0]["created_at"]
-    assert notes[0]["created_by"]
+    assert notes[0]["author_name"]
+    assert notes[0]["id"] == note_id
 
     # Empty note should fail
-    bad = await client.post(f"/docs/{doc_id}/notes", headers=_h(token), json={"text": "  "})
+    bad = await client.post(f"/docs/{doc_id}/notes", headers=_h(token), json={"note": "  "})
     assert bad.status_code == 422
 
-    # Add a second note - verify order (newest last in list, newest first when reversed for display)
-    await client.post(f"/docs/{doc_id}/notes", headers=_h(token), json={"text": "Second note"})
-    doc2 = (await client.get(f"/docs/{doc_id}", headers=_h(token))).json()
-    notes2 = doc2.get("internal_notes", [])
+    # Add a second note - newest first
+    await client.post(f"/docs/{doc_id}/notes", headers=_h(token), json={"note": "Second note"})
+    notes2 = (await client.get(f"/docs/{doc_id}/notes", headers=_h(token))).json()
     assert len(notes2) == 2
-    assert notes2[0]["text"] == "Test internal note"
-    assert notes2[1]["text"] == "Second note"
+    assert notes2[0]["note"] == "Second note"
+    assert notes2[1]["note"] == "Test internal note"
