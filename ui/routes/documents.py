@@ -16,6 +16,8 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol
 from ui.components.activity import activity_table
+from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
+from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _parse_dates, _resolve_preset
@@ -474,6 +476,33 @@ def _send_to_modal(
 # Compact SVG icons for CSV export/import (16x16, matching pair)
 _ICON_CSV_EXPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>'
 _ICON_CSV_IMPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 12 15 15"/></svg>'
+
+
+async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
+    """Fetch notes and return the rendered notes section (innerHTML target)."""
+    from starlette.responses import Response as _Res
+    tz = "UTC"
+    try:
+        _co = await api.get_company(token)
+        tz = _co.get("timezone") or "UTC"
+    except Exception:
+        pass
+    try:
+        notes = await api.list_list_notes(token, entity_id) if is_list else await api.list_doc_notes(token, entity_id)
+    except Exception:
+        notes = []
+    _base = f"/lists/{entity_id}" if is_list else f"/docs/{entity_id}"
+    return _shared_notes_tab(
+        entity_id=entity_id,
+        notes=notes,
+        add_url=f"{_base}/notes",
+        edit_url=f"{_base}/notes/{{note_id}}/edit",
+        delete_url=f"{_base}/notes/{{note_id}}",
+        refresh_target=f"#notes-section-{_safe_id(entity_id)}",
+        note_field="note",
+        author_field="author_name",
+        tz=tz,
+    )
 
 
 def setup_routes(app):
@@ -1286,7 +1315,12 @@ def setup_routes(app):
                     bank_accounts = []
             except Exception:
                 pass
-        # Draft invoices use proforma numbering by design - label accordingly
+        # Fetch notes for doc (first-class entities)
+        doc_notes: list[dict] = []
+        try:
+            doc_notes = await api.list_doc_notes(token, entity_id)
+        except Exception:
+            pass
         status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
         type_label = _doc_singular_label(doc_type)
         section_label = _doc_section_label(doc_type)
@@ -1295,7 +1329,7 @@ def setup_routes(app):
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
             request=request,
@@ -1669,60 +1703,144 @@ def setup_routes(app):
 
     @app.post("/docs/{entity_id}/notes")
     async def doc_add_note(request: Request, entity_id: str):
-        """Add an internal note to a document."""
+        """Add a note to a document."""
         token = _token(request)
         if not token:
-            from starlette.responses import Response as _R
-            return _R("", status_code=401)
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
         form = await request.form()
-        text = str(form.get("text", "")).strip()
-        if text:
+        note = str(form.get("note", "")).strip()
+        if note:
             try:
-                await api.add_doc_note(token, entity_id, text)
+                await api.add_doc_note(token, entity_id, note)
             except APIError:
                 pass
-        # Re-fetch doc to render updated notes section
+        return await _doc_notes_section_response(token, entity_id, is_list=False)
+
+    @app.get("/docs/{entity_id}/notes/{note_id}/edit")
+    async def doc_note_edit_form(request: Request, entity_id: str, note_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
         try:
-            doc = await api.get_doc(token, entity_id)
-            tz: str = "UTC"
+            notes = await api.list_doc_notes(token, entity_id)
+        except APIError:
+            notes = []
+        note = next((n for n in notes if (n.get("note_id") or n.get("id")) == note_id), {})
+        return _shared_note_edit_form(
+            note_id=note_id,
+            current_text=note.get("note", ""),
+            save_url=f"/docs/{entity_id}/notes/{note_id}",
+            cancel_url=f"/docs/{entity_id}/notes/refresh",
+            refresh_target=f"#notes-section-{_safe_id(entity_id)}",
+        )
+
+    @app.patch("/docs/{entity_id}/notes/{note_id}")
+    async def doc_edit_note(request: Request, entity_id: str, note_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
+        form = await request.form()
+        note = str(form.get("note", "")).strip()
+        if note:
             try:
-                _co = await api.get_company(token)
-                tz = _co.get("timezone") or "UTC"
-            except Exception:
-                pass
-            is_list = doc.get("doc_type") == "list"
-            return _internal_notes_section(entity_id, doc, is_list, tz)
-        except Exception:
-            from starlette.responses import Response as _R
-            return _R("", status_code=204)
+                await api.update_doc_note(token, entity_id, note_id, note)
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+        return await _doc_notes_section_response(token, entity_id, is_list=False)
+
+    @app.delete("/docs/{entity_id}/notes/{note_id}")
+    async def doc_delete_note(request: Request, entity_id: str, note_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
+        try:
+            await api.delete_doc_note(token, entity_id, note_id)
+        except APIError:
+            pass
+        return await _doc_notes_section_response(token, entity_id, is_list=False)
+
+    @app.get("/docs/{entity_id}/notes/refresh")
+    async def doc_notes_refresh(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
+        return await _doc_notes_section_response(token, entity_id, is_list=False)
 
     @app.post("/lists/{entity_id}/notes")
     async def list_add_note(request: Request, entity_id: str):
-        """Add an internal note to a list."""
+        """Add a note to a list."""
         token = _token(request)
         if not token:
-            from starlette.responses import Response as _R
-            return _R("", status_code=401)
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
         form = await request.form()
-        text = str(form.get("text", "")).strip()
-        if text:
+        note = str(form.get("note", "")).strip()
+        if note:
             try:
-                await api.add_list_note(token, entity_id, text)
+                await api.add_list_note(token, entity_id, note)
             except APIError:
                 pass
-        # Re-fetch list to render updated notes section
+        return await _doc_notes_section_response(token, entity_id, is_list=True)
+
+    @app.get("/lists/{entity_id}/notes/{note_id}/edit")
+    async def list_note_edit_form(request: Request, entity_id: str, note_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
         try:
-            lst = await api.get_list(token, entity_id)
-            tz: str = "UTC"
+            notes = await api.list_list_notes(token, entity_id)
+        except APIError:
+            notes = []
+        note = next((n for n in notes if (n.get("note_id") or n.get("id")) == note_id), {})
+        return _shared_note_edit_form(
+            note_id=note_id,
+            current_text=note.get("note", ""),
+            save_url=f"/lists/{entity_id}/notes/{note_id}",
+            cancel_url=f"/lists/{entity_id}/notes/refresh",
+            refresh_target=f"#notes-section-{_safe_id(entity_id)}",
+        )
+
+    @app.patch("/lists/{entity_id}/notes/{note_id}")
+    async def list_edit_note(request: Request, entity_id: str, note_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
+        form = await request.form()
+        note = str(form.get("note", "")).strip()
+        if note:
             try:
-                _co = await api.get_company(token)
-                tz = _co.get("timezone") or "UTC"
-            except Exception:
-                pass
-            return _internal_notes_section(entity_id, lst, True, tz)
-        except Exception:
-            from starlette.responses import Response as _R
-            return _R("", status_code=204)
+                await api.update_list_note(token, entity_id, note_id, note)
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+        return await _doc_notes_section_response(token, entity_id, is_list=True)
+
+    @app.delete("/lists/{entity_id}/notes/{note_id}")
+    async def list_delete_note(request: Request, entity_id: str, note_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
+        try:
+            await api.delete_list_note(token, entity_id, note_id)
+        except APIError:
+            pass
+        return await _doc_notes_section_response(token, entity_id, is_list=True)
+
+    @app.get("/lists/{entity_id}/notes/refresh")
+    async def list_notes_refresh(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            from starlette.responses import Response as _Res
+            return _Res("", status_code=401)
+        return await _doc_notes_section_response(token, entity_id, is_list=True)
+
 
     # T2: Save line items
     @app.post("/docs/{entity_id}/lines")
@@ -2818,6 +2936,12 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
+        list_notes: list[dict] = []
+        try:
+            list_notes = await api.list_list_notes(token, entity_id)
+        except Exception:
+            pass
+
         ref = lst.get("ref_id") or entity_id
         status = lst.get("status", "draft")
         status_label = status.replace("_", " ").title()
@@ -2825,7 +2949,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
-            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request)),
+            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), notes=list_notes),
             title=f"List {ref} - Celerp",
             nav_active="lists",
             request=request,
@@ -3514,7 +3638,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -4995,8 +5119,19 @@ async function celerpCsvImport(input, entityId) {{
             Div(
                 Div(
                     Div(Span("📝", cls="section-icon"), H3(t("page.internal_notes"), cls="section-title"), cls="section-header"),
-                    _internal_notes_section(entity_id, doc, is_list, tz),
+                    _shared_notes_tab(
+                        entity_id=entity_id,
+                        notes=notes or [],
+                        add_url=f"{_base}/notes",
+                        edit_url=f"{_base}/notes/{{note_id}}/edit",
+                        delete_url=f"{_base}/notes/{{note_id}}",
+                        refresh_target=f"#notes-section-{_safe_id(entity_id)}",
+                        note_field="note",
+                        author_field="author_name",
+                        tz=tz,
+                    ),
                     cls="doc-section doc-section--half",
+                    id=f"notes-section-{_safe_id(entity_id)}",
                 ),
                 Div(
                     Div(Span("🤝", cls="section-icon"), H3(t("page.sales_commissions"), cls="section-title"), cls="section-header"),
@@ -5014,103 +5149,6 @@ async function celerpCsvImport(input, entityId) {{
         cls="doc-detail doc-detail--gc",
     )
 
-
-
-def _safe_id(s: str) -> str:
-    """Return a CSS-selector-safe HTML id from an entity_id string.
-
-    Colons in entity_ids (e.g. 'doc:PF-2605-0001') are valid in HTML id
-    attributes but break CSS selectors like querySelector('#doc:PF-2605-0001')
-    because ':' is parsed as a pseudo-class separator.  Replace ':' with '-'.
-    """
-    return s.replace(":", "-")
-
-
-def _internal_notes_section(entity_id: str, doc: dict, is_list: bool, tz: str = "UTC") -> FT:
-    """Render append-only internal notes timeline + add-note form."""
-    from datetime import datetime, timezone as _tz
-    try:
-        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-        try:
-            _zone = ZoneInfo(tz)
-        except ZoneInfoNotFoundError:
-            _zone = _tz.utc
-    except ImportError:
-        _zone = _tz.utc
-
-    def _fmt_ts(iso: str) -> str:
-        if not iso:
-            return ""
-        try:
-            dt = datetime.fromisoformat(iso)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_tz.utc)
-            return dt.astimezone(_zone).strftime("%Y-%m-%d %H:%M")
-        except ValueError:
-            return iso[:16].replace("T", " ")
-
-    _base = f"/lists/{entity_id}" if is_list else f"/docs/{entity_id}"
-
-    # Collect all notes: legacy string first (oldest), then structured list (oldest→newest displayed newest first)
-    all_notes: list[dict] = []
-    legacy = doc.get("internal_note") or ""
-    if legacy:
-        all_notes.append({"text": legacy, "created_at": "", "created_by": ""})
-    all_notes.extend(doc.get("internal_notes") or [])
-    # Newest first
-    all_notes = list(reversed(all_notes))
-
-    timeline_items = []
-    for n in all_notes:
-        text = n.get("text") or ""
-        ts_display = _fmt_ts(n.get("created_at") or "")
-        author = n.get("created_by") or ""
-        timeline_items.append(
-            Div(
-                Div(
-                    Small(ts_display, cls="note-timestamp") if ts_display else "",
-                    Span(f" · {author}", cls="note-author-name") if author else "",
-                    cls="note-meta",
-                ),
-                P(text, cls="note-text"),
-                cls="note-item",
-            )
-        )
-
-    note_input_id = f"note-input-{_safe_id(entity_id)}"
-    form_id = f"note-form-{_safe_id(entity_id)}"
-    add_btn_id = f"note-add-btn-{_safe_id(entity_id)}"
-    save_btn_id = f"save-btn-{_safe_id(entity_id)}"
-
-    add_form = Form(
-        Textarea(
-            name="text", placeholder="Write a note...", rows="3", cls="form-input",
-            id=note_input_id,
-            style="display:none;width:100%;",
-            **{
-                "onkeydown": f"if(event.key==='Escape'){{document.getElementById('{note_input_id}').style.display='none';document.getElementById('{add_btn_id}').style.display='';document.getElementById('{save_btn_id}').style.display='none';}}",
-            },
-        ),
-        Div(
-            Button(t("btn.save_note"), type="submit", cls="btn btn--primary btn--sm",
-                style="display:none;", id=save_btn_id,
-            ),
-            style="margin-top:0.4rem;",
-        ),
-        Button(t("btn._add_note"), type="button", cls="btn btn--ghost btn--sm", id=add_btn_id,
-            onclick=f"document.getElementById('{note_input_id}').style.display='';document.getElementById('{note_input_id}').focus();document.getElementById('{save_btn_id}').style.display='';this.style.display='none';",
-        ),
-        hx_post=f"{_base}/notes",
-        hx_target=f"#{form_id}",
-        hx_swap="outerHTML",
-        id=form_id,
-    )
-
-    return Div(
-        add_form,
-        Div(*timeline_items, cls="notes-timeline") if timeline_items else P(t("label.no_notes_yet"), cls="meta-value"),
-        cls="form-group",
-    )
 
 
 def _doc_history_section(ledger: list[dict]) -> FT:

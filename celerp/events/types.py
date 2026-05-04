@@ -66,6 +66,12 @@ class EventType(StrEnum):
     DOC_CONVERTED = "doc.converted"
     DOC_RECEIVED = "doc.received"
     DOC_ITEMS_RETURNED = "doc.items_returned"
+    DOC_NOTE_ADDED = "doc.note_added"
+    DOC_NOTE_UPDATED = "doc.note_updated"
+    DOC_NOTE_REMOVED = "doc.note_removed"
+    LIST_NOTE_ADDED = "list.note_added"
+    LIST_NOTE_UPDATED = "list.note_updated"
+    LIST_NOTE_REMOVED = "list.note_removed"
 
     # Manufacturing
     MFG_ORDER_CREATED = "mfg.order.created"

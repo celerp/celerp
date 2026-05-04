@@ -228,12 +228,38 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
     elif event_type == "doc.note_added":
-        current.setdefault("internal_notes", [])
-        current["internal_notes"].append({
-            "text": data["text"],
-            "created_at": data.get("created_at", ""),
-            "created_by": data.get("created_by", ""),
+        # First-class doc_note entity (same pattern as contact_note)
+        current.update({
+            "entity_type": "doc_note",
+            "note_id": data.get("note_id"),
+            "doc_id": data.get("doc_id"),
+            "note": data.get("note"),
+            "author_id": data.get("author_id"),
+            "author_name": data.get("author_name"),
+            "created_at": data.get("created_at"),
+            "updated_at": None,
         })
+    elif event_type == "doc.note_updated":
+        current["note"] = data.get("note")
+        current["updated_at"] = data.get("updated_at")
+    elif event_type == "doc.note_removed":
+        current["deleted"] = True
+    elif event_type == "list.note_added":
+        current.update({
+            "entity_type": "list_note",
+            "note_id": data.get("note_id"),
+            "list_id": data.get("list_id"),
+            "note": data.get("note"),
+            "author_id": data.get("author_id"),
+            "author_name": data.get("author_name"),
+            "created_at": data.get("created_at"),
+            "updated_at": None,
+        })
+    elif event_type == "list.note_updated":
+        current["note"] = data.get("note")
+        current["updated_at"] = data.get("updated_at")
+    elif event_type == "list.note_removed":
+        current["deleted"] = True
     elif event_type == "doc.fulfilled":
         current["fulfillment_status"] = "fulfilled"
         current["fulfilled_items"] = data["fulfilled_items"]

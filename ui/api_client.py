@@ -1078,14 +1078,44 @@ async def duplicate_list(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/lists/{entity_id}/duplicate", json={})).json()
 
 
-async def add_doc_note(token: str, entity_id: str, text: str) -> dict:
+async def list_doc_notes(token: str, entity_id: str) -> list[dict]:
     async with _client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/notes", json={"text": text})).json()
+        return _raise(await c.get(f"/docs/{entity_id}/notes")).json()
 
 
-async def add_list_note(token: str, entity_id: str, text: str) -> dict:
+async def add_doc_note(token: str, entity_id: str, note: str) -> dict:
     async with _client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/notes", json={"text": text})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/notes", json={"note": note})).json()
+
+
+async def update_doc_note(token: str, entity_id: str, note_id: str, note: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/docs/{entity_id}/notes/{note_id}", json={"note": note})).json()
+
+
+async def delete_doc_note(token: str, entity_id: str, note_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/docs/{entity_id}/notes/{note_id}")).json()
+
+
+async def list_list_notes(token: str, entity_id: str) -> list[dict]:
+    async with _client(token) as c:
+        return _raise(await c.get(f"/lists/{entity_id}/notes")).json()
+
+
+async def add_list_note(token: str, entity_id: str, note: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/notes", json={"note": note})).json()
+
+
+async def update_list_note(token: str, entity_id: str, note_id: str, note: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/lists/{entity_id}/notes/{note_id}", json={"note": note})).json()
+
+
+async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/lists/{entity_id}/notes/{note_id}")).json()
 
 
 async def export_lists_csv(token: str, params: dict | None = None) -> bytes:

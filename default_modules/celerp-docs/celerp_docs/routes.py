@@ -1650,26 +1650,115 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
     raise HTTPException(status_code=409, detail="Unsupported document conversion")
 
 
-class NoteAddBody(BaseModel):
-    text: str
+class NoteCreate(BaseModel):
+    note: str
+    idempotency_key: str | None = None
+
+
+class NoteUpdate(BaseModel):
+    note: str
+    idempotency_key: str | None = None
+
+
+def _note_list_for(session_exec_result) -> list[dict]:
+    """Filter active (non-deleted) note projections from a scalars result."""
+    return [
+        r.state | {"id": r.entity_id}
+        for r in session_exec_result
+        if not r.state.get("deleted")
+    ]
+
+
+@router.get("/{entity_id}/notes")
+async def list_doc_notes(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    await _get_doc(session, company_id, entity_id)
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "doc_note",
+            )
+        )
+    ).scalars().all()
+    notes = [r.state | {"id": r.entity_id} for r in rows if r.state.get("doc_id") == entity_id and not r.state.get("deleted")]
+    notes.sort(key=lambda n: n.get("created_at") or "", reverse=True)
+    return notes
 
 
 @router.post("/{entity_id}/notes")
 async def add_doc_note(
     entity_id: str,
-    payload: NoteAddBody,
+    payload: NoteCreate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
-    if not payload.text.strip():
+    await _get_doc(session, company_id, entity_id)
+    if not payload.note.strip():
         raise HTTPException(status_code=422, detail="Note text cannot be empty")
-    now = datetime.now(UTC).isoformat()
+    note_id = f"note:{uuid.uuid4()}"
     entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
         event_type="doc.note_added",
-        data={"text": payload.text.strip(), "created_at": now, "created_by": str(user.id)},
+        data={
+            "doc_id": entity_id,
+            "note_id": note_id,
+            "note": payload.note.strip(),
+            "author_id": str(user.id),
+            "author_name": getattr(user, "name", None) or user.email,
+            "created_at": datetime.now(UTC).isoformat(),
+        },
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, "id": note_id}
+
+
+@router.patch("/{entity_id}/notes/{note_id}")
+async def update_doc_note(
+    entity_id: str,
+    note_id: str,
+    payload: NoteUpdate,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await _get_doc(session, company_id, entity_id)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
+    if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
+        event_type="doc.note_updated",
+        data={"doc_id": entity_id, "note_id": note_id, "note": payload.note.strip(), "updated_at": datetime.now(UTC).isoformat()},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.delete("/{entity_id}/notes/{note_id}")
+async def delete_doc_note(
+    entity_id: str,
+    note_id: str,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await _get_doc(session, company_id, entity_id)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
+    if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
+        event_type="doc.note_removed",
+        data={"doc_id": entity_id, "note_id": note_id},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=str(uuid.uuid4()), metadata_={},
     )
@@ -2278,25 +2367,102 @@ async def duplicate_list(
     return {"event_id": entry.id, "id": new_entity_id}
 
 
+@lists_router.get("/{entity_id}/notes")
+async def list_list_notes(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    await _get_list(session, company_id, entity_id)
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "list_note",
+            )
+        )
+    ).scalars().all()
+    notes = [r.state | {"id": r.entity_id} for r in rows if r.state.get("list_id") == entity_id and not r.state.get("deleted")]
+    notes.sort(key=lambda n: n.get("created_at") or "", reverse=True)
+    return notes
+
+
 @lists_router.post("/{entity_id}/notes")
 async def add_list_note(
     entity_id: str,
-    payload: NoteAddBody,
+    payload: NoteCreate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
-    if not payload.text.strip():
+    await _get_list(session, company_id, entity_id)
+    if not payload.note.strip():
         raise HTTPException(status_code=422, detail="Note text cannot be empty")
-    now = datetime.now(UTC).isoformat()
-    entry = await _emit_list(
-        session, company_id, entity_id, "doc.note_added",
-        {"text": payload.text.strip(), "created_at": now, "created_by": str(user.id)},
-        user,
+    note_id = f"note:{uuid.uuid4()}"
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="list_note",
+        event_type="list.note_added",
+        data={
+            "list_id": entity_id,
+            "note_id": note_id,
+            "note": payload.note.strip(),
+            "author_id": str(user.id),
+            "author_name": getattr(user, "name", None) or user.email,
+            "created_at": datetime.now(UTC).isoformat(),
+        },
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, "id": note_id}
+
+
+@lists_router.patch("/{entity_id}/notes/{note_id}")
+async def update_list_note(
+    entity_id: str,
+    note_id: str,
+    payload: NoteUpdate,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await _get_list(session, company_id, entity_id)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
+    if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="list_note",
+        event_type="list.note_updated",
+        data={"list_id": entity_id, "note_id": note_id, "note": payload.note.strip(), "updated_at": datetime.now(UTC).isoformat()},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     await session.commit()
     return {"event_id": entry.id}
+
+
+@lists_router.delete("/{entity_id}/notes/{note_id}")
+async def delete_list_note(
+    entity_id: str,
+    note_id: str,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await _get_list(session, company_id, entity_id)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
+    if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="list_note",
+        event_type="list.note_removed",
+        data={"list_id": entity_id, "note_id": note_id},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
 
 
 @lists_router.post("/import")

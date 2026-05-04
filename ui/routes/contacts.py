@@ -15,6 +15,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
+from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _parse_dates
@@ -489,74 +490,18 @@ async def _company_timezone(token: str) -> str:
 
 
 def _notes_tab(contact_id: str, notes: list[dict], tz: str = "UTC") -> FT:
-    """Notes tab content: add form + timeline."""
-    try:
-        _zone = ZoneInfo(tz)
-    except ZoneInfoNotFoundError:
-        _zone = _tz.utc
-
-    def _fmt_ts(iso: str) -> str:
-        if not iso:
-            return ""
-        try:
-            dt = datetime.fromisoformat(iso)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_tz.utc)
-            return dt.astimezone(_zone).strftime("%Y-%m-%d %H:%M")
-        except ValueError:
-            return iso[:16].replace("T", " ")
-    note_form = Form(
-        Div(
-            Textarea(name="note", placeholder="Add a note...", rows="3", cls="form-input", style="width:100%"),
-            cls="form-group",
-        ),
-        Button(t("btn.add_note"), type="submit", cls="btn btn--primary btn--sm"),
-        hx_post=f"/contacts/{contact_id}/notes",
-        hx_target="#tab-content",
-        hx_swap="innerHTML",
-        cls="section-card",
+    """Notes tab content: add form + timeline. Delegates to shared notes_tab component."""
+    return _shared_notes_tab(
+        entity_id=contact_id,
+        notes=notes,
+        add_url=f"/contacts/{contact_id}/notes",
+        edit_url=f"/contacts/{contact_id}/notes/{{note_id}}/edit",
+        delete_url=f"/contacts/{contact_id}/notes/{{note_id}}",
+        refresh_target="#tab-content",
+        note_field="note",
+        author_field="author_name",
+        tz=tz,
     )
-    if not notes:
-        return Div(note_form, P(t("label.no_notes_yet"), cls="empty-state-msg"))
-    timeline = []
-    for n in notes:
-        note_id = n.get("note_id") or n.get("id") or ""
-        text = n.get("note") or ""
-        author = n.get("author_name") or ""
-        created = n.get("created_at") or ""
-        updated = n.get("updated_at")
-        ts_display = _fmt_ts(created)
-        if updated:
-            ts_display += f" (edited {_fmt_ts(updated)})"
-        initials = "".join(w[0].upper() for w in author.split()[:2]) if author else "?"
-        timeline.append(Div(
-            Div(
-                Span(initials, cls="note-author-badge", title=author),
-                Div(
-                    Span(author, cls="note-author-name") if author else "",
-                    Small(ts_display, cls="note-timestamp"),
-                    cls="note-meta",
-                ),
-                cls="note-header",
-            ),
-            P(text, cls="note-text"),
-            Div(
-                Button(t("btn.edit"),
-                       hx_get=f"/contacts/{contact_id}/notes/{note_id}/edit",
-                       hx_target=f"#note-{note_id}",
-                       hx_swap="outerHTML",
-                       cls="btn btn--ghost btn--xs"),
-                Button(t("btn.delete"),
-                       hx_delete=f"/contacts/{contact_id}/notes/{note_id}",
-                       hx_target="#tab-content",
-                       hx_swap="innerHTML",
-                       hx_confirm="Delete this note?",
-                       cls="btn btn--ghost btn--xs btn--danger"),
-                cls="note-actions",
-            ),
-            cls="note-item", id=f"note-{note_id}",
-        ))
-    return Div(note_form, *timeline)
 
 
 def _contact_ledger_table(ledger: list[dict]) -> FT:
@@ -1364,21 +1309,12 @@ def setup_routes(app):
         except APIError:
             notes = []
         note = next((n for n in notes if (n.get("note_id") or n.get("id")) == note_id), {})
-        return Div(
-            Form(
-                Textarea(note.get("note", ""), name="note", rows="3", cls="form-input", style="width:100%"),
-                Div(
-                    Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
-                           hx_get=f"/contacts/{contact_id}/tab/notes",
-                           hx_target="#tab-content", hx_swap="innerHTML"),
-                    cls="form-row",
-                ),
-                hx_patch=f"/contacts/{contact_id}/notes/{note_id}",
-                hx_target="#tab-content",
-                hx_swap="innerHTML",
-            ),
-            cls="note-item note-item--editing", id=f"note-{note_id}",
+        return _shared_note_edit_form(
+            note_id=note_id,
+            current_text=note.get("note", ""),
+            save_url=f"/contacts/{contact_id}/notes/{note_id}",
+            cancel_url=f"/contacts/{contact_id}/tab/notes",
+            refresh_target="#tab-content",
         )
 
     @app.patch("/contacts/{contact_id}/notes/{note_id}")

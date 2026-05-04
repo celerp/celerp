@@ -410,7 +410,45 @@ class DocSharedImport(BaseModel):
 
 
 class DocNoteAdded(BaseModel):
-    text: str
+    doc_id: str
+    note_id: str
+    note: str
+    author_id: str
+    author_name: str
+    created_at: str
+
+
+class DocNoteUpdated(BaseModel):
+    doc_id: str
+    note_id: str
+    note: str
+    updated_at: str
+
+
+class DocNoteRemoved(BaseModel):
+    doc_id: str
+    note_id: str
+
+
+class ListNoteAdded(BaseModel):
+    list_id: str
+    note_id: str
+    note: str
+    author_id: str
+    author_name: str
+    created_at: str
+
+
+class ListNoteUpdated(BaseModel):
+    list_id: str
+    note_id: str
+    note: str
+    updated_at: str
+
+
+class ListNoteRemoved(BaseModel):
+    list_id: str
+    note_id: str
 
 
 class DocFulfilled(BaseModel):
@@ -777,6 +815,11 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.received": DocReceived,
     "doc.shared_import": DocSharedImport,
     "doc.note_added": DocNoteAdded,
+    "doc.note_updated": DocNoteUpdated,
+    "doc.note_removed": DocNoteRemoved,
+    "list.note_added": ListNoteAdded,
+    "list.note_updated": ListNoteUpdated,
+    "list.note_removed": ListNoteRemoved,
     "doc.fulfilled": DocFulfilled,
     "doc.partially_fulfilled": DocPartiallyFulfilled,
     "doc.return_received": DocReturnReceived,
