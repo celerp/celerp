@@ -28,6 +28,7 @@ from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequen
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import PickResult, compute_pick_plan
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, validate_line_quantity
+from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, UNFULFILLABLE_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -531,41 +532,51 @@ async def create_doc(
 
     # Auto-compute total from line items if not explicitly provided (or zero)
     if not payload.total and payload.line_items:
+        currency = data.get("currency", "USD")
         # If any line provides line_total, it is pre-computed (discount already applied).
         # Header discount only applies when computing from quantity * unit_price.
         has_explicit_line_totals = any(li.line_total is not None for li in payload.line_items)
-        computed = sum(
-            (li.line_total if li.line_total is not None else li.quantity * li.unit_price)
-            for li in payload.line_items
-        )
-        if not has_explicit_line_totals:
-            computed = computed - payload.discount
 
-        # Compute per-line tax amounts (compound-aware), update data
-        line_tax_total = 0.0
+        # Round each line_total to currency precision at source
+        rounded_line_totals = [
+            round_money(
+                to_decimal(li.line_total) if li.line_total is not None
+                else to_decimal(li.quantity) * to_decimal(li.unit_price),
+                currency,
+            )
+            for li in payload.line_items
+        ]
+
+        subtotal_d = sum(rounded_line_totals, to_decimal(0))
+        if not has_explicit_line_totals:
+            subtotal_d = subtotal_d - round_money(payload.discount, currency)
+
+        # Compute per-line tax amounts (compound-aware), update data with rounded values
+        from decimal import Decimal as _Dec
+        line_tax_total_d = _Dec(0)
         if data.get("line_items"):
             resolved_line_items = []
-            for li_data, li_model in zip(data["line_items"], payload.line_items):
+            for li_data, li_model, lt_d in zip(data["line_items"], payload.line_items, rounded_line_totals):
+                li_data = {**li_data, "line_total": to_stored_float(lt_d)}
                 if li_model.taxes:
-                    line_base = float(li_data.get("line_total") or li_model.quantity * li_model.unit_price)
-                    resolved = compute_tax_amounts(li_model.taxes, line_base)
-                    li_data = {**li_data, "taxes": [item.model_dump() for item in resolved]}
-                    line_tax_total += sum(item.amount for item in resolved)
+                    resolved = compute_tax_amounts(li_model.taxes, to_stored_float(lt_d), currency)
+                    li_data["taxes"] = [item.model_dump() for item in resolved]
+                    line_tax_total_d += sum(to_decimal(item.amount) for item in resolved)
                 resolved_line_items.append(li_data)
             data["line_items"] = resolved_line_items
 
         # doc_taxes: compute compound-aware amounts against subtotal, take precedence over legacy tax
         if payload.doc_taxes:
-            subtotal_base = computed  # pre-doc-tax subtotal
-            resolved_doc_taxes = compute_tax_amounts(payload.doc_taxes, subtotal_base)
+            resolved_doc_taxes = compute_tax_amounts(payload.doc_taxes, to_stored_float(subtotal_d), currency)
             data["doc_taxes"] = [item.model_dump() for item in resolved_doc_taxes]
-            effective_tax = sum(item.amount for item in resolved_doc_taxes) + line_tax_total
+            effective_tax_d = sum(to_decimal(item.amount) for item in resolved_doc_taxes) + line_tax_total_d
         else:
-            effective_tax = payload.tax + line_tax_total
+            effective_tax_d = round_money(payload.tax, currency) + line_tax_total_d
 
-        computed = computed + effective_tax + payload.shipping
-        data["total"] = computed
-        data["subtotal"] = computed - effective_tax - payload.shipping
+        shipping_d = round_money(payload.shipping, currency)
+        total_d = round_money(subtotal_d + effective_tax_d + shipping_d, currency)
+        data["total"] = to_stored_float(total_d)
+        data["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
 
     data["amount_outstanding"] = payload.amount_outstanding if payload.amount_outstanding is not None else float(data.get("total", 0))
 
@@ -935,8 +946,11 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     outstanding = float(_doc_state.get("amount_outstanding", _doc_state.get("total", 0)) or 0)
     if outstanding <= 0:
         raise HTTPException(status_code=409, detail="Invoice already fully paid")
-    if payload.amount > outstanding + 1e-9:
-        raise HTTPException(status_code=409, detail="Payment exceeds amount outstanding")
+    # Use Decimal comparison: 1-cent tolerance covers display rounding on the final payment.
+    # New docs will have exact rounded totals so this tolerance only applies to legacy data.
+    from celerp.services.money import to_decimal as _to_d
+    if _to_d(payload.amount) - _to_d(outstanding) > _to_d("0.01"):
+        raise HTTPException(status_code=409, detail=f"Payment {payload.amount} exceeds amount outstanding {outstanding}")
 
     body = payload.model_dump(exclude_none=True)
     body.setdefault("currency", _doc_state.get("currency", "USD"))

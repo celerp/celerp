@@ -14,6 +14,7 @@ import uuid
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key
+from celerp.services.money import round_money, to_decimal, to_stored_float
 from sqlalchemy import select as _select
 
 
@@ -63,9 +64,13 @@ async def _emit_auto_posted_je(
 
 
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict) -> None:
-    tax = float(doc.get("tax", 0) or 0)
-    total = float(doc.get("total", 0) or 0)
-    revenue = total - tax  # net revenue (after discount, before tax)
+    currency = doc.get("currency", "USD")
+    total_d = round_money(doc.get("total", 0), currency)
+    tax_d = round_money(doc.get("tax", 0), currency)
+    revenue_d = round_money(total_d - tax_d, currency)
+    total = to_stored_float(total_d)
+    tax = to_stored_float(tax_d)
+    revenue = to_stored_float(revenue_d)
     # Use a cycle-aware suffix so re-finalize after revert creates a fresh JE entity
     # rather than hitting the dedup guard on the voided JE from the previous cycle.
     cycle = int(doc.get("revert_count", 0))
@@ -226,21 +231,24 @@ async def create_for_bill_conversion(
     for lines with SKU, 6950 (misc expense) for lines without.
     """
     total = float(doc.get("total", 0) or 0)
+    currency = doc.get("currency", "USD")
     line_items = doc.get("line_items", [])
     debit_entries: list[dict] = []
-    tax_total = 0.0
+    from decimal import Decimal as _Dec
+    tax_total_d = _Dec(0)
 
     if line_items:
         for li in line_items:
-            line_total = float(li.get("line_total", 0) or 0) or (
-                float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
-            )
+            line_total = to_stored_float(round_money(
+                to_decimal(li.get("line_total") or 0) or
+                to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
+                currency,
+            ))
             if line_total <= 0:
                 continue
-            # Per-line tax: collect to Input VAT (1150), not folded into expense/inventory.
-            tax_rate = float(li.get("tax_rate", 0) or 0)
-            line_tax = round(line_total * tax_rate / 100, 2)
-            tax_total += line_tax
+            tax_rate = to_decimal(li.get("tax_rate", 0) or 0)
+            line_tax_d = round_money(to_decimal(line_total) * tax_rate / 100, currency)
+            tax_total_d += line_tax_d
             # receive_as overrides SKU-based account selection for bills.
             receive_as = (li.get("receive_as") or "").strip().lower()
             if li.get("account_code"):
@@ -250,14 +258,11 @@ async def create_for_bill_conversion(
             elif receive_as == "asset":
                 account = "1210"
             else:
-                # "stock" or default: use 1130 if SKU present, else 6950
                 account = "1130" if li.get("sku") else "6950"
             debit_entries.append({"account": account, "debit": line_total, "credit": 0.0})
-        if tax_total > 0:
-            debit_entries.append({"account": "1150", "debit": round(tax_total, 2), "credit": 0.0})
+        if tax_total_d > 0:
+            debit_entries.append({"account": "1150", "debit": to_stored_float(tax_total_d), "credit": 0.0})
 
-    # If line items present but all had zero totals (e.g. stripped from payload),
-    # fall back to doc total against misc expense rather than emitting a one-sided JE.
     if not debit_entries:
         if total <= 0:
             return
@@ -317,13 +322,16 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
     (which may still exist if voiding didn't delete them).
     """
     doc_type = doc.get("doc_type", "")
+    currency = doc.get("currency", "USD")
     total = float(doc.get("total", 0) or 0)
     if total <= 0:
         return
 
     if doc_type == "invoice":
-        tax = float(doc.get("tax", 0) or 0)
-        revenue = total - tax
+        tax_d = round_money(doc.get("tax", 0), currency)
+        total_d = round_money(total, currency)
+        revenue = to_stored_float(round_money(total_d - tax_d, currency))
+        tax = to_stored_float(tax_d)
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -340,19 +348,23 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
             metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
         )
     elif doc_type in ("bill", "purchase_order"):
+        currency = doc.get("currency", "USD")
         line_items = doc.get("line_items", [])
         debit_entries: list[dict] = []
-        tax_total = 0.0
+        from decimal import Decimal as _Dec
+        tax_total_d = _Dec(0)
         if line_items:
             for li in line_items:
-                line_total = float(li.get("line_total", 0) or 0) or (
-                    float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
-                )
+                line_total = to_stored_float(round_money(
+                    to_decimal(li.get("line_total") or 0) or
+                    to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
+                    currency,
+                ))
                 if line_total <= 0:
                     continue
-                tax_rate = float(li.get("tax_rate", 0) or 0)
-                line_tax = round(line_total * tax_rate / 100, 2)
-                tax_total += line_tax
+                tax_rate = to_decimal(li.get("tax_rate", 0) or 0)
+                line_tax_d = round_money(to_decimal(line_total) * tax_rate / 100, currency)
+                tax_total_d += line_tax_d
                 receive_as = (li.get("receive_as") or "").strip().lower()
                 if li.get("account_code"):
                     account = li["account_code"]
@@ -363,8 +375,8 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 else:
                     account = "1130" if li.get("sku") else "6950"
                 debit_entries.append({"account": account, "debit": line_total, "credit": 0.0})
-            if tax_total > 0:
-                debit_entries.append({"account": "1150", "debit": round(tax_total, 2), "credit": 0.0})
+            if tax_total_d > 0:
+                debit_entries.append({"account": "1150", "debit": to_stored_float(tax_total_d), "credit": 0.0})
         if not debit_entries:
             if total <= 0:
                 return
