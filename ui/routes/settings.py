@@ -12,7 +12,7 @@ from starlette.responses import RedirectResponse, Response
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
-from ui.components.table import EMPTY
+from ui.components.table import EMPTY, unwrap_address
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
@@ -1276,7 +1276,6 @@ def setup_routes(app):
         val = str(loc.get(field, "") or "")
 
         if field == "type":
-            _LOC_TYPES = [("warehouse", "Warehouse"), ("store", "Store"), ("office", "Office"), ("virtual", "Virtual")]
             return Td(
                 Select(
                     *[Option(label, value=v, selected=(v == val)) for v, label in _LOC_TYPES],
@@ -1307,7 +1306,7 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
-        if field == "type" and value not in {"warehouse", "store", "office", "virtual"}:
+        if field == "type" and value not in _LOC_TYPE_VALUES:
             return P(f"Invalid location type: {value!r}", cls="cell-error")
         patch_val: str | bool = value
         if field == "is_default":
@@ -2101,15 +2100,7 @@ def setup_routes(app):
             return _company_addresses_section(locations)
         loc_id = str(loc.get("id", ""))
         name = loc.get("name") or ""
-        addr_raw = loc.get("address") or {}
-        if isinstance(addr_raw, dict):
-            addr_text = addr_raw.get("text") or addr_raw.get("line1") or ""
-            for k in ("line2", "city", "state", "postal_code", "country"):
-                v = addr_raw.get(k) or ""
-                if v:
-                    addr_text = addr_text + ("\n" if addr_text else "") + v
-        else:
-            addr_text = str(addr_raw)
+        addr_text = unwrap_address(loc.get("address"))
         return Form(
             Input(name="name", value=name, cls="cell-input", placeholder="Name"),
             Textarea(addr_text, name="address_text", cls="cell-input", rows="3", placeholder="Address"),
@@ -2349,9 +2340,22 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
         cls="cell cell--clickable",
     )
 
+# Location type options: single source of truth.
+# "address" = company From-address (created via Settings > General > Addresses).
+_LOC_TYPES: list[tuple[str, str]] = [
+    ("warehouse", "Warehouse"),
+    ("store", "Store"),
+    ("office", "Office"),
+    ("virtual", "Virtual"),
+    ("address", "Company Address"),
+]
+_LOC_TYPE_VALUES: frozenset[str] = frozenset(v for v, _ in _LOC_TYPES)
+
 
 def _location_display_cell(location_id: str, field: str, value) -> FT:
-    display = str(value) if value and str(value).strip() else EMPTY
+    display = unwrap_address(value) if field == "address" else (str(value) if value and str(value).strip() else EMPTY)
+    if not display:
+        display = EMPTY
     return Td(
         Span(display, cls="cell-text"),
         title="Click to edit",
@@ -2448,15 +2452,7 @@ def _company_address_card(loc: dict) -> FT:
     """Read-mode address card for a company location."""
     loc_id = str(loc.get("id", ""))
     name = loc.get("name") or ""
-    addr_raw = loc.get("address") or {}
-    if isinstance(addr_raw, dict):
-        addr_text = addr_raw.get("text") or addr_raw.get("line1") or ""
-        for k in ("line2", "city", "state", "postal_code", "country"):
-            v = addr_raw.get(k) or ""
-            if v:
-                addr_text = addr_text + ("\n" if addr_text else "") + v
-    else:
-        addr_text = str(addr_raw)
+    addr_text = unwrap_address(loc.get("address"))
     is_default = bool(loc.get("is_default"))
     default_badge = (
         Span(t("settings._default"), cls="badge badge--primary")

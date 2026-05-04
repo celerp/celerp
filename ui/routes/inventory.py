@@ -2522,11 +2522,10 @@ def _print_all_labels_link(p: dict, total: int) -> FT | None:
 
     _LABEL_CAP = 100
     count = min(total, _LABEL_CAP)
-    label = t("btn.print_all_labels_n").format(n=count) if count < total else t("btn.print_all_labels_n").format(n=count)
     if total > _LABEL_CAP:
-        label = f"🖨 {t('btn.print_labels')} (first {_LABEL_CAP})"
+        label = f"{t('btn._print_labels')} (first {_LABEL_CAP})"
     else:
-        label = f"🖨 {t('btn.print_labels')} ({count})"
+        label = f"{t('btn._print_labels')} ({count})"
 
     qs_params = {k: v for k, v in _base_state(p, include_page=False).items()
                  if k in ("q", "status", "category", "sort", "dir") and v}
@@ -2538,9 +2537,9 @@ def _print_label_dropdown(entity_id: str) -> FT:
     """Print label icon button with HTMX-loaded template dropdown."""
     dropdown_id = f"print-label-dd-{entity_id.replace(':', '-')}"
     return Div(
-        Button(t("btn.u0001f5a8"),  # printer icon
+        Button("🖨",
             cls="btn btn--secondary btn--icon",
-            title="Print label",
+            title=t("btn._print_labels"),
             onclick=f"var dd=document.getElementById('{dropdown_id}');dd.classList.toggle('open');",
         ),
         Div(

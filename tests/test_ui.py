@@ -1819,6 +1819,35 @@ class TestSettingsInlineEditValidation:
         assert b"cell-error" in r.content
         mock_patch.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_location_type_address_is_valid(self, ui_client):
+        """PATCH /settings/locations/{id}/type with 'address' must be accepted (Company Address type)."""
+        _loc = {"id": "loc1", "name": "HQ", "type": "address", "address": {"text": "Phuket"}, "is_default": False}
+        with (
+            patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [_loc]})),
+        ):
+            r = await ui_client.patch(
+                "/settings/locations/loc1/type", data={"value": "address"}, cookies=_authed()
+            )
+        assert r.status_code == 200
+        assert b"cell-error" not in r.content
+        mock_patch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_location_address_display_unwraps_dict(self, ui_client):
+        """Location address column must show plain text, not raw JSON dict repr."""
+        _locs = [{"id": "loc1", "name": "HQ", "type": "warehouse", "address": {"text": "Phuket"}, "is_default": False}]
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Phuket" in r.content
+        assert b'{"text"' not in r.content  # must NOT show raw dict repr
+
     # ── Item schema type ─────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
@@ -10909,3 +10938,119 @@ def test_internal_notes_ids_contain_no_colons():
         assert ":" not in id_val, (
             f"HTML id {id_val!r} contains ':' which breaks CSS selectors / HTMX targeting"
         )
+
+
+# ---------------------------------------------------------------------------
+# Print Labels button text fixes
+# ---------------------------------------------------------------------------
+
+class TestPrintLabelButtonText:
+    """Print Labels list button must show real text, not raw i18n keys."""
+
+    def test_print_label_list_button_no_raw_key(self):
+        """_print_all_labels_link must not emit a raw t() key as button text."""
+        from ui.routes.inventory import _print_all_labels_link
+        from unittest.mock import MagicMock
+
+        p = MagicMock()
+        p.total = 5
+        p.q = ""
+        p.status = ""
+        p.category = ""
+        p.sort = ""
+        p.dir = ""
+
+        result = _print_all_labels_link(p, total=5)
+        if result is None:
+            return  # labels module not installed - skip
+        html = str(result)
+        assert "btn.print_labels" not in html, f"Raw i18n key found in button: {html!r}"
+        assert "Print Labels" in html or "🖨" in html
+
+    def test_print_label_dropdown_button_no_unicode_escape(self):
+        """_print_label_dropdown must NOT render a literal unicode escape sequence."""
+        from ui.routes.inventory import _print_label_dropdown
+        html = str(_print_label_dropdown("item:test-123"))
+        assert "u0001f5a8" not in html.lower(), "Literal unicode escape found in button"
+        assert "btn.u0001f5a8" not in html, "Raw i18n key found in button"
+
+
+# ---------------------------------------------------------------------------
+# apply-credit error surfacing
+# ---------------------------------------------------------------------------
+
+class TestApplyCreditErrorSurfacing:
+    """apply-credit form must surface backend errors to the user."""
+
+    @pytest.mark.asyncio
+    async def test_apply_credit_error_returns_inline_html(self, ui_client):
+        """POST /docs/{cn}/apply-credit on API error must return inline error HTML (not redirect)."""
+        from unittest.mock import AsyncMock, patch as mock_patch
+        from ui.api_client import APIError
+
+        with mock_patch(
+            "ui.api_client.apply_credit_note",
+            new=AsyncMock(side_effect=APIError(409, "Amount exceeds credit note balance")),
+        ):
+            r = await ui_client.post(
+                "/docs/doc:cn-001/apply-credit",
+                data={"target_doc_id": "doc:inv-001", "amount": "999.00", "date": "2026-01-10"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"flash--error" in r.content
+        assert b"Amount exceeds" in r.content
+        # Must NOT be a redirect
+        assert "HX-Redirect" not in r.headers
+
+    @pytest.mark.asyncio
+    async def test_apply_credit_success_returns_redirect(self, ui_client):
+        """POST /docs/{cn}/apply-credit on success must return 204 with HX-Redirect."""
+        from unittest.mock import AsyncMock, patch as mock_patch
+
+        with mock_patch(
+            "ui.api_client.apply_credit_note",
+            new=AsyncMock(return_value={"event_id": "e1"}),
+        ):
+            r = await ui_client.post(
+                "/docs/doc:cn-001/apply-credit",
+                data={"target_doc_id": "doc:inv-001", "amount": "100.00", "date": "2026-01-10"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert "HX-Redirect" in r.headers
+
+
+# ---------------------------------------------------------------------------
+# unwrap_address unit tests
+# ---------------------------------------------------------------------------
+
+class TestUnwrapAddress:
+    """unwrap_address must handle all address shapes without WET code."""
+
+    def test_dict_with_text_key(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address({"text": "Phuket"}) == "Phuket"
+
+    def test_dict_with_line1(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address({"line1": "123 Main St"}) == "123 Main St"
+
+    def test_dict_multiline(self):
+        from ui.components.table import unwrap_address
+        result = unwrap_address({"text": "123 Main", "city": "Bangkok", "country": "Thailand"})
+        assert "123 Main" in result
+        assert "Bangkok" in result
+        assert "Thailand" in result
+
+    def test_plain_string(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address("42 Somewhere") == "42 Somewhere"
+
+    def test_none(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address(None) == ""
+
+    def test_empty_dict(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address({}) == ""

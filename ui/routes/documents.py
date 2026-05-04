@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.notes import _safe_id
@@ -2143,7 +2143,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="payment-error")
+            return Span(str(e.detail), cls="flash flash--error")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/refund-credit")
@@ -3461,7 +3461,10 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
                         ),
                         Span("", id="payment-error"),
                         Button(t("btn.apply"), type="submit", cls="btn btn--primary btn--sm"),
-                        hx_post=f"/docs/{entity_id}/apply-credit", hx_swap="none", cls="form-card",
+                        hx_post=f"/docs/{entity_id}/apply-credit",
+                        hx_target="#payment-error",
+                        hx_swap="innerHTML",
+                        cls="form-card",
                     ),
                     cls="payment-form-section",
                 ),
@@ -3571,10 +3574,7 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
         return _doc_display_cell(doc_id, "company_address", display)
 
     def _addr_text(loc: dict) -> str:
-        addr = loc.get("address") or {}
-        if isinstance(addr, dict):
-            return addr.get("text") or addr.get("line1") or loc.get("name") or ""
-        return str(addr)
+        return unwrap_address(loc.get("address")) or loc.get("name") or ""
 
     options = [Option("-- select address --", value="", selected=(not current_address))]
     for loc in company_locations:

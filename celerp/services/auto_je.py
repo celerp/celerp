@@ -160,9 +160,12 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float) -> None:
-    """Create JE for credit note application: AR-to-AR transfer."""
-    app_key = f"cn_apply_{cn_id}"
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0) -> None:
+    """Create JE for credit note application: AR-to-AR transfer.
+
+    payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
+    """
+    app_key = f"cn_apply_{cn_id}:{payment_index}"
     await _emit_auto_posted_je(
         session,
         company_id=company_id,

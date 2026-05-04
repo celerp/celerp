@@ -1242,10 +1242,12 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # JE: AR-to-AR transfer
+    # JE: AR-to-AR transfer. Index by current payment count to get a unique key per application.
+    payment_idx = len(cn_row.state.get("payments", []))
     await auto_je.create_for_cn_application(
         session, company_id=company_id, user_id=user.id,
         doc_id=payload.target_doc_id, cn_id=entity_id, amount=payload.amount,
+        payment_index=payment_idx,
     )
     await session.commit()
     return {"event_id": entry.id}

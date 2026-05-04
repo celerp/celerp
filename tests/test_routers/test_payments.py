@@ -831,3 +831,51 @@ async def test_bill_real_world_flow_blank_create_then_patch_lines(client):
     # Step 6: AP must be balanced (finalize credits AP, payment would debit it)
     assert "2110" in tb_map
     assert tb_map["2110"]["total_credit"] == pytest.approx(5885.0, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_apply_cn_void_then_reapply_same_invoice(client):
+    """Apply CN to invoice → void the application → re-apply to same invoice must succeed."""
+    token = await _register(client)
+    h = _h(token)
+
+    inv = await _create_and_finalize_invoice(client, token, total=500.0)
+    cn = await _create_and_finalize_cn(client, token, original_doc_id=inv, total=100.0)
+
+    # First application
+    r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=h, json={
+        "target_doc_id": inv, "amount": 100.0, "date": "2026-01-10",
+    })
+    assert r.status_code == 200
+
+    # Verify CN is paid
+    cn_state = (await client.get(f"/docs/{cn}", headers=h)).json()
+    assert cn_state["status"] == "paid"
+
+    # Void the application on the CN side (payment index 0)
+    r = await client.post(f"/docs/{cn}/void-payment", headers=h, json={
+        "payment_index": 0, "void_reason": "mistake", "refund_date": "2026-01-11",
+    })
+    assert r.status_code == 200
+
+    # Both sides should be restored
+    cn_state = (await client.get(f"/docs/{cn}", headers=h)).json()
+    assert cn_state["status"] == "final"
+    assert cn_state["amount_outstanding"] == pytest.approx(100.0, abs=0.01)
+
+    inv_state = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert inv_state["status"] == "final"
+    assert inv_state["amount_outstanding"] == pytest.approx(500.0, abs=0.01)
+
+    # Re-apply to same invoice - must succeed
+    r = await client.post(f"/docs/{cn}/apply-to-invoice", headers=h, json={
+        "target_doc_id": inv, "amount": 100.0, "date": "2026-01-12",
+    })
+    assert r.status_code == 200, f"Re-apply failed: {r.text}"
+
+    # Invoice outstanding must have decreased by the re-applied amount
+    inv_state = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert inv_state["amount_outstanding"] == pytest.approx(400.0, abs=0.01)
+    # CN outstanding must be 0 (fully applied)
+    cn_state = (await client.get(f"/docs/{cn}", headers=h)).json()
+    assert cn_state["amount_outstanding"] == pytest.approx(0.0, abs=0.01)

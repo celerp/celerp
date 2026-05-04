@@ -1214,3 +1214,20 @@ def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: 
         cls=f"data-table {cls_extra}".strip(),
         **({"id": id} if id else {}),
     )
+
+
+def unwrap_address(raw) -> str:
+    """Unwrap an address value that may be a dict (``{"text": "…"}``) or a plain string.
+
+    Single source of truth for all UI address display - used by settings, documents, etc.
+    """
+    if not raw:
+        return ""
+    if isinstance(raw, dict):
+        text = raw.get("text") or raw.get("line1") or ""
+        for k in ("line2", "city", "state", "postal_code", "country"):
+            v = raw.get(k) or ""
+            if v:
+                text = text + ("\n" if text else "") + v
+        return text
+    return str(raw)
