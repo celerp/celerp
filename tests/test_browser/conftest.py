@@ -244,23 +244,20 @@ def api(api_server, seeded_user):
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _reset_event_loop_after_playwright(playwright):
+def _reset_event_loop_after_playwright():
     """Playwright's sync API creates and closes its own asyncio event loop.
 
     After pw.stop() closes that loop, the asyncio policy still references a
     closed/dead loop. Any subsequent pytest-asyncio fixtures then fail with
     'Runner.run() cannot be called from a running event loop'.
 
-    This fixture runs after playwright (via explicit dependency) and clears
-    the stale loop reference so pytest-asyncio can create a fresh one.
+    This fixture yields first (so all browser tests run), then installs a
+    fresh event loop so unit tests that run after browser tests get a clean
+    slate. We do NOT take ``playwright`` as a dep - that would tear down
+    before playwright stops, still leaving a closed loop.
     """
     import asyncio
     yield
-    # Playwright has stopped; clear the closed loop from asyncio's policy
-    # so unit tests that run after browser tests get a clean slate.
-    try:
-        loop = asyncio.get_event_loop_policy().get_event_loop()
-        if loop.is_closed():
-            asyncio.get_event_loop_policy().set_event_loop(None)
-    except RuntimeError:
-        asyncio.get_event_loop_policy().set_event_loop(None)
+    # All browser tests finished. Install a new loop so pytest-asyncio can
+    # create its own runner for any tests that follow.
+    asyncio.get_event_loop_policy().set_event_loop(asyncio.new_event_loop())

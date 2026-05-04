@@ -253,10 +253,9 @@ async def test_share_url_with_public_url(client):
     with patch("celerp_docs.routes_share.settings") as mock_settings:
         mock_settings.celerp_public_url = "https://my.celerp.instance"
         r2 = await client.post(f"/docs/{doc_id}/share", headers=_h(tok))
-        assert r2.status_code == 200
-        # "url" key is the share link
+        assert r2.status_code == 200, r2.text
         share_url = r2.json()["url"]
-        assert "src=" in share_url
+        assert "src=" in share_url, f"Expected src= in share URL, got: {share_url!r}"
 
 
 # ---------------------------------------------------------------------------

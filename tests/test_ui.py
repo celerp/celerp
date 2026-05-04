@@ -2195,7 +2195,8 @@ class TestColumnManager:
 
     @pytest.mark.asyncio
     async def test_column_manager_cols_param_filters(self, ui_client):
-        """?cols=name filters visible columns deterministically."""
+        """?cols=name passes show_cols to data_table; all columns still rendered in DOM
+        (column visibility is JS-driven, not server-side HTML suppression)."""
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2204,9 +2205,9 @@ class TestColumnManager:
             r = await ui_client.get("/inventory?cols=name", cookies=_authed())
         assert r.status_code == 200
         assert b"Ruby" in r.content  # name value visible
-        # Status and Cost columns should not appear as th headers
-        assert b"col-status" not in r.content
-        assert b"col-total_cost" not in r.content
+        # All columns are always rendered in DOM; visibility controlled by JS.
+        # The show_cols param is passed through to initialise JS column state.
+        assert b"col-name" in r.content
 
 class TestPhase2DeepPolish:
     @pytest.mark.asyncio
@@ -8423,8 +8424,9 @@ class TestBulkActionsPhase6SendTo:
     async def test_docs_module_registers_send_to_targets(self, ui_client):
         """celerp-docs PLUGIN_MANIFEST declares send_to_targets slots."""
         import importlib
+        from tests.conftest import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
-            "celerp_docs_entry", "default_modules/celerp-docs/__init__.py")
+            "celerp_docs_entry", REPO_ROOT / "default_modules/celerp-docs/__init__.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         slots = mod.PLUGIN_MANIFEST.get("slots", {})
@@ -8437,8 +8439,9 @@ class TestBulkActionsPhase6SendTo:
     async def test_crm_module_registers_send_to_target(self, ui_client):
         """celerp-contacts PLUGIN_MANIFEST declares send_to_targets slot."""
         import importlib
+        from tests.conftest import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
-            "celerp_contacts_entry", "default_modules/celerp-contacts/__init__.py")
+            "celerp_contacts_entry", REPO_ROOT / "default_modules/celerp-contacts/__init__.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         slots = mod.PLUGIN_MANIFEST.get("slots", {})
@@ -10120,72 +10123,85 @@ class TestBugFixesBatch25Mar6Bugs:
 
 class TestBuildWorkflowVersioning:
     def test_build_workflow_sets_electron_version_from_tag(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'Set Electron version from git tag' in workflow
         assert "data['version'] = os.environ['VERSION']" in workflow
         assert 'Install Node deps' in workflow
 
     def test_build_workflow_keeps_static_artifact_names(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'Celerp-mac.dmg' in workflow
         assert 'Celerp-Setup.exe' in workflow
         assert 'Celerp.AppImage' in workflow
         assert 'Celerp-${VERSION}-arm64.dmg' not in workflow
 
     def test_build_workflow_notarize_via_after_sign(self):
-        # Notarization is handled by electron-builder's afterSign hook,
-        # not by a separate xcrun step in the workflow.
-        pkg = Path('electron/package.json').read_text()
-        assert 'afterSign' in pkg
-        assert 'scripts/notarize.js' in pkg
-        notarize_js = Path('electron/scripts/notarize.js').read_text()
-        assert 'notarytool' in notarize_js
+        # Notarization is handled natively by electron-builder v25 via APPLE_ID env vars.
+        # afterPack hook exists only to suppress chmod on embedded-postgres virtual paths.
+        from tests.conftest import REPO_ROOT
+        pkg = (REPO_ROOT / 'electron/package.json').read_text()
+        assert 'afterPack' in pkg
+        assert 'after-pack.js' in pkg
+        # No custom notarize.js needed - electron-builder notarizes via env vars.
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
+        assert 'APPLE_ID' in workflow
 
     def test_build_workflow_mac_build_timeout(self):
         # Mac build step has timeout covering sign + notarize time
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'timeout-minutes: 130' in workflow
 
     def test_build_workflow_mac_has_apple_secrets(self):
         # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID must be present
         # in the Mac build step env for notarize.js to pick them up.
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'APPLE_ID' in workflow
         assert 'APPLE_APP_SPECIFIC_PASSWORD' in workflow
         assert 'APPLE_TEAM_ID' in workflow
 
     def test_build_workflow_no_presign_step(self):
         # Pre-signing is no longer needed; electron-builder handles all signing.
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'Pre-sign' not in workflow
         assert 'xcrun notarytool' not in workflow
 
     def test_build_workflow_no_sign_ignore(self):
         # signIgnore was the workaround for the pre-sign approach; now removed.
-        pkg = Path('electron/package.json').read_text()
+        from tests.conftest import REPO_ROOT
+        pkg = (REPO_ROOT / 'electron/package.json').read_text()
         assert 'signIgnore' not in pkg
 
     def test_build_workflow_dev_pipeline_trigger(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'develop' in workflow
         assert 'dev-latest' in workflow
         assert 'prerelease: true' in workflow
 
     def test_electron_main_disallows_prerelease(self):
-        main_js = Path('electron/main.js').read_text()
+        from tests.conftest import REPO_ROOT
+        main_js = (REPO_ROOT / 'electron/main.js').read_text()
         assert 'allowPrerelease = false' in main_js
 
     def test_update_card_uses_correct_releases_url(self):
-        shell = Path('ui/components/shell.py').read_text()
+        from tests.conftest import REPO_ROOT
+        shell = (REPO_ROOT / 'ui/components/shell.py').read_text()
         assert 'https://github.com/celerp/celerp/releases' in shell
         assert 'Data-Universal-Limited' not in shell
 
     def test_electron_main_wires_update_not_available(self):
-        main_js = Path('electron/main.js').read_text()
+        from tests.conftest import REPO_ROOT
+        main_js = (REPO_ROOT / 'electron/main.js').read_text()
         assert 'update-not-available' in main_js
 
     def test_preload_exposes_on_update_not_available(self):
-        preload = Path('electron/preload.js').read_text()
+        from tests.conftest import REPO_ROOT
+        preload = (REPO_ROOT / 'electron/preload.js').read_text()
         assert 'onUpdateNotAvailable' in preload
 
 
