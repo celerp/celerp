@@ -1246,6 +1246,8 @@ a:hover { text-decoration: underline; }
 .total-row--final { border-top: 2px solid var(--c-border); padding-top: 6px; margin-top: 4px; }
 .total-label { color: var(--c-text2); white-space: nowrap; }
 .total-label--final { font-weight: 700; color: var(--c-text); font-size: 14px; }
+.total-label--conversion { color: var(--c-text2); font-style: italic; font-size: 12px; }
+.total-row--conversion { border-top: 1px dashed var(--c-border); margin-top: 2px; padding-top: 4px; }
 .total-label--editable { text-decoration: underline dotted var(--c-text2); text-underline-offset: 3px; }
 .total-label--editable:hover { color: var(--c-text); }
 .total-value { font-weight: 500; color: var(--c-text); text-align: right; }

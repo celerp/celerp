@@ -1290,9 +1290,11 @@ def setup_routes(app):
             pass
         # Fetch company timezone for notes display
         tz: str = "UTC"
+        company_currency: str = "USD"
         try:
             _co = await api.get_company(token)
             tz = _co.get("timezone") or "UTC"
+            company_currency = _co.get("currency") or "USD"
         except Exception:
             pass
         company_taxes: list[dict] = []
@@ -1324,7 +1326,7 @@ def setup_routes(app):
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
             request=request,
@@ -1376,6 +1378,25 @@ def setup_routes(app):
             # Status is a state-machine field; transitions happen via lifecycle buttons only.
             # Return a non-editable display to block direct manipulation via URL.
             return _doc_display_cell(entity_id, "status", value)
+        elif field == "currency":
+            # Currency is immutable after creation - show read-only display
+            return _doc_display_cell(entity_id, "currency", value)
+        elif field == "conversion_rate":
+            # Editable on draft only; locked after finalization
+            doc_status = doc.get("status", "draft")
+            if doc_status != "draft":
+                return _doc_display_cell(entity_id, "conversion_rate", value)
+            input_el = Input(
+                type="number", name="value", value=value, step="any", min="0",
+                hx_patch=f"/docs/{entity_id}/field/{field}",
+                hx_target="closest .editable-cell", hx_swap="outerHTML",
+                hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
+                onkeydown=esc_js + enter_js,
+                onblur=f"if(!this.value.trim() && !this.dataset.dirty){{{blur_restore}}}",
+                oninput="this.dataset.dirty='1'",
+                data_orig=value,
+                placeholder="e.g. 35.00",
+            )
         elif field == "purchase_kind":
             opts = ["inventory", "expense", "asset"]
             input_el = Select(
@@ -1600,6 +1621,10 @@ def setup_routes(app):
                             patch["price_list"] = default_pl
                         except Exception:
                             pass
+                    # Propagate contact currency to draft doc (enables foreign-currency workflow)
+                    contact_currency = contact.get("currency")
+                    if contact_currency and doc.get("status", "draft") == "draft":
+                        patch["currency"] = contact_currency
                 except APIError:
                     pass  # contact fetch failure → skip auto-populate
             # Auto-calculate due_date when payment_terms changes
@@ -3630,7 +3655,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD") -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -4977,6 +5002,11 @@ async function celerpCsvImport(input, entityId) {{
         Div(Span(t("doc.total"), cls="total-label total-label--final"),
             Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
             cls="total-row total-row--final"),
+        # Conversion note: shown only when doc currency differs from company base currency
+        *([Div(
+            Span(f"≈ {fmt_money(total_amount * float(doc.get('conversion_rate') or 1), company_currency)} at {doc.get('conversion_rate')} {company_currency}/{currency}", cls="total-label total-label--conversion"),
+            cls="total-row total-row--conversion",
+        )] if currency != company_currency and doc.get("conversion_rate") else []),
         cls="total-panel",
     )
 
@@ -5000,6 +5030,12 @@ async function celerpCsvImport(input, entityId) {{
     if not is_list:
         _contact_rows.append(Div(Div(t("doc.payment_terms"), cls="form-label"), _cell("payment_terms", doc.get("payment_terms")), cls="form-group"))
     _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _cell("status", status), *_slot_badges, cls="form-group"))
+    # Currency row: always show; rate row shown only when doc currency differs from base
+    _contact_rows.append(Div(Div(t("doc.currency"), cls="form-label"), _cell("currency", currency), cls="form-group"))
+    if currency != company_currency:
+        _rate_val = doc.get("conversion_rate")
+        _rate_display = str(_rate_val) if _rate_val else "--"
+        _contact_rows.append(Div(Div(t("doc.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
     if not is_list and outstanding_value is not None:
         _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
 

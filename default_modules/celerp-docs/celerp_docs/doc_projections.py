@@ -47,9 +47,13 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
     elif event_type == "doc.updated":
         _PATCH_PROTECTED = {"status", "entity_type", "company_id"}
+        _is_finalized = current.get("status", "draft") != "draft"
         for field, change in data["fields_changed"].items():
-            if field not in _PATCH_PROTECTED:
-                current[field] = change.get("new")
+            if field in _PATCH_PROTECTED:
+                continue
+            if field == "conversion_rate" and _is_finalized:
+                continue  # conversion_rate is immutable after finalization
+            current[field] = change.get("new")
         # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
         # based on how much has already been paid - never let outstanding go negative.
         if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):
