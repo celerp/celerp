@@ -20,8 +20,6 @@ from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from ui.routes.settings import (
     _check_role,
     _token,
-    _CURRENCIES,
-    _CURRENCY_CODES,
     _TIMEZONES,
     _TZ_SEARCH,
     _FISCAL_MONTHS,

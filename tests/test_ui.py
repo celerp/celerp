@@ -1848,6 +1848,39 @@ class TestSettingsInlineEditValidation:
         assert b"Phuket" in r.content
         assert b'{"text"' not in r.content  # must NOT show raw dict repr
 
+    @pytest.mark.asyncio
+    async def test_location_address_patch_wraps_plain_text_as_dict(self, ui_client):
+        """PATCH /settings/locations/{id}/address with plain text must send {'text': ...} to backend."""
+        _loc = {"id": "loc1", "name": "HQ", "type": "warehouse", "address": {"text": "Chiang Mai"}, "is_default": False}
+        with (
+            patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [_loc]})),
+        ):
+            r = await ui_client.patch(
+                "/settings/locations/loc1/address", data={"value": "Chiang Mai"}, cookies=_authed()
+            )
+        assert r.status_code == 200
+        assert b"cell-error" not in r.content
+        mock_patch.assert_called_once_with(mock_patch.call_args[0][0], "loc1", {"address": {"text": "Chiang Mai"}})
+
+    @pytest.mark.asyncio
+    async def test_location_type_display_shows_label_not_raw_value(self, ui_client):
+        """Location type column must show 'Warehouse' not 'warehouse' (display label from _LOC_TYPES)."""
+        _locs = [{"id": "loc1", "name": "HQ", "type": "warehouse", "address": None, "is_default": False}]
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Warehouse" in r.content  # capitalized label
+        # Raw value "warehouse" may appear in HTMX attributes but not as cell-text
+        html = r.text
+        import re
+        cell_texts = re.findall(r'class="cell-text"[^>]*>([^<]+)<', html)
+        assert not any(t.strip() == "warehouse" for t in cell_texts), "Raw 'warehouse' shown as cell text"
+
     # ── Item schema type ─────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
@@ -2266,6 +2299,26 @@ class TestPhase2DeepPolish:
             r = await ui_client.patch("/contacts/ct:1/field/phone", data={"value": "999"}, cookies=_authed())
         assert r.status_code == 200
         assert b"cell--clickable" in r.content
+
+    @pytest.mark.asyncio
+    async def test_contact_currency_field_edit_returns_combobox(self, ui_client):
+        """GET /contacts/{id}/field/currency/edit must return a currency combobox, not plain text input."""
+        contact = {**_CONTACTS[0], "currency": "THB"}
+        with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
+            r = await ui_client.get("/contacts/ct:1/field/currency/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b"combobox-wrap" in r.content
+        assert b"THB" in r.content
+        assert b'type="text"' in r.content  # search input
+
+    @pytest.mark.asyncio
+    async def test_contact_currency_field_patch_rejects_invalid_code(self, ui_client):
+        """PATCH /contacts/{id}/field/currency with garbage must return cell-error."""
+        with patch("ui.api_client.patch_contact", new=AsyncMock()) as mock_patch:
+            r = await ui_client.patch("/contacts/ct:1/field/currency", data={"value": "FFF"}, cookies=_authed())
+        assert r.status_code == 200
+        assert b"cell-error" in r.content
+        mock_patch.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_docs_detail_field_patch(self, ui_client):

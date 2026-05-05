@@ -13,6 +13,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
 from ui.components.table import EMPTY, unwrap_address
+from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, currency_combobox_td
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
@@ -28,55 +29,6 @@ def _check_role(request: Request, min_role: str = "admin") -> RedirectResponse |
 
 
 # ── Constrained field options ────────────────────────────────────────────
-
-# ISO 4217 common currencies: (code, label)
-_CURRENCIES: list[tuple[str, str]] = [
-    ("AED", "AED – UAE Dirham"),
-    ("AUD", "AUD – Australian Dollar"),
-    ("BDT", "BDT – Bangladeshi Taka"),
-    ("BRL", "BRL – Brazilian Real"),
-    ("CAD", "CAD – Canadian Dollar"),
-    ("CHF", "CHF – Swiss Franc"),
-    ("CLP", "CLP – Chilean Peso"),
-    ("CNY", "CNY – Chinese Yuan"),
-    ("COP", "COP – Colombian Peso"),
-    ("CZK", "CZK – Czech Koruna"),
-    ("DKK", "DKK – Danish Krone"),
-    ("EGP", "EGP – Egyptian Pound"),
-    ("EUR", "EUR – Euro"),
-    ("GBP", "GBP – British Pound"),
-    ("HKD", "HKD – Hong Kong Dollar"),
-    ("HUF", "HUF – Hungarian Forint"),
-    ("IDR", "IDR – Indonesian Rupiah"),
-    ("ILS", "ILS – Israeli Shekel"),
-    ("INR", "INR – Indian Rupee"),
-    ("JPY", "JPY – Japanese Yen"),
-    ("KRW", "KRW – South Korean Won"),
-    ("KWD", "KWD – Kuwaiti Dinar"),
-    ("MXN", "MXN – Mexican Peso"),
-    ("MYR", "MYR – Malaysian Ringgit"),
-    ("NGN", "NGN – Nigerian Naira"),
-    ("NOK", "NOK – Norwegian Krone"),
-    ("NZD", "NZD – New Zealand Dollar"),
-    ("PEN", "PEN – Peruvian Sol"),
-    ("PHP", "PHP – Philippine Peso"),
-    ("PKR", "PKR – Pakistani Rupee"),
-    ("PLN", "PLN – Polish Złoty"),
-    ("QAR", "QAR – Qatari Riyal"),
-    ("RON", "RON – Romanian Leu"),
-    ("RUB", "RUB – Russian Ruble"),
-    ("SAR", "SAR – Saudi Riyal"),
-    ("SEK", "SEK – Swedish Krona"),
-    ("SGD", "SGD – Singapore Dollar"),
-    ("THB", "THB – Thai Baht"),
-    ("TRY", "TRY – Turkish Lira"),
-    ("TWD", "TWD – Taiwan Dollar"),
-    ("UAH", "UAH – Ukrainian Hryvnia"),
-    ("USD", "USD – US Dollar"),
-    ("VND", "VND – Vietnamese Dong"),
-    ("ZAR", "ZAR – South African Rand"),
-]
-_CURRENCY_CODES: frozenset[str] = frozenset(c for c, _ in _CURRENCIES)
 
 # IANA timezones - canonical names only (no deprecated aliases)
 _TIMEZONES: list[str] = sorted(
@@ -568,37 +520,11 @@ def setup_routes(app):
         val = str(company.get(field, "") or "")
 
         if field == "currency":
-            label_map = {code: label for code, label in _CURRENCIES}
-            display_val = label_map.get(val, val)
-            return Td(
-                Div(
-                    Input(
-                        type="text", value=display_val, placeholder="Search currency...",
-                        cls="cell-input combobox-input", autofocus=True,
-                    ),
-                    Input(type="hidden", name="value", value=val,
-                          id=f"company-{field}-input"),
-                    Div(
-                        *[Div(
-                            Span(f"{code} - {label}"),
-                            cls="combobox-option",
-                            data_value=code,
-                            data_search=f"{code} {label}".lower(),
-                          ) for code, label in _CURRENCIES],
-                        cls="combobox-list",
-                    ),
-                    cls="combobox-wrap",
-                ),
-                Button(t("btn.save"), type="button",
-                       hx_patch=f"/settings/company/{field}",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       hx_include=f"#company-{field}-input",
-                       cls="btn btn--primary btn--xs ml-sm"),
-                Button(t("btn.cancel"), type="button",
-                       hx_get=f"/settings/company/{field}/display",
-                       hx_target="closest td", hx_swap="outerHTML",
-                       cls="btn btn--secondary btn--xs ml-xs"),
-                cls="cell cell--editing",
+            return currency_combobox_td(
+                value=val,
+                hidden_id=f"company-{field}-input",
+                patch_url=f"/settings/company/{field}",
+                cancel_url=f"/settings/company/{field}/display",
             )
 
         if field == "fiscal_year_start":
@@ -709,7 +635,7 @@ def setup_routes(app):
             import re as _re
             if not value.strip() or not _re.fullmatch(r"[a-z0-9][a-z0-9\-]*", value.strip()):
                 return P(t("error.invalid_slug"), cls="cell-error")
-        if field == "currency" and value not in _CURRENCY_CODES:
+        if field == "currency" and value not in CURRENCY_CODES:
             return P(f"Invalid currency: {value!r}", cls="cell-error")
         if field == "fiscal_year_start" and value not in _FISCAL_VALUES:
             return P(f"Invalid fiscal year start: {value!r}", cls="cell-error")
@@ -1308,9 +1234,11 @@ def setup_routes(app):
         value = str(form.get("value", ""))
         if field == "type" and value not in _LOC_TYPE_VALUES:
             return P(f"Invalid location type: {value!r}", cls="cell-error")
-        patch_val: str | bool = value
+        patch_val: str | bool | dict = value
         if field == "is_default":
             patch_val = value.strip().lower() in {"true", "1", "yes"}
+        elif field == "address":
+            patch_val = {"text": value} if value.strip() else {}
         try:
             await api.patch_location(token, location_id, {field: patch_val})
             locations = (await api.get_locations(token)).get("items", [])
@@ -2227,8 +2155,7 @@ def _company_display_cell(field: str, value) -> FT:
     raw = str(value) if value and str(value).strip() else ""
     if field == "currency" and raw:
         # Show "USD – US Dollar" if we know it, else just the code
-        label_map = {code: label for code, label in _CURRENCIES}
-        display = label_map.get(raw, raw)
+        display = currency_label(raw)
     elif field == "fiscal_year_start" and raw:
         label_map = {v: label for v, label in _FISCAL_MONTHS}
         display = label_map.get(raw, raw)
@@ -2350,10 +2277,16 @@ _LOC_TYPES: list[tuple[str, str]] = [
     ("address", "Company Address"),
 ]
 _LOC_TYPE_VALUES: frozenset[str] = frozenset(v for v, _ in _LOC_TYPES)
+_LOC_TYPE_LABELS: dict[str, str] = {v: lbl for v, lbl in _LOC_TYPES}
 
 
 def _location_display_cell(location_id: str, field: str, value) -> FT:
-    display = unwrap_address(value) if field == "address" else (str(value) if value and str(value).strip() else EMPTY)
+    if field == "address":
+        display = unwrap_address(value)
+    elif field == "type":
+        display = _LOC_TYPE_LABELS.get(str(value), str(value)) if value else EMPTY
+    else:
+        display = str(value) if value and str(value).strip() else EMPTY
     if not display:
         display = EMPTY
     return Td(

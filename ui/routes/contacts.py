@@ -16,6 +16,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
+from ui.components.currency import currency_combobox_td, CURRENCY_CODES as _CURRENCY_CODES
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _parse_dates
@@ -1688,6 +1689,13 @@ def setup_routes(app):
                 onkeydown=_esc_js,
                 onchange="if(this.value==='__add_new__'){window.location.href='/settings/contacts?tab=payment-terms';return false;}",
             )
+        elif field == "currency":
+            return currency_combobox_td(
+                value=val,
+                hidden_id=f"contact-currency-{contact_id}",
+                patch_url=f"/contacts/{contact_id}/field/currency",
+                cancel_url=f"/contacts/{contact_id}/field/currency/display",
+            )
         else:
             # Guard: ignore blur within 350ms of mount to prevent dblclick's
             # second mouseup from immediately closing the editor.
@@ -1739,6 +1747,8 @@ def setup_routes(app):
         value = str(form.get("value", ""))
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
+        if field == "currency" and value and value not in _CURRENCY_CODES:
+            return P(f"Invalid currency code: {value!r}", cls="cell-error")
         data = {field: float(value) if field == "credit_limit" and value else value}
         try:
             await api.patch_contact(token, contact_id, data)
