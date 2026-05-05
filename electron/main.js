@@ -278,7 +278,8 @@ function _moduleAlembicLocations() {
 
 function startApi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
-    apiPort = await getFreePort();
+    // apiPort and uiPort are pre-allocated by the caller before startApi/startUi
+    // are invoked, so both values are already set here.
     const env = {
       ...process.env,
       // Scrub Python environment variables that the user's shell may have set
@@ -304,6 +305,7 @@ function startApi(dbUrl, cfg) {
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
       CELERP_INSTALL_CHANNEL: "electron",
       CELERP_API_PORT: String(apiPort),
+      CELERP_UI_PORT: String(uiPort),
       ...resolveStorageEnv(cfg),
     };
     apiProcess = spawn(
@@ -326,7 +328,7 @@ function startApi(dbUrl, cfg) {
 
 function startUi(dbUrl, cfg) {
   return new Promise(async (resolve, reject) => {
-    uiPort = await getFreePort();
+    // uiPort is pre-allocated by the caller; no need to allocate here.
     const env = {
       ...process.env,
       // Scrub Python environment variables that the user's shell may have set.
@@ -613,6 +615,11 @@ app.whenReady().then(async () => {
     seedDefaultModules();
     runModuleSetup();
     runMigrations(dbConfig.url);
+    // Pre-allocate both ports so each process env carries both values.
+    // GatewayClient runs inside the API process and needs to know the UI port
+    // for its reverse-proxy routing; allocating upfront avoids a null race.
+    apiPort = await getFreePort();
+    uiPort = await getFreePort();
     await startApi(dbConfig.url, cfg);
     await startUi(dbConfig.url, cfg);
 
@@ -620,7 +627,7 @@ app.whenReady().then(async () => {
       getApiProcess: () => apiProcess,
       getUiProcess: () => uiProcess,
       setUiProcess: (p) => { uiProcess = p; },
-      startApi: (url) => startApi(url, readConfig()),
+      startApi: async (url) => { apiPort = await getFreePort(); uiPort = await getFreePort(); return startApi(url, readConfig()); },
       startUi: (url) => startUi(url, readConfig()),
       // Sentinel must live next to PYTHON_CONFIG_PATH so Python's config_path().parent
       // resolves to the same directory that Electron watches.
