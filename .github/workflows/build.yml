@@ -96,7 +96,8 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: pnpm run build:mac
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm run build:mac -- --publish onTagOrDraft
 
       - name: Build macOS (dev - signed only, no notarization)
         if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
@@ -107,8 +108,16 @@ jobs:
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
         run: pnpm run build:mac
 
-      - name: Build (Windows / Linux - no signing)
-        if: matrix.os != 'macos-latest'
+      - name: Build (Windows / Linux - release tag)
+        if: matrix.os != 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
+        working-directory: electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ${{ matrix.build_cmd }} -- --publish onTagOrDraft
+
+      - name: Build (Windows / Linux - dev build)
+        if: matrix.os != 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"

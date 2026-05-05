@@ -268,6 +268,7 @@ async def upload_contact_file(
     contact_id: str,
     file: UploadFile,
     description: str = Form(""),
+    document_tag: str = Form(""),
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -303,6 +304,7 @@ async def upload_contact_file(
             "size": len(content),
             "uploaded_at": now,
             "description": description,
+            "document_tag": document_tag,
         },
         actor_id=user.id,
         location_id=None,
@@ -318,6 +320,40 @@ async def upload_contact_file(
         "content_type": content_type,
         "size": len(content),
     }
+
+
+@router.post("/contacts/{contact_id}/files/{file_id}/tag")
+async def tag_contact_file(
+    contact_id: str,
+    file_id: str,
+    document_tag: str = Form(""),
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Update the document_tag on an existing uploaded file."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+    if row is None or row.entity_type != "contact":
+        raise HTTPException(status_code=404, detail="Not found")
+    files = row.state.get("files", [])
+    if not any(f.get("file_id") == file_id for f in files):
+        raise HTTPException(status_code=404, detail="File not found")
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=contact_id,
+        entity_type="contact",
+        event_type="crm.contact.file_tagged",
+        data={"file_id": file_id, "document_tag": document_tag},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+    return (updated.state if updated else {}) | {"id": contact_id}
 
 
 @router.get("/contacts/{contact_id}/files/{file_id}")

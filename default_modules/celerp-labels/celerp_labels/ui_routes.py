@@ -1468,6 +1468,24 @@ def setup_ui_routes(app) -> None:
             template = templates[0] if templates else None
         return _printable_label_sheet([item_data] if item_data else [], template)
 
+    @app.get("/labels/template-options")
+    async def labels_template_options(request: Request):
+        """Return <option> elements for label templates (HTMX fragment for bulk toolbar select)."""
+        templates = await _fetch_templates(request)
+        from fasthtml.common import Option, NotStr
+        if not templates:
+            return NotStr('<option value="" disabled selected>No templates - create one in Settings</option>')
+        opts = "".join(
+            f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
+            for tpl in templates
+        )
+        # Pre-select first template
+        first_id = templates[0]["id"]
+        first_name = templates[0]["name"]
+        return NotStr(f'<option value="{first_id}" selected>{first_name}</option>' +
+                      "".join(f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
+                               for tpl in templates[1:]))
+
     @app.post("/labels/print-bulk")
     async def labels_print_bulk(request: Request):
         """Bulk print preview: show template picker + print button for selected items."""

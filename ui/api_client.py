@@ -1443,11 +1443,16 @@ async def patch_contact_defaults(token: str, defaults: dict) -> dict:
         return _raise(await c.patch("/companies/me/contact-defaults", json={"defaults": defaults})).json()
 
 
-async def upload_contact_file(token: str, contact_id: str, file_data: bytes, filename: str, content_type: str, description: str = "") -> dict:
+async def upload_contact_file(token: str, contact_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
     async with _client(token) as c:
         files = {"file": (filename, file_data, content_type)}
-        data = {"description": description}
+        data = {"description": description, "document_tag": document_tag}
         return _raise(await c.post(f"/crm/contacts/{contact_id}/files", files=files, data=data)).json()
+
+
+async def tag_contact_file(token: str, contact_id: str, file_id: str, document_tag: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/crm/contacts/{contact_id}/files/{file_id}/tag", data={"document_tag": document_tag})).json()
 
 
 async def delete_contact_file(token: str, contact_id: str, file_id: str) -> dict:

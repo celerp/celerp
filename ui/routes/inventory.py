@@ -107,16 +107,14 @@ async def _inventory_content(
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
     extra_params = urlencode(_base_state(p))
     total_items = valuation.get("item_count", 0)
-    print_all_link = _print_all_labels_link(p, total_items)
 
     return Div(
         _category_tabs(category_counts, p),
         _valuation_bar(valuation, currency, lang),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p),
-        _bulk_toolbar(locations),
+        _bulk_toolbar(locations, p, total_items),
         Div(
             _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
-            print_all_link if print_all_link else "",
             cls="column-manager-row",
         ),
         data_table(
@@ -1688,7 +1686,7 @@ function celerpPrintLabel(entityId, templateId) {
         return Response("", status_code=204, headers={"HX-Refresh": "true"})
 
 
-def _bulk_toolbar(locations: list[dict]) -> FT:
+def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0) -> FT:
     """Sticky toolbar: [N selected] [Clear] [Action ▾] [context-area].
 
     Single action dropdown drives everything. Context area swaps based on selection.
@@ -1751,7 +1749,7 @@ def _bulk_toolbar(locations: list[dict]) -> FT:
         Div(id="bulk-context", cls="bulk-context"),
         Div(id="bulk-action-result"),
         # Hidden templates for context area content
-        _bulk_context_templates(loc_opts, _loc_opt, _loc_js, send_to_opts, get_slot("bulk_action")),
+        _bulk_context_templates(loc_opts, _loc_opt, _loc_js, send_to_opts, get_slot("bulk_action"), p or {}, total_items),
         id="bulk-toolbar",
         cls="bulk-toolbar",
         **{"data-hidden": "true"},
@@ -1764,6 +1762,8 @@ def _bulk_context_templates(
     loc_new_js: str,
     send_to_opts: list,
     module_actions: list,
+    p: dict | None = None,
+    total_items: int = 0,
 ) -> FT:
     """Hidden <template> elements for each action's context area. JS clones them into #bulk-context."""
     from fasthtml.common import Template
@@ -1845,11 +1845,50 @@ def _bulk_context_templates(
     # Module action templates.
     # navigate type: native form submit opening a new tab (for full-page responses).
     # htmx type (default): HTMX POST into #bulk-action-result.
+    # celerp-labels gets a special inline template selector to skip the intermediate page.
     module_tpls = []
     for action in module_actions:
         action_id = action["form_action"].replace("/", "_").strip("_")
+        is_labels = action.get("_module") == "celerp-labels"
         is_navigate = action.get("action_type") == "navigate"
-        if is_navigate:
+
+        if is_labels:
+            # Build filter params for "print all" fallback link
+            _LABEL_CAP = 100
+            count = min(total_items, _LABEL_CAP)
+            filter_qs_params = {k: v for k, v in (p or {}).items()
+                                if k in ("q", "status", "category", "sort", "dir") and v}
+            from urllib.parse import urlencode as _ue
+            print_all_href = "/labels/print-list" + (f"?{_ue(filter_qs_params)}" if filter_qs_params else "")
+            print_all_label = f"{t('btn._print_labels')} (all {count})" if total_items else t("btn._print_labels")
+
+            form = Form(
+                # Template selector loaded via HTMX on first use
+                Select(
+                    Option(t("label.loading_templates"), value="", disabled=True, selected=True),
+                    name="template_id",
+                    id="bulk-labels-template-select",
+                    cls="form-input form-input--sm",
+                    hx_get="/labels/template-options",
+                    hx_trigger="load",
+                    hx_swap="innerHTML",
+                    hx_target="#bulk-labels-template-select",
+                ),
+                Button(action.get("label", t("btn._print_labels")), type="submit", cls="btn btn--primary btn--sm"),
+                action="/labels/print-bulk/generate",
+                method="post",
+                target="_blank",
+                onsubmit="submitBulkAction(this)",
+                cls="display-contents",
+            )
+            # "Print all filtered items" link as a secondary option
+            print_all_form = Form(
+                A(print_all_label, href=print_all_href, target="_blank",
+                  cls="btn btn--ghost btn--sm", style="white-space:nowrap"),
+                cls="display-contents",
+            )
+            module_tpls.append(Template(Div(form, print_all_form, cls="display-contents"), id=f"tpl-mod-{action_id}"))
+        elif is_navigate:
             form = Form(
                 Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
                 action=action["form_action"],
@@ -1858,6 +1897,7 @@ def _bulk_context_templates(
                 onsubmit="submitBulkAction(this)",
                 cls="display-contents",
             )
+            module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
         else:
             form = Form(
                 Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
@@ -1867,7 +1907,7 @@ def _bulk_context_templates(
                 onsubmit="submitBulkAction(this)",
                 cls="display-contents",
             )
-        module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
+            module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
 
     return Div(
         transfer_tpl,
@@ -2506,31 +2546,6 @@ def _resolve_field_def(
     return f_def, f_def.get("type", "text"), f_def.get("options") or None, allow_custom
 
 
-def _print_all_labels_link(p: dict, total: int) -> FT | None:
-    """Return a 'Print all labels (N)' link for the column-manager-row when labels module is loaded.
-
-    Only rendered when the celerp-labels bulk_action slot is registered.
-    Passes exact current filter state (q, status, category, sort, dir) as GET params.
-    Capped at 100 items; shows warning count when total exceeds cap.
-    Returns None when labels module is not loaded.
-    """
-    from celerp.modules.slots import get as get_slot
-    bulk_actions = get_slot("bulk_action")
-    labels_action = next((a for a in bulk_actions if a.get("_module") == "celerp-labels"), None)
-    if not labels_action:
-        return None
-
-    _LABEL_CAP = 100
-    count = min(total, _LABEL_CAP)
-    if total > _LABEL_CAP:
-        label = f"{t('btn._print_labels')} (first {_LABEL_CAP})"
-    else:
-        label = f"{t('btn._print_labels')} ({count})"
-
-    qs_params = {k: v for k, v in _base_state(p, include_page=False).items()
-                 if k in ("q", "status", "category", "sort", "dir") and v}
-    href = "/labels/print-list" + (f"?{urlencode(qs_params)}" if qs_params else "")
-    return A(label, href=href, target="_blank", cls="btn btn--ghost btn--sm print-all-labels-btn")
 
 
 def _print_label_dropdown(entity_id: str) -> FT:

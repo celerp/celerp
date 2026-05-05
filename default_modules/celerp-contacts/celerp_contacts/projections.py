@@ -126,7 +126,13 @@ def apply_contact_event(state: dict, event_type: str, data: dict) -> dict:
             "size": data.get("size"),
             "uploaded_at": data.get("uploaded_at"),
             "description": data.get("description", ""),
+            "document_tag": data.get("document_tag", ""),
         })
+    elif event_type == "crm.contact.file_tagged":
+        for f in current.get("files", []):
+            if f.get("file_id") == data.get("file_id"):
+                f["document_tag"] = data.get("document_tag", "")
+                break
     elif event_type == "crm.contact.file_removed":
         current["files"] = [f for f in current.get("files", []) if f["file_id"] != data["file_id"]]
 

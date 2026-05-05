@@ -141,26 +141,77 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
     )
 
 
-def _files_section(contact: dict, contact_id: str) -> FT:
-    """Files list with drag-and-drop upload, rendered inside the Documents tab."""
+def _DOCUMENT_TAGS_LIST():
+    return [
+        "Registrations", "Agreements", "Bills", "Invoices",
+        "Bank Documents", "Asset Documents", "Correspondence", "Other",
+    ]
+
+
+def _files_section(contact: dict, contact_id: str, tag_filter: str = "", search_filter: str = "") -> FT:
+    """Files list with drag-and-drop upload, tag system, and filter/search."""
     files = contact.get("files", [])
+    all_tags = _DOCUMENT_TAGS_LIST()
+
+    # Apply filters
+    filtered = files
+    if tag_filter:
+        filtered = [f for f in filtered if f.get("document_tag", "") == tag_filter]
+    if search_filter:
+        s = search_filter.lower()
+        filtered = [f for f in filtered if s in (f.get("filename", "")).lower()]
+
     file_items = []
-    for f in files:
+    for f in filtered:
         fid = f.get("file_id", "")
         fname = f.get("filename", "file")
         size = f.get("size", 0)
         size_str = f"{size / 1024:.0f}KB" if size < 1048576 else f"{size / 1048576:.1f}MB"
+        doc_tag = f.get("document_tag", "")
+        tag_opts = [Option("-- no tag --", value="")] + [
+            Option(tag, value=tag, selected=(tag == doc_tag)) for tag in all_tags
+        ]
         file_items.append(Div(
             A(fname, href=f"/contacts/{contact_id}/files/{fid}/download", cls="file-link"),
             Span(size_str, cls="file-size"),
-            Button("×", hx_delete=f"/contacts/{contact_id}/files/{fid}",
+            Select(
+                *tag_opts,
+                cls="form-input form-input--xs file-tag-select",
+                hx_post=f"/contacts/{contact_id}/files/{fid}/tag",
+                hx_target="#files-section",
+                hx_swap="outerHTML",
+                hx_trigger="change",
+                name="document_tag",
+            ),
+            Button("x", hx_delete=f"/contacts/{contact_id}/files/{fid}",
                    hx_target="#files-section", hx_swap="outerHTML",
                    hx_confirm=f"Delete {fname}?",
                    cls="btn btn--ghost btn--xs"),
             cls="file-item",
         ))
 
-    # Drag-and-drop upload zone with click-to-browse fallback
+    # Filter/search bar
+    filter_bar = Form(
+        Input(
+            type="text", name="search", placeholder="Search files...",
+            value=search_filter, cls="form-input form-input--sm",
+            style="width:140px;",
+        ),
+        Select(
+            Option("All tags", value=""),
+            *[Option(tag, value=tag, selected=(tag == tag_filter)) for tag in all_tags],
+            name="tag_filter", cls="form-input form-input--sm",
+        ),
+        Button("Filter", type="submit", cls="btn btn--ghost btn--sm"),
+        hx_get=f"/contacts/{contact_id}/files/filter",
+        hx_target="#files-section",
+        hx_swap="outerHTML",
+        cls="files-filter-bar",
+    )
+
+    # Upload zone tag selector
+    tag_opts_upload = [Option("-- no tag --", value="")] + [Option(tag, value=tag) for tag in all_tags]
+
     drop_js = f"""
 (function(){{
   var zone = document.getElementById('file-drop-zone');
@@ -169,21 +220,34 @@ def _files_section(contact: dict, contact_id: str) -> FT:
   function uploadFile(file) {{
     var fd = new FormData();
     fd.append('file', file);
-    var statusEl = document.querySelector('.file-drop-text');
+    var tagSel = document.getElementById('file-upload-tag');
+    if (tagSel) fd.append('document_tag', tagSel.value);
+    var statusEl = zone.querySelector('.file-drop-text');
     if (statusEl) statusEl.textContent = 'Uploading...';
     fetch('/contacts/{contact_id}/files', {{
       method: 'POST',
+      headers: {{'HX-Request': 'true'}},
       body: fd,
     }}).then(function(resp) {{
       if (!resp.ok) throw new Error('Upload failed');
-      // Reload documents tab to refresh files section with proper htmx init
-      htmx.ajax('GET', '/contacts/{contact_id}/tab/documents', {{target: '#tab-content', swap: 'innerHTML'}});
+      return resp.text();
+    }}).then(function(html) {{
+      var sec = document.getElementById('files-section');
+      if (sec) {{
+        sec.outerHTML = html;
+        if (window.htmx) htmx.process(document.body);
+      }}
     }}).catch(function(err) {{
-      alert('Upload failed: ' + err.message);
       if (statusEl) statusEl.textContent = 'Drop files here or click to browse';
+      alert('Upload failed: ' + err.message);
     }});
   }}
-  zone.addEventListener('click', function() {{ input.click(); }});
+  zone.addEventListener('click', function(e) {{
+    var t = e.target;
+    if (t === zone || t.classList.contains('file-drop-text') || t.classList.contains('file-drop-icon') || t.classList.contains('file-drop-hint')) {{
+      input.click();
+    }}
+  }});
   input.addEventListener('change', function() {{
     if (input.files.length) uploadFile(input.files[0]);
   }});
@@ -205,16 +269,18 @@ def _files_section(contact: dict, contact_id: str) -> FT:
             Input(type="file", name="file", id="file-drop-input", style="display:none"),
             cls="file-drop-zone", id="file-drop-zone",
         ),
+        Select(*tag_opts_upload, name="document_tag", id="file-upload-tag",
+               cls="form-input form-input--sm", style="margin-top:6px;"),
     )
 
     return Div(
         H3(t("page.documents"), cls="section-title"),
+        filter_bar,
         *file_items if file_items else [P(t("label.no_files_yet"), cls="text--muted")],
         upload_form,
         Script(drop_js),
         cls="card", id="files-section",
     )
-
 
 def _contact_info_card(c: dict, *, oob: bool = False) -> FT:
     """Left-column contact info: click-to-edit fields."""
@@ -1839,11 +1905,12 @@ def setup_routes(app):
                 contact = {"entity_id": contact_id}
             return _files_section(contact, contact_id)
         description = str(form.get("description", "")).strip()
+        document_tag = str(form.get("document_tag", "")).strip()
         content = await file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
         try:
-            await api.upload_contact_file(token, contact_id, content, filename, content_type, description)
+            await api.upload_contact_file(token, contact_id, content, filename, content_type, description, document_tag)
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
@@ -1860,6 +1927,33 @@ def setup_routes(app):
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
         return _files_section(contact, contact_id)
+
+    @app.post("/contacts/{contact_id}/files/{file_id}/tag")
+    async def contact_tag_file(request: Request, contact_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        document_tag = str(form.get("document_tag", "")).strip()
+        try:
+            await api.tag_contact_file(token, contact_id, file_id, document_tag)
+            contact = await api.get_contact(token, contact_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _files_section(contact, contact_id)
+
+    @app.get("/contacts/{contact_id}/files/filter")
+    async def contact_files_filter(request: Request, contact_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        tag_filter = str(request.query_params.get("tag_filter", "")).strip()
+        search_filter = str(request.query_params.get("search", "")).strip()
+        try:
+            contact = await api.get_contact(token, contact_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _files_section(contact, contact_id, tag_filter=tag_filter, search_filter=search_filter)
 
     @app.get("/contacts/{contact_id}/files/{file_id}/download")
     async def contact_download_file(request: Request, contact_id: str, file_id: str):
