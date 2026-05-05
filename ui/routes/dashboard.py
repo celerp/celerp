@@ -417,9 +417,9 @@ _DEFAULT_CONFIG: dict = {
         {"key": "inv_value",      "label": "Inventory (active)",  "value_fn": "active_items_count","sub_fn": "total_items_sub",      "href": "/inventory"},
         {"key": "cost_basis",     "label": "Cost Value",          "value_fn": "cost_total",        "sub_fn": "at_cost_sub",          "href": "/inventory", "min_role": "manager"},
         {"key": "retail_value",   "label": "Retail Value",        "value_fn": "retail_total",      "sub_fn": "at_retail_sub",        "href": "/inventory"},
-        {"key": "ar_outstanding", "label": "AR Outstanding",      "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status=outstanding", "alert_fn": "ar_positive"},
-        {"key": "revenue_mtd",    "label": "Revenue MTD",         "value_fn": "revenue_mtd",       "sub_fn": None,                   "href": "/reports"},
-        {"key": "pos_pending",    "label": "POs Pending",         "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",   "href": "/docs?type=purchase_order"},
+        {"key": "ar_outstanding", "label": "AR Outstanding",      "value_fn": "ar_outstanding",    "sub_fn": "invoices_outstanding_sub","href": "/docs?type=invoice&status_in=final,sent,awaiting_payment,partial", "alert_fn": "ar_positive"},
+        {"key": "revenue_mtd",    "label": "Revenue MTD",         "value_fn": "revenue_mtd",       "sub_fn": None,                   "href": "/reports/sales?preset=this_month&group_by=customer"},
+        {"key": "pos_pending",    "label": "POs Pending",         "value_fn": "pending_pos_count", "sub_fn": "ap_outstanding_sub",   "href": "/docs?type=purchase_order&status=draft"},
     ],
     "secondary_kpis": [],
     "quick_links": [

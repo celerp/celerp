@@ -39,7 +39,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
         if s.get("consignment_flag") == _CONSIGNMENT_IN or i.consignment_flag == _CONSIGNMENT_IN:
             continue
         status = str(s.get("status") or "").lower()
-        if status in {"archived", "deleted", "void"}:
+        if status in {"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "disposed"}:
             continue
         active_items.append(i)
         qty = float(s.get("quantity") or 0)
