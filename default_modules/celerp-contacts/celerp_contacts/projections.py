@@ -120,21 +120,25 @@ def apply_contact_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "crm.contact.file_attached":
         current.setdefault("files", [])
         current["files"].append({
-            "file_id": data["file_id"],
+            "id": data["file_id"],
             "filename": data["filename"],
-            "content_type": data.get("content_type"),
+            "mime": data.get("mime"),
             "size": data.get("size"),
-            "uploaded_at": data.get("uploaded_at"),
-            "description": data.get("description", ""),
-            "document_tag": data.get("document_tag", ""),
+            "description": data.get("description") or "",
+            "document_tag": data.get("document_tag") or "",
         })
     elif event_type == "crm.contact.file_tagged":
         for f in current.get("files", []):
-            if f.get("file_id") == data.get("file_id"):
+            if f.get("id") == data.get("file_id"):
                 f["document_tag"] = data.get("document_tag", "")
                 break
-    elif event_type == "crm.contact.file_removed":
-        current["files"] = [f for f in current.get("files", []) if f["file_id"] != data["file_id"]]
+    elif event_type == "crm.contact.file_description_updated":
+        for f in current.get("files", []):
+            if f.get("id") == data.get("file_id"):
+                f["description"] = data.get("description", "")
+                break
+    elif event_type in ("crm.contact.file_deleted", "crm.contact.file_removed"):
+        current["files"] = [f for f in current.get("files", []) if f.get("id") != data["file_id"]]
 
     elif event_type == "crm.memo.created":
         current.update({"entity_type": "memo", **data})

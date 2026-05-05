@@ -9,7 +9,7 @@ import io
 import uuid
 from datetime import UTC, datetime, date as _date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -23,6 +23,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
@@ -3218,3 +3219,139 @@ async def undo_receive(
 
     await session.commit()
     return {"undone": True, "item_ids": received_item_ids}
+
+
+# ── Doc File Attachments ───────────────────────────────────────────────────────
+
+
+def _get_doc_file(files: list[dict], file_id: str) -> dict:
+    match = next((f for f in files if f.get("id") == file_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return match
+
+
+@router.post("/{entity_id}/files")
+async def upload_doc_file(
+    entity_id: str,
+    file: UploadFile,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_doc(session, company_id, entity_id)
+    try:
+        meta = await store_upload(company_id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
+
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.file_attached",
+        data={
+            "entity_id": entity_id,
+            "entity_type": "doc",
+            "file_id": meta["id"],
+            "filename": meta["filename"],
+            "mime": meta["mime"],
+            "size": meta["size"],
+            "document_tag": None,
+            "description": None,
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, **meta}
+
+
+@router.patch("/{entity_id}/files/{file_id}/tag")
+async def tag_doc_file(
+    entity_id: str,
+    file_id: str,
+    document_tag: str = Form(""),
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_doc(session, company_id, entity_id)
+    _get_doc_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.file_tagged",
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "document_tag": document_tag},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    return (updated.state if updated else {}) | {"id": entity_id}
+
+
+@router.patch("/{entity_id}/files/{file_id}/description")
+async def update_doc_file_description(
+    entity_id: str,
+    file_id: str,
+    description: str = Form(""),
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_doc(session, company_id, entity_id)
+    _get_doc_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.file_description_updated",
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "description": description},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    return (updated.state if updated else {}) | {"id": entity_id}
+
+
+@router.delete("/{entity_id}/files/{file_id}")
+async def delete_doc_file(
+    entity_id: str,
+    file_id: str,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_doc(session, company_id, entity_id)
+    _get_doc_file(row.state.get("files", []), file_id)
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.file_deleted",
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    return (updated.state if updated else {}) | {"id": entity_id}

@@ -86,7 +86,7 @@ async def test_doctor_all_checks_run(client, session):
     r = await client.post("/admin/doctor", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
-    assert len(data["results"]) == 10
+    assert len(data["results"]) == 11
     check_names = [c["check"] for c in data["results"]]
     assert "missing_jes" in check_names
     assert "duplicate_jes" in check_names

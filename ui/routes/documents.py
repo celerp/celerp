@@ -17,6 +17,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
+from ui.components.files import _files_section as _doc_files_section
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
@@ -4273,25 +4274,29 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Div("Drop PDF or receipt image here to auto-fill this bill", cls="ai-dropzone__text"),
                     Div(t("doc.powered_by_celerp_ai_operator"), cls="ai-dropzone__sub"),
                     cls="ai-dropzone",
-                    data_ai_dropzone="1",
-                    onclick="celerpAiDropzoneClick()",
+                    id=f"ai-dropzone-{entity_id}",
                     title="Auto-fill line items from receipts or invoices",
                 ),
-                Script("""
-(function() {
-  window.celerpAiDropzoneClick = function() {
-    var el = document.querySelector('[data-ai-dropzone]');
-    if (el) {
-      el.innerHTML = '✨ <a href="/ai" style="color:inherit;font-weight:600;">Unlock AI auto-fill</a> — Requires Celerp Cloud ($29/mo)';
-      el.style.cursor = 'default'; el.onclick = null;
-    }
-  };
-  var dz = document.querySelector('[data-ai-dropzone]');
+                Script(f"""
+(function() {{
+  var dz = document.getElementById('ai-dropzone-{entity_id}');
   if (!dz) return;
-  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('ai-dropzone--over'); });
-  dz.addEventListener('dragleave', function() { dz.classList.remove('ai-dropzone--over'); });
-  dz.addEventListener('drop', function(e) { e.preventDefault(); dz.classList.remove('ai-dropzone--over'); celerpAiDropzoneClick(); });
-})();
+  function handleFile(file) {{
+    var fd = new FormData(); fd.append('file', file);
+    dz.classList.add('ai-dropzone--over');
+    fetch('/docs/{entity_id}/files', {{method:'POST',body:fd}})
+      .then(function(r) {{ dz.classList.remove('ai-dropzone--over'); }})
+      .catch(function() {{ dz.classList.remove('ai-dropzone--over'); }});
+  }}
+  dz.addEventListener('click', function() {{
+    var inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.pdf,image/*';
+    inp.onchange = function() {{ if (inp.files.length) handleFile(inp.files[0]); }};
+    inp.click();
+  }});
+  dz.addEventListener('dragover', function(e) {{ e.preventDefault(); dz.classList.add('ai-dropzone--over'); }});
+  dz.addEventListener('dragleave', function() {{ dz.classList.remove('ai-dropzone--over'); }});
+  dz.addEventListener('drop', function(e) {{ e.preventDefault(); if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); }});
+}})();
 """),
             ]
 
@@ -5169,6 +5174,14 @@ async function celerpCsvImport(input, entityId) {{
                 ),
                 cls="doc-row",
             ),
+            cls="doc-internal",
+        ),
+        # --- Attachments section ---
+        Details(
+            Summary(
+                H2(t("label.files"), cls="internal-section-title"),
+            ),
+            _doc_files_section("doc", entity_id, doc.get("files", [])),
             cls="doc-internal",
         ),
         # --- History / Activity section ---

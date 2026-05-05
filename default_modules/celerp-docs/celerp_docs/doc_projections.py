@@ -45,6 +45,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("linked", [])
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
+        current.setdefault("files", [])
     elif event_type == "doc.updated":
         _PATCH_PROTECTED = {"status", "entity_type", "company_id"}
         _is_finalized = current.get("status", "draft") != "draft"
@@ -236,6 +237,28 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("linked", [])
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
+    elif event_type == "doc.file_attached":
+        current.setdefault("files", [])
+        current["files"].append({
+            "id": data["file_id"],
+            "filename": data["filename"],
+            "mime": data.get("mime"),
+            "size": data.get("size"),
+            "description": data.get("description") or "",
+            "document_tag": data.get("document_tag") or "",
+        })
+    elif event_type == "doc.file_tagged":
+        for f in current.get("files", []):
+            if f.get("id") == data.get("file_id"):
+                f["document_tag"] = data.get("document_tag", "")
+                break
+    elif event_type == "doc.file_description_updated":
+        for f in current.get("files", []):
+            if f.get("id") == data.get("file_id"):
+                f["description"] = data.get("description", "")
+                break
+    elif event_type == "doc.file_deleted":
+        current["files"] = [f for f in current.get("files", []) if f.get("id") != data["file_id"]]
     elif event_type == "doc.note_added":
         # First-class doc_note entity (same pattern as contact_note)
         current.update({

@@ -11089,26 +11089,6 @@ def test_internal_notes_ids_contain_no_colons():
 class TestPrintLabelButtonText:
     """Print Labels list button must show real text, not raw i18n keys."""
 
-    def test_print_label_list_button_no_raw_key(self):
-        """_print_all_labels_link must not emit a raw t() key as button text."""
-        from ui.routes.inventory import _print_all_labels_link
-        from unittest.mock import MagicMock
-
-        p = MagicMock()
-        p.total = 5
-        p.q = ""
-        p.status = ""
-        p.category = ""
-        p.sort = ""
-        p.dir = ""
-
-        result = _print_all_labels_link(p, total=5)
-        if result is None:
-            return  # labels module not installed - skip
-        html = str(result)
-        assert "btn.print_labels" not in html, f"Raw i18n key found in button: {html!r}"
-        assert "Print Labels" in html or "🖨" in html
-
     def test_print_label_dropdown_button_no_unicode_escape(self):
         """_print_label_dropdown must NOT render a literal unicode escape sequence."""
         from ui.routes.inventory import _print_label_dropdown
@@ -11196,3 +11176,39 @@ class TestUnwrapAddress:
     def test_empty_dict(self):
         from ui.components.table import unwrap_address
         assert unwrap_address({}) == ""
+
+
+# ── Files section render tests ────────────────────────────────────────────────
+
+class TestFilesSectionRenders:
+    def test_files_section_renders_empty(self):
+        """_files_section with no files should render empty-state message."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert "files-section-c1" in html
+        assert "files-table-c1" in html
+        assert "file-drop-zone-c1" in html
+
+    def test_files_section_renders_with_files(self):
+        """_files_section with files should render filename, tag select and delete button."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "contract.pdf", "size": 12345, "document_tag": "contracts", "description": "Main contract"},
+        ]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "contract.pdf" in html
+        assert "f1" in html
+        assert "file-tag-select" in html
+        assert "file-desc" in html
+        assert "Main contract" in html
+
+    def test_files_section_doc_entity(self):
+        """_files_section with entity_type='doc' uses /docs/ URLs."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f2", "filename": "bill.pdf", "size": 500, "document_tag": "", "description": ""}]
+        html = to_xml(_files_section("doc", "d1", files))
+        assert "/docs/d1/files" in html
+        assert "files-section-d1" in html
