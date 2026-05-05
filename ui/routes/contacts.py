@@ -15,6 +15,9 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
+from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
+from ui.components.currency import currency_combobox_td, CURRENCY_CODES as _CURRENCY_CODES
+from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _parse_dates
@@ -489,80 +492,114 @@ async def _company_timezone(token: str) -> str:
 
 
 def _notes_tab(contact_id: str, notes: list[dict], tz: str = "UTC") -> FT:
-    """Notes tab content: add form + timeline."""
-    try:
-        _zone = ZoneInfo(tz)
-    except ZoneInfoNotFoundError:
-        _zone = _tz.utc
-
-    def _fmt_ts(iso: str) -> str:
-        if not iso:
-            return ""
-        try:
-            dt = datetime.fromisoformat(iso)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=_tz.utc)
-            return dt.astimezone(_zone).strftime("%Y-%m-%d %H:%M")
-        except ValueError:
-            return iso[:16].replace("T", " ")
-    note_form = Form(
-        Div(
-            Textarea(name="note", placeholder="Add a note...", rows="3", cls="form-input", style="width:100%"),
-            cls="form-group",
-        ),
-        Button(t("btn.add_note"), type="submit", cls="btn btn--primary btn--sm"),
-        hx_post=f"/contacts/{contact_id}/notes",
-        hx_target="#tab-content",
-        hx_swap="innerHTML",
-        cls="section-card",
+    """Notes tab content: add form + timeline. Delegates to shared notes_tab component."""
+    return _shared_notes_tab(
+        entity_id=contact_id,
+        notes=notes,
+        add_url=f"/contacts/{contact_id}/notes",
+        edit_url=f"/contacts/{contact_id}/notes/{{note_id}}/edit",
+        delete_url=f"/contacts/{contact_id}/notes/{{note_id}}",
+        refresh_target="#tab-content",
+        note_field="note",
+        author_field="author_name",
+        tz=tz,
     )
-    if not notes:
-        return Div(note_form, P(t("label.no_notes_yet"), cls="empty-state-msg"))
-    timeline = []
-    for n in notes:
-        note_id = n.get("note_id") or n.get("id") or ""
-        text = n.get("note") or ""
-        author = n.get("author_name") or ""
-        created = n.get("created_at") or ""
-        updated = n.get("updated_at")
-        ts_display = _fmt_ts(created)
-        if updated:
-            ts_display += f" (edited {_fmt_ts(updated)})"
-        initials = "".join(w[0].upper() for w in author.split()[:2]) if author else "?"
-        timeline.append(Div(
-            Div(
-                Span(initials, cls="note-author-badge", title=author),
-                Div(
-                    Span(author, cls="note-author-name") if author else "",
-                    Small(ts_display, cls="note-timestamp"),
-                    cls="note-meta",
-                ),
-                cls="note-header",
-            ),
-            P(text, cls="note-text"),
-            Div(
-                Button(t("btn.edit"),
-                       hx_get=f"/contacts/{contact_id}/notes/{note_id}/edit",
-                       hx_target=f"#note-{note_id}",
-                       hx_swap="outerHTML",
-                       cls="btn btn--ghost btn--xs"),
-                Button(t("btn.delete"),
-                       hx_delete=f"/contacts/{contact_id}/notes/{note_id}",
-                       hx_target="#tab-content",
-                       hx_swap="innerHTML",
-                       hx_confirm="Delete this note?",
-                       cls="btn btn--ghost btn--xs btn--danger"),
-                cls="note-actions",
-            ),
-            cls="note-item", id=f"note-{note_id}",
-        ))
-    return Div(note_form, *timeline)
 
 
 def _contact_ledger_table(ledger: list[dict]) -> FT:
     """Activity history section for contact detail page."""
     from ui.components.activity import activity_table
     return activity_table(ledger, max_display=10)
+
+
+def _contacts_bulk_toolbar(contact_type: str) -> FT:
+    """Sticky bulk action toolbar for the contacts list. Hidden until rows are selected."""
+    return Div(
+        Span(t("doc.0_selected"), id="contact-bulk-count", cls="bulk-count"),
+        Button(t("btn.clear"), id="contact-bulk-clear-btn", cls="btn btn--ghost btn--sm",
+               style="display:none",
+               onclick=(
+                   "CelerpSelection.clear();"
+                   "CelerpSelection.syncCheckboxes();"
+                   "document.getElementById('contact-bulk-count').textContent='0 selected';"
+                   "document.getElementById('contact-bulk-toolbar').classList.remove('is-active');"
+                   "document.getElementById('contact-bulk-clear-btn').style.display='none';"
+                   "_resetBulkActions();"
+               )),
+        Select(
+            Option(t("inv.action"), value="", disabled=True, selected=True),
+            Option(t("btn.export_csv") + " (selected)", value="contact-export"),
+            Option(t("inv.merge"), value="contact-merge"),
+            Option(t("btn.delete"), value="delete"),
+            id="contact-bulk-select", cls="form-input form-input--sm",
+            onchange="contactBulkChanged(this.value)",
+        ),
+        Div(id="contact-bulk-context"),
+        Div(id="bulk-action-result"),
+        _contact_bulk_templates(contact_type),
+        id="contact-bulk-toolbar",
+        cls="bulk-toolbar",
+    )
+
+
+def _contact_bulk_templates(contact_type: str) -> FT:
+    """Hidden <template> elements for contact bulk action context UI."""
+    from fasthtml.common import Template as _Tpl
+    merge_tpl = _Tpl(
+        Div(
+            P(f"Select the primary {contact_type} to keep. All others will be merged into it.",
+              cls="meta-value", style="margin-bottom:0.5rem;font-size:0.85rem;"),
+            Div(id="contact-merge-radio-list"),
+            Button(t("btn.confirm_merge"), type="button", id="contact-merge-confirm-btn",
+                   cls="btn btn--primary btn--sm", style="margin-top:0.75rem;",
+                   disabled=True,
+                   onclick="contactMergeSubmit()"),
+            Script("""
+(function(){
+  var list = document.getElementById('contact-merge-radio-list');
+  if (!list) return;
+  var all = CelerpSelection.all();
+  Object.keys(all).forEach(function(id) {
+    var meta = all[id];
+    var label = document.createElement('label');
+    label.style.cssText = 'display:flex;align-items:center;gap:0.5rem;margin:0.25rem 0;font-size:0.85rem;cursor:pointer;';
+    var radio = document.createElement('input');
+    radio.type = 'radio'; radio.name = 'contact-merge-winner'; radio.value = id;
+    radio.addEventListener('change', function() {
+      document.getElementById('contact-merge-confirm-btn').disabled = false;
+    });
+    label.appendChild(radio);
+    label.appendChild(document.createTextNode((meta.name || id) + (meta.contact_type ? ' (' + meta.contact_type + ')' : '')));
+    list.appendChild(label);
+  });
+  window.contactMergeSubmit = function() {
+    var winner = document.querySelector('input[name="contact-merge-winner"]:checked');
+    if (!winner) return;
+    var sources = CelerpSelection.ids().filter(function(id) { return id !== winner.value; });
+    fetch('/crm/contacts/merge', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({target_contact_id: winner.value, source_contact_ids: sources})
+    }).then(function(r) { return r.json(); }).then(function(d) {
+      if (d.merged_into) {
+        window.location.href = '/contacts/' + d.merged_into;
+      } else {
+        var res = document.getElementById('bulk-action-result');
+        if (res) res.innerHTML = '<p class="flash flash--error">' + (d.detail || 'Merge failed') + '</p>';
+      }
+    }).catch(function(err) {
+      var res = document.getElementById('bulk-action-result');
+      if (res) res.innerHTML = '<p class="flash flash--error">Merge failed: ' + err.message + '</p>';
+    });
+  };
+  if (window.htmx) htmx.process(list.parentElement);
+})();
+"""),
+            cls="bulk-context",
+        ),
+        id="tpl-contact-merge",
+    )
+    return merge_tpl
 
 
 def _contacts_content(
@@ -606,7 +643,8 @@ def _contacts_content(
             currency=currency,
             sort_target="#contacts-content",
             show_row_menu=False,
-            show_checkboxes=False,
+            show_checkboxes=True,
+            selection_key="celerp_contact_selection",
             link_fn=link_fn,
             auto_hide_empty=False,
             edit_url_tpl="/contacts/{id}/field/{field}/edit",
@@ -638,7 +676,73 @@ def _contacts_page_shell(contact_type: str, contacts: list[dict], request: Reque
             A(t("btn.import"), href="/crm/import/contacts", cls="btn btn--secondary"),
         ),
         Div(column_manager(schema, et), cls="column-manager-row"),
+        _contacts_bulk_toolbar(contact_type),
         _contacts_content(contact_type, contacts, q, page, total, per_page, sort, sort_dir, currency),
+        Script(f"""
+(function(){{
+  function updateContactBulkToolbar(){{
+    var n = typeof CelerpSelection !== 'undefined' ? CelerpSelection.count() : 0;
+    var toolbar = document.getElementById('contact-bulk-toolbar');
+    var countEl = document.getElementById('contact-bulk-count');
+    var clearBtn = document.getElementById('contact-bulk-clear-btn');
+    if (countEl) countEl.textContent = n + ' selected';
+    if (toolbar) toolbar.classList.toggle('is-active', n > 0);
+    if (clearBtn) clearBtn.style.display = n > 0 ? '' : 'none';
+  }}
+  window.contactBulkChanged = function(action){{
+    var ctx = document.getElementById('contact-bulk-context');
+    if (ctx) ctx.innerHTML = '';
+    document.getElementById('bulk-action-result').innerHTML = '';
+    if (action === 'contact-export'){{
+      var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
+      if (!ids.length) return;
+      var qs = ids.map(function(id){{return 'selected=' + encodeURIComponent(id);}}).join('&');
+      window.location.href = '/contacts/{contact_type}s/export/csv?' + qs;
+      return;
+    }}
+    if (action === 'delete'){{
+      if (!confirm('Delete selected contacts? Contacts linked to open documents cannot be deleted.')) return;
+      var ids = typeof CelerpSelection !== 'undefined' ? CelerpSelection.ids() : [];
+      fetch('/crm/contacts/bulk/delete', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{contact_ids: ids}})
+      }}).then(function(r){{ return r.json(); }}).then(function(d){{
+        var res = document.getElementById('bulk-action-result');
+        if (d.deleted !== undefined){{
+          res.innerHTML = '<p class="flash flash--success">Deleted ' + d.deleted + ' contact(s).</p>';
+          setTimeout(function(){{ sessionStorage.removeItem('celerp_contact_selection'); window.location.reload(); }}, 800);
+        }} else {{
+          res.innerHTML = '<p class="flash flash--error">' + (d.detail || 'Delete failed') + '</p>';
+        }}
+      }}).catch(function(err){{
+        document.getElementById('bulk-action-result').innerHTML = '<p class="flash flash--error">Delete failed: ' + err.message + '</p>';
+      }});
+      return;
+    }}
+    if (action === 'contact-merge'){{
+      var tpl = document.getElementById('tpl-contact-merge');
+      if (!tpl || !ctx) return;
+      var clone = tpl.content.cloneNode(true);
+      ctx.appendChild(clone);
+      if (window.htmx) htmx.process(ctx);
+      return;
+    }}
+  }};
+  // Hook into CelerpSelection updates
+  document.body.addEventListener('htmx:afterSwap', function(e){{
+    if (e.detail && e.detail.target && e.detail.target.id === 'contacts-content'){{
+      if (typeof CelerpSelection !== 'undefined') CelerpSelection.syncCheckboxes();
+      updateContactBulkToolbar();
+    }}
+  }});
+  document.addEventListener('change', function(e){{
+    if (e.target && e.target.classList.contains('row-select')) updateContactBulkToolbar();
+  }});
+  document.body.addEventListener('celerpSelectionClear', updateContactBulkToolbar);
+  updateContactBulkToolbar();
+}})();
+"""),
         title=f"{label} - Celerp",
         nav_active=nav_key,
         request=request,
@@ -1070,11 +1174,44 @@ def setup_routes(app):
         )
 
         cid = contact.get("entity_id") or contact.get("id") or contact_id
+        is_deleted = bool(contact.get("deleted"))
+
+        delete_btn = "" if is_deleted else Script(f"""
+(function(){{
+  var btn = document.getElementById('contact-delete-btn');
+  if (!btn) return;
+  btn.addEventListener('click', function(){{
+    if (!confirm('Delete this contact? This cannot be undone if the contact has no associated documents.')) return;
+    fetch('/crm/contacts/bulk/delete', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{contact_ids: ['{cid}']}})
+    }}).then(function(r){{ return r.json(); }}).then(function(d){{
+      if (d.deleted !== undefined) {{
+        sessionStorage.removeItem('celerp_contact_selection');
+        window.location.href = '{back_href}';
+      }} else {{
+        alert(d.detail || 'Delete failed.');
+      }}
+    }}).catch(function(err){{ alert('Delete failed: ' + err.message); }});
+  }});
+}})();
+""")
+
+        action_bar = Div(
+            Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
+                   type="button", style="margin-left:auto;") if not is_deleted else
+            Span(t("label.deleted"), cls="status-badge status-badge--void"),
+            cls="action-bar",
+            style="display:flex; align-items:center; padding: 0.5rem 0;",
+        )
 
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (back_label, back_href), (contact_name, None)]),
             page_header(contact_name),
             autofocus_script,
+            action_bar,
+            delete_btn,
             _financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start),
             Div(
                 Div(
@@ -1097,6 +1234,7 @@ def setup_routes(app):
             ),
             title=f"{contact_name} - Celerp",
             nav_active=nav_active_key,
+            extra_head=_phone_head_items(),
             request=request,
         )
 
@@ -1174,21 +1312,12 @@ def setup_routes(app):
         except APIError:
             notes = []
         note = next((n for n in notes if (n.get("note_id") or n.get("id")) == note_id), {})
-        return Div(
-            Form(
-                Textarea(note.get("note", ""), name="note", rows="3", cls="form-input", style="width:100%"),
-                Div(
-                    Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
-                           hx_get=f"/contacts/{contact_id}/tab/notes",
-                           hx_target="#tab-content", hx_swap="innerHTML"),
-                    cls="form-row",
-                ),
-                hx_patch=f"/contacts/{contact_id}/notes/{note_id}",
-                hx_target="#tab-content",
-                hx_swap="innerHTML",
-            ),
-            cls="note-item note-item--editing", id=f"note-{note_id}",
+        return _shared_note_edit_form(
+            note_id=note_id,
+            current_text=note.get("note", ""),
+            save_url=f"/contacts/{contact_id}/notes/{note_id}",
+            cancel_url=f"/contacts/{contact_id}/tab/notes",
+            refresh_target="#tab-content",
         )
 
     @app.patch("/contacts/{contact_id}/notes/{note_id}")
@@ -1562,6 +1691,20 @@ def setup_routes(app):
                 onkeydown=_esc_js,
                 onchange="if(this.value==='__add_new__'){window.location.href='/settings/contacts?tab=payment-terms';return false;}",
             )
+        elif field == "phone":
+            return phone_input_td(
+                value=val,
+                patch_url=f"/contacts/{contact_id}/field/phone",
+                cancel_url=f"/contacts/{contact_id}/field/phone/display",
+                field_id="contact-phone",
+            )
+        elif field == "currency":
+            return currency_combobox_td(
+                value=val,
+                hidden_id="contact-currency-input",
+                patch_url=f"/contacts/{contact_id}/field/currency",
+                cancel_url=f"/contacts/{contact_id}/field/currency/display",
+            )
         else:
             # Guard: ignore blur within 350ms of mount to prevent dblclick's
             # second mouseup from immediately closing the editor.
@@ -1613,6 +1756,8 @@ def setup_routes(app):
         value = str(form.get("value", ""))
         if field not in _EDITABLE:
             return P(t("label.not_editable"), cls="cell-error")
+        if field == "currency" and value and value not in _CURRENCY_CODES:
+            return P(f"Invalid currency code: {value!r}", cls="cell-error")
         data = {field: float(value) if field == "credit_limit" and value else value}
         try:
             await api.patch_contact(token, contact_id, data)
@@ -1745,11 +1890,17 @@ def setup_routes(app):
 
     @app.get("/contacts/customers/export/csv")
     async def customers_export_csv(request: Request):
-        return RedirectResponse("/crm/export/csv?contact_type=customer", status_code=302)
+        qs = request.query_params
+        selected_qs = "&".join(f"selected={v}" for v in qs.getlist("selected"))
+        base = "/crm/export/csv?contact_type=customer"
+        return RedirectResponse(base + ("&" + selected_qs if selected_qs else ""), status_code=302)
 
     @app.get("/contacts/vendors/export/csv")
     async def vendors_export_csv(request: Request):
-        return RedirectResponse("/crm/export/csv?contact_type=vendor", status_code=302)
+        qs = request.query_params
+        selected_qs = "&".join(f"selected={v}" for v in qs.getlist("selected"))
+        base = "/crm/export/csv?contact_type=vendor"
+        return RedirectResponse(base + ("&" + selected_qs if selected_qs else ""), status_code=302)
 
     # ── Backward compat: /crm redirects ──────────────────────────────────
 
@@ -1772,7 +1923,12 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         q = request.query_params.get("q", "")
-        params = {"q": q} if q else {}
+        selected = request.query_params.getlist("selected")
+        params: dict = {}
+        if q:
+            params["q"] = q
+        if selected:
+            params["selected"] = selected
         try:
             data = await api.export_contacts_csv(token, params)
         except APIError as e:
@@ -2282,6 +2438,38 @@ def setup_routes(app):
         return _R("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{memo_id}"})
 
     # ── Backward compat: /crm/{contact_id:path} → /contacts/{contact_id} ──
+
+    @app.post("/crm/contacts/bulk/delete")
+    async def crm_bulk_delete_contacts(request: Request):
+        """Proxy: browser JS -> UI server -> backend API."""
+        from starlette.responses import JSONResponse
+        token = _token(request)
+        if not token:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+            result = await api.bulk_delete_contacts(token, body.get("contact_ids", []))
+            return JSONResponse(result)
+        except APIError as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
+
+    @app.post("/crm/contacts/merge")
+    async def crm_merge_contacts(request: Request):
+        """Proxy: browser JS -> UI server -> backend API."""
+        from starlette.responses import JSONResponse
+        token = _token(request)
+        if not token:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        try:
+            body = await request.json()
+            result = await api.merge_contacts(
+                token,
+                target_contact_id=body.get("target_contact_id", ""),
+                source_contact_ids=body.get("source_contact_ids", []),
+            )
+            return JSONResponse(result)
+        except APIError as e:
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
 
     @app.get("/crm/{contact_id}")
     async def crm_detail_redirect(contact_id: str):

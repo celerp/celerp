@@ -19,6 +19,10 @@ from celerp.main import app
 from ui.app import app as _ui_app
 
 import sys as _sys, os as _os
+from pathlib import Path
+
+# Absolute path to the repository root (two levels up from this conftest).
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-inventory")

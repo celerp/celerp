@@ -238,7 +238,6 @@
   "btn.submit": "Invia",
   "btn.test_connection": "Testa connessione",
   "btn.transfer": "Trasferisci",
-  "btn.u0001f5a8": "🖨",
   "btn.u00d7": "×",
   "btn.u2705_confirm_create": "✅ Conferma e crea",
   "btn.u274c_discard": "❌ Scarta",
@@ -1145,5 +1144,7 @@
   "settings.password_changed": "Password modificata con successo",
   "btn.change_password": "Cambia password",
   "status.all_issued": "Tutte le emesse",
-  "nav.credit_notes": "Note di Credito"
+  "nav.credit_notes": "Note di Credito",
+  "btn.reset_columns": "Ripristina",
+  "btn.reset_columns_title": "Ripristina le colonne ai valori predefiniti"
 }

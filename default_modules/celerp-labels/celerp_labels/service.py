@@ -113,15 +113,18 @@ def render_label_text(items: list[dict[str, Any]], template: dict[str, Any]) -> 
     return "\n".join(lines)
 
 
-def _make_barcode_image(value: str) -> io.BytesIO | None:
-    """Render a Code128 barcode to PNG bytes (bars only, no text - text rendered separately)."""
+def _make_barcode_image(value: str, module_height: int = 8) -> io.BytesIO | None:
+    """Render a Code128 barcode to PNG bytes (bars only, no text - text rendered separately).
+
+    module_height: bar height in mm-equivalent units (4-30). Default 8.
+    """
     if not _BARCODE:
         return None
     try:
         buf = io.BytesIO()
         code128 = barcode.get("code128", str(value or "0"), writer=ImageWriter())
         code128.write(buf, options={
-            "module_height": 8,
+            "module_height": max(1, min(30, int(module_height))),
             "font_size": 0,      # No text in barcode image
             "text_distance": 0,
             "quiet_zone": 1,

@@ -188,13 +188,13 @@ document.addEventListener('htmx:afterSettle', function(e) {
   root.querySelectorAll('.combobox-wrap').forEach(initCombobox);
 });
 
-document.body.addEventListener('htmx:responseError', function(e) {
+document.addEventListener('htmx:responseError', function(e) {
   var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
   var status = (e.detail && e.detail.xhr && e.detail.xhr.status) || 'error';
   showGlobalUiError('Request failed (' + status + '): ' + path);
 });
 
-document.body.addEventListener('htmx:sendError', function(e) {
+document.addEventListener('htmx:sendError', function(e) {
   var path = (e.detail && e.detail.pathInfo && e.detail.pathInfo.requestPath) || 'unknown request';
   showGlobalUiError('Network error while loading: ' + path);
 });
@@ -398,12 +398,26 @@ document.addEventListener('DOMContentLoaded', function() {
 
       setState('Up to date', false);
 
+      function resetCheckBtn() {
+        if (checkBtn) {
+          checkBtn.disabled = false;
+          checkBtn.textContent = 'Check for updates';
+        }
+      }
+
       window.celerp.onUpdateAvailable(function() {
         setState('Update available - downloading...', false);
+        resetCheckBtn();
+      });
+
+      window.celerp.onUpdateNotAvailable(function() {
+        setState('Up to date', false);
+        resetCheckBtn();
       });
 
       window.celerp.onUpdateDownloaded(function(info) {
         setState('Restart to install v' + info.version, true);
+        resetCheckBtn();
       });
 
       if (checkBtn) {
@@ -411,13 +425,10 @@ document.addEventListener('DOMContentLoaded', function() {
           checkBtn.disabled = true;
           checkBtn.textContent = '...';
           setState('Checking...', false);
-          window.celerp.checkForUpdates().then(function() {
-            checkBtn.disabled = false;
-            checkBtn.textContent = 'Check for updates';
-          }).catch(function() {
-            checkBtn.disabled = false;
-            checkBtn.textContent = 'Check for updates';
+          // Button re-enabled by onUpdateAvailable / onUpdateNotAvailable / error path
+          window.celerp.checkForUpdates().catch(function() {
             setState('Up to date', false);
+            resetCheckBtn();
           });
         });
       }
@@ -431,7 +442,9 @@ document.addEventListener('DOMContentLoaded', function() {
       // PyPI path - fetch current version from /health, compare to PyPI
       fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
         var current = health.version || '';
-        if (versionEl) versionEl.textContent = current ? 'v' + current : 'Unknown';
+        var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current === '0.0.0+dev';
+        if (versionEl) versionEl.textContent = isDev ? 'Development build' : (current ? 'v' + current : 'Unknown');
+        if (isDev) { setState('Running from source - no updates', false); return; }
         return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
           var latest = pypi.info && pypi.info.version ? pypi.info.version : null;
           if (!latest) { setState('Up to date', false); return; }
@@ -575,20 +588,20 @@ def _topbar(companies: list[dict], lang: str = "en") -> FT:
                     Div(
                         Span("", cls="update-card__version"),
                         Span("", cls="update-card__state"),
-                        A("Releases", href="https://github.com/Data-Universal-Limited/celerp/releases",
-                          target="_blank", rel="noopener noreferrer", cls="update-card__releases-link"),
                         cls="update-card__info",
                     ),
                     Div(
-                        Button("Check for updates", cls="update-card__check-btn", type="button"),
-                        Button("Restart to install", cls="update-card__restart-btn", type="button",
+                        Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
+                        Button(t("btn.restart_to_install"), cls="update-card__restart-btn", type="button",
                                style="display:none;"),
                         Div(
                             Code("pip install --upgrade celerp", cls="update-card__cmd"),
-                            Button("Copy", cls="update-card__copy-btn", type="button"),
+                            Button(t("btn.copy"), cls="update-card__copy-btn", type="button"),
                             cls="update-card__upgrade-cmd",
                             style="display:none;",
                         ),
+                        A(t("msg.releases"), href="https://github.com/celerp/celerp/releases",
+                          target="_blank", rel="noopener noreferrer", cls="update-card__releases-link"),
                         cls="update-card__actions",
                     ),
                     id="update-status-card",

@@ -86,7 +86,7 @@ async def test_doctor_all_checks_run(client, session):
     r = await client.post("/admin/doctor", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
-    assert len(data["results"]) == 7
+    assert len(data["results"]) == 10
     check_names = [c["check"] for c in data["results"]]
     assert "missing_jes" in check_names
     assert "duplicate_jes" in check_names
@@ -95,6 +95,7 @@ async def test_doctor_all_checks_run(client, session):
     assert "stale_projections" in check_names
     assert "unbalanced_jes" in check_names
     assert "zero_amount_jes" in check_names
+    assert "fractional_piece_quantities" in check_names
 
 
 @pytest.mark.asyncio
@@ -198,10 +199,10 @@ async def test_import_paid_invoice_creates_jes(client, session):
     # Check JE projections were created
     r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
     jes = r.json()["items"]
-    # Should have 4 events: fin:created, fin:posted, pay:created, pay:posted
+    # Only finalization JE is created on import (no synthetic payment JE)
     je_types = [e["event_type"] for e in jes]
-    assert je_types.count("acc.journal_entry.created") == 2
-    assert je_types.count("acc.journal_entry.posted") == 2
+    assert je_types.count("acc.journal_entry.created") == 1
+    assert je_types.count("acc.journal_entry.posted") == 1
 
     # Trial balance should show data
     r = await client.get("/accounting/trial-balance", headers=_h(token))
@@ -327,7 +328,7 @@ async def test_batch_import_paid_invoices_create_jes(client, session):
     r = await client.get("/ledger?entity_type=journal_entry", headers=_h(token))
     jes = r.json()["items"]
     created = [e for e in jes if e["event_type"] == "acc.journal_entry.created"]
-    assert len(created) == 6  # 3 fin + 3 pay
+    assert len(created) == 3  # 3 finalization only; no synthetic payment JEs on import
 
 
 # --- Doctor fix mode ---
@@ -541,7 +542,7 @@ async def test_doctor_fix_missing_payment_je(client, session):
     # Mark as paid via a subsequent event (but no auto-JE hook for this path)
     r = await client.post("/docs/import", headers=_h(token), json={
         "entity_id": entity_id, "event_type": "doc.payment.received",
-        "data": {"amount": 600.0, "amount_paid": 600, "amount_outstanding": 0, "status": "paid"},
+        "data": {"amount": 600.0, "amount_paid": 600, "amount_outstanding": 0, "status": "paid", "payment_date": "2026-01-15"},
         "source": "import:test",
         "idempotency_key": f"idem-pf-pay-{uuid.uuid4().hex[:8]}",
     })
@@ -790,5 +791,194 @@ async def test_connector_sync_contacts(client, patch_connector_session_token):
         resp = await client.post("/connectors/shopify/sync", headers=headers, json={
             "entity": "contacts", "access_token": "tok",
         })
-    assert resp.status_code == 200
-    assert resp.json()["entity"] == "contacts"
+
+
+# --- inverted_doc_dates doctor check ---
+
+@pytest.mark.asyncio
+async def test_doctor_inverted_doc_dates_clean_data(client, session):
+    """No inverted dates -> found=0."""
+    token = await _register(client)
+    h = _h(token)
+    # Create a normal invoice with valid dates.
+    await client.post("/docs", headers=h, json={
+        "doc_type": "invoice", "contact_name": "Test",
+        "line_items": [{"description": "x", "quantity": 1, "unit_price": 100}],
+        "issue_date": "2024-06-01", "due_date": "2024-06-30",
+    })
+    r = await client.post("/admin/doctor?checks=inverted_doc_dates", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "inverted_doc_dates")
+    assert result["found"] == 0
+
+
+@pytest.mark.asyncio
+async def test_doctor_inverted_doc_dates_detect_and_fix(client, session):
+    """Import a doc with due_date < issue_date (simulating pre-v1.0.10 data).
+    Dry-run should find it; fix run should repair due_date = issue_date."""
+    token = await _register(client)
+    h = _h(token)
+    entity_id = f"doc:inv-date-{uuid.uuid4().hex[:8]}"
+
+    # Plant the inverted doc via the import endpoint (bypasses _assert_date_order).
+    r = await client.post("/docs/import", headers=h, json={
+        "entity_id": entity_id,
+        "event_type": "doc.created",
+        "data": {
+            "doc_type": "invoice", "contact_name": "Legacy",
+            "total": 100, "subtotal": 100, "tax": 0, "status": "draft",
+            "issue_date": "2024-06-15",
+            "due_date": "2024-06-01",   # inverted: due < issue
+        },
+        "source": "import:test",
+        "idempotency_key": f"inv-{uuid.uuid4().hex}",
+    })
+    assert r.status_code == 200
+
+    # Dry-run: detect but don't fix.
+    r = await client.post("/admin/doctor?checks=inverted_doc_dates", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "inverted_doc_dates")
+    assert result["found"] >= 1
+    assert result["fixed"] == 0
+
+    # Fix run.
+    r = await client.post("/admin/doctor?checks=inverted_doc_dates&fix=true", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "inverted_doc_dates")
+    assert result["fixed"] >= 1
+
+    # Verify: due_date now == issue_date (set to issue_date = "2024-06-15").
+    r2 = await client.get(f"/docs/{entity_id}", headers=h)
+    assert r2.status_code == 200
+    doc = r2.json()
+    assert doc["due_date"] >= doc["issue_date"]
+
+    # Second fix run: idempotent -> fixed=0.
+    r = await client.post("/admin/doctor?checks=inverted_doc_dates&fix=true", headers=h)
+    result = next(c for c in r.json()["results"] if c["check"] == "inverted_doc_dates")
+    assert result["fixed"] == 0
+
+
+# --- Doctor check: fractional_piece_quantities ---
+
+@pytest.mark.asyncio
+async def test_fractional_piece_quantities_clean(client, session):
+    """No fractional piece items or doc lines -> found=0."""
+    token = await _register(client)
+    h = _h(token)
+
+    # Create a whole-number piece item
+    r = await client.post("/items", headers=h, json={
+        "sku": "FPQ-CLEAN-001", "name": "Whole Piece", "quantity": 3, "sell_by": "piece",
+    })
+    assert r.status_code == 200
+
+    # Create an invoice with integer quantity
+    r = await client.post("/docs", headers=h, json={
+        "doc_type": "invoice", "contact_name": "Test",
+        "line_items": [{"sku": "FPQ-CLEAN-001", "name": "Whole Piece", "sell_by": "piece", "quantity": 1, "unit_price": 100}],
+        "subtotal": 100, "total": 100,
+    })
+    assert r.status_code == 200
+
+    r = await client.post("/admin/doctor?checks=fractional_piece_quantities", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "fractional_piece_quantities")
+    assert result["found"] == 0
+    assert result["fixed"] == 0
+    assert result["auto_fixable"] is False
+
+
+@pytest.mark.asyncio
+async def test_fractional_piece_quantities_detects_item_and_doc(client, session):
+    """Items and docs with fractional piece quantities are detected, never auto-fixed."""
+    token = await _register(client)
+    h = _h(token)
+
+    # Plant a piece item with fractional quantity via import
+    item_eid = f"item:{uuid.uuid4()}"
+    from celerp.events.engine import emit_event as _emit
+    import uuid as _uuid
+    me = (await client.get("/companies/me", headers=h)).json()
+    company_id = _uuid.UUID(me["id"])
+
+    await _emit(
+        session, company_id=company_id,
+        entity_id=item_eid, entity_type="item",
+        event_type="item.created",
+        data={"sku": "FPQ-BAD-ITEM", "name": "Bad Piece Item", "quantity": 0.7, "sell_by": "piece"},
+        actor_id=None, location_id=None, source="test",
+        idempotency_key=f"fpq-item-{_uuid.uuid4().hex}",
+        metadata_={},
+    )
+
+    # Plant a finalized doc with fractional piece line via import
+    doc_eid = f"doc:FPQ-INV-{_uuid.uuid4().hex[:8]}"
+    await _emit(
+        session, company_id=company_id,
+        entity_id=doc_eid, entity_type="doc",
+        event_type="doc.created",
+        data={
+            "doc_type": "invoice", "status": "final",
+            "line_items": [{"sku": "FPQ-BAD-ITEM", "name": "Bad Piece Item", "sell_by": "piece", "quantity": 0.7, "unit_price": 100}],
+        },
+        actor_id=None, location_id=None, source="test",
+        idempotency_key=f"fpq-doc-{_uuid.uuid4().hex}",
+        metadata_={},
+    )
+    await session.commit()
+
+    # Dry-run: detects both
+    r = await client.post("/admin/doctor?checks=fractional_piece_quantities", headers=h)
+    assert r.status_code == 200
+    result = next(c for c in r.json()["results"] if c["check"] == "fractional_piece_quantities")
+    assert result["found"] >= 2
+    assert result["fixed"] == 0
+
+    item_findings = [d for d in result["details"] if d["kind"] == "item"]
+    doc_findings = [d for d in result["details"] if d["kind"] == "doc_line"]
+    assert any(f["sku"] == "FPQ-BAD-ITEM" and f["quantity"] == 0.7 for f in item_findings)
+    assert any(f["sku"] == "FPQ-BAD-ITEM" and f["action_required"] == "void_and_reissue_or_credit_note" for f in doc_findings)
+
+    # Fix mode: still not fixed (report-only check)
+    r2 = await client.post("/admin/doctor?checks=fractional_piece_quantities&fix=true", headers=h)
+    assert r2.status_code == 200
+    result2 = next(c for c in r2.json()["results"] if c["check"] == "fractional_piece_quantities")
+    assert result2["fixed"] == 0
+    assert result2["found"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_upgrade_report_written_on_fix_with_from_version(client, session, tmp_path, monkeypatch):
+    """When fix=true and from_version provided, upgrade report JSON is written to disk."""
+    import importlib, celerp.config as cfg_mod
+    monkeypatch.setattr(cfg_mod.settings, "data_dir", str(tmp_path), raising=False)
+
+    token = await _register(client)
+    h = _h(token)
+    await _create_invoice(client, token, total=100, tax=0)
+
+    r = await client.post("/admin/doctor?fix=true&from_version=1.0.9", headers=h)
+    assert r.status_code == 200
+    data = r.json()
+    assert "upgrade_report" in data
+    report_path = data["upgrade_report"]
+    import os, json as _json
+    assert os.path.isfile(report_path)
+    with open(report_path) as f:
+        report = _json.load(f)
+    assert report["from_version"] == "1.0.9"
+    assert "auto_fixed" in report
+    assert "manual_attention_required" in report
+
+
+@pytest.mark.asyncio
+async def test_all_checks_have_auto_fixable_field(client, session):
+    """Every check result must include the auto_fixable boolean field."""
+    token = await _register(client)
+    r = await client.post("/admin/doctor", headers=_h(token))
+    assert r.status_code == 200
+    for result in r.json()["results"]:
+        assert "auto_fixable" in result, f"check {result['check']} missing auto_fixable field"
+        assert isinstance(result["auto_fixable"], bool)

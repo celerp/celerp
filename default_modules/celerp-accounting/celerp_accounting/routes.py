@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.constants import ISO_4217_CURRENCIES
 from celerp_accounting.models import Account, BankAccount, BankStatementLine, ReconciliationRule, ReconciliationSession
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager
@@ -162,6 +163,27 @@ async def seed_chart_of_accounts_hook(*, session: AsyncSession, company_id: uuid
     await _seed_default_bank_account(session, company_id)
 
 
+async def backfill_chart_of_accounts_hook(*, session: AsyncSession) -> None:
+    """Lifecycle hook called via on_modules_ready slot.
+
+    Seeds the chart of accounts for any existing company that has none yet.
+    This handles the case where accounting is enabled after the company was
+    already created (e.g. first-run with no modules, then preset applied).
+    """
+    from celerp.models.company import Company
+    from sqlalchemy import select as _select
+
+    companies = (await session.execute(_select(Company))).scalars().all()
+    for company in companies:
+        has_accounts = (await session.execute(
+            _select(Account.id).where(Account.company_id == company.id).limit(1)
+        )).scalar_one_or_none()
+        if has_accounts:
+            continue
+        await seed_chart_of_accounts(session, company.id)
+        await _seed_default_bank_account(session, company.id)
+
+
 def _account_to_dict(acc: Account) -> dict:
     return {
         "id": str(acc.id),
@@ -194,13 +216,11 @@ async def seed_chart_endpoint(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Seed the default chart of accounts for this company. Only adds missing accounts."""
-    existing_codes = {
-        row.code for row in (
-            await session.execute(
-                select(Account.code).where(Account.company_id == company_id)
-            )
-        ).scalars().all()
-    }
+    existing_codes = set(
+        (await session.execute(
+            select(Account.code).where(Account.company_id == company_id)
+        )).scalars().all()
+    )
     added = 0
     for entry in THAI_CHART_OF_ACCOUNTS:
         if entry["code"] not in existing_codes:
@@ -222,7 +242,7 @@ async def seed_chart_endpoint(
     if not existing_bank:
         await _seed_default_bank_account(session, company_id)
 
-    await session.flush()
+    await session.commit()
     return {"added": added, "already_existed": len(existing_codes)}
 
 
@@ -367,7 +387,7 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = state.get("ts") or state.get("created_at") or ""
+        ts = (state.get("ts") or state.get("created_at") or "")[:10]
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
@@ -380,6 +400,25 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
             credit = Decimal(str(entry.get("credit") or 0))
             balances[code] = balances.get(code, Decimal(0)) + debit - credit
     return balances
+
+
+@router.get("/journal-entries")
+async def list_journal_entries(
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """List all journal entry projections - for debugging and audit."""
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "journal_entry",
+            )
+        )
+    ).scalars().all()
+    items = [{"entity_id": r.entity_id, **r.state} for r in rows]
+    return {"items": items, "total": len(items)}
 
 
 @router.get("/trial-balance")
@@ -415,7 +454,7 @@ async def trial_balance(
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = state.get("ts") or state.get("created_at") or ""
+        ts = (state.get("ts") or state.get("created_at") or "")[:10]
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
@@ -705,6 +744,9 @@ async def create_bank_account(
 ) -> dict:
     if payload.bank_type not in _BANK_TYPES:
         raise HTTPException(status_code=422, detail=f"bank_type must be one of {sorted(_BANK_TYPES)}")
+    currency = payload.currency.upper()
+    if currency not in ISO_4217_CURRENCIES:
+        raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
 
     # Resolve or auto-assign chart account code
     code = payload.account_code or await _next_bank_account_code(session, company_id)
@@ -734,7 +776,7 @@ async def create_bank_account(
         bank_name=payload.bank_name,
         account_number=payload.account_number,
         bank_type=payload.bank_type,
-        currency=payload.currency,
+        currency=currency,
         opening_balance=payload.opening_balance,
     )
     session.add(bank)
@@ -813,7 +855,10 @@ async def patch_bank_account(
     if payload.bank_type is not None:
         b.bank_type = payload.bank_type
     if payload.currency is not None:
-        b.currency = payload.currency
+        normed = payload.currency.upper()
+        if normed not in ISO_4217_CURRENCIES:
+            raise HTTPException(status_code=422, detail=f"Invalid currency '{payload.currency}'. Must be a valid ISO 4217 code.")
+        b.currency = normed
     if payload.is_active is not None:
         b.is_active = payload.is_active
 

@@ -238,8 +238,7 @@
   "btn.submit": "Nộp",
   "btn.test_connection": "Kiểm tra kết nối",
   "btn.transfer": "Chuyển khoản",
-  "btn.u0001f5a8": "🖨",
-  "btn.u00d7": "\\u00d7",
+  "btn.u00d7": "×",
   "btn.u2705_confirm_create": "\\u2705 Xác nhận & Tạo",
   "btn.u274c_discard": "\\u274c Loại bỏ",
   "btn.undo": "Hoàn tác",
@@ -423,8 +422,8 @@
   "inv.u0001f5d1_dispose": "🗑 Loại bỏ",
   "inv.u21a9_bring_back_in": "\\u21a9 Mang về",
   "inv.u21a9_return_to_vendor": "\\u21a9 Trả lại cho nhà cung cấp",
-  "inv.u23f3_expire": "\\u23f3 Hết hạn",
-  "inv.u2702_split": "\\u2702 Tách",
+  "inv.u23f3_expire": "⏳ Hết hạn",
+  "inv.u2702_split": "✂ Tách",
   "inv.splitting_disabled_hint": "Tính năng tách đã bị tắt cho mặt hàng này. Bật trong «Cho phép tách» ở trên.",
   "inv.unknown_document_type": "Loại tài liệu không xác định.",
   "label._add_item": "+ Thêm mục",
@@ -1145,5 +1144,7 @@
   "settings.password_changed": "Đổi mật khẩu thành công",
   "btn.change_password": "Đổi mật khẩu",
   "status.all_issued": "Tất cả đã phát hành",
-  "nav.credit_notes": "Phiếu Ghi Có"
+  "nav.credit_notes": "Phiếu Ghi Có",
+  "btn.reset_columns": "Đặt lại",
+  "btn.reset_columns_title": "Đặt lại các cột về mặc định"
 }

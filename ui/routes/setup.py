@@ -23,6 +23,7 @@ from pathlib import Path
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import auth_shell, flash
+from ui.components.currency import CURRENCIES, CURRENCY_CODES
 from ui.config import COOKIE_NAME
 from ui.i18n import t, get_lang
 from celerp.config import set_enabled_modules as _set_enabled_modules
@@ -87,45 +88,6 @@ def _load_verticals() -> list[tuple[str, str]]:
     options.sort(key=lambda x: x[1])
     return options + pinned_last
 
-_CURRENCIES = [
-    ("USD", "USD - US Dollar"),
-    ("EUR", "EUR - Euro"),
-    ("GBP", "GBP - British Pound"),
-    ("JPY", "JPY - Japanese Yen"),
-    ("CNY", "CNY - Chinese Yuan"),
-    ("AUD", "AUD - Australian Dollar"),
-    ("CAD", "CAD - Canadian Dollar"),
-    ("CHF", "CHF - Swiss Franc"),
-    ("HKD", "HKD - Hong Kong Dollar"),
-    ("SGD", "SGD - Singapore Dollar"),
-    ("SEK", "SEK - Swedish Krona"),
-    ("NOK", "NOK - Norwegian Krone"),
-    ("DKK", "DKK - Danish Krone"),
-    ("NZD", "NZD - New Zealand Dollar"),
-    ("MXN", "MXN - Mexican Peso"),
-    ("BRL", "BRL - Brazilian Real"),
-    ("ZAR", "ZAR - South African Rand"),
-    ("INR", "INR - Indian Rupee"),
-    ("KRW", "KRW - South Korean Won"),
-    ("IDR", "IDR - Indonesian Rupiah"),
-    ("MYR", "MYR - Malaysian Ringgit"),
-    ("PHP", "PHP - Philippine Peso"),
-    ("VND", "VND - Vietnamese Dong"),
-    ("THB", "THB - Thai Baht"),
-    ("TWD", "TWD - Taiwan Dollar"),
-    ("RUB", "RUB - Russian Ruble"),
-    ("TRY", "TRY - Turkish Lira"),
-    ("SAR", "SAR - Saudi Riyal"),
-    ("AED", "AED - UAE Dirham"),
-    ("PLN", "PLN - Polish Zloty"),
-    ("CZK", "CZK - Czech Koruna"),
-    ("HUF", "HUF - Hungarian Forint"),
-    ("ILS", "ILS - Israeli Shekel"),
-    ("CLP", "CLP - Chilean Peso"),
-    ("PKR", "PKR - Pakistani Rupee"),
-]
-# Code-only list for validation/defaults
-_CURRENCY_CODES = [c for c, _ in _CURRENCIES]
 _TIMEZONES = [
     "Asia/Bangkok", "Asia/Singapore", "Asia/Tokyo", "Asia/Hong_Kong",
     "Asia/Kolkata", "Europe/London", "Europe/Paris", "America/New_York",
@@ -164,6 +126,16 @@ def setup_routes(app):
             "phone": str(form.get("phone", "")).strip(),
             "address": str(form.get("address", "")).strip(),
         }
+
+        if data["currency"] not in CURRENCY_CODES:
+            try:
+                company = await api.get_company(token)
+            except APIError:
+                company = {}
+            return auth_shell(
+                _company_details_form(company, error=f"Invalid currency: {data['currency']!r}. Please select from the list.", lang=get_lang(request)),
+                title="Company setup - Celerp",
+            )
 
         try:
             await api.patch_company(token, data)
@@ -406,7 +378,7 @@ def _company_details_form(company: dict, error: str | None = None, lang: str = "
                     cls="form-input",
                 ),
                 Datalist(
-                    *[Option(label, value=code) for code, label in _CURRENCIES],
+                    *[Option(label, value=code) for code, label in CURRENCIES],
                     id="currency-list",
                 ),
                 cls="form-group",

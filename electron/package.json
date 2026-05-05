@@ -19,7 +19,6 @@
     "embedded-postgres": "^17.9.0-beta.16"
   },
   "devDependencies": {
-    "@electron/notarize": "^2.5.0",
     "electron": "^30.0.0",
     "electron-builder": "^25.0.0",
     "jest": "^30.3.0"
@@ -98,10 +97,6 @@
             "arm64"
           ]
         }
-      ],
-      "signIgnore": [
-        "Contents/Resources/python/",
-        "Contents/Resources/app.asar.unpacked/node_modules/@embedded-postgres/"
       ]
     },
     "linux": {
@@ -120,7 +115,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
-    }
+    },
+    "afterPack": "scripts/after-pack.js"
   },
   "jest": {
     "testEnvironment": "node",

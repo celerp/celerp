@@ -56,7 +56,7 @@ async def test_invoice_partial_then_full_payment_updates_balances(journey_api):
 
     pay1 = await journey_api.post(
         f"/docs/{inv_id}/payment",
-        json={"amount": 400.0, "method": "cash", "reference": "p1", "idempotency_key": _u()},
+        json={"payment_date": "2026-01-15", "amount": 400.0, "method": "cash", "reference": "p1", "idempotency_key": _u(), "bank_account": "1111"},
     )
     assert pay1.status_code == 200, pay1.text
 
@@ -68,7 +68,7 @@ async def test_invoice_partial_then_full_payment_updates_balances(journey_api):
 
     pay2 = await journey_api.post(
         f"/docs/{inv_id}/payment",
-        json={"amount": 600.0, "method": "bank", "reference": "p2", "idempotency_key": _u()},
+        json={"payment_date": "2026-01-15", "amount": 600.0, "method": "bank", "reference": "p2", "idempotency_key": _u(), "bank_account": "1111"},
     )
     assert pay2.status_code == 200, pay2.text
 
@@ -92,7 +92,7 @@ async def test_invoice_void_blocks_payment(journey_api):
 
     pay = await journey_api.post(
         f"/docs/{inv_id}/payment",
-        json={"amount": 100.0, "method": "cash", "reference": "after-void", "idempotency_key": _u()},
+        json={"payment_date": "2026-01-15", "amount": 100.0, "method": "cash", "reference": "after-void", "idempotency_key": _u(), "bank_account": "1111"},
     )
     assert pay.status_code == 409
 
@@ -106,7 +106,7 @@ async def test_credit_note_reduces_original_invoice_outstanding(journey_api):
     # Partially pay so invoice isn't a trivial full-outstanding case.
     pay = await journey_api.post(
         f"/docs/{inv_id}/payment",
-        json={"amount": 200.0, "method": "cash", "reference": "pre-credit", "idempotency_key": _u()},
+        json={"payment_date": "2026-01-15", "amount": 200.0, "method": "cash", "reference": "pre-credit", "idempotency_key": _u(), "bank_account": "1111"},
     )
     assert pay.status_code == 200, pay.text
 

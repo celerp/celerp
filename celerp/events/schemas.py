@@ -149,6 +149,9 @@ class CrmContactUpdated(BaseModel):
 
 class CrmContactMerged(BaseModel):
     source_contact_ids: list[str]
+    merged_people: list[dict] = Field(default_factory=list)
+    merged_addresses: list[dict] = Field(default_factory=list)
+    merged_tags: list[str] = Field(default_factory=list)
 
 
 class CrmContactTagged(BaseModel):
@@ -308,6 +311,10 @@ class DocUpdated(BaseModel):
     fields_changed: dict[str, dict[str, Any]]
 
 
+class DocRenumbered(BaseModel):
+    fields_changed: dict[str, dict[str, Any]]
+
+
 class DocPatched(BaseModel):
     """CSV upsert patch: accepts any doc data fields."""
     model_config = {"extra": "allow"}
@@ -352,8 +359,9 @@ class DocPaymentReceived(BaseModel):
     method: str | None = None
     reference: str | None = None
     remaining_balance: float | None = None
-    payment_date: str | None = None
+    payment_date: str
     bank_account: str | None = None
+    conversion_rate: float | None = None  # pass-through for premium multicurrency module
     source_doc_id: str | None = None
     target_doc_id: str | None = None
 
@@ -367,6 +375,12 @@ class DocPaymentRefunded(BaseModel):
 class DocPaymentVoided(BaseModel):
     payment_index: int
     void_reason: str | None = None
+    refund_date: str | None = None  # ISO date for the reversal JE; defaults to today if absent
+
+
+class DocPaymentDeleted(BaseModel):
+    payment_index: int
+    delete_reason: str | None = None
 
 
 class DocConverted(BaseModel):
@@ -396,7 +410,45 @@ class DocSharedImport(BaseModel):
 
 
 class DocNoteAdded(BaseModel):
-    text: str
+    doc_id: str
+    note_id: str
+    note: str
+    author_id: str
+    author_name: str
+    created_at: str
+
+
+class DocNoteUpdated(BaseModel):
+    doc_id: str
+    note_id: str
+    note: str
+    updated_at: str
+
+
+class DocNoteRemoved(BaseModel):
+    doc_id: str
+    note_id: str
+
+
+class ListNoteAdded(BaseModel):
+    list_id: str
+    note_id: str
+    note: str
+    author_id: str
+    author_name: str
+    created_at: str
+
+
+class ListNoteUpdated(BaseModel):
+    list_id: str
+    note_id: str
+    note: str
+    updated_at: str
+
+
+class ListNoteRemoved(BaseModel):
+    list_id: str
+    note_id: str
 
 
 class DocFulfilled(BaseModel):
@@ -746,6 +798,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     # Documents
     "doc.created": DocCreated,
     "doc.updated": DocUpdated,
+    "doc.renumbered": DocRenumbered,
     "doc.patched": DocPatched,
     "doc.linked": DocLinked,
     "doc.finalized": DocFinalized,
@@ -757,10 +810,16 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.payment.received": DocPaymentReceived,
     "doc.payment.refunded": DocPaymentRefunded,
     "doc.payment.voided": DocPaymentVoided,
+    "doc.payment.deleted": DocPaymentDeleted,
     "doc.converted": DocConverted,
     "doc.received": DocReceived,
     "doc.shared_import": DocSharedImport,
     "doc.note_added": DocNoteAdded,
+    "doc.note_updated": DocNoteUpdated,
+    "doc.note_removed": DocNoteRemoved,
+    "list.note_added": ListNoteAdded,
+    "list.note_updated": ListNoteUpdated,
+    "list.note_removed": ListNoteRemoved,
     "doc.fulfilled": DocFulfilled,
     "doc.partially_fulfilled": DocPartiallyFulfilled,
     "doc.return_received": DocReturnReceived,

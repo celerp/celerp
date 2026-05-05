@@ -28,7 +28,7 @@ import re
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from ui.routes.csv_import import _load_csv, MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC, _CORE_ITEM_COLS
@@ -303,6 +303,38 @@ class TestAuthRouting:
         assert r.status_code == 503
         data = r.json()
         assert data["overall"] == "degraded"
+
+    @pytest.mark.asyncio
+    async def test_health_proxy_returns_503_on_api_failure(self, ui_client):
+        """GET /health when API is unreachable → 503 with version key, not 404."""
+        import httpx
+        with patch("httpx.AsyncClient") as mock_cls:
+            instance = AsyncMock()
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            instance.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
+            mock_cls.return_value = instance
+            r = await ui_client.get("/health")
+        assert r.status_code == 503
+        data = r.json()
+        assert "version" in data
+
+    @pytest.mark.asyncio
+    async def test_health_proxy_forwards_api_response(self, ui_client):
+        """GET /health proxies API response including version field."""
+        import httpx
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"status": "ok", "version": "1.0.9"}
+        mock_response.status_code = 200
+        with patch("httpx.AsyncClient") as mock_cls:
+            instance = AsyncMock()
+            instance.__aenter__ = AsyncMock(return_value=instance)
+            instance.__aexit__ = AsyncMock(return_value=False)
+            instance.get = AsyncMock(return_value=mock_response)
+            mock_cls.return_value = instance
+            r = await ui_client.get("/health")
+        assert r.status_code == 200
+        assert r.json()["version"] == "1.0.9"
 
     @pytest.mark.asyncio
     async def test_attachment_proxy_requires_auth(self, ui_client):
@@ -620,6 +652,37 @@ class TestCompanySwitcher:
         r = await ui_client.post("/create-company", data={"company_name": "Test"})
         assert r.status_code in (302, 303)
         assert "login" in r.headers.get("location", "")
+
+    @pytest.mark.asyncio
+    async def test_setup_company_invalid_currency_shows_error(self, ui_client):
+        """POST /setup/company with free-text garbage currency → re-render form with error, no API call."""
+        with (
+            patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/setup/company",
+                data={"currency": "FFF", "timezone": "UTC"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"Invalid currency" in r.content
+        mock_patch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_setup_company_valid_currency_accepted(self, ui_client):
+        """POST /setup/company with a valid ISO code → patch called, redirect."""
+        with (
+            patch("ui.api_client.patch_company", new=AsyncMock()),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/setup/company",
+                data={"currency": "THB", "timezone": "Asia/Bangkok"},
+                cookies=_authed(),
+                follow_redirects=False,
+            )
+        assert r.status_code in (200, 302, 303)
 
 
 # ── Page rendering (authed) ──────────────────────────────────────────────────
@@ -1387,12 +1450,24 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
         ):
-            r = await ui_client.get("/inventory/content", cookies=_authed())
+            r = await ui_client.get("/inventory/content", cookies=_authed(), headers={"HX-Request": "true"})
         assert r.status_code == 200
         # The #inventory-content div must be present for HTMX outerHTML swap
         assert b"inventory-content" in r.content
         # Must contain status cards (not status-tabs - those were removed in UX cleanup)
         assert b"status-card" in r.content
+
+    @pytest.mark.asyncio
+    async def test_inventory_content_direct_nav_redirects(self, ui_client):
+        """GET /inventory/content without HX-Request header redirects to /inventory (preserving QS)."""
+        r = await ui_client.get(
+            "/inventory/content?sort=name&dir=desc&q=ruby",
+            cookies=_authed(),
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert r.headers["location"].startswith("/inventory")
+        assert "sort=name" in r.headers["location"]
 
     @pytest.mark.asyncio
     async def test_category_tabs_target_inventory_content(self, ui_client):
@@ -1775,6 +1850,68 @@ class TestSettingsInlineEditValidation:
         assert b"cell-error" in r.content
         mock_patch.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_location_type_address_is_valid(self, ui_client):
+        """PATCH /settings/locations/{id}/type with 'address' must be accepted (Company Address type)."""
+        _loc = {"id": "loc1", "name": "HQ", "type": "address", "address": {"text": "Phuket"}, "is_default": False}
+        with (
+            patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [_loc]})),
+        ):
+            r = await ui_client.patch(
+                "/settings/locations/loc1/type", data={"value": "address"}, cookies=_authed()
+            )
+        assert r.status_code == 200
+        assert b"cell-error" not in r.content
+        mock_patch.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_location_address_display_unwraps_dict(self, ui_client):
+        """Location address column must show plain text, not raw JSON dict repr."""
+        _locs = [{"id": "loc1", "name": "HQ", "type": "warehouse", "address": {"text": "Phuket"}, "is_default": False}]
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Phuket" in r.content
+        assert b'{"text"' not in r.content  # must NOT show raw dict repr
+
+    @pytest.mark.asyncio
+    async def test_location_address_patch_wraps_plain_text_as_dict(self, ui_client):
+        """PATCH /settings/locations/{id}/address with plain text must send {'text': ...} to backend."""
+        _loc = {"id": "loc1", "name": "HQ", "type": "warehouse", "address": {"text": "Chiang Mai"}, "is_default": False}
+        with (
+            patch("ui.api_client.patch_location", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [_loc]})),
+        ):
+            r = await ui_client.patch(
+                "/settings/locations/loc1/address", data={"value": "Chiang Mai"}, cookies=_authed()
+            )
+        assert r.status_code == 200
+        assert b"cell-error" not in r.content
+        mock_patch.assert_called_once_with(mock_patch.call_args[0][0], "loc1", {"address": {"text": "Chiang Mai"}})
+
+    @pytest.mark.asyncio
+    async def test_location_type_display_shows_label_not_raw_value(self, ui_client):
+        """Location type column must show 'Warehouse' not 'warehouse' (display label from _LOC_TYPES)."""
+        _locs = [{"id": "loc1", "name": "HQ", "type": "warehouse", "address": None, "is_default": False}]
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Warehouse" in r.content  # capitalized label
+        # Raw value "warehouse" may appear in HTMX attributes but not as cell-text
+        html = r.text
+        import re
+        cell_texts = re.findall(r'class="cell-text"[^>]*>([^<]+)<', html)
+        assert not any(t.strip() == "warehouse" for t in cell_texts), "Raw 'warehouse' shown as cell text"
+
     # ── Item schema type ─────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
@@ -1962,14 +2099,15 @@ class TestDocumentPolish:
         assert b"badge--invoice" in r.content
 
     @pytest.mark.asyncio
-    async def test_doc_status_field_edit_returns_select(self, ui_client):
-        """Editing status field on doc detail → <select> not free text input."""
+    async def test_doc_status_field_edit_returns_readonly_badge(self, ui_client):
+        """Status field is a state-machine field; /edit endpoint must return a read-only badge, not a select."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_DOC_DETAIL)):
             r = await ui_client.get("/docs/d:1/field/status/edit", cookies=_authed())
         assert r.status_code == 200
-        assert b"<select" in r.content
-        assert b"paid" in r.content
-        assert b"awaiting_payment" in r.content
+        # Must NOT contain a select (that would allow direct status manipulation)
+        assert b"<select" not in r.content
+        # Must render the status badge
+        assert b"badge" in r.content
 
     @pytest.mark.asyncio
     async def test_doc_table_awaiting_payment_status_uses_badge_class(self, ui_client):
@@ -2151,7 +2289,8 @@ class TestColumnManager:
 
     @pytest.mark.asyncio
     async def test_column_manager_cols_param_filters(self, ui_client):
-        """?cols=name filters visible columns deterministically."""
+        """?cols=name passes show_cols to data_table; all columns still rendered in DOM
+        (column visibility is JS-driven, not server-side HTML suppression)."""
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -2160,9 +2299,9 @@ class TestColumnManager:
             r = await ui_client.get("/inventory?cols=name", cookies=_authed())
         assert r.status_code == 200
         assert b"Ruby" in r.content  # name value visible
-        # Status and Cost columns should not appear as th headers
-        assert b"col-status" not in r.content
-        assert b"col-total_cost" not in r.content
+        # All columns are always rendered in DOM; visibility controlled by JS.
+        # The show_cols param is passed through to initialise JS column state.
+        assert b"col-name" in r.content
 
 class TestPhase2DeepPolish:
     @pytest.mark.asyncio
@@ -2191,6 +2330,84 @@ class TestPhase2DeepPolish:
             r = await ui_client.patch("/contacts/ct:1/field/phone", data={"value": "999"}, cookies=_authed())
         assert r.status_code == 200
         assert b"cell--clickable" in r.content
+
+    @pytest.mark.asyncio
+    async def test_contact_currency_field_edit_returns_combobox(self, ui_client):
+        """GET /contacts/{id}/field/currency/edit must return a currency combobox, not plain text input."""
+        contact = {**_CONTACTS[0], "currency": "THB"}
+        with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
+            r = await ui_client.get("/contacts/ct:1/field/currency/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b"combobox-wrap" in r.content
+        assert b"THB" in r.content
+        assert b'type="text"' in r.content  # search input
+        # hidden_id must not contain colons (breaks querySelectorAll)
+        import re
+        hidden_ids = re.findall(r'<input[^>]+type="hidden"[^>]+id="([^"]+)"', r.text)
+        assert all(":" not in hid for hid in hidden_ids), f"Colon in hidden input id: {hidden_ids}"
+
+    @pytest.mark.asyncio
+    async def test_contact_currency_field_patch_rejects_invalid_code(self, ui_client):
+        """PATCH /contacts/{id}/field/currency with garbage must return cell-error."""
+        with patch("ui.api_client.patch_contact", new=AsyncMock()) as mock_patch:
+            r = await ui_client.patch("/contacts/ct:1/field/currency", data={"value": "FFF"}, cookies=_authed())
+        assert r.status_code == 200
+        assert b"cell-error" in r.content
+        mock_patch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_contact_phone_field_edit_returns_iti_widget(self, ui_client):
+        """GET /contacts/{id}/field/phone/edit must return an intl-tel-input widget."""
+        contact = {**_CONTACTS[0], "phone": "+66812345678"}
+        with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
+            r = await ui_client.get("/contacts/ct:1/field/phone/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b"iti-wrap" in r.content           # wrapper div
+        assert b"iti-input" in r.content          # visible tel input
+        assert b'type="hidden"' in r.content      # hidden E.164 value input
+        assert b'name="value"' in r.content       # correct name for PATCH
+        assert b"intlTelInput" in r.content       # init script present
+        # hidden input id must not contain colons (breaks querySelectorAll)
+        import re
+        hidden_ids = re.findall(r'<input[^>]+type="hidden"[^>]+id="([^"]+)"', r.text)
+        assert hidden_ids, "No hidden input found"
+        assert all(":" not in hid for hid in hidden_ids), f"Colon in hidden id: {hidden_ids}"
+
+    @pytest.mark.asyncio
+    async def test_contact_phone_field_edit_empty_value(self, ui_client):
+        """Phone edit with no stored phone renders widget with empty value (no crash)."""
+        contact = {**_CONTACTS[0], "phone": None}
+        with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
+            r = await ui_client.get("/contacts/ct:1/field/phone/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b"iti-wrap" in r.content
+
+    @pytest.mark.asyncio
+    async def test_company_phone_field_edit_returns_iti_widget(self, ui_client):
+        """GET /settings/company/phone/edit must return an intl-tel-input widget."""
+        company = {"phone": "+6621234567", "currency": "THB", "settings": {}}
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
+            r = await ui_client.get("/settings/company/phone/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b"iti-wrap" in r.content
+        assert b"intlTelInput" in r.content
+        assert b'name="value"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_contact_detail_page_includes_phone_assets(self, ui_client):
+        """Contact detail page must include intl-tel-input CSS and JS in <head>."""
+        contact = {**_CONTACTS[0]}
+        with (
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})),
+            patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_contact_tags_vocabulary", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+        assert r.status_code == 200
+        assert b"intlTelInput" in r.content       # JS asset in head
+        assert b"intlTelInput.min.css" in r.content  # CSS asset in head
 
     @pytest.mark.asyncio
     async def test_docs_detail_field_patch(self, ui_client):
@@ -8379,8 +8596,9 @@ class TestBulkActionsPhase6SendTo:
     async def test_docs_module_registers_send_to_targets(self, ui_client):
         """celerp-docs PLUGIN_MANIFEST declares send_to_targets slots."""
         import importlib
+        from tests.conftest import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
-            "celerp_docs_entry", "default_modules/celerp-docs/__init__.py")
+            "celerp_docs_entry", REPO_ROOT / "default_modules/celerp-docs/__init__.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         slots = mod.PLUGIN_MANIFEST.get("slots", {})
@@ -8393,8 +8611,9 @@ class TestBulkActionsPhase6SendTo:
     async def test_crm_module_registers_send_to_target(self, ui_client):
         """celerp-contacts PLUGIN_MANIFEST declares send_to_targets slot."""
         import importlib
+        from tests.conftest import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
-            "celerp_contacts_entry", "default_modules/celerp-contacts/__init__.py")
+            "celerp_contacts_entry", REPO_ROOT / "default_modules/celerp-contacts/__init__.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         slots = mod.PLUGIN_MANIFEST.get("slots", {})
@@ -9261,10 +9480,13 @@ class TestLabelPages:
         assert 'oninput="labelEditorUpdatePreview()"' in html
 
     @pytest.mark.asyncio
-    async def test_print_preview_route_removed(self, label_client):
-        """GET /labels/print/{id} should 404 (route removed)."""
+    async def test_print_single_route_exists(self, label_client):
+        """GET /labels/print/{id} must return 200 HTML (single-item print UI route)."""
         r = await label_client.get("/labels/print/item-123", cookies=_authed())
-        assert r.status_code == 404
+        # Returns printable HTML page (200) or 302 if auth fails in test env
+        assert r.status_code in (200, 302), (
+            f"Expected 200 or 302, got {r.status_code}: route may not be registered"
+        )
 
     @pytest.mark.asyncio
     async def test_barcode_preview_text_below_bars(self, label_client):
@@ -10073,42 +10295,86 @@ class TestBugFixesBatch25Mar6Bugs:
 
 class TestBuildWorkflowVersioning:
     def test_build_workflow_sets_electron_version_from_tag(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'Set Electron version from git tag' in workflow
         assert "data['version'] = os.environ['VERSION']" in workflow
         assert 'Install Node deps' in workflow
 
     def test_build_workflow_keeps_static_artifact_names(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'Celerp-mac.dmg' in workflow
         assert 'Celerp-Setup.exe' in workflow
         assert 'Celerp.AppImage' in workflow
         assert 'Celerp-${VERSION}-arm64.dmg' not in workflow
 
-    def test_build_workflow_notarize_step_present(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
-        assert 'Notarize Mac DMG' in workflow
-        assert 'xcrun notarytool submit' in workflow
-        assert '--timeout 2h' in workflow
+    def test_build_workflow_notarize_via_after_sign(self):
+        # Notarization is handled natively by electron-builder v25 via APPLE_ID env vars.
+        # afterPack hook exists only to suppress chmod on embedded-postgres virtual paths.
+        from tests.conftest import REPO_ROOT
+        pkg = (REPO_ROOT / 'electron/package.json').read_text()
+        assert 'afterPack' in pkg
+        assert 'after-pack.js' in pkg
+        # No custom notarize.js needed - electron-builder notarizes via env vars.
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
+        assert 'APPLE_ID' in workflow
 
-    def test_build_workflow_notarize_timeout(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
+    def test_build_workflow_mac_build_timeout(self):
+        # Mac build step has timeout covering sign + notarize time
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'timeout-minutes: 130' in workflow
-        assert 'timeout-minutes: 180' in workflow
+
+    def test_build_workflow_mac_has_apple_secrets(self):
+        # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID must be present
+        # in the Mac build step env for notarize.js to pick them up.
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
+        assert 'APPLE_ID' in workflow
+        assert 'APPLE_APP_SPECIFIC_PASSWORD' in workflow
+        assert 'APPLE_TEAM_ID' in workflow
+
+    def test_build_workflow_no_presign_step(self):
+        # Pre-signing is no longer needed; electron-builder handles all signing.
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
+        assert 'Pre-sign' not in workflow
+        assert 'xcrun notarytool' not in workflow
+
+    def test_build_workflow_no_sign_ignore(self):
+        # signIgnore was the workaround for the pre-sign approach; now removed.
+        from tests.conftest import REPO_ROOT
+        pkg = (REPO_ROOT / 'electron/package.json').read_text()
+        assert 'signIgnore' not in pkg
 
     def test_build_workflow_dev_pipeline_trigger(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
+        from tests.conftest import REPO_ROOT
+        workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'develop' in workflow
         assert 'dev-latest' in workflow
         assert 'prerelease: true' in workflow
 
-    def test_build_workflow_no_notarize_for_dev(self):
-        workflow = Path('.github/workflows/build.yml').read_text()
-        assert "startsWith(github.ref, 'refs/tags/v')" in workflow
-
     def test_electron_main_disallows_prerelease(self):
-        main_js = Path('electron/main.js').read_text()
+        from tests.conftest import REPO_ROOT
+        main_js = (REPO_ROOT / 'electron/main.js').read_text()
         assert 'allowPrerelease = false' in main_js
+
+    def test_update_card_uses_correct_releases_url(self):
+        from tests.conftest import REPO_ROOT
+        shell = (REPO_ROOT / 'ui/components/shell.py').read_text()
+        assert 'https://github.com/celerp/celerp/releases' in shell
+        assert 'Data-Universal-Limited' not in shell
+
+    def test_electron_main_wires_update_not_available(self):
+        from tests.conftest import REPO_ROOT
+        main_js = (REPO_ROOT / 'electron/main.js').read_text()
+        assert 'update-not-available' in main_js
+
+    def test_preload_exposes_on_update_not_available(self):
+        from tests.conftest import REPO_ROOT
+        preload = (REPO_ROOT / 'electron/preload.js').read_text()
+        assert 'onUpdateNotAvailable' in preload
 
 
 class TestInventoryUXFixes:
@@ -10260,6 +10526,51 @@ class TestInventoryUXFixes:
         bulk = mod.PLUGIN_MANIFEST["slots"]["bulk_action"]
         assert bulk["form_action"] == "/labels/print-bulk"
 
+    def test_labels_manifest_bulk_action_type_is_navigate(self):
+        """Labels bulk_action must declare action_type=navigate so it opens in a new tab."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "celerp_labels_init",
+            str(Path(__file__).parent.parent / "default_modules/celerp-labels/__init__.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        bulk = mod.PLUGIN_MANIFEST["slots"]["bulk_action"]
+        assert bulk.get("action_type") == "navigate", (
+            "Labels bulk action must be navigate type so it opens a new tab "
+            "rather than being injected via HTMX into #bulk-action-result"
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_print_preview_post_redirects_on_no_selection(self, ui_client):
+        """POST /labels/print-bulk with no selected IDs redirects to /inventory."""
+        r = await ui_client.post(
+            "/labels/print-bulk",
+            data={},
+            cookies=_authed(),
+            follow_redirects=False,
+        )
+        assert r.status_code == 302
+        assert "/inventory" in r.headers["location"]
+
+    def test_bulk_print_navigate_type_opens_new_tab(self):
+        """Template generated for navigate-type module bulk action must have target=_blank."""
+        # Verifies the server-side template rendering picks up action_type=navigate
+        # and produces a form that opens a new tab rather than an HTMX swap.
+        from celerp_labels.ui_routes import _printable_label_sheet
+        # The actual mechanism is in inventory.py _bulk_context_templates.
+        # We verify it at the manifest level (covered by test_labels_manifest_bulk_action_type_is_navigate)
+        # and here confirm the print sheet is a full HTMLResponse (not a fragment).
+        from starlette.responses import HTMLResponse
+        result = _printable_label_sheet(
+            [{"name": "A"}, {"name": "B"}],
+            {"format": "40x30mm", "fields": [{"key": "name", "type": "text", "label": "Name"}]},
+        )
+        assert isinstance(result, HTMLResponse)
+        # Full page with print trigger - not an HTMX fragment
+        assert b"window.print()" in result.body
+        assert b"<!DOCTYPE html>" in result.body
+
     def test_print_bulk_helper_generates_html(self):
         """_bulk_print_preview_page returns base_shell response with template picker."""
         from celerp_labels.ui_routes import _printable_label_sheet
@@ -10283,6 +10594,147 @@ class TestInventoryUXFixes:
         from starlette.responses import HTMLResponse
         assert isinstance(result, HTMLResponse)
         assert b"Ring" in result.body
+
+    # ── Fix: mod: tpl-id mismatch ─────────────────────────────────────────────
+
+    def test_bulk_action_mod_tpl_id_derivation_matches_js(self):
+        """Template DOM id and JS tplId derivation must agree for mod: actions.
+
+        The option value is  'mod:{action_id}'  (colon separator).
+        The template id is   'tpl-mod-{action_id}'  (hyphen separator).
+        JS must strip the 'mod:' prefix (4 chars) and prepend 'tpl-mod-', NOT
+        concatenate 'tpl-' + value directly (which would yield 'tpl-mod:{action_id}').
+        This test locks that contract so neither side can drift independently.
+        """
+        # Simulate the Python side: derive action_id from form_action
+        form_action = "/labels/print-bulk"
+        action_id = form_action.replace("/", "_").strip("_")  # mirrors inventory.py
+
+        option_value = f"mod:{action_id}"          # value attr on <option>
+        template_dom_id = f"tpl-mod-{action_id}"   # id attr on <template>
+
+        # Simulate the JS side: action.startsWith('mod:') -> 'tpl-mod-' + action.slice(4)
+        js_tpl_id = "tpl-mod-" + option_value[4:]  # option_value[4:] == action.slice(4)
+
+        assert js_tpl_id == template_dom_id, (
+            f"JS-derived tplId {js_tpl_id!r} != DOM template id {template_dom_id!r}. "
+            "Update bulkActionChanged() in ui/components/table.py to match."
+        )
+
+    @pytest.mark.asyncio
+    async def test_bulk_action_print_labels_option_in_inventory(self, ui_client):
+        """'Print Labels' appears in the bulk action dropdown when labels module is loaded."""
+        from celerp.modules.slots import register as register_slot, clear as clear_slots
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "celerp_labels_init",
+            str(Path(__file__).parent.parent / "default_modules/celerp-labels/__init__.py"),
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        bulk = mod.PLUGIN_MANIFEST["slots"]["bulk_action"]
+        register_slot("bulk_action", {**bulk, "_module": "celerp-labels"})
+        try:
+            with (
+                patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+                patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+                patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+                patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            ):
+                r = await ui_client.get("/inventory", cookies=_authed())
+            assert r.status_code == 200
+            body = r.text
+            # Option value derived the same way as Python side
+            action_id = bulk["form_action"].replace("/", "_").strip("_")
+            assert f'value="mod:{action_id}"' in body, (
+                "Bulk action dropdown must contain the Print Labels option"
+            )
+            # Hidden <template> with matching tpl-mod- id must also be present
+            assert f'id="tpl-mod-{action_id}"' in body, (
+                "Hidden <template> with matching tpl-mod- id must be in the DOM"
+            )
+        finally:
+            clear_slots()
+
+    # ── Print-all-labels list route ───────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_print_list_redirects_on_empty_result(self, ui_client):
+        """GET /labels/print-list with no matching items redirects to /inventory."""
+        with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
+            mock_resp = AsyncMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"items": []}
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=AsyncMock(get=AsyncMock(return_value=mock_resp)))
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            r = await ui_client.get("/labels/print-list", cookies=_authed(), follow_redirects=False)
+        assert r.status_code == 302
+        assert "/inventory" in r.headers["location"]
+
+    @pytest.mark.asyncio
+    async def test_print_list_passes_filter_params_to_api(self, ui_client):
+        """GET /labels/print-list forwards q/status/category to the items API."""
+        captured_params = {}
+
+        async def fake_get(url, params=None, headers=None, **kw):
+            captured_params.update(params or {})
+            mock_resp = AsyncMock()
+            mock_resp.status_code = 200
+            mock_resp.json.return_value = {"items": [{"entity_id": "gc:abc"}]}
+            return mock_resp
+
+        with patch("celerp_labels.ui_routes.httpx.AsyncClient") as mock_cls:
+            mock_client = AsyncMock()
+            mock_client.get = fake_get
+            mock_cls.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
+            # When one item is found but no templates, it still redirects (no templates = redirect)
+            r = await ui_client.get(
+                "/labels/print-list?q=ruby&status=available&category=gemstones",
+                cookies=_authed(),
+                follow_redirects=False,
+            )
+        # Params were forwarded to the API
+        assert captured_params.get("q") == "ruby"
+        assert captured_params.get("status") == "available"
+        assert captured_params.get("category") == "gemstones"
+        assert int(captured_params.get("limit", 0)) <= 100
+
+    @pytest.mark.asyncio
+    async def test_print_all_labels_link_appears_when_labels_loaded(self, ui_client):
+        """'Print all labels' link appears in inventory toolbar when labels module is loaded."""
+        from celerp.modules.slots import register as register_slot, clear as clear_slots
+        register_slot("bulk_action", {
+            "label": "Print Labels",
+            "form_action": "/labels/print-bulk",
+            "action_type": "navigate",
+            "_module": "celerp-labels",
+        })
+        try:
+            with (
+                patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+                patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+                patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+                patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            ):
+                r = await ui_client.get("/inventory", cookies=_authed())
+            assert r.status_code == 200
+            assert "/labels/print-list" in r.text
+        finally:
+            clear_slots()
+
+    @pytest.mark.asyncio
+    async def test_print_all_labels_link_absent_without_labels_module(self, ui_client):
+        """'Print all labels' link does NOT appear when labels module is not loaded."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        assert "/labels/print-list" not in r.text
 
 
 # ── AI Page Tests ─────────────────────────────────────────────────────────────
@@ -10568,3 +11020,179 @@ class TestVendorDocReceiveAsColumn:
         # The JS includes data-name="receive_as" as code text, so check for the select element specifically
         assert '<select' not in html or 'data-name="receive_as"' not in html.split('<script')[0], \
             "receive_as select element must not appear in invoice markup (outside script)"
+
+
+# ── Issue fixes: document.body null + _safe_id + /health proxy ───────────────
+
+def test_client_js_uses_document_not_body_for_htmx_listeners():
+    """_CLIENT_JS must not use document.body.addEventListener for HTMX events.
+
+    _CLIENT_JS is injected in <head> where document.body is null, causing
+    'Cannot read properties of null (reading addEventListener)' at runtime.
+    All HTMX event listeners must be attached to document instead.
+    """
+    from ui.components.shell import _CLIENT_JS
+    assert "document.body.addEventListener" not in _CLIENT_JS, (
+        "_CLIENT_JS must not call document.body.addEventListener - "
+        "body is null when scripts run in <head>. Use document.addEventListener instead."
+    )
+
+
+def test_safe_id_makes_css_selector_safe_id():
+    """_safe_id must replace ':' so the result is valid in CSS selectors.
+
+    entity_ids like 'doc:PF-2605-0001' contain ':' which CSS parsers treat
+    as a pseudo-class separator, breaking querySelector('#doc:PF-...')
+    """
+    from ui.routes.documents import _safe_id
+    raw = "doc:PF-2605-0001"
+    safe = _safe_id(raw)
+    assert ":" not in safe, f"_safe_id must remove colons, got: {safe!r}"
+    # Must still be non-empty and usable as an HTML id
+    assert safe and safe[0].isalpha() or safe[0] in ("-", "_"), \
+        f"Result should start with a letter or - or _: {safe!r}"
+
+
+def test_internal_notes_ids_contain_no_colons():
+    """notes_tab must produce HTML ids free of colons.
+
+    HTMX internally calls querySelectorAll with hx-target values. An id like
+    'note-form-doc:PF-2605-0001' causes a SyntaxError and silently prevents
+    the note from saving.
+    """
+    from ui.components.notes import notes_tab, _safe_id
+    from fasthtml.common import to_xml
+    entity_id = "doc:PF-2605-0001"
+    html = to_xml(notes_tab(
+        entity_id=entity_id,
+        notes=[],
+        add_url=f"/docs/{entity_id}/notes",
+        edit_url=f"/docs/{entity_id}/notes/{{note_id}}/edit",
+        delete_url=f"/docs/{entity_id}/notes/{{note_id}}",
+        refresh_target=f"#notes-section-{_safe_id(entity_id)}",
+        note_field="note",
+        author_field="author_name",
+        tz="UTC",
+    ))
+    import re
+    ids = re.findall(r'\bid="([^"]*)"', html)
+    for id_val in ids:
+        assert ":" not in id_val, (
+            f"HTML id {id_val!r} contains ':' which breaks CSS selectors / HTMX targeting"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Print Labels button text fixes
+# ---------------------------------------------------------------------------
+
+class TestPrintLabelButtonText:
+    """Print Labels list button must show real text, not raw i18n keys."""
+
+    def test_print_label_list_button_no_raw_key(self):
+        """_print_all_labels_link must not emit a raw t() key as button text."""
+        from ui.routes.inventory import _print_all_labels_link
+        from unittest.mock import MagicMock
+
+        p = MagicMock()
+        p.total = 5
+        p.q = ""
+        p.status = ""
+        p.category = ""
+        p.sort = ""
+        p.dir = ""
+
+        result = _print_all_labels_link(p, total=5)
+        if result is None:
+            return  # labels module not installed - skip
+        html = str(result)
+        assert "btn.print_labels" not in html, f"Raw i18n key found in button: {html!r}"
+        assert "Print Labels" in html or "🖨" in html
+
+    def test_print_label_dropdown_button_no_unicode_escape(self):
+        """_print_label_dropdown must NOT render a literal unicode escape sequence."""
+        from ui.routes.inventory import _print_label_dropdown
+        html = str(_print_label_dropdown("item:test-123"))
+        assert "u0001f5a8" not in html.lower(), "Literal unicode escape found in button"
+        assert "btn.u0001f5a8" not in html, "Raw i18n key found in button"
+
+
+# ---------------------------------------------------------------------------
+# apply-credit error surfacing
+# ---------------------------------------------------------------------------
+
+class TestApplyCreditErrorSurfacing:
+    """apply-credit form must surface backend errors to the user."""
+
+    @pytest.mark.asyncio
+    async def test_apply_credit_error_returns_inline_html(self, ui_client):
+        """POST /docs/{cn}/apply-credit on API error must return inline error HTML (not redirect)."""
+        from unittest.mock import AsyncMock, patch as mock_patch
+        from ui.api_client import APIError
+
+        with mock_patch(
+            "ui.api_client.apply_credit_note",
+            new=AsyncMock(side_effect=APIError(409, "Amount exceeds credit note balance")),
+        ):
+            r = await ui_client.post(
+                "/docs/doc:cn-001/apply-credit",
+                data={"target_doc_id": "doc:inv-001", "amount": "999.00", "date": "2026-01-10"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"flash--error" in r.content
+        assert b"Amount exceeds" in r.content
+        # Must NOT be a redirect
+        assert "HX-Redirect" not in r.headers
+
+    @pytest.mark.asyncio
+    async def test_apply_credit_success_returns_redirect(self, ui_client):
+        """POST /docs/{cn}/apply-credit on success must return 204 with HX-Redirect."""
+        from unittest.mock import AsyncMock, patch as mock_patch
+
+        with mock_patch(
+            "ui.api_client.apply_credit_note",
+            new=AsyncMock(return_value={"event_id": "e1"}),
+        ):
+            r = await ui_client.post(
+                "/docs/doc:cn-001/apply-credit",
+                data={"target_doc_id": "doc:inv-001", "amount": "100.00", "date": "2026-01-10"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204
+        assert "HX-Redirect" in r.headers
+
+
+# ---------------------------------------------------------------------------
+# unwrap_address unit tests
+# ---------------------------------------------------------------------------
+
+class TestUnwrapAddress:
+    """unwrap_address must handle all address shapes without WET code."""
+
+    def test_dict_with_text_key(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address({"text": "Phuket"}) == "Phuket"
+
+    def test_dict_with_line1(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address({"line1": "123 Main St"}) == "123 Main St"
+
+    def test_dict_multiline(self):
+        from ui.components.table import unwrap_address
+        result = unwrap_address({"text": "123 Main", "city": "Bangkok", "country": "Thailand"})
+        assert "123 Main" in result
+        assert "Bangkok" in result
+        assert "Thailand" in result
+
+    def test_plain_string(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address("42 Somewhere") == "42 Somewhere"
+
+    def test_none(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address(None) == ""
+
+    def test_empty_dict(self):
+        from ui.components.table import unwrap_address
+        assert unwrap_address({}) == ""

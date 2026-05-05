@@ -411,6 +411,7 @@ def data_table(
     q: str | None = None,
     show_row_menu: bool = True,
     show_checkboxes: bool = True,
+    selection_key: str = "celerp_inv_selection",
     link_fn: dict[str, str] | None = None,
     auto_hide_empty: bool = True,
     edit_url_tpl: str | None = None,
@@ -434,9 +435,16 @@ def data_table(
     delete_url_tpl: URL template for row-menu delete, with ``{entity_id}`` placeholder
                     (e.g. ``"/api/items/{entity_id}"``). Defaults to ``/api/items/{entity_id}``.
     """
-    visible = [f for f in schema if show_cols is None or f["key"] in show_cols]
+    # Render ALL schema columns server-side.
+    # show_cols only controls the INITIAL JS visibility state (not what HTML is rendered).
+    # This ensures the column manager can show any column without a round-trip,
+    # and page 2 / HTMX navigation retains all columns.
+    visible = list(schema)
+    # If show_cols provided, put those first (in declared order), extras follow
     if show_cols:
-        visible.sort(key=lambda f: show_cols.index(f["key"]) if f["key"] in show_cols else 999)
+        ordered = [f for key in show_cols for f in schema if f["key"] == key]
+        rest = [f for f in schema if f["key"] not in show_cols]
+        visible = ordered + rest
 
     if not rows:
         if q and q.strip():
@@ -533,9 +541,12 @@ def data_table(
     # JS: smart column defaults + localStorage persistence + drag-to-resize
     import json as _json
     page_key = f"celerp_cols_{entity_type}"
-    # Build default visibility from show_in_table so columns hidden by schema stay hidden
-    # until the user explicitly toggles them via the column manager.
-    _schema_defaults = {f["key"]: f.get("show_in_table", True) for f in visible}
+    # Default visibility: show_cols if provided (user/saved selection), else schema show_in_table.
+    # Columns not in show_cols start hidden but are fully rendered in DOM so JS can toggle them.
+    if show_cols:
+        _schema_defaults = {f["key"]: (f["key"] in show_cols) for f in visible}
+    else:
+        _schema_defaults = {f["key"]: f.get("show_in_table", True) for f in visible}
     _js = f"""
 (function(){{
   var PAGE_KEY = '{page_key}';
@@ -583,15 +594,14 @@ def data_table(
     }});
   }}
 
-  // Apply visibility
+  // Apply visibility — use data-col attribute so order-independent
   function applyVis() {{
     ths.forEach(function(th) {{
       var key = th.dataset.key;
-      var col_idx = Array.from(th.parentNode.children).indexOf(th);
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
       rows.forEach(function(tr) {{
-        var td = tr.cells[col_idx];
+        var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
       }});
     }});
@@ -599,7 +609,21 @@ def data_table(
   }}
   applyVis();
 
-  // Drag-to-resize column headers
+  // Drag-to-resize column headers — persist widths to localStorage
+  var WIDTH_KEY = 'celerp_col_widths_{entity_type}';
+  function loadWidths() {{
+    try {{ return JSON.parse(localStorage.getItem(WIDTH_KEY) || 'null'); }} catch(e) {{ return null; }}
+  }}
+  function saveWidths() {{
+    var w = {{}};
+    ths.forEach(function(th) {{ if (th.style.width) w[th.dataset.key] = th.style.width; }});
+    localStorage.setItem(WIDTH_KEY, JSON.stringify(w));
+  }}
+  // Restore persisted widths on load
+  (function() {{
+    var saved = loadWidths();
+    if (saved) ths.forEach(function(th) {{ if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; }});
+  }})();
   ths.forEach(function(th) {{
     var handle = document.createElement('div');
     handle.className = 'col-resize-handle';
@@ -611,10 +635,30 @@ def data_table(
       startW = th.offsetWidth;
       e.preventDefault();
       e.stopPropagation();
-      function onMove(e2) {{ th.style.width = Math.max(40, startW + e2.pageX - startX) + 'px'; }}
+      var scrollWrap = table.closest('.table-scroll-wrap');
+      var autoScrollRaf = null;
+      function onMove(e2) {{
+        e2.preventDefault();
+        th.style.width = Math.max(40, startW + e2.pageX - startX) + 'px';
+        // Auto-scroll the container when dragging near the right edge
+        if (scrollWrap) {{
+          var rect = scrollWrap.getBoundingClientRect();
+          var ZONE = 48; // px from edge to trigger auto-scroll
+          if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
+          if (e2.clientX > rect.right - ZONE) {{
+            var speed = Math.round((e2.clientX - (rect.right - ZONE)) / ZONE * 12) + 2;
+            (function scroll() {{
+              scrollWrap.scrollLeft += speed;
+              autoScrollRaf = requestAnimationFrame(scroll);
+            }})();
+          }}
+        }}
+      }}
       function onUp() {{
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        if (autoScrollRaf) cancelAnimationFrame(autoScrollRaf);
+        saveWidths();
       }}
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
@@ -670,9 +714,10 @@ def data_table(
         if (actionsTd) ordered.push(actionsTd);
         ordered.forEach(function(td) {{ tr.appendChild(td); }});
       }});
-      // Persist new order
+      // Persist new order and notify picker
       var newOrder = Array.from(thead_tr.querySelectorAll('th[data-key]')).map(function(h){{return h.dataset.key;}});
       try {{ localStorage.setItem(ORDER_KEY, JSON.stringify(newOrder)); }} catch(e) {{}}
+      document.dispatchEvent(new CustomEvent('celerp:col-reorder', {{detail: {{order: newOrder}}}}));
       dragKey = null;
     }});
   }});
@@ -760,12 +805,10 @@ function bulkActionChanged(action){
     if(!confirm('Delete selected items? This cannot be undone.')) return;
     _bulkImmediate('/api/items/bulk/delete',null,null);return;
   }
-  // Module actions (immediate)
-  if(action.startsWith('module:')){
-    _bulkImmediate(action.slice(7),null,null);return;
-  }
-  // Context-driven actions - clone template
-  var tplId='tpl-'+action;
+  // Context-driven actions - clone template (includes module actions via mod: prefix)
+  // mod: actions use tpl-mod-{action_id} where action_id strips the mod: prefix.
+  // The option value and template id must be derived the same way to stay in sync.
+  var tplId=action.startsWith('mod:')?'tpl-mod-'+action.slice(4):'tpl-'+action;
   if(action==='send_to') tplId='tpl-send-to';
   var tpl=document.getElementById(tplId);
   if(!tpl) return;
@@ -923,19 +966,34 @@ function sendToTypeChanged(docType){
 """
     scripts = [Script(_js)]
     if show_checkboxes:
-        scripts.append(Script(_bulk_js))
-    return Div(Table(header, Tbody(*[_row(r) for r in rows]), cls="data-table", id="data-table"), *scripts, id="data-table-wrap")
+        scripts.append(Script(_bulk_js.replace("'celerp_inv_selection'", f"'{selection_key}'")))
+    return Div(
+        Div(
+            Table(header, Tbody(*[_row(r) for r in rows]), cls="data-table", id="data-table"),
+            cls="table-scroll-wrap",
+        ),
+        *scripts,
+        id="data-table-wrap",
+    )
 
 
 def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str] | None = None) -> FT:
-    """Generic column manager dropdown. Toggles column visibility via localStorage.
+    """Generic column manager dropdown. Toggles column visibility and order via localStorage.
 
     Uses the same localStorage key as ``data_table`` (``celerp_cols_{entity_type}``),
     so visibility state is shared between the manager UI and the table's own JS.
+
+    Features:
+    - Checkbox toggle per column with immediate visibility apply
+    - Drag-and-drop reordering within the picker (source of truth for column order)
+    - Listens for ``celerp:col-reorder`` events fired by data_table header drag, keeping
+      the picker in sync when the user drags a table column header directly
+    - Reset to default button (clears all localStorage keys and reloads)
     """
     import json as _json
     selected = set(visible_cols) if visible_cols else {f["key"] for f in schema if f.get("show_in_table", True)}
     col_data = [{"key": f["key"], "label": f.get("label", f["key"])} for f in schema]
+    default_keys = _json.dumps([f["key"] for f in schema if f.get("show_in_table", True)])
 
     checkboxes = [
         Label(
@@ -950,8 +1008,9 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
 
     _mgr_js = f"""
 (function(){{
-  var VIS_KEY='celerp_cols_{entity_type}',ORDER_KEY='celerp_col_order_{entity_type}';
+  var VIS_KEY='celerp_cols_{entity_type}',ORDER_KEY='celerp_col_order_{entity_type}',WIDTH_KEY='celerp_col_widths_{entity_type}';
   var ALL={_json.dumps(col_data)};
+  var DEFAULTS={default_keys};
   var btn=document.getElementById('col-mgr-btn'),menu=document.getElementById('col-mgr-menu');
   if(!btn||!menu) return;
   function loadVis(){{try{{return JSON.parse(localStorage.getItem(VIS_KEY)||'null')}}catch(e){{return null}}}}
@@ -963,12 +1022,12 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     var ths=Array.from(t.querySelectorAll('thead th[data-key]'));
     var rows=Array.from(t.querySelectorAll('tbody tr.data-row'));
     ths.forEach(function(th){{
-      var k=th.dataset.key,ci=Array.from(th.parentNode.children).indexOf(th),show=prefs[k]!==false;
+      var k=th.dataset.key,show=prefs[k]!==false;
       th.style.display=show?'':'none';
-      rows.forEach(function(tr){{var td=tr.cells[ci];if(td)td.style.display=show?'':'none';}});
+      rows.forEach(function(tr){{var td=tr.querySelector('[data-col="'+k+'"]');if(td)td.style.display=show?'':'none';}});
     }});
   }}
-  function applyOrder(order){{
+  function applyOrderToTable(order){{
     if(!order||!order.length)return;
     var t=document.getElementById('data-table');if(!t)return;
     var htr=t.querySelector('thead tr');if(!htr)return;
@@ -976,12 +1035,20 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
     order.forEach(function(k){{var th=htr.querySelector('th[data-key="'+k+'"]');if(th&&actTh)htr.insertBefore(th,actTh);else if(th)htr.appendChild(th);}});
     var allThs=Array.from(htr.querySelectorAll('th[data-key]'));
     t.querySelectorAll('tbody tr.data-row').forEach(function(tr){{
-      var cells=Array.from(tr.children);
       var cbTd=tr.querySelector('.col-checkbox'),aTd=tr.querySelector('.col-actions');
-      var data=allThs.map(function(h){{return cells.find(function(td){{return td.dataset.col===h.dataset.key}});}}).filter(Boolean);
+      var data=allThs.map(function(h){{return tr.querySelector('[data-col="'+h.dataset.key+'"]');}}).filter(Boolean);
       var out=[];if(cbTd)out.push(cbTd);out=out.concat(data);if(aTd)out.push(aTd);
       out.forEach(function(td){{tr.appendChild(td);}});
     }});
+  }}
+  function applyOrderToPicker(order){{
+    if(!order||!order.length)return;
+    var labels=menu.querySelectorAll('label[data-col]');if(!labels.length)return;
+    var parent=labels[0].parentNode;
+    order.forEach(function(key){{var lbl=menu.querySelector('label[data-col="'+key+'"]');if(lbl)parent.appendChild(lbl);}});
+  }}
+  function pickerOrder(){{
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){{return l.dataset.col;}});
   }}
   function syncCB(){{var p=loadVis()||{{}};menu.querySelectorAll('input[type=checkbox]').forEach(function(c){{c.checked=p[c.value]!==false;}});}}
   btn.addEventListener('click',function(e){{e.stopPropagation();var o=menu.style.display!=='none';menu.style.display=o?'none':'';if(!o)syncCB();}});
@@ -989,8 +1056,9 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
   menu.addEventListener('change',function(e){{
     if(e.target.type!=='checkbox')return;
     var k=e.target.value,p=loadVis()||{{}};
-    if(!Object.keys(p).length)ALL.forEach(function(c){{p[c.key]={_json.dumps(sorted(selected))}.indexOf(c.key)!==-1;}});
+    if(!Object.keys(p).length)ALL.forEach(function(c){{p[c.key]=DEFAULTS.indexOf(c.key)!==-1;}});
     p[k]=e.target.checked;saveVis(p);applyVis(p);
+    applyOrderToTable(pickerOrder());
   }});
   var ds=null;
   menu.querySelectorAll('label[draggable]').forEach(function(l){{
@@ -1001,18 +1069,43 @@ def column_manager(schema: list[dict], entity_type: str, visible_cols: list[str]
       e.preventDefault();if(!ds||ds===l)return;
       var par=l.parentNode,sn=ds.nextSibling;par.insertBefore(ds,l);if(sn)par.insertBefore(l,sn);else par.appendChild(l);
       ds.style.opacity='';
-      var no=Array.from(menu.querySelectorAll('label[data-col]')).map(function(x){{return x.dataset.col;}});
-      saveOrder(no);applyOrder(no);
+      var no=pickerOrder();saveOrder(no);applyOrderToTable(no);
     }});
   }});
+  // Sync picker when table header is dragged (data_table fires this event)
+  document.addEventListener('celerp:col-reorder',function(e){{
+    if(!e.detail||!e.detail.order)return;
+    applyOrderToPicker(e.detail.order);
+    saveOrder(e.detail.order);
+  }});
   var sv=loadVis();if(sv)applyVis(sv);
-  var so=loadOrder();if(so)applyOrder(so);
+  var so=loadOrder();
+  if(so){{applyOrderToPicker(so);applyOrderToTable(so);}}
   menu.style.display='none';
 }})();
 """
+    reset_onclick = (
+        f"localStorage.removeItem('celerp_cols_{entity_type}');"
+        f"localStorage.removeItem('celerp_col_order_{entity_type}');"
+        f"localStorage.removeItem('celerp_col_widths_{entity_type}');"
+        f"location.reload();"
+    )
     return Div(
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
-        Div(*checkboxes, cls="column-menu", id="col-mgr-menu", style="display:none"),
+        Div(
+            *checkboxes,
+            Button(
+                t("btn.reset_columns"),
+                id="col-mgr-reset",
+                cls="btn btn--sm btn--ghost col-mgr-reset-btn",
+                type="button",
+                onclick=reset_onclick,
+                title=t("btn.reset_columns_title"),
+            ),
+            cls="column-menu",
+            id="col-mgr-menu",
+            style="display:none",
+        ),
         Script(_mgr_js),
         cls="column-manager",
     )
@@ -1045,13 +1138,16 @@ def pagination(page: int, total: int, per_page: int, base_url: str, extra_params
 
 def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> FT:
     options = [25, 50, 100, 250, 500]
+    # Swap only the content fragment (avoids double shell render).
+    # base_url is e.g. "/inventory"; content endpoint is "/inventory/content".
+    content_url = base_url.rstrip("/") + "/content"
     return Select(
         *[Option(f"{n} per page", value=str(n), selected=(n == current)) for n in options],
         name="per_page",
-        hx_get=base_url,
+        hx_get=content_url,
         hx_trigger="change",
-        hx_target="#main-content",
-        hx_swap="innerHTML",
+        hx_target="#inventory-content",
+        hx_swap="outerHTML",
         hx_include="[name='q'],[name='status'],[name='category'],[name='cols']",
         hx_push_url="true",
         cls="filter-select per-page-select",
@@ -1118,3 +1214,20 @@ def simple_table(headers: list[str], rows: list[list], id: str = "", cls_extra: 
         cls=f"data-table {cls_extra}".strip(),
         **({"id": id} if id else {}),
     )
+
+
+def unwrap_address(raw) -> str:
+    """Unwrap an address value that may be a dict (``{"text": "…"}``) or a plain string.
+
+    Single source of truth for all UI address display - used by settings, documents, etc.
+    """
+    if not raw:
+        return ""
+    if isinstance(raw, dict):
+        text = raw.get("text") or raw.get("line1") or ""
+        for k in ("line2", "city", "state", "postal_code", "country"):
+            v = raw.get(k) or ""
+            if v:
+                text = text + ("\n" if text else "") + v
+        return text
+    return str(raw)

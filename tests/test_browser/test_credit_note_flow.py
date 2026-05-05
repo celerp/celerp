@@ -7,6 +7,8 @@ from __future__ import annotations
 import pytest
 from playwright.sync_api import Page, expect
 
+pytestmark = pytest.mark.browser
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -164,9 +166,10 @@ def test_receive_return_badge_after_submission(page: Page, ui_server: str, api):
     page.goto(f"{ui_server}/docs/{cn_id}", wait_until="domcontentloaded")
     page.screenshot(path="/mnt/storage/agent_storage/celerp/screenshots/cn-flow/07-cn-after-receive-return.png", full_page=True)
 
-    badge = page.locator("span.badge", has_text="Return Received")
-    expect(badge).to_be_visible()
+    # After receive-return, the Revert Return Stock button appears (GDR undo)
+    # and the original Receive Return button is gone
+    revert_btn = page.locator("button", has_text="Revert Return Stock")
+    expect(revert_btn).to_be_visible()
 
-    # Receive Return button should be gone (replaced by badge)
     btn = page.locator("button", has_text="Receive Return")
     expect(btn).to_have_count(0)

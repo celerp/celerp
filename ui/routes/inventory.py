@@ -106,13 +106,19 @@ async def _inventory_content(
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
     extra_params = urlencode(_base_state(p))
+    total_items = valuation.get("item_count", 0)
+    print_all_link = _print_all_labels_link(p, total_items)
 
     return Div(
         _category_tabs(category_counts, p),
         _valuation_bar(valuation, currency, lang),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p),
         _bulk_toolbar(locations),
-        Div(_column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open), cls="column-manager-row"),
+        Div(
+            _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
+            print_all_link if print_all_link else "",
+            cls="column-manager-row",
+        ),
         data_table(
             eff_schema,
             items,
@@ -124,6 +130,7 @@ async def _inventory_content(
             extra_params=_base_state(p),
             currency=currency,
             sort_target="#inventory-content",
+            auto_hide_empty=False,
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
         Div(id="modal-container"),
@@ -188,7 +195,12 @@ def setup_routes(app):
         """HTMX partial: returns #inventory-content fragment (tabs + cards + valuation + table).
 
         Used by category tabs, status tabs, search, sort, and pagination so all state stays consistent.
+        Direct (non-HTMX) navigation to this URL redirects to the full inventory page so users
+        can bookmark/refresh sort/filter URLs without getting a bare HTML fragment.
         """
+        if not request.headers.get("HX-Request"):
+            qs = request.url.query
+            return RedirectResponse(f"/inventory{'?' + qs if qs else ''}", status_code=302)
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -846,18 +858,8 @@ def setup_routes(app):
             )
         print_js = """
 function celerpPrintLabel(entityId, templateId) {
-    var token = document.cookie.split(';').map(c=>c.trim()).find(c=>c.startsWith('celerp_token='));
-    token = token ? token.split('=')[1] : '';
-    fetch('/api/labels/print/' + entityId + '?template_id=' + templateId, {
-        method: 'POST',
-        headers: {'Authorization': 'Bearer ' + token}
-    })
-    .then(r => r.blob())
-    .then(blob => {
-        var url = URL.createObjectURL(blob);
-        var w = window.open(url);
-        if (w) w.addEventListener('load', function() { w.print(); });
-    });
+    // UI-layer GET route: no API auth needed, auto-triggers window.print()
+    window.open('/labels/print/' + encodeURIComponent(entityId) + '?template_id=' + encodeURIComponent(templateId));
 }
 """
         items = [
@@ -919,11 +921,17 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
-        value: str | bool = str(form.get("value", ""))
+        value: str | float | bool = str(form.get("value", ""))
 
         # Convert bool fields from string to proper bool
         if field == "allow_splitting":
             value = value.lower() in ("true", "1", "yes")
+        # Convert numeric fields from string to float
+        elif field == "quantity" or field.endswith("_price"):
+            try:
+                value = float(value)
+            except (ValueError, TypeError):
+                return P(t("error.invalid_number"), cls="cell-error")
 
         try:
             if field == "location_name":
@@ -1697,11 +1705,14 @@ def _bulk_toolbar(locations: list[dict]) -> FT:
         for tgt in send_to_targets
     ]
 
-    # Module immediate actions (e.g. Print Labels)
+    # Module bulk actions - each shows a confirm button in the context area.
+    # action_type="navigate" → opens in new tab via native form submit.
+    # action_type="htmx" (default) → HTMX POST into #bulk-action-result.
     module_action_opts = []
     for action in get_slot("bulk_action"):
+        action_id = action["form_action"].replace("/", "_").strip("_")
         module_action_opts.append(
-            Option(action.get("label", "Action"), value=f"module:{action['form_action']}")
+            Option(action.get("label", "Action"), value=f"mod:{action_id}")
         )
 
     # Build the main Action dropdown options
@@ -1831,21 +1842,32 @@ def _bulk_context_templates(
         id="tpl-send-to",
     )
 
-    # Module action templates (immediate, e.g. Print Labels)
+    # Module action templates.
+    # navigate type: native form submit opening a new tab (for full-page responses).
+    # htmx type (default): HTMX POST into #bulk-action-result.
     module_tpls = []
     for action in module_actions:
         action_id = action["form_action"].replace("/", "_").strip("_")
-        module_tpls.append(Template(
-            Form(
+        is_navigate = action.get("action_type") == "navigate"
+        if is_navigate:
+            form = Form(
+                Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
+                action=action["form_action"],
+                method="post",
+                target="_blank",
+                onsubmit="submitBulkAction(this)",
+                cls="display-contents",
+            )
+        else:
+            form = Form(
                 Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
                 hx_post=action["form_action"],
                 hx_target="#bulk-action-result",
                 hx_swap="outerHTML",
                 onsubmit="submitBulkAction(this)",
                 cls="display-contents",
-            ),
-            id=f"tpl-module-{action_id}",
-        ))
+            )
+        module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
 
     return Div(
         transfer_tpl,
@@ -2146,7 +2168,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
       rows.forEach(function(tr) {{
-        var td = tr.cells[colIdx];
+        var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
       }});
     }});
@@ -2188,6 +2210,24 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     }});
   }}
 
+  // Mirror the picker label order to match a given key array (picker is source of truth)
+  function applyOrderToPicker(order) {{
+    if (!order || !order.length) return;
+    var labels = menu.querySelectorAll('label[data-col]');
+    if (!labels.length) return;
+    var parent = labels[0].parentNode;
+    // Move labels into the declared order; unmentioned keys stay at end
+    order.forEach(function(key) {{
+      var lbl = menu.querySelector('label[data-col="' + key + '"]');
+      if (lbl) parent.appendChild(lbl);
+    }});
+  }}
+
+  // Get current picker order (label DOM order = source of truth)
+  function pickerOrder() {{
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
+  }}
+
   // Save cols to server (background, no page reload)
   function saveToServer(visibleKeys) {{
     var form = new FormData();
@@ -2213,7 +2253,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     }}
   }});
 
-  // Checkbox change: immediate column toggle
+  // Checkbox change: immediate column toggle + re-apply order so new column
+  // appears at its picker position rather than at the DOM end of the table.
   menu.addEventListener('change', function(e) {{
     if (e.target.type !== 'checkbox') return;
     var key = e.target.value;
@@ -2225,6 +2266,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     prefs[key] = e.target.checked;
     saveVis(prefs);
     applyVisToTable(prefs);
+    // Re-apply picker order so the newly-visible column lands in the right slot
+    applyOrderToTable(pickerOrder());
     // Save visible keys to server
     var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
     saveToServer(visibleKeys);
@@ -2249,24 +2292,33 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     lbl.addEventListener('drop', function(e) {{
       e.preventDefault();
       if (!dragSrc || dragSrc === lbl) return;
-      // Swap in DOM
+      // Swap in picker DOM
       var parent = lbl.parentNode;
       var srcNext = dragSrc.nextSibling;
       parent.insertBefore(dragSrc, lbl);
       if (srcNext) parent.insertBefore(lbl, srcNext); else parent.appendChild(lbl);
       dragSrc.style.opacity = '';
-      // Persist new order
-      var newOrder = Array.from(menu.querySelectorAll('label[data-col]')).map(function(l){{return l.dataset.col;}});
+      // Persist new order and apply to table
+      var newOrder = pickerOrder();
       saveOrder(newOrder);
       applyOrderToTable(newOrder);
     }});
+  }});
+
+  // Listen for table-header drag reorder (fired by data_table.py drag handler)
+  document.addEventListener('celerp:col-reorder', function(e) {{
+    if (!e.detail || !e.detail.order) return;
+    applyOrderToPicker(e.detail.order);
   }});
 
   // Init: apply localStorage state on page load
   var storedVis = loadVis();
   if (storedVis) applyVisToTable(storedVis);
   var storedOrder = loadOrder();
-  if (storedOrder) applyOrderToTable(storedOrder);
+  if (storedOrder) {{
+    applyOrderToPicker(storedOrder);
+    applyOrderToTable(storedOrder);
+  }}
 
   // Keep menu closed unless keep_open is set
   {'menu.style.display = "";' if keep_open else 'menu.style.display = "none";'}
@@ -2277,6 +2329,20 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
         Div(
             *checkboxes,
+            Button(
+                t("btn.reset_columns"),
+                id="col-mgr-reset",
+                cls="btn btn--sm btn--ghost col-mgr-reset-btn",
+                type="button",
+                onclick=(
+                    f"localStorage.removeItem('celerp_cols_inventory');"
+                    f"localStorage.removeItem('celerp_col_order_inventory');"
+                    f"localStorage.removeItem('celerp_col_widths_inventory');"
+                    f"fetch('/inventory/columns',{{method:'POST',body:new FormData()}});"
+                    f"location.reload();"
+                ),
+                title=t("btn.reset_columns_title"),
+            ),
             Form(
                 *hidden_inputs,
                 id="col-mgr-form",
@@ -2440,13 +2506,40 @@ def _resolve_field_def(
     return f_def, f_def.get("type", "text"), f_def.get("options") or None, allow_custom
 
 
+def _print_all_labels_link(p: dict, total: int) -> FT | None:
+    """Return a 'Print all labels (N)' link for the column-manager-row when labels module is loaded.
+
+    Only rendered when the celerp-labels bulk_action slot is registered.
+    Passes exact current filter state (q, status, category, sort, dir) as GET params.
+    Capped at 100 items; shows warning count when total exceeds cap.
+    Returns None when labels module is not loaded.
+    """
+    from celerp.modules.slots import get as get_slot
+    bulk_actions = get_slot("bulk_action")
+    labels_action = next((a for a in bulk_actions if a.get("_module") == "celerp-labels"), None)
+    if not labels_action:
+        return None
+
+    _LABEL_CAP = 100
+    count = min(total, _LABEL_CAP)
+    if total > _LABEL_CAP:
+        label = f"{t('btn._print_labels')} (first {_LABEL_CAP})"
+    else:
+        label = f"{t('btn._print_labels')} ({count})"
+
+    qs_params = {k: v for k, v in _base_state(p, include_page=False).items()
+                 if k in ("q", "status", "category", "sort", "dir") and v}
+    href = "/labels/print-list" + (f"?{urlencode(qs_params)}" if qs_params else "")
+    return A(label, href=href, target="_blank", cls="btn btn--ghost btn--sm print-all-labels-btn")
+
+
 def _print_label_dropdown(entity_id: str) -> FT:
     """Print label icon button with HTMX-loaded template dropdown."""
     dropdown_id = f"print-label-dd-{entity_id.replace(':', '-')}"
     return Div(
-        Button(t("btn.u0001f5a8"),  # printer icon
+        Button("🖨",
             cls="btn btn--secondary btn--icon",
-            title="Print label",
+            title=t("btn._print_labels"),
             onclick=f"var dd=document.getElementById('{dropdown_id}');dd.classList.toggle('open');",
         ),
         Div(

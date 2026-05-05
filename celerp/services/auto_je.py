@@ -14,6 +14,7 @@ import uuid
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key
+from celerp.services.money import round_money, to_decimal, to_stored_float
 from sqlalchemy import select as _select
 
 
@@ -63,16 +64,25 @@ async def _emit_auto_posted_je(
 
 
 async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str, doc: dict) -> None:
-    tax = float(doc.get("tax", 0) or 0)
-    total = float(doc.get("total", 0) or 0)
-    revenue = total - tax  # net revenue (after discount, before tax)
+    currency = doc.get("currency", "USD")
+    total_d = round_money(doc.get("total", 0), currency)
+    tax_d = round_money(doc.get("tax", 0), currency)
+    revenue_d = round_money(total_d - tax_d, currency)
+    total = to_stored_float(total_d)
+    tax = to_stored_float(tax_d)
+    revenue = to_stored_float(revenue_d)
+    # Use a cycle-aware suffix so re-finalize after revert creates a fresh JE entity
+    # rather than hitting the dedup guard on the voided JE from the previous cycle.
+    cycle = int(doc.get("revert_count", 0))
+    cycle_suffix = f"fin:{cycle}" if cycle else "fin"
+    je_type_key = f"invoice.finalized:{cycle}" if cycle else "invoice.finalized"
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:fin",
-        idem_create=je_idempotency_key(doc_id, "invoice.finalized", "c"),
-        idem_posted=je_idempotency_key(doc_id, "invoice.finalized", "p"),
+        je_id=f"je:auto:{doc_id}:{cycle_suffix}",
+        idem_create=je_idempotency_key(doc_id, je_type_key, "c"),
+        idem_posted=je_idempotency_key(doc_id, je_type_key, "p"),
         memo=f"Auto JE for {doc_id} finalized",
         ts=doc.get("finalized_at") or doc.get("issue_date"),
         entries=[
@@ -84,14 +94,17 @@ async def create_for_doc_finalized(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, cumulative_paid: float | None = None, bank_account_code: str = "1110", doc_type: str = "invoice") -> None:
+async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, amount: float, payment_index: int, bank_account_code: str, doc_type: str = "invoice", payment_date: str) -> None:
     """Create JE for a payment.
 
-    bank_account_code: chart account to debit (defaults to "1110" generic cash).
-    Pass the specific bank sub-account (e.g. "1111") when the user selects a bank.
+    bank_account_code: chart account to debit. Required - no default. Always pass the
+        specific bank sub-account (e.g. "1111"). Omitting raises TypeError at call time.
     doc_type: 'invoice' debits bank/credits AR; 'bill' debits AP/credits bank.
+    payment_date: ISO date string (YYYY-MM-DD). Always required.
+    payment_index: position of this payment in the payments list (0-based). Used as the
+        idempotency key suffix so voiding and re-paying at the same amount never collides.
     """
-    paid_key = str(int(round((cumulative_paid or amount) * 100)))  # cents, avoids float key issues
+    paid_key = str(payment_index)
     if doc_type in ("bill", "purchase_order"):
         entries = [
             {"account": "2110", "debit": float(amount), "credit": 0.0},
@@ -110,13 +123,18 @@ async def create_for_doc_payment(session, *, company_id, user_id, doc_id: str, a
         idem_create=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "p"),
         memo=f"Auto JE for {doc_id} payment",
+        ts=payment_date,
         entries=entries,
-        metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "cumulative_paid": cumulative_paid},
+        metadata_={"trigger": "doc.payment.received", "doc_id": doc_id, "payment_index": payment_index},
     )
 
 
-async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str = "1110", doc_type: str = "invoice") -> None:
-    """Reverse a payment JE by creating a counter-entry."""
+async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, payment_index: int, amount: float, bank_account_code: str, doc_type: str = "invoice", refund_date: str | None = None) -> None:
+    """Reverse a payment JE by creating a counter-entry.
+
+    refund_date: ISO date for the reversal JE (defaults to today if None). Used when
+        void is actually a refund - the date affects bank ledger position.
+    """
     void_key = f"void_{payment_index}"
     if doc_type in ("bill", "purchase_order"):
         entries = [
@@ -136,14 +154,18 @@ async def void_for_doc_payment(session, *, company_id, user_id, doc_id: str, pay
         idem_create=je_idempotency_key(doc_id, f"payment.voided:{void_key}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"payment.voided:{void_key}", "p"),
         memo=f"Auto JE for {doc_id} payment void (index {payment_index})",
+        ts=refund_date,
         entries=entries,
         metadata_={"trigger": "doc.payment.voided", "doc_id": doc_id, "payment_index": payment_index},
     )
 
 
-async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float) -> None:
-    """Create JE for credit note application: AR-to-AR transfer."""
-    app_key = f"cn_apply_{cn_id}"
+async def create_for_cn_application(session, *, company_id, user_id, doc_id: str, cn_id: str, amount: float, payment_index: int = 0) -> None:
+    """Create JE for credit note application: AR-to-AR transfer.
+
+    payment_index disambiguates repeated applications (void + re-apply) to the same CN-invoice pair.
+    """
+    app_key = f"cn_apply_{cn_id}:{payment_index}"
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -205,34 +227,51 @@ async def create_for_bill_conversion(
     doc_id: str,
     doc: dict,
 ) -> None:
-    """Create JE when a PO is converted to a bill.
+    """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
 
     Debit per-line expense/inventory accounts, credit AP (2110).
     Line-level account_code takes priority; otherwise defaults to 1130 (inventory)
     for lines with SKU, 6950 (misc expense) for lines without.
     """
     total = float(doc.get("total", 0) or 0)
+    currency = doc.get("currency", "USD")
     line_items = doc.get("line_items", [])
-    entries: list[dict] = []
+    debit_entries: list[dict] = []
+    from decimal import Decimal as _Dec
+    tax_total_d = _Dec(0)
 
     if line_items:
         for li in line_items:
-            line_total = float(li.get("line_total", 0) or 0) or (
-                float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
-            )
+            line_total = to_stored_float(round_money(
+                to_decimal(li.get("line_total") or 0) or
+                to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
+                currency,
+            ))
             if line_total <= 0:
                 continue
-            account = li.get("account_code") or ("1130" if li.get("sku") else "6950")
-            entries.append({"account": account, "debit": line_total, "credit": 0.0})
-    else:
-        # No line items - single debit to misc expense
-        entries.append({"account": "6950", "debit": total, "credit": 0.0})
+            tax_rate = to_decimal(li.get("tax_rate", 0) or 0)
+            line_tax_d = round_money(to_decimal(line_total) * tax_rate / 100, currency)
+            tax_total_d += line_tax_d
+            # receive_as overrides SKU-based account selection for bills.
+            receive_as = (li.get("receive_as") or "").strip().lower()
+            if li.get("account_code"):
+                account = li["account_code"]
+            elif receive_as == "expense":
+                account = "6950"
+            elif receive_as == "asset":
+                account = "1210"
+            else:
+                account = "1130" if li.get("sku") else "6950"
+            debit_entries.append({"account": account, "debit": line_total, "credit": 0.0})
+        if tax_total_d > 0:
+            debit_entries.append({"account": "1150", "debit": to_stored_float(tax_total_d), "credit": 0.0})
 
-    if total > 0:
-        entries.append({"account": "2110", "debit": 0.0, "credit": total})
+    if not debit_entries:
+        if total <= 0:
+            return
+        debit_entries.append({"account": "6950", "debit": total, "credit": 0.0})
 
-    if not entries:
-        return
+    entries = debit_entries + [{"account": "2110", "debit": 0.0, "credit": total}]
 
     await _emit_auto_posted_je(
         session,
@@ -242,17 +281,27 @@ async def create_for_bill_conversion(
         idem_create=je_idempotency_key(doc_id, "po.converted_to_bill", "c"),
         idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
+        ts=doc.get("issue_date") or doc.get("finalized_at"),
         entries=entries,
         metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id},
     )
 
 
-async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str) -> None:
-    """Void the auto-JE that was created when a doc was finalized (invoice or bill)."""
-    for je_suffix in ("fin", "bill"):
+async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str, revert_count: int = 0) -> None:
+    """Void the auto-JE that was created when a doc was finalized (invoice or bill).
+
+    revert_count: the current revert_count from doc state (before this revert increments it).
+    Used to derive the correct JE entity id for cycle-aware invoice JEs.
+    """
+    # Cycle-aware invoice JE id (matches create_for_doc_finalized logic).
+    cycle = revert_count
+    fin_suffix = f"fin:{cycle}" if cycle else "fin"
+    for je_suffix in (fin_suffix, "bill"):
         je_id = f"je:auto:{doc_id}:{je_suffix}"
         row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
         if row is not None and row.state.get("status") == "posted":
+            # Void idempotency key is cycle-aware to allow multiple revert cycles.
+            void_cycle_key = f"revert_to_draft:{revert_count}"
             await emit_event(
                 session,
                 company_id=company_id,
@@ -263,7 +312,7 @@ async def void_for_doc_finalized(session, *, company_id, user_id, doc_id: str) -
                 actor_id=user_id,
                 location_id=None,
                 source="auto_je",
-                idempotency_key=je_idempotency_key(doc_id, "revert_to_draft", "void"),
+                idempotency_key=je_idempotency_key(doc_id, void_cycle_key, "void"),
                 metadata_={"trigger": "doc.reverted_to_draft", "doc_id": doc_id},
             )
             return  # void the first found; at most one exists per doc
@@ -276,13 +325,16 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
     (which may still exist if voiding didn't delete them).
     """
     doc_type = doc.get("doc_type", "")
+    currency = doc.get("currency", "USD")
     total = float(doc.get("total", 0) or 0)
     if total <= 0:
         return
 
     if doc_type == "invoice":
-        tax = float(doc.get("tax", 0) or 0)
-        revenue = total - tax
+        tax_d = round_money(doc.get("tax", 0), currency)
+        total_d = round_money(total, currency)
+        revenue = to_stored_float(round_money(total_d - tax_d, currency))
+        tax = to_stored_float(tax_d)
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -299,20 +351,40 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
             metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
         )
     elif doc_type in ("bill", "purchase_order"):
+        currency = doc.get("currency", "USD")
         line_items = doc.get("line_items", [])
-        entries: list[dict] = []
+        debit_entries: list[dict] = []
+        from decimal import Decimal as _Dec
+        tax_total_d = _Dec(0)
         if line_items:
             for li in line_items:
-                line_total = float(li.get("line_total", 0) or 0) or (
-                    float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
-                )
+                line_total = to_stored_float(round_money(
+                    to_decimal(li.get("line_total") or 0) or
+                    to_decimal(li.get("quantity", 0)) * to_decimal(li.get("unit_price", 0)),
+                    currency,
+                ))
                 if line_total <= 0:
                     continue
-                account = li.get("account_code") or ("1130" if li.get("sku") else "6950")
-                entries.append({"account": account, "debit": line_total, "credit": 0.0})
-        else:
-            entries.append({"account": "6950", "debit": total, "credit": 0.0})
-        entries.append({"account": "2110", "debit": 0.0, "credit": total})
+                tax_rate = to_decimal(li.get("tax_rate", 0) or 0)
+                line_tax_d = round_money(to_decimal(line_total) * tax_rate / 100, currency)
+                tax_total_d += line_tax_d
+                receive_as = (li.get("receive_as") or "").strip().lower()
+                if li.get("account_code"):
+                    account = li["account_code"]
+                elif receive_as == "expense":
+                    account = "6950"
+                elif receive_as == "asset":
+                    account = "1210"
+                else:
+                    account = "1130" if li.get("sku") else "6950"
+                debit_entries.append({"account": account, "debit": line_total, "credit": 0.0})
+            if tax_total_d > 0:
+                debit_entries.append({"account": "1150", "debit": to_stored_float(tax_total_d), "credit": 0.0})
+        if not debit_entries:
+            if total <= 0:
+                return
+            debit_entries.append({"account": "6950", "debit": total, "credit": 0.0})
+        entries = debit_entries + [{"account": "2110", "debit": 0.0, "credit": total}]
         await _emit_auto_posted_je(
             session,
             company_id=company_id,
@@ -321,6 +393,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
             idem_create=je_idempotency_key(doc_id, "po.converted_to_bill.unvoid", "c"),
             idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill.unvoid", "p"),
             memo=f"Auto JE for {doc_id} unvoided (restore bill conversion)",
+            ts=doc.get("issue_date") or doc.get("finalized_at"),
             entries=entries,
             metadata_={"trigger": "doc.unvoided", "doc_id": doc_id},
         )

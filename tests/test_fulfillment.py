@@ -333,9 +333,9 @@ async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _
     )
     await session.commit()
 
-    # Verify item is sold/qty=0 after fulfillment
+    # Verify item is sold and qty preserved (= fulfilled qty) after fulfillment
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 0
+    assert float(inv_row.state.get("quantity", 0)) == 10
 
     # Re-read doc state (now has fulfilled_items)
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
@@ -397,8 +397,10 @@ async def test_void_does_not_change_fulfillment_status(client, session, auth, _s
 
     # Stock must NOT be automatically restored (fulfillment is independent)
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 0, \
+    assert float(inv_row.state.get("quantity", 0)) > 0, \
         "Voiding must not auto-restore stock; use Revert Fulfillment for that"
+    assert inv_row.state.get("status") == "sold", \
+        "Voiding must not change item status back to available"
 
 
 @pytest.mark.asyncio
@@ -437,8 +439,10 @@ async def test_revert_to_draft_does_not_change_fulfillment_status(client, sessio
 
     # Stock must NOT be automatically restored
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) == 0, \
+    assert float(inv_row.state.get("quantity", 0)) > 0, \
         "Revert-to-draft must not auto-restore stock; use Revert Fulfillment for that"
+    assert inv_row.state.get("status") == "sold", \
+        "Revert-to-draft must not change item status back to available"
 
 
 @pytest.mark.asyncio
@@ -595,3 +599,113 @@ class TestPickAllowSplitting:
         result = compute_pick_plan(line_items, inventory)
         assert len(result.picks) == 1
         assert result.picks[0].action == "split"
+
+
+# ---------------------------------------------------------------------------
+# consignment_in fulfillment: must NOT deduct inventory
+# ---------------------------------------------------------------------------
+
+async def _create_consignment_in(client, auth, line_items) -> str:
+    """Create a finalized consignment_in document."""
+    total = sum(li.get("quantity", 0) * li.get("unit_price", 0) for li in line_items)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "consignment_in",
+        "ref_id": f"CONS-{uuid.uuid4().hex[:6]}",
+        "line_items": line_items,
+        "total": total,
+    })
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    r2 = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
+    assert r2.status_code == 200, r2.text
+    return doc_id
+
+
+@pytest.mark.asyncio
+async def test_consignment_in_fulfill_does_not_deduct_inventory(client, session, auth, _setup_ids):
+    """Fulfilling a consignment_in must NOT decrease item quantities.
+
+    Root-cause regression: the outbound item.fulfilled path set quantity=0 regardless
+    of doc type. consignment_in fulfillment is inbound - goods already arrived at
+    receive time. Fulfillment only closes the doc.
+    """
+    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
+    initial_qty = 10.0
+
+    # Create inventory item (simulating goods received earlier)
+    item_id = await _create_item(client, auth, sku, initial_qty, cost_price=5.0)
+
+    # Create and finalize a consignment_in for the same SKU
+    doc_id = await _create_consignment_in(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 10, "unit_price": 5.0},
+    ])
+
+    # Fulfill the consignment_in
+    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["fulfillment_status"] == "fulfilled"
+
+    # Item quantity must be unchanged
+    r2 = await client.get(f"/items/{item_id}", headers=auth["headers"])
+    assert r2.status_code == 200, r2.text
+    item_state = r2.json()
+    assert float(item_state["quantity"]) == initial_qty, (
+        f"consignment_in fulfill must not deduct inventory: "
+        f"expected qty={initial_qty}, got {item_state['quantity']}"
+    )
+
+    # Doc must show fulfilled
+    r3 = await client.get(f"/docs/{doc_id}", headers=auth["headers"])
+    assert r3.json().get("fulfillment_status") == "fulfilled"
+
+
+@pytest.mark.asyncio
+async def test_consignment_in_unfulfill_does_not_touch_inventory(client, session, auth, _setup_ids):
+    """Reversing fulfillment on a consignment_in must not alter item quantities."""
+    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
+    initial_qty = 8.0
+
+    item_id = await _create_item(client, auth, sku, initial_qty, cost_price=3.0)
+    doc_id = await _create_consignment_in(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 8, "unit_price": 3.0},
+    ])
+
+    # Fulfill then unfulfill
+    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+
+    r2 = await client.post(f"/docs/{doc_id}/unfulfill", headers=auth["headers"])
+    assert r2.status_code == 200, r2.text
+
+    # Quantity still unchanged
+    r3 = await client.get(f"/items/{item_id}", headers=auth["headers"])
+    assert float(r3.json()["quantity"]) == initial_qty
+
+    # Doc fulfillment_status cleared
+    r4 = await client.get(f"/docs/{doc_id}", headers=auth["headers"])
+    assert r4.json().get("fulfillment_status") in (None, "", "unfulfilled", "partial")
+
+
+@pytest.mark.asyncio
+async def test_consignment_in_fulfill_no_cogs_je(client, session, auth, _setup_ids):
+    """Fulfilling a consignment_in must produce no COGS journal entry (goods not owned)."""
+    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
+
+    await _create_item(client, auth, sku, 5, cost_price=10.0)
+    doc_id = await _create_consignment_in(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 10.0},
+    ])
+
+    # Record JE count before
+    r_before = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
+    je_count_before = len(r_before.json().get("items", []))
+
+    await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+
+    # JE count must not have increased (no COGS for consignment)
+    r_after = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
+    je_count_after = len(r_after.json().get("items", []))
+    assert je_count_after == je_count_before, (
+        f"consignment_in fulfill must not create COGS JE: before={je_count_before}, after={je_count_after}"
+    )

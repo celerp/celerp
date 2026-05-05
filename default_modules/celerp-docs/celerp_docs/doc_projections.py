@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal
+
+from celerp.services.money import to_decimal, to_stored_float
 
 
 def _recalc_list_totals(state: dict) -> dict:
@@ -43,14 +46,20 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
     elif event_type == "doc.updated":
+        _PATCH_PROTECTED = {"status", "entity_type", "company_id"}
         for field, change in data["fields_changed"].items():
-            current[field] = change.get("new")
+            if field not in _PATCH_PROTECTED:
+                current[field] = change.get("new")
         # If total changed (e.g. line items added/removed on a draft), recalculate outstanding
         # based on how much has already been paid - never let outstanding go negative.
         if "total" in data.get("fields_changed", {}) or "line_items" in data.get("fields_changed", {}):
-            paid = float(current.get("amount_paid", 0) or 0)
-            total = float(current.get("total", 0) or 0)
-            current["amount_outstanding"] = max(0.0, total - paid)
+            paid = to_decimal(current.get("amount_paid", 0))
+            total = to_decimal(current.get("total", 0))
+            current["amount_outstanding"] = to_stored_float(max(Decimal(0), total - paid))
+    elif event_type == "doc.renumbered":
+        # Narrow alias of doc.updated: only ref_id / doc_number may be changed.
+        for field, change in data["fields_changed"].items():
+            current[field] = change.get("new")
     elif event_type == "doc.linked":
         current.setdefault("linked", [])
         current["linked"].append({"entity_id": data["entity_id"], "entity_type": data["entity_type"]})
@@ -93,6 +102,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]
             current["doc_number"] = data["ref_id"]
+        # Track how many times this doc has been reverted so re-finalization
+        # uses a distinct JE id and idempotency key each cycle.
+        current["revert_count"] = int(current.get("revert_count", 0)) + 1
         # Fulfillment state is independent of doc status - do not clear it here.
         # Use the /unfulfill endpoint to explicitly revert fulfillment.
     elif event_type == "doc.unvoided":
@@ -101,12 +113,12 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.pop("void_reason", None)
         current.pop("pre_void_status", None)
     elif event_type == "doc.payment.received":
-        paid = float(current.get("amount_paid", 0)) + float(data["amount"])
-        total = float(current.get("total", 0) or 0)
-        outstanding = max(0.0, total - paid)
-        current["amount_paid"] = paid
-        current["amount_outstanding"] = outstanding
-        current["status"] = "paid" if outstanding <= 0.005 else "partial"
+        paid = to_decimal(current.get("amount_paid", 0)) + to_decimal(data["amount"])
+        total = to_decimal(current.get("total", 0))
+        outstanding = max(Decimal(0), total - paid)
+        current["amount_paid"] = to_stored_float(paid)
+        current["amount_outstanding"] = to_stored_float(outstanding)
+        current["status"] = "paid" if outstanding <= Decimal("0.005") else "partial"
         # Build payments list
         current.setdefault("payments", [])
         current["payments"].append({
@@ -116,7 +128,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             "method": data.get("method"),
             "reference": data.get("reference"),
             "payment_date": data.get("payment_date"),
-            "bank_account": data.get("bank_account", "1110"),
+            "bank_account": data.get("bank_account"),
+            "conversion_rate": data.get("conversion_rate"),
             "source_doc_id": data.get("source_doc_id"),
             "target_doc_id": data.get("target_doc_id"),
             "status": "active",
@@ -127,20 +140,34 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if 0 <= idx < len(payments):
             payments[idx]["status"] = "voided"
             payments[idx]["void_reason"] = data.get("void_reason")
-            # Recalculate totals from active payments only
-            active_total = sum(p["amount"] for p in payments if p["status"] == "active")
-            total = float(current.get("total", 0) or 0)
-            current["amount_paid"] = active_total
-            current["amount_outstanding"] = max(0.0, total - active_total)
-            current["status"] = "paid" if current["amount_outstanding"] <= 0.005 else ("partial" if active_total > 0 else "final")
+            payments[idx]["refund_date"] = data.get("refund_date")
+            active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
+            total = to_decimal(current.get("total", 0))
+            outstanding = max(Decimal(0), total - active_total)
+            current["amount_paid"] = to_stored_float(active_total)
+            current["amount_outstanding"] = to_stored_float(outstanding)
+            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if active_total > 0 else "final")
+    elif event_type == "doc.payment.deleted":
+        idx = data["payment_index"]
+        payments = current.get("payments", [])
+        if 0 <= idx < len(payments):
+            del payments[idx]
+            for i, p in enumerate(payments):
+                p["index"] = i
+            active_total = to_decimal(sum(p["amount"] for p in payments if p["status"] == "active"))
+            total = to_decimal(current.get("total", 0))
+            outstanding = max(Decimal(0), total - active_total)
+            current["amount_paid"] = to_stored_float(active_total)
+            current["amount_outstanding"] = to_stored_float(outstanding)
+            current["status"] = "paid" if outstanding <= Decimal("0.005") else ("partial" if active_total > 0 else "final")
     elif event_type == "doc.payment.refunded":
-        refunded = float(data["amount"])
-        total = float(current.get("total", 0) or 0)
-        paid = max(0.0, float(current.get("amount_paid", 0)) - refunded)
-        outstanding = max(0.0, total - paid)
-        current["amount_paid"] = paid
-        current["amount_outstanding"] = outstanding
-        current["status"] = "paid" if outstanding <= 0.005 else "partial"
+        refunded = to_decimal(data["amount"])
+        total = to_decimal(current.get("total", 0))
+        paid = max(Decimal(0), to_decimal(current.get("amount_paid", 0)) - refunded)
+        outstanding = max(Decimal(0), total - paid)
+        current["amount_paid"] = to_stored_float(paid)
+        current["amount_outstanding"] = to_stored_float(outstanding)
+        current["status"] = "paid" if outstanding <= Decimal("0.005") else "partial"
     elif event_type == "doc.converted":
         current["status"] = "converted"
         current["converted_to"] = data["target_doc_id"]
@@ -206,12 +233,38 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_paid", 0.0)
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
     elif event_type == "doc.note_added":
-        current.setdefault("internal_notes", [])
-        current["internal_notes"].append({
-            "text": data["text"],
-            "created_at": data.get("created_at", ""),
-            "created_by": data.get("created_by", ""),
+        # First-class doc_note entity (same pattern as contact_note)
+        current.update({
+            "entity_type": "doc_note",
+            "note_id": data.get("note_id"),
+            "doc_id": data.get("doc_id"),
+            "note": data.get("note"),
+            "author_id": data.get("author_id"),
+            "author_name": data.get("author_name"),
+            "created_at": data.get("created_at"),
+            "updated_at": None,
         })
+    elif event_type == "doc.note_updated":
+        current["note"] = data.get("note")
+        current["updated_at"] = data.get("updated_at")
+    elif event_type == "doc.note_removed":
+        current["deleted"] = True
+    elif event_type == "list.note_added":
+        current.update({
+            "entity_type": "list_note",
+            "note_id": data.get("note_id"),
+            "list_id": data.get("list_id"),
+            "note": data.get("note"),
+            "author_id": data.get("author_id"),
+            "author_name": data.get("author_name"),
+            "created_at": data.get("created_at"),
+            "updated_at": None,
+        })
+    elif event_type == "list.note_updated":
+        current["note"] = data.get("note")
+        current["updated_at"] = data.get("updated_at")
+    elif event_type == "list.note_removed":
+        current["deleted"] = True
     elif event_type == "doc.fulfilled":
         current["fulfillment_status"] = "fulfilled"
         current["fulfilled_items"] = data["fulfilled_items"]

@@ -86,57 +86,21 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
 
-      - name: Pre-sign Python and PostgreSQL binaries (macOS)
-        if: matrix.os == 'macos-latest'
+      - name: Build macOS (production - signed + notarized)
+        if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 130
+        working-directory: electron
         env:
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: |
-          # Sign all Mach-O binaries in the Python standalone and embedded-postgres
-          # node_modules BEFORE electron-builder runs. electron-builder will skip
-          # these directories via signIgnore, so their signatures are preserved.
-          #
-          # We use a dedicated short-lived keychain to avoid interfering with the
-          # electron-builder keychain that is created in the Build step.
-          IDENTITY="EEC6C15E6827071A403257986E6379A650C62AFB"
-          CERT_PATH="$RUNNER_TEMP/presign.p12"
-          KEYCHAIN_PATH="$RUNNER_TEMP/presign.keychain-db"
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: pnpm run build:mac
 
-          echo "$CSC_LINK" | base64 --decode > "$CERT_PATH"
-          security create-keychain -p "presign" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "presign" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
-          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychain -d user | tr -d '"')
-          security set-key-partition-list -S apple-tool:,apple: -s -k "presign" "$KEYCHAIN_PATH"
-          rm -f "$CERT_PATH"
-
-          sign_macho_in_dir() {
-            local dir="$1"
-            echo "Pre-signing Mach-O binaries in: $dir"
-            find "$dir" -type f -print0 | \
-              xargs -0 -P 8 sh -c '
-                for f do
-                  if file "$f" | grep -q "Mach-O"; then
-                    codesign --force --sign "'"$IDENTITY"'" \
-                      --timestamp --options runtime \
-                      --keychain "'"$KEYCHAIN_PATH"'" "$f" 2>&1
-                  fi
-                done
-              ' _
-            echo "Done signing: $dir"
-          }
-
-          sign_macho_in_dir "electron/python-standalone/mac-arm64/python"
-          sign_macho_in_dir "electron/node_modules/@embedded-postgres"
-
-          # Remove presign keychain from the search list so electron-builder's
-          # own keychain setup is not confused by a second keychain containing
-          # the same certificate.
-          security list-keychain -d user -s $(security list-keychain -d user | tr -d '"' | grep -v presign)
-
-      - name: Build (macOS)
-        if: matrix.os == 'macos-latest'
+      - name: Build macOS (dev - signed only, no notarization)
+        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 60
         working-directory: electron
         env:
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
@@ -150,27 +114,6 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: ${{ matrix.build_cmd }}
 
-      - name: Notarize Mac DMG
-        if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
-        timeout-minutes: 130
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          # electron-builder produces a versioned filename (e.g. Celerp-1.0.9-arm64.dmg).
-          # The normalize step runs after this one, so we find the DMG dynamically.
-          DMG=$(find electron/dist -name "*.dmg" | head -1)
-          if [ -z "$DMG" ]; then
-            echo "ERROR: no DMG found in electron/dist" && ls electron/dist && exit 1
-          fi
-          echo "Notarizing: $DMG"
-          xcrun notarytool submit "$DMG" \
-            --apple-id "$APPLE_ID" \
-            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
-            --team-id "$APPLE_TEAM_ID" \
-            --wait --timeout 2h
-          xcrun stapler staple "$DMG"
 
       - name: Normalize artifact names
         shell: bash

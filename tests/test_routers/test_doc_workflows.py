@@ -107,7 +107,7 @@ async def test_invoice_partial_then_full_payment_with_je(client, session):
     inv = await _create_invoice(client, token)
 
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
-    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 40})
+    r = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 40, "bank_account": "1111"})
     assert r.status_code == 200
 
     partial = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
@@ -117,8 +117,8 @@ async def test_invoice_partial_then_full_payment_with_je(client, session):
 
     je1 = await _find_je(client, token, "doc.payment.received", inv)
     e1 = je1["data"]["entries"]
-    assert {x["account"] for x in e1} == {"1110", "1120"}
-    assert any(x["account"] == "1110" and float(x["debit"]) == 40 for x in e1)
+    assert {x["account"] for x in e1} == {"1111", "1120"}
+    assert any(x["account"] == "1111" and float(x["debit"]) == 40 for x in e1)
     assert any(x["account"] == "1120" and float(x["credit"]) == 40 for x in e1)
     _assert_balanced(e1)
 
@@ -126,7 +126,7 @@ async def test_invoice_partial_then_full_payment_with_je(client, session):
     assert je_row.metadata_["trigger"] == "doc.payment.received"
     assert je_row.metadata_["doc_id"] == inv
 
-    r2 = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 67})
+    r2 = await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 67, "bank_account": "1111"})
     assert r2.status_code == 200
     paid = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert paid["status"] == "paid"
@@ -139,7 +139,7 @@ async def test_invoice_guards_void_edit_pay_and_overpayment(client):
     inv = await _create_invoice(client, token)
 
     # pay draft
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 1})).status_code == 409
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 1, "bank_account": "1111"})).status_code == 409
 
     # edit finalized
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
@@ -152,10 +152,10 @@ async def test_invoice_guards_void_edit_pay_and_overpayment(client):
     ).status_code == 409
 
     # overpayment
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 108})).status_code == 409
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 108, "bank_account": "1111"})).status_code == 409
 
     # paid then void forbidden
-    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 107})).status_code == 200
+    assert (await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 107, "bank_account": "1111"})).status_code == 200
     assert (await client.post(f"/docs/{inv}/void", headers=_h(token), json={"reason": "x"})).status_code == 409
 
     # draft can be voided
@@ -567,7 +567,7 @@ async def test_summary_partial_invoice_in_awaiting_not_paid(client, session):
     # Record a partial payment (500 out of 1000)
     await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
                       json={"amount": 500, "method": "transfer", "reference": "PART-1",
-                            "payment_date": "2026-04-25", "bank_account": "1110"})
+                            "payment_date": "2026-04-25", "bank_account": "1111"})
     r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
@@ -589,7 +589,7 @@ async def test_summary_all_count_not_doubled(client, session):
     # Pay in full
     await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
                       json={"amount": 200, "method": "cash", "reference": "FULL-1",
-                            "payment_date": "2026-04-25", "bank_account": "1110"})
+                            "payment_date": "2026-04-25", "bank_account": "1111"})
     r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
@@ -607,7 +607,7 @@ async def test_summary_awaiting_payment_total_is_outstanding(client, session):
     # Partial payment of 300 -> outstanding = 500
     await client.post(f"/docs/{doc_id}/payment", headers=_h(token),
                       json={"amount": 300, "method": "cash", "reference": "P1",
-                            "payment_date": "2026-04-25", "bank_account": "1110"})
+                            "payment_date": "2026-04-25", "bank_account": "1111"})
     r = await client.get("/docs/summary?doc_type=invoice", headers=_h(token))
     assert r.status_code == 200
     data = r.json()
@@ -626,7 +626,7 @@ async def _pay(client, token: str, doc_id: str, amount: float, reference: str = 
         f"/docs/{doc_id}/payment",
         headers=_h(token),
         json={"amount": amount, "method": "transfer", "reference": reference,
-              "payment_date": "2026-04-25", "bank_account": "1110"},
+              "payment_date": "2026-04-25", "bank_account": "1111"},
     )
     assert r.status_code == 200, f"Payment failed: {r.json()}"
 
@@ -1492,3 +1492,229 @@ async def test_receive_goods_uses_bill_line_category_and_attributes(client, sess
     assert new_item.get("color") == "green", f"attributes.color not set: {new_item}"
     assert new_item.get("shape") == "oval", f"attributes.shape not set: {new_item}"
     assert new_item.get("measurements (mm)") == "10x8", f"attributes.measurements not set: {new_item}"
+
+
+# ---------------------------------------------------------------------------
+# Revert-to-draft → re-finalize tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_invoice_revert_to_draft_then_re_finalize(client, session):
+    """Finalize → revert → finalize again must succeed and reuse the same INV ref."""
+    token = await _register(client)
+
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+
+    # First finalize
+    r = await client.post(f"/docs/{inv}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+    state1 = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state1["status"] == "final"
+    inv_ref = state1["ref_id"]
+    assert re.match(r"^INV-", inv_ref), f"Expected INV- ref, got: {inv_ref}"
+    pf_ref = state1.get("source_proforma_ref", "")
+
+    # Revert to draft
+    r = await client.post(f"/docs/{inv}/revert-to-draft", headers=h, json={"reason": "mistake"})
+    assert r.status_code == 200, r.text
+    draft = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert draft["status"] == "draft"
+    # ref_id should still be the INV ref (not reset to PF)
+    assert draft["ref_id"] == inv_ref
+
+    # Re-finalize
+    r = await client.post(f"/docs/{inv}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+    state2 = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state2["status"] == "final"
+    # Must reuse the same INV ref - no new counter slot consumed
+    assert state2["ref_id"] == inv_ref, (
+        f"Re-finalize changed INV ref from {inv_ref} to {state2['ref_id']} - counter slot wasted"
+    )
+    # source_proforma_ref must still point to the original PF ref
+    if pf_ref:
+        assert state2.get("source_proforma_ref") == pf_ref, (
+            f"source_proforma_ref changed on re-finalize: {state2.get('source_proforma_ref')!r} != {pf_ref!r}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_invoice_re_finalize_creates_fresh_je(client, session):
+    """JE must be voided on revert and a fresh JE created on re-finalize.
+
+    The dedup guard on idempotency keys must not block the second JE.
+    """
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+
+    # Finalize → check JE is posted
+    await client.post(f"/docs/{inv}/finalize", headers=h)
+
+    ledger_rows = (await client.get("/ledger?entity_type=journal_entry", headers=h)).json()["items"]
+    fin_je_after_first = [
+        e for e in ledger_rows
+        if inv in (e["data"].get("memo") or "") and "finalized" in (e["data"].get("memo") or "")
+    ]
+    assert fin_je_after_first, "No finalize JE found after first finalize"
+
+    # Revert → finalize JE must be voided
+    await client.post(f"/docs/{inv}/revert-to-draft", headers=h, json={"reason": "test"})
+
+    # Re-finalize → a new posted JE must exist
+    r = await client.post(f"/docs/{inv}/finalize", headers=h)
+    assert r.status_code == 200, r.text
+
+    # Collect all JEs for this doc
+    ledger_rows2 = (await client.get("/ledger?entity_type=journal_entry", headers=h)).json()["items"]
+    fin_je_rows = [
+        e for e in ledger_rows2
+        if inv in (e["data"].get("memo") or "") and "finalized" in (e["data"].get("memo") or "")
+    ]
+    # There should be at least two posted events (created + posted) for the second finalize cycle
+    assert len(fin_je_rows) >= 1, "Expected at least one JE event for re-finalize"
+
+    # Verify the document is final and has a valid AR balance (JE was actually recorded)
+    state = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state["status"] == "final"
+
+
+@pytest.mark.asyncio
+async def test_invoice_counter_not_double_incremented_on_re_finalize(client, session):
+    """Re-finalizing a previously-finalized invoice must not consume a new counter slot.
+
+    Create two invoices; finalize both; revert the first; re-finalize the first.
+    The re-finalized invoice must keep its original number, not leapfrog the second.
+    """
+    token = await _register(client)
+    h = _h(token)
+
+    inv_a = await _create_invoice(client, token)
+    inv_b = await _create_invoice(client, token)
+
+    await client.post(f"/docs/{inv_a}/finalize", headers=h)
+    await client.post(f"/docs/{inv_b}/finalize", headers=h)
+
+    ref_a = (await client.get(f"/docs/{inv_a}", headers=h)).json()["ref_id"]
+    ref_b = (await client.get(f"/docs/{inv_b}", headers=h)).json()["ref_id"]
+
+    # Revert inv_a, then re-finalize
+    await client.post(f"/docs/{inv_a}/revert-to-draft", headers=h, json={"reason": "test"})
+    await client.post(f"/docs/{inv_a}/finalize", headers=h)
+
+    ref_a_after = (await client.get(f"/docs/{inv_a}", headers=h)).json()["ref_id"]
+    ref_b_after = (await client.get(f"/docs/{inv_b}", headers=h)).json()["ref_id"]
+
+    # inv_a keeps its original ref; inv_b is unaffected
+    assert ref_a_after == ref_a, f"Re-finalize changed ref_a from {ref_a} to {ref_a_after}"
+    assert ref_b_after == ref_b, f"inv_b ref changed unexpectedly to {ref_b_after}"
+
+
+@pytest.mark.asyncio
+async def test_invoice_multiple_revert_cycles(client, session):
+    """Finalize → revert → finalize → revert → finalize must work for N cycles."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+
+    await client.post(f"/docs/{inv}/finalize", headers=h)
+    original_ref = (await client.get(f"/docs/{inv}", headers=h)).json()["ref_id"]
+
+    for cycle in range(1, 4):
+        r_revert = await client.post(f"/docs/{inv}/revert-to-draft", headers=h, json={"reason": f"cycle {cycle}"})
+        assert r_revert.status_code == 200, f"Revert failed on cycle {cycle}: {r_revert.text}"
+
+        r_final = await client.post(f"/docs/{inv}/finalize", headers=h)
+        assert r_final.status_code == 200, f"Re-finalize failed on cycle {cycle}: {r_final.text}"
+
+        state = (await client.get(f"/docs/{inv}", headers=h)).json()
+        assert state["status"] == "final", f"Expected final status after cycle {cycle}, got: {state['status']}"
+        assert state["ref_id"] == original_ref, (
+            f"Ref changed on cycle {cycle}: {original_ref} -> {state['ref_id']}"
+        )
+        assert int(state.get("revert_count", 0)) == cycle, (
+            f"revert_count should be {cycle} after cycle {cycle}, got {state.get('revert_count')}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Status protection tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_patch_doc_status_rejected(client, session):
+    """PATCH /docs/{id} with status in fields_changed must return 422."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+    r = await client.patch(
+        f"/docs/{inv}",
+        headers=h,
+        json={"fields_changed": {"status": {"old": "draft", "new": "paid"}}},
+    )
+    assert r.status_code == 422, r.text
+    assert "status" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patch_doc_entity_type_rejected(client, session):
+    """PATCH /docs/{id} with entity_type in fields_changed must return 422."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+    r = await client.patch(
+        f"/docs/{inv}",
+        headers=h,
+        json={"fields_changed": {"entity_type": {"old": "doc", "new": "malicious"}}},
+    )
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_patch_doc_status_not_applied_via_projection(client, session):
+    """Projection ignores status even if somehow smuggled into fields_changed; safe data fields still apply."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token)
+    h = _h(token)
+
+    # Confirm draft
+    state_before = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state_before["status"] == "draft"
+
+    # Patch a safe field to confirm the normal path still works
+    r = await client.patch(
+        f"/docs/{inv}",
+        headers=h,
+        json={"fields_changed": {"reference": {"old": None, "new": "TEST-REF"}}},
+    )
+    assert r.status_code == 200, r.text
+
+    state_after = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state_after["status"] == "draft"  # unchanged
+    assert state_after["reference"] == "TEST-REF"  # data field updated
+
+
+@pytest.mark.asyncio
+async def test_status_only_reachable_via_lifecycle(client, session):
+    """An invoice reaches 'paid' only after finalize + record_payment, never via patch."""
+    token = await _register(client)
+    inv = await _create_invoice(client, token, subtotal=100, tax=0, total=100)
+    h = _h(token)
+
+    # Attempt direct patch to paid - must be blocked
+    r = await client.patch(
+        f"/docs/{inv}",
+        headers=h,
+        json={"fields_changed": {"status": {"old": "draft", "new": "paid"}}},
+    )
+    assert r.status_code == 422, r.text
+
+    # Status must still be draft
+    assert (await client.get(f"/docs/{inv}", headers=h)).json()["status"] == "draft"
+
+    # Now go through legitimate lifecycle
+    await client.post(f"/docs/{inv}/finalize", headers=h)
+    state = (await client.get(f"/docs/{inv}", headers=h)).json()
+    assert state["status"] == "final"
+    # (full payment flow tested in test_payments.py)

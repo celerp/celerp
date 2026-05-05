@@ -20,6 +20,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
+from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -28,16 +29,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-_DEFAULT_UNITS: list[dict] = [
-    {"name": "piece", "label": "Piece", "decimals": 0},
-    {"name": "carat", "label": "Carat (ct)", "decimals": 2},
-    {"name": "gram", "label": "Gram (g)", "decimals": 2},
-    {"name": "kg", "label": "Kilogram (kg)", "decimals": 3},
-    {"name": "oz", "label": "Ounce (oz)", "decimals": 2},
-    {"name": "lb", "label": "Pound (lb)", "decimals": 2},
-    {"name": "liter", "label": "Liter (L)", "decimals": 2},
-    {"name": "meter", "label": "Meter (m)", "decimals": 2},
-]
+_DEFAULT_UNITS = DEFAULT_UNITS  # backwards-compat alias for any internal callers
 
 
 async def _get_company_units(session: AsyncSession, company_id) -> list[dict]:
@@ -48,23 +40,7 @@ async def _get_company_units(session: AsyncSession, company_id) -> list[dict]:
         units = (company.settings or {}).get("units")
         if units:
             return units
-    return _DEFAULT_UNITS
-
-
-def validate_quantity(qty: float, decimals: int) -> None:
-    """Raise HTTPException(422) if qty has more decimal places than allowed.
-
-    Uses round-trip via Decimal to avoid float arithmetic artifacts (e.g. 2.55*100=254.999...).
-    """
-    from decimal import Decimal, ROUND_HALF_UP
-    d = Decimal(str(qty))
-    quantizer = Decimal(10) ** -decimals
-    rounded = d.quantize(quantizer, rounding=ROUND_HALF_UP)
-    if d != rounded:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Quantity {qty} exceeds allowed precision ({decimals} decimal places)",
-        )
+    return DEFAULT_UNITS
 
 
 def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None) -> dict:
@@ -199,6 +175,8 @@ async def list_items(
     barcode: str | None = None,
     status: str | None = None,
     category: str | None = None,
+    sort: str | None = None,
+    dir: str = "desc",
 ) -> dict:
     """List items with optional filters.
 
@@ -279,6 +257,24 @@ async def list_items(
             # Items without expiry float to the bottom; expired items sort before no-expiry
             return exp or "9999-99-99"
         result.sort(key=_fefo_key)
+
+    # User-requested column sort - applied AFTER all filtering so pagination is globally correct.
+    # FEFO overrides user sort for available items; explicit sort wins for all other statuses.
+    if sort and (not company or (company.settings or {}).get("inventory_method") != "fefo" or status not in (None, "available", "")):
+        reverse = dir.lower() != "asc"
+
+        def _sort_key(item: dict):
+            v = item.get(sort)
+            if v is None:
+                # Nulls always last regardless of direction
+                return (1, "")
+            if isinstance(v, (int, float)):
+                return (0, v)
+            s = str(v)
+            # ISO date/datetime strings sort correctly as strings
+            return (0, s.lower())
+
+        result.sort(key=_sort_key, reverse=reverse)
 
     total = len(result)
     return {"items": result[offset: offset + limit], "total": total}

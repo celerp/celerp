@@ -17,6 +17,7 @@ PUT    /settings/labels/{id}        Save template -> return refreshed editor pan
 """
 from __future__ import annotations
 
+import httpx
 import logging
 from ui.i18n import t, get_lang
 
@@ -29,8 +30,45 @@ except ImportError:  # pragma: no cover
 
 log = logging.getLogger(__name__)
 
+# Named format → (width_mm, height_mm)
+_FORMAT_MM: dict[str, tuple[float, float]] = {
+    "24x24mm": (24.0, 24.0),
+    "29x29mm": (29.0, 29.0),
+    "34x34mm": (34.0, 34.0),
+    "40x30mm": (40.0, 30.0),
+    "62x29mm": (62.0, 29.0),
+    "100x50mm": (100.0, 50.0),
+    "A4": (210.0, 297.0),
+    "A5": (148.0, 210.0),
+    "letter": (216.0, 279.0),
+}
+_FORMAT_MM_DEFAULT = (40.0, 30.0)
+
+
+def _format_to_mm(
+    fmt: str | None,
+    width_mm: float | None,
+    height_mm: float | None,
+) -> tuple[float, float]:
+    """Return (width_mm, height_mm) for a template format string.
+
+    Priority: named format table > custom width_mm/height_mm > default 40x30.
+    """
+    if fmt and fmt != "custom":
+        if fmt in _FORMAT_MM:
+            return _FORMAT_MM[fmt]
+        # Try parsing "WxHmm" dynamically
+        import re
+        m = re.match(r"^(\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)mm$", fmt)
+        if m:
+            return (float(m.group(1)), float(m.group(2)))
+    if width_mm and height_mm:
+        return (float(width_mm), float(height_mm))
+    return _FORMAT_MM_DEFAULT
+
 _COMMON_FIELDS = [
     ("barcode", "Barcode (bars)", "barcode"),
+    ("barcode_text", "Barcode (number)", "barcode_text"),
     ("qr", "QR Code", "qr"),
     ("name", "Name", "text"),
     ("sku", "SKU", "text"),
@@ -61,6 +99,7 @@ _SAMPLE_DATA = {
     "name": "Sample Item",
     "sku": "SKU-001",
     "barcode": "123456789",
+    "barcode_text": "123456789",
     "qr": "123456789",
     "category": "General",
     "status": "Available",
@@ -395,6 +434,7 @@ def _field_row_compact(
     x_val = field.get("x", "")
     y_val = field.get("y", "")
     font_size = field.get("fontSize", "")
+    barcode_height = field.get("barcode_height", "")
 
     # Build option groups as JSON for the searchable-select component
     options_js = _build_field_options_js(key, global_extra, category_attrs)
@@ -430,6 +470,10 @@ def _field_row_compact(
             f'<input type="hidden" name="fields[{idx}][x]" value="{x_val}" class="fld-x">'
             f'<input type="hidden" name="fields[{idx}][y]" value="{y_val}" class="fld-y">'
             f'<input type="hidden" name="fields[{idx}][fontSize]" value="{font_size}" class="fld-fs">'
+            f'<input type="number" name="fields[{idx}][barcode_height]" value="{barcode_height}" class="form-input form-input--sm fld-bh"'
+            f' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"'
+            f' style="display:{("" if ftype == "barcode" else "none")};width:60px;"'
+            f' oninput="labelEditorUpdatePreview()">'
         ),
         cls="field-row-compact",
         data_idx=str(idx),
@@ -604,13 +648,16 @@ def _editor_panel(
       currentVal = k;
       display.value = v || '';
       if (hiddenIn) hiddenIn.value = k;
-      // Sync fld-type and fld-label hidden inputs in the parent row
+      // Sync fld-type, fld-label, and fld-bh visibility in the parent row
       var row = wrapper.closest('.field-row-compact');
       if (row) {{
         var typeIn = row.querySelector('.fld-type');
-        if (typeIn) typeIn.value = fieldType(k);
+        var ft = fieldType(k);
+        if (typeIn) typeIn.value = ft;
         var labelIn = row.querySelector('.fld-label');
         if (labelIn && !labelIn._userEdited) labelIn.value = v || k;
+        var bhIn = row.querySelector('.fld-bh');
+        if (bhIn) bhIn.style.display = ft === 'barcode' ? '' : 'none';
       }}
       closeDropdown();
       labelEditorUpdatePreview();
@@ -683,7 +730,10 @@ def _editor_panel(
         '<input type="hidden" name="fields[' + idx + '][type]" value="text" class="fld-type">' +
         '<input type="hidden" name="fields[' + idx + '][x]" value="" class="fld-x">' +
         '<input type="hidden" name="fields[' + idx + '][y]" value="" class="fld-y">' +
-        '<input type="hidden" name="fields[' + idx + '][fontSize]" value="" class="fld-fs">';
+        '<input type="hidden" name="fields[' + idx + '][fontSize]" value="" class="fld-fs">' +
+        '<input type="number" name="fields[' + idx + '][barcode_height]" value="" class="form-input form-input--sm fld-bh"' +
+        ' min="1" max="30" placeholder="Bar H" title="Barcode bar height (1-30)"' +
+        ' style="display:none;width:60px;" oninput="labelEditorUpdatePreview()">';
       list.appendChild(row);
       initSearchableSelect(row.querySelector('.searchable-select'), addFieldGroups);
       labelEditorUpdatePreview();
@@ -738,7 +788,7 @@ def _editor_panel(
   // Fixed QR size: always 10mm. Barcode: min 20mm wide, min 6mm tall.
   var QR_SIZE_MM = 10;
   var BC_MIN_W_MM = 20;
-  var BC_MIN_H_MM = 6;
+  var BC_PX_PER_H = 4;  // pixels per barcode_height unit (matches print sheet: 4px/unit)
 
   window.labelEditorUpdatePreview = function() {{
     var canvas = document.getElementById('preview-canvas');
@@ -784,18 +834,21 @@ def _editor_panel(
       if (ftype === 'barcode') {{
         block.className = 'label-field-block label-field-block--barcode';
         var bcWPx = Math.round(Math.max(BC_MIN_W_MM, Math.min(dims.wMm - xPos - 2, 30)) * dims.scale);
-        var bcHPx = Math.round(Math.max(BC_MIN_H_MM, Math.min(8, dims.hMm / 4)) * dims.scale);
+        var bhEl = row.querySelector('.fld-bh');
+        var bcHeightVal = (bhEl && bhEl.value !== '') ? parseInt(bhEl.value) : 8;
+        var bcHPx = Math.max(4, bcHeightVal * BC_PX_PER_H);
         block.style.width = bcWPx + 'px';
         var img = document.createElement('img');
-        img.src = '/api/labels/preview/barcode?value=' + encodeURIComponent(sample);
+        img.src = '/api/labels/preview/barcode?value=' + encodeURIComponent(sample) + '&height=' + bcHeightVal;
         img.style.width = bcWPx + 'px';
         img.style.height = bcHPx + 'px';
         img.alt = 'barcode';
-        var txt = document.createElement('span');
-        txt.className = 'bc-text';
-        txt.textContent = sample;
         block.appendChild(img);
-        block.appendChild(txt);
+      }} else if (ftype === 'barcode_text') {{
+        block.className = 'label-field-block label-field-block--barcode-text';
+        block.style.fontFamily = 'monospace';
+        block.style.fontSize = '11px';
+        block.textContent = sample;
       }} else if (ftype === 'qr') {{
         block.className = 'label-field-block label-field-block--qr';
         // QR is always exactly 10mm
@@ -946,7 +999,7 @@ def _label_settings_root(
     )
 
 
-def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None) -> object:
+def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_base: str, token: str | None, request: object = None) -> object:
     """Show template picker + confirm Print button for bulk label printing."""
     ft = _ft()
     Div, H2, Form, Label, Select, Option, Button, P, Input = (
@@ -988,12 +1041,45 @@ def _bulk_print_preview_page(entity_ids: list[str], templates: list[dict], api_b
 
 def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
     """Return a minimal printable HTML page that auto-triggers window.print()."""
+    import base64
+
     if not template:
         fields = [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
+        w_mm, h_mm = _FORMAT_MM_DEFAULT
     else:
         fields = template.get("fields") or [{"key": "name", "type": "text"}, {"key": "sku", "type": "text"}]
+        w_mm, h_mm = _format_to_mm(
+            template.get("format"),
+            template.get("width_mm"),
+            template.get("height_mm"),
+        )
 
     from starlette.responses import HTMLResponse
+    from celerp_labels.service import _make_barcode_image, _make_qr_image
+
+    def _barcode_img_tag(val: str, module_height: int = 8) -> str:
+        buf = _make_barcode_image(val, module_height=module_height)
+        h_px = max(4, int(module_height) * 4)
+        if buf:
+            b64 = base64.b64encode(buf.read()).decode()
+            return (
+                f'<div class="label-field label-field--barcode">'
+                f'<img src="data:image/png;base64,{b64}" alt="{val}"'
+                f' style="max-width:100%;height:{h_px}px;display:block;">'
+                f'</div>'
+            )
+        return f'<div class="label-field label-field--barcode">{val}</div>'
+
+    def _qr_img_tag(val: str) -> str:
+        buf = _make_qr_image(val)
+        if buf:
+            b64 = base64.b64encode(buf.read()).decode()
+            return (
+                f'<div class="label-field label-field--qr">'
+                f'<img src="data:image/png;base64,{b64}" alt="{val}" style="width:40px;height:40px;display:block;">'
+                f'</div>'
+            )
+        return f'<div class="label-field label-field--qr">{val}</div>'
 
     label_rows = []
     for item in items:
@@ -1002,13 +1088,20 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
             key = f.get("key", "")
             ftype = f.get("type", "text")
             field_label = str(f.get("label", "") or key).strip()
-            val = str(item.get(key, "") or (item.get("attributes") or {}).get(key, "") or "")
+            # qr/barcode/barcode_text fields: fall back to item's barcode field then sku
+            if key in ("qr", "barcode", "barcode_text"):
+                val = str(item.get("barcode", "") or item.get("sku", "") or "")
+            else:
+                val = str(item.get(key, "") or (item.get("attributes") or {}).get(key, "") or "")
             if not val:
                 continue
             if ftype == "barcode":
-                field_lines.append(f'<div class="label-field label-field--barcode">{val}</div>')
+                bc_height = int(f.get("barcode_height") or 8)
+                field_lines.append(_barcode_img_tag(val, module_height=bc_height))
+            elif ftype == "barcode_text":
+                field_lines.append(f'<div class="label-field label-field--barcode-text"><span class="bc-human">{val}</span></div>')
             elif ftype == "qr":
-                field_lines.append(f'<div class="label-field label-field--qr">{val}</div>')
+                field_lines.append(_qr_img_tag(val))
             else:
                 display = f"{field_label}: {val}" if field_label else val
                 field_lines.append(f'<div class="label-field">{display}</div>')
@@ -1022,11 +1115,29 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
 <style>
 body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 .label-sheet {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-.label-item {{ border: 1px solid #999; padding: 6px 8px; min-width: 80px; font-size: 11px; break-inside: avoid; }}
-.label-field {{ margin-bottom: 2px; }}
-.label-field--barcode, .label-field--qr {{ font-family: monospace; font-size: 10px; }}
+.label-item {{
+  border: 1px solid #999;
+  padding: 4px 6px;
+  font-size: 11px;
+  break-inside: avoid;
+  width: {w_mm}mm;
+  height: {h_mm}mm;
+  box-sizing: border-box;
+  overflow: hidden;
+  flex-shrink: 0;
+}}
+.label-field {{ margin-bottom: 2px; overflow: hidden; }}
+.label-field--barcode {{ margin-bottom: 3px; }}
+.label-field--barcode img {{ max-width: 100%; display: block; }}
+.label-field--barcode-text {{ margin-bottom: 2px; }}
+.bc-human {{ font-family: monospace; font-size: 9px; display: block; text-align: center; }}
+.label-field--qr {{ margin-bottom: 3px; }}
 .no-print {{ margin-bottom: 1rem; }}
-@media print {{ .no-print {{ display: none; }} }}
+@media print {{
+  .no-print {{ display: none; }}
+  body {{ padding: 0; margin: 0; }}
+  .label-sheet {{ gap: 4px; padding: 4px; }}
+}}
 </style>
 </head>
 <body>
@@ -1043,7 +1154,6 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 
 def setup_ui_routes(app) -> None:
     """Entry point called by the module loader."""
-    import httpx
     from ui.components.shell import base_shell
 
     def _token(request: Request) -> str | None:
@@ -1182,7 +1292,8 @@ def setup_ui_routes(app) -> None:
     async def barcode_preview(request: Request):
         from celerp_labels.service import _make_barcode_image
         value = request.query_params.get("value", "0000000")
-        buf = _make_barcode_image(value)
+        height = int(request.query_params.get("height", "8"))
+        buf = _make_barcode_image(value, module_height=height)
         if buf:
             return StarletteResponse(content=buf.read(), media_type="image/png",
                                      headers={"Cache-Control": "public, max-age=3600"})
@@ -1326,6 +1437,37 @@ def setup_ui_routes(app) -> None:
             "fields": fields, "width_mm": width_mm, "height_mm": height_mm,
         })
 
+    @app.get("/labels/print/{entity_id}")
+    async def labels_print_single(request: Request, entity_id: str):
+        """Printable HTML label page for a single item (GET - safe for window.open).
+
+        Fetches item data via internal API, renders _printable_label_sheet,
+        and auto-triggers window.print().  No PDF dependency on the UI layer.
+        """
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        template_id = request.query_params.get("template_id") or None
+        item_data: dict = {}
+        try:
+            async with httpx.AsyncClient(timeout=5) as c:
+                r = await c.get(
+                    f"{_api_base(request)}/items/{entity_id}",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if r.status_code == 200:
+                    item_data = r.json()
+        except Exception as exc:
+            log.warning("Could not fetch item %s for label print: %s", entity_id, exc)
+        template: dict | None = None
+        if template_id:
+            templates = await _fetch_templates(request)
+            template = next((tpl for tpl in templates if tpl["id"] == template_id), None)
+        if not template:
+            templates = await _seed_presets_if_empty(request)
+            template = templates[0] if templates else None
+        return _printable_label_sheet([item_data] if item_data else [], template)
+
     @app.post("/labels/print-bulk")
     async def labels_print_bulk(request: Request):
         """Bulk print preview: show template picker + print button for selected items."""
@@ -1337,7 +1479,106 @@ def setup_ui_routes(app) -> None:
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
         templates = await _seed_presets_if_empty(request)
-        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token)
+        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+
+    @app.get("/labels/print-doc/{doc_id}")
+    async def labels_print_doc(request: Request, doc_id: str):
+        """Print labels for all line items in a finalized/sent doc or list.
+
+        Fetches the doc (or list) by id, extracts item entity_ids from line_items,
+        and opens the bulk preview page. Opens in a new tab via the action bar button.
+        Query param ``list=1`` switches to the lists API endpoint.
+        """
+        if not _token(request):
+            return RedirectResponse("/login", status_code=302)
+        token = _token(request)
+        is_list = request.query_params.get("list") == "1"
+        entity_ids: list[str] = []
+        skus_to_resolve: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                endpoint = f"{_api_base(request)}/lists/{doc_id}" if is_list else f"{_api_base(request)}/docs/{doc_id}"
+                r = await c.get(endpoint, headers={"Authorization": f"Bearer {token}"})
+                log.debug("labels_print_doc: GET %s -> %s", endpoint, r.status_code)
+                if r.status_code == 200:
+                    doc = r.json()
+                    line_items = doc.get("line_items") or []
+                    log.debug("labels_print_doc: %d line items in doc", len(line_items))
+                    for li in line_items:
+                        # entity_id stored by JS save; item_id stored by some import paths
+                        eid = li.get("entity_id") or li.get("item_entity_id") or li.get("item_id")
+                        if eid:
+                            entity_ids.append(eid)
+                        elif li.get("sku"):
+                            skus_to_resolve.append(li["sku"])
+                    log.debug("labels_print_doc: %d entity_ids direct, %d SKUs to resolve", len(entity_ids), len(skus_to_resolve))
+                else:
+                    log.warning("labels_print_doc: unexpected status %s from %s: %s", r.status_code, endpoint, r.text[:200])
+                # SKU fallback: resolve any line items that had no entity_id stored
+                if skus_to_resolve:
+                    seen: set[str] = set(entity_ids)
+                    for sku in dict.fromkeys(skus_to_resolve):  # deduplicate, preserve order
+                        try:
+                            sr = await c.get(
+                                f"{_api_base(request)}/items",
+                                params={"sku": sku, "limit": 1, "status": "all"},
+                                headers={"Authorization": f"Bearer {token}"},
+                            )
+                            if sr.status_code == 200:
+                                items = sr.json().get("items", [])
+                                if items:
+                                    # list_items uses "id", single item fetch uses "entity_id"
+                                    eid = items[0].get("entity_id") or items[0].get("id")
+                                    if eid and eid not in seen:
+                                        entity_ids.append(eid)
+                                        seen.add(eid)
+                            else:
+                                log.warning("labels_print_doc: SKU lookup for %r -> %s", sku, sr.status_code)
+                        except Exception as exc:
+                            log.warning("labels_print_doc: SKU lookup for %r failed: %s", sku, exc)
+        except Exception as exc:
+            log.exception("labels_print_doc: failed to fetch doc %s: %s", doc_id, exc)
+        redirect = "/lists" if is_list else "/docs"
+        if not entity_ids:
+            return RedirectResponse(redirect, status_code=302)
+        templates = await _seed_presets_if_empty(request)
+        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+
+    @app.get("/labels/print-list")
+    async def labels_print_list(request: Request):
+        """Print-all-labels for the current filtered inventory view.
+
+        Accepts the same filter params as /inventory (q, status, category, sort, dir).
+        Fetches up to _LABEL_LIST_CAP items and feeds them into the bulk preview flow.
+        Opens in a new tab (target=_blank link from inventory toolbar).
+        """
+        _LABEL_LIST_CAP = 100
+        if not _token(request):
+            return RedirectResponse("/login", status_code=302)
+        token = _token(request)
+        qp = dict(request.query_params)
+        api_params: dict = {"limit": _LABEL_LIST_CAP, "offset": 0}
+        for key in ("q", "status", "category", "sort", "dir"):
+            if qp.get(key):
+                api_params[key] = qp[key]
+        entity_ids: list[str] = []
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                r = await c.get(
+                    f"{_api_base(request)}/items",
+                    params=api_params,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                if r.status_code == 200:
+                    entity_ids = [it["entity_id"] for it in r.json().get("items", []) if it.get("entity_id")]
+        except Exception:
+            pass
+        if not entity_ids:
+            return RedirectResponse("/inventory", status_code=302)
+        templates = await _seed_presets_if_empty(request)
+        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+
+
 
     @app.post("/labels/print-bulk/generate")
     async def labels_print_bulk_generate(request: Request):
@@ -1375,6 +1616,11 @@ def setup_ui_routes(app) -> None:
     log.info("celerp-labels: UI routes registered")
 
 
+# Alias so kernel app.py (_CONDITIONAL_UI via setup_routes) and the external
+# module loader (setup_ui_routes) both work from the single definition above.
+setup_routes = setup_ui_routes
+
+
 def _parse_float(val) -> float | None:
     if val is None or str(val).strip() == "":
         return None
@@ -1385,7 +1631,7 @@ def _parse_float(val) -> float | None:
 
 
 def _extract_fields_from_form(form) -> list[dict]:
-    """Parse fields[N][key/label/x/y/fontSize/bold/type] from multidict into ordered list."""
+    """Parse fields[N][key/label/x/y/fontSize/bold/type/barcode_height] from multidict into ordered list."""
     import re
     buckets: dict[int, dict] = {}
     for key, val in form.multi_items():
@@ -1405,7 +1651,7 @@ def _extract_fields_from_form(form) -> list[dict]:
             "label": (row.get("label") or k).strip(),
             "type": row.get("type", "text"),
         }
-        for num_attr in ("x", "y", "fontSize"):
+        for num_attr in ("x", "y", "fontSize", "barcode_height"):
             v = _parse_float(row.get(num_attr))
             if v is not None:
                 field[num_attr] = v

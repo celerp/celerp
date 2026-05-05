@@ -303,7 +303,7 @@ def _infra_db_section() -> FT:
         ),
         # Restore previous button (GDR undo support)
         Div(
-            Button("↩ Restore previous DB settings",
+            Button(t("btn._restore_previous_db_settings"),
                 cls="btn btn--outline btn--sm",
                 hx_post="/settings/cloud/restore-db",
                 hx_target="#db-test-result",
@@ -658,7 +658,7 @@ def setup_routes(app):
 
             prev_url = cfg.get("database_backup", {}).get("previous_url", "")
             if not prev_url:
-                return Span("No previous database URL to restore.", cls="infra-test-result--err")
+                return Span(t("settings.no_previous_database_url_to_restore"), cls="infra-test-result--err")
 
             current_url = cfg.get("database", {}).get("url", "")
             cfg.setdefault("database_backup", {})["previous_url"] = current_url
@@ -668,7 +668,7 @@ def setup_routes(app):
             import subprocess
             subprocess.Popen(["pkill", "-HUP", "-f", "uvicorn"])
 
-            return Span("↩ Restored previous DB URL. Restarting...", cls="infra-test-result--ok")
+            return Span(t("settings._restored_previous_db_url_restarting"), cls="infra-test-result--ok")
         except Exception as exc:
             return Span(f"✗ Restore failed: {exc}", cls="infra-test-result--err")
 

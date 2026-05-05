@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -25,8 +26,10 @@ from celerp.services import auto_je
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
-from celerp.services.pick import compute_pick_plan
-from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
+from celerp.services.pick import PickResult, compute_pick_plan
+from celerp.services.units import DEFAULT_UNITS, build_unit_map, validate_line_quantity
+from celerp.services.money import round_money, to_decimal, to_stored_float
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, UNFULFILLABLE_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -105,11 +108,12 @@ class DocUnvoidBody(BaseModel):
 
 class DocPaymentBody(BaseModel):
     amount: float
+    payment_date: str  # ISO date (YYYY-MM-DD), always required
     currency: str | None = None
     method: str | None = None
     reference: str | None = None
-    payment_date: str | None = None
     bank_account: str | None = None
+    conversion_rate: float | None = None  # pass-through for premium multicurrency module
     source_doc_id: str | None = None
     target_doc_id: str | None = None
     idempotency_key: str | None = None
@@ -156,11 +160,82 @@ class DocBatchImportRequest(BaseModel):
     upsert: bool = False
 
 
+def _assert_date_order(patch: dict, current: dict | None = None) -> None:
+    """Raise 422 if due_date is set and earlier than issue_date.
+
+    Merges patch over current so partial updates are validated against the full
+    resulting state, not just the fields being changed.
+    """
+    merged = {**(current or {}), **patch}
+    issue = merged.get("issue_date") or ""
+    due = merged.get("due_date") or ""
+    if issue and due and due < issue:
+        raise HTTPException(
+            status_code=422,
+            detail="due_date cannot be earlier than issue_date",
+        )
+
+
 async def _get_doc(session: AsyncSession, company_id, entity_id: str) -> Projection:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None or row.entity_type != "doc":
         raise HTTPException(status_code=404, detail="Document not found")
     return row
+
+
+async def _get_unit_map(session: AsyncSession, company_id: str) -> dict[str, dict]:
+    """Return a name-keyed unit map for the company (falls back to DEFAULT_UNITS)."""
+    company = await session.get(Company, company_id)
+    units = (company.settings or {}).get("units") if company else None
+    return build_unit_map(units if units else DEFAULT_UNITS)
+
+
+async def _get_item_sell_by_map(session: AsyncSession, company_id: str) -> dict[str, str]:
+    """Return a SKU -> sell_by mapping for all inventory items in the company.
+
+    Used to resolve sell_by when it is not present on a document line item.
+    """
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )
+    ).scalars().all()
+    result: dict[str, str] = {}
+    for row in rows:
+        sku = row.state.get("sku")
+        sell_by = row.state.get("sell_by")
+        if sku and sell_by:
+            result[sku] = sell_by
+    return result
+
+
+async def _assert_ref_id_unique(
+    session: AsyncSession,
+    company_id: str,
+    ref_id: str,
+    *,
+    exclude_entity_id: str | None = None,
+) -> None:
+    """Raise HTTP 409 if any doc in the company already has the given ref_id in its state.
+
+    Uses a state JSON index scan (same pattern as SKU uniqueness in inventory).
+    exclude_entity_id: the doc being renamed - excluded so renaming to own current
+    number is treated as a no-op and does not raise.
+    """
+    existing = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "doc",
+                Projection.state["ref_id"].as_string() == ref_id,
+            )
+        )
+    ).scalars().first()
+    if existing and existing.entity_id != exclude_entity_id:
+        raise HTTPException(status_code=409, detail=f"Document number '{ref_id}' already exists")
 
 
 @router.get("")
@@ -422,6 +497,22 @@ async def create_doc(
         if payload.total > original_total + 1e-9:
             raise HTTPException(status_code=409, detail="Credit note total cannot exceed original invoice total")
 
+    # Reject if contact is deleted
+    if payload.contact_id:
+        contact_row = await session.get(Projection, {"company_id": company_id, "entity_id": payload.contact_id})
+        if contact_row is not None and contact_row.state.get("deleted"):
+            raise HTTPException(status_code=422, detail="This contact has been deleted and cannot be used on new documents.")
+
+    _assert_date_order(payload.model_dump(exclude_none=True))
+
+    # Validate line item quantities against sell_by unit precision
+    if payload.line_items:
+        unit_map = await _get_unit_map(session, company_id)
+        sell_by_map = await _get_item_sell_by_map(session, company_id)
+        for li in payload.line_items:
+            resolved_sell_by = li.sell_by or (sell_by_map.get(li.sku) if li.sku else None)
+            validate_line_quantity(li.quantity, resolved_sell_by, unit_map, label=li.name or li.sku or "Line item")
+
     company = await session.get(Company, company_id)
     # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
     seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
@@ -441,41 +532,51 @@ async def create_doc(
 
     # Auto-compute total from line items if not explicitly provided (or zero)
     if not payload.total and payload.line_items:
+        currency = data.get("currency", "USD")
         # If any line provides line_total, it is pre-computed (discount already applied).
         # Header discount only applies when computing from quantity * unit_price.
         has_explicit_line_totals = any(li.line_total is not None for li in payload.line_items)
-        computed = sum(
-            (li.line_total if li.line_total is not None else li.quantity * li.unit_price)
-            for li in payload.line_items
-        )
-        if not has_explicit_line_totals:
-            computed = computed - payload.discount
 
-        # Compute per-line tax amounts (compound-aware), update data
-        line_tax_total = 0.0
+        # Round each line_total to currency precision at source
+        rounded_line_totals = [
+            round_money(
+                to_decimal(li.line_total) if li.line_total is not None
+                else to_decimal(li.quantity) * to_decimal(li.unit_price),
+                currency,
+            )
+            for li in payload.line_items
+        ]
+
+        subtotal_d = sum(rounded_line_totals, to_decimal(0))
+        if not has_explicit_line_totals:
+            subtotal_d = subtotal_d - round_money(payload.discount, currency)
+
+        # Compute per-line tax amounts (compound-aware), update data with rounded values
+        from decimal import Decimal as _Dec
+        line_tax_total_d = _Dec(0)
         if data.get("line_items"):
             resolved_line_items = []
-            for li_data, li_model in zip(data["line_items"], payload.line_items):
+            for li_data, li_model, lt_d in zip(data["line_items"], payload.line_items, rounded_line_totals):
+                li_data = {**li_data, "line_total": to_stored_float(lt_d)}
                 if li_model.taxes:
-                    line_base = float(li_data.get("line_total") or li_model.quantity * li_model.unit_price)
-                    resolved = compute_tax_amounts(li_model.taxes, line_base)
-                    li_data = {**li_data, "taxes": [item.model_dump() for item in resolved]}
-                    line_tax_total += sum(item.amount for item in resolved)
+                    resolved = compute_tax_amounts(li_model.taxes, to_stored_float(lt_d), currency)
+                    li_data["taxes"] = [item.model_dump() for item in resolved]
+                    line_tax_total_d += sum(to_decimal(item.amount) for item in resolved)
                 resolved_line_items.append(li_data)
             data["line_items"] = resolved_line_items
 
         # doc_taxes: compute compound-aware amounts against subtotal, take precedence over legacy tax
         if payload.doc_taxes:
-            subtotal_base = computed  # pre-doc-tax subtotal
-            resolved_doc_taxes = compute_tax_amounts(payload.doc_taxes, subtotal_base)
+            resolved_doc_taxes = compute_tax_amounts(payload.doc_taxes, to_stored_float(subtotal_d), currency)
             data["doc_taxes"] = [item.model_dump() for item in resolved_doc_taxes]
-            effective_tax = sum(item.amount for item in resolved_doc_taxes) + line_tax_total
+            effective_tax_d = sum(to_decimal(item.amount) for item in resolved_doc_taxes) + line_tax_total_d
         else:
-            effective_tax = payload.tax + line_tax_total
+            effective_tax_d = round_money(payload.tax, currency) + line_tax_total_d
 
-        computed = computed + effective_tax + payload.shipping
-        data["total"] = computed
-        data["subtotal"] = computed - effective_tax - payload.shipping
+        shipping_d = round_money(payload.shipping, currency)
+        total_d = round_money(subtotal_d + effective_tax_d + shipping_d, currency)
+        data["total"] = to_stored_float(total_d)
+        data["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
 
     data["amount_outstanding"] = payload.amount_outstanding if payload.amount_outstanding is not None else float(data.get("total", 0))
 
@@ -515,6 +616,13 @@ async def create_doc(
 
 @router.patch("/{entity_id}")
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    _PROTECTED_FIELDS = {"status", "entity_type", "company_id"}
+    protected_attempted = _PROTECTED_FIELDS & set(payload.fields_changed)
+    if protected_attempted:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Fields {sorted(protected_attempted)} cannot be changed via patch. Use the appropriate lifecycle endpoints.",
+        )
     row = await _get_doc(session, company_id, entity_id)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
@@ -526,13 +634,26 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     # Uniqueness check when ref_id is being changed
     new_ref = (payload.fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
-        new_eid = f"doc:{new_ref}"
-        if new_eid != entity_id:
-            existing = await session.execute(
-                select(Projection).where(Projection.company_id == company_id, Projection.entity_id == new_eid)
+        await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
+    # Validate issue/due date ordering against the merged resulting state
+    patch_flat = {k: v.get("new") for k, v in payload.fields_changed.items() if v.get("new") is not None}
+    _assert_date_order(patch_flat, row.state)
+
+    # Validate patched line items when present
+    new_line_items = (payload.fields_changed.get("line_items") or {}).get("new")
+    if new_line_items and isinstance(new_line_items, list):
+        unit_map = await _get_unit_map(session, company_id)
+        sell_by_map = await _get_item_sell_by_map(session, company_id)
+        for li in new_line_items:
+            sku = li.get("sku")
+            resolved_sell_by = li.get("sell_by") or (sell_by_map.get(sku) if sku else None)
+            validate_line_quantity(
+                float(li.get("quantity", 0) or 0),
+                resolved_sell_by,
+                unit_map,
+                label=li.get("name") or sku or "Line item",
             )
-            if existing.scalar_one_or_none():
-                raise HTTPException(status_code=409, detail=f"Document number '{new_ref}' already exists")
+
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
@@ -598,13 +719,22 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     finalize_data: dict = {}
     event_type = "doc.finalized"
 
-    # Invoices: assign real INV number on finalize, preserving PF ref
+    # Invoices: assign real INV number on finalize, preserving PF ref.
+    # On re-finalize (after revert-to-draft) the doc already holds the INV ref
+    # and the original source_proforma_ref — reuse both so no counter slot is wasted
+    # and the proforma link stays intact.
     if doc_type == "invoice":
-        company = await session.get(Company, company_id)
-        inv_ref = next_doc_ref(company, "invoice")
-        finalize_data["ref_id"] = inv_ref
-        finalize_data["source_proforma_ref"] = _initial_doc_state.get("ref_id", "")
-        await session.flush()
+        existing_inv_ref = _initial_doc_state.get("ref_id", "")
+        is_re_finalize = bool(_initial_doc_state.get("revert_count", 0))
+        if is_re_finalize and existing_inv_ref and not existing_inv_ref.startswith("PF-"):
+            # Reuse existing INV ref; keep existing source_proforma_ref untouched.
+            finalize_data["ref_id"] = existing_inv_ref
+        else:
+            company = await session.get(Company, company_id)
+            inv_ref = next_doc_ref(company, "invoice")
+            finalize_data["ref_id"] = inv_ref
+            finalize_data["source_proforma_ref"] = existing_inv_ref
+            await session.flush()
 
     # Purchase Orders: "Convert to Bill" - assign BILL number, change doc_type
     elif doc_type == "purchase_order":
@@ -621,11 +751,12 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
         data=finalize_data,
         actor_id=_user_id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
-    # Auto-JE on finalize (invoices) or convert to bill (POs)
+    # Auto-JE on finalize (invoices, direct bills, or convert to bill (POs))
     if doc_type == "invoice":
         await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state)
-    elif doc_type == "purchase_order":
+    elif doc_type in ("purchase_order", "bill"):
         # Bill conversion JE: debit expense/inventory accounts, credit AP (2110)
+        # Covers both PO->bill conversion and directly-created bills finalized directly.
         await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state)
     # Fire doc_finalize_hook for modules (e.g. warehousing) to react — before commit.
     await fire_lifecycle(
@@ -690,10 +821,69 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # Void the finalize JE
-    await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id)
+    # Void the finalize JE - pass current revert_count (before this revert increments it)
+    current_revert_count = int(state.get("revert_count", 0))
+    await auto_je.void_for_doc_finalized(session, company_id=company_id, user_id=user.id, doc_id=entity_id, revert_count=current_revert_count)
     await session.commit()
     return {"event_id": entry.id}
+
+
+class DocRenumberBody(BaseModel):
+    ref_id: str
+
+
+@router.post("/{entity_id}/renumber")
+async def renumber_doc(
+    entity_id: str,
+    payload: DocRenumberBody,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change the display number (ref_id / doc_number) of any non-void document.
+
+    The internal entity_id (storage key) is never changed. Only the ref_id field
+    in the document state is updated. Uniqueness is enforced across all doc
+    ref_ids in the company (state scan, not entity_id lookup).
+
+    Voided documents are immutable records and cannot be renumbered.
+    """
+    row = await _get_doc(session, company_id, entity_id)
+    state = row.state
+    if state.get("status") == "void":
+        raise HTTPException(status_code=409, detail="Voided documents cannot be renumbered")
+
+    new_ref = payload.ref_id.strip()
+    if not new_ref:
+        raise HTTPException(status_code=422, detail="ref_id must not be empty")
+
+    old_ref = state.get("ref_id") or ""
+    if new_ref == old_ref:
+        # No-op: return current state without emitting an event
+        return row.state | {"id": entity_id}
+
+    await _assert_ref_id_unique(session, company_id, new_ref, exclude_entity_id=entity_id)
+
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.renumbered",
+        data={"fields_changed": {
+            "ref_id": {"old": old_ref, "new": new_ref},
+            "doc_number": {"old": old_ref, "new": new_ref},
+        }},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=f"renumber:{entity_id}:{new_ref}",
+        metadata_={},
+    )
+    await session.commit()
+
+    updated = await _get_doc(session, company_id, entity_id)
+    return updated.state | {"id": entity_id}
 
 
 @router.post("/{entity_id}/unvoid")
@@ -754,29 +944,40 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
 @router.post("/{entity_id}/payment")
 async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
-    if row.state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
+    # Snapshot scalar values before any flush() to avoid SQLAlchemy lazy-load expiry
+    # (emit_event -> flush() -> ORM expires row -> MissingGreenlet on subsequent row.state access).
+    _doc_state = dict(row.state)
+    _user_id = user.id
+    if _doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
         raise HTTPException(status_code=409, detail="Cannot record payment in current status")
-    outstanding = float(row.state.get("amount_outstanding", row.state.get("total", 0)) or 0)
+    outstanding = float(_doc_state.get("amount_outstanding", _doc_state.get("total", 0)) or 0)
     if outstanding <= 0:
         raise HTTPException(status_code=409, detail="Invoice already fully paid")
-    if payload.amount > outstanding + 1e-9:
-        raise HTTPException(status_code=409, detail="Payment exceeds amount outstanding")
+    # Use Decimal comparison: 1-cent tolerance covers display rounding on the final payment.
+    # New docs will have exact rounded totals so this tolerance only applies to legacy data.
+    from celerp.services.money import to_decimal as _to_d
+    if _to_d(payload.amount) - _to_d(outstanding) > _to_d("0.01"):
+        raise HTTPException(status_code=409, detail=f"Payment {payload.amount} exceeds amount outstanding {outstanding}")
 
     body = payload.model_dump(exclude_none=True)
-    body.setdefault("currency", row.state.get("currency", "USD"))
+    body.setdefault("currency", _doc_state.get("currency", "USD"))
     body["remaining_balance"] = max(0.0, outstanding - payload.amount)
+    if not payload.bank_account:
+        raise HTTPException(status_code=422, detail="bank_account is required")
+    bank_code = payload.bank_account
+    # Compute payment_index BEFORE appending (len of current active+voided list = next index)
+    payment_index = len(_doc_state.get("payments", []))
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.payment.received",
-        data=body, actor_id=user.id, location_id=None, source="api",
+        data=body, actor_id=_user_id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    cumulative_paid = float(row.state.get("amount_paid", 0) or 0) + payload.amount
-    bank_code = payload.bank_account or "1110"
-    doc_type = row.state.get("doc_type", "invoice")
+    doc_type = _doc_state.get("doc_type", "invoice")
     await auto_je.create_for_doc_payment(
-        session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        amount=payload.amount, cumulative_paid=cumulative_paid,
+        session, company_id=company_id, user_id=_user_id, doc_id=entity_id,
+        amount=payload.amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type=doc_type,
+        payment_date=payload.payment_date,
     )
     # Lifecycle hook for modules (e.g. multicurrency FX gain/loss)
     from celerp.modules.slots import fire_lifecycle
@@ -784,9 +985,9 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
         "on_doc_payment",
         session=session,
         company_id=company_id,
-        user_id=user.id,
+        user_id=_user_id,
         doc_id=entity_id,
-        doc=row.state,
+        doc=_doc_state,
         amount=payload.amount,
         bank_account_code=bank_code,
     )
@@ -819,6 +1020,7 @@ async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 class VoidPaymentBody(BaseModel):
     payment_index: int
     void_reason: str | None = None
+    refund_date: str | None = None  # ISO date for the reversal JE (defaults to today)
     idempotency_key: str | None = None
 
 
@@ -835,17 +1037,19 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
         event_type="doc.payment.voided",
-        data={"payment_index": payload.payment_index, "void_reason": payload.void_reason},
+        data={"payment_index": payload.payment_index, "void_reason": payload.void_reason, "refund_date": payload.refund_date},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # Reverse the payment JE
+    # Reverse the payment JE - use stored bank_account; fall back to "1111" (default account that always exists)
+    # for historical payments recorded before bank_account was required.
     doc_type = row.state.get("doc_type", "invoice")
-    bank_code = payment.get("bank_account", "1110")
+    bank_code = payment.get("bank_account") or "1111"
     await auto_je.void_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         payment_index=payload.payment_index, amount=payment["amount"],
         bank_account_code=bank_code, doc_type=doc_type,
+        refund_date=payload.refund_date,
     )
 
     # If this was a credit_note application (paired payment), void the other side too
@@ -871,6 +1075,102 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
                         idempotency_key=str(uuid.uuid4()), metadata_={},
                     )
                     break
+
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+# ---------------------------------------------------------------------------
+# Delete individual payment (data-entry error correction)
+# ---------------------------------------------------------------------------
+
+class DeletePaymentBody(BaseModel):
+    delete_reason: str | None = None
+    idempotency_key: str | None = None
+
+
+@router.delete("/{entity_id}/payments/{payment_index}")
+async def delete_payment(
+    entity_id: str,
+    payment_index: int,
+    payload: DeletePaymentBody = DeletePaymentBody(),
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete a payment entirely (data-entry error correction).
+
+    Unlike void-payment (which creates a reversal JE visible in the bank ledger as a
+    refund), delete removes the payment from the doc projection and voids the original
+    JE so it disappears from all reports. Use only for payments that were never real.
+
+    Blocked if the payment JE has been reconciled in a closed reconciliation session.
+    If reconciled in an open session, the JE is automatically un-matched first.
+    """
+    from celerp_accounting.models import ReconciliationSession, BankStatementLine  # noqa: PLC0415
+
+    row = await _get_doc(session, company_id, entity_id)
+    payments = row.state.get("payments", [])
+    if payment_index < 0 or payment_index >= len(payments):
+        raise HTTPException(status_code=422, detail="Invalid payment index")
+    payment = payments[payment_index]
+    if payment.get("status") != "active":
+        raise HTTPException(status_code=409, detail="Only active payments can be deleted")
+
+    # Determine the JE id for this payment
+    je_id = f"je:auto:{entity_id}:pay:{payment_index}"
+
+    # Check reconciliation status - query all sessions that include this JE
+    recon_result = await session.execute(
+        _sa.select(ReconciliationSession).where(
+            ReconciliationSession.company_id == company_id,
+        )
+    )
+    recon_sessions = recon_result.scalars().all()
+
+    for recon in recon_sessions:
+        if je_id in (recon.reconciled_je_ids or []):
+            if recon.status == "closed":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Payment has been reconciled in a closed period. Unreconcile to delete.",
+                )
+            # Open session - auto-unmatch
+            updated_ids = [j for j in (recon.reconciled_je_ids or []) if j != je_id]
+            recon.reconciled_je_ids = updated_ids
+            # Clear matched_je_id on any statement line pointing to this JE
+            sl_result = await session.execute(
+                _sa.select(BankStatementLine).where(
+                    BankStatementLine.reconciliation_session_id == recon.id,
+                    BankStatementLine.matched_je_id == je_id,
+                )
+            )
+            for sl in sl_result.scalars().all():
+                sl.matched_je_id = None
+                sl.status = "unmatched"
+
+    # Emit doc.payment.deleted - projection removes the row and re-indexes
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        event_type="doc.payment.deleted",
+        data={"payment_index": payment_index, "delete_reason": payload.delete_reason},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+
+    # Void the original payment JE so it disappears from bank ledger + reports
+    je_row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if je_row is not None and je_row.state.get("status") == "posted":
+        from celerp.services.je_keys import je_idempotency_key as _je_key  # noqa: PLC0415
+        await emit_event(
+            session, company_id=company_id, entity_id=je_id, entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data={"reason": f"Deleted: payment {payment_index} on {entity_id}. {payload.delete_reason or ''}".strip()},
+            actor_id=user.id, location_id=None, source="auto_je",
+            idempotency_key=_je_key(entity_id, f"payment.deleted:{payment_index}", "void"),
+            metadata_={"trigger": "doc.payment.deleted", "doc_id": entity_id},
+        )
 
     await session.commit()
     return {"event_id": entry.id}
@@ -942,10 +1242,12 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
-    # JE: AR-to-AR transfer
+    # JE: AR-to-AR transfer. Index by current payment count to get a unique key per application.
+    payment_idx = len(cn_row.state.get("payments", []))
     await auto_je.create_for_cn_application(
         session, company_id=company_id, user_id=user.id,
         doc_id=payload.target_doc_id, cn_id=entity_id, amount=payload.amount,
+        payment_index=payment_idx,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -958,7 +1260,7 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
 
 class CnRefundBody(BaseModel):
     amount: float
-    date: str | None = None
+    date: str  # ISO date (YYYY-MM-DD), always required
     method: str | None = None
     bank_account: str | None = None
     reference: str | None = None
@@ -977,8 +1279,10 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     if payload.amount > cn_outstanding + 1e-9:
         raise HTTPException(status_code=409, detail="Refund amount exceeds credit note balance")
 
-    payment_date = payload.date or datetime.now(UTC).date().isoformat()
-    bank_code = payload.bank_account or "1110"
+    payment_date = payload.date
+    if not payload.bank_account:
+        raise HTTPException(status_code=422, detail="bank_account is required")
+    bank_code = payload.bank_account
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc",
@@ -992,11 +1296,12 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     # JE: debit AR, credit bank
-    cumulative = float(cn.get("amount_paid", 0) or 0) + payload.amount
+    payment_index = len(cn.get("payments", []))
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
-        amount=payload.amount, cumulative_paid=cumulative,
+        amount=payload.amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type="invoice",
+        payment_date=payment_date,
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -1010,7 +1315,7 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
 class BulkPaymentBody(BaseModel):
     doc_ids: list[str]
     amount: float
-    payment_date: str | None = None
+    payment_date: str  # ISO date (YYYY-MM-DD), always required
     method: str | None = None
     bank_account: str | None = None
     reference: str | None = None
@@ -1049,8 +1354,10 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     # Allocate amount oldest-first
     remaining = payload.amount
     allocations = []
-    payment_date = payload.date if hasattr(payload, 'date') else payload.payment_date
-    bank_code = payload.bank_account or "1110"
+    payment_date = payload.payment_date
+    if not payload.bank_account:
+        raise HTTPException(status_code=422, detail="bank_account is required")
+    bank_code = payload.bank_account
 
     for doc_id, state in payable:
         if remaining <= 0.005:
@@ -1075,12 +1382,13 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
-        cumulative = float(state.get("amount_paid", 0) or 0) + alloc
+        payment_index = len(state.get("payments", []))
         doc_type = state.get("doc_type", "invoice")
         await auto_je.create_for_doc_payment(
             session, company_id=company_id, user_id=user.id, doc_id=doc_id,
-            amount=alloc, cumulative_paid=cumulative,
+            amount=alloc, payment_index=payment_index,
             bank_account_code=bank_code, doc_type=doc_type,
+            payment_date=payment_date,
         )
         allocations.append({"doc_id": doc_id, "amount": alloc})
         remaining -= alloc
@@ -1103,6 +1411,18 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
 
     is_consignment = doc_type == "consignment_in"
     created_item_ids: list[str] = []
+
+    # Build sell_by lookup: item projections are authoritative; doc line items as fallback
+    sell_by_map = await _get_item_sell_by_map(session, company_id)
+    doc_line_sell_by: dict[str, str] = {
+        li.get("sku", ""): li.get("sell_by") or ""
+        for li in (row.state.get("line_items") or [])
+        if li.get("sku")
+    }
+    unit_map = await _get_unit_map(session, company_id)
+    for it in payload.received_items:
+        sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
+        validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
 
     for it in payload.received_items:
         if it.item_id:
@@ -1340,7 +1660,7 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
                 for li in state.get("line_items", [])
             )
         await auto_je.create_for_bill_conversion(
-            session, company_id=company_id, user_id=user.id, po_id=new_doc_id, doc=state, total=bill_total,
+            session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc=state,
         )
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
@@ -1353,26 +1673,115 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
     raise HTTPException(status_code=409, detail="Unsupported document conversion")
 
 
-class NoteAddBody(BaseModel):
-    text: str
+class NoteCreate(BaseModel):
+    note: str
+    idempotency_key: str | None = None
+
+
+class NoteUpdate(BaseModel):
+    note: str
+    idempotency_key: str | None = None
+
+
+def _note_list_for(session_exec_result) -> list[dict]:
+    """Filter active (non-deleted) note projections from a scalars result."""
+    return [
+        r.state | {"id": r.entity_id}
+        for r in session_exec_result
+        if not r.state.get("deleted")
+    ]
+
+
+@router.get("/{entity_id}/notes")
+async def list_doc_notes(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    await _get_doc(session, company_id, entity_id)
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "doc_note",
+            )
+        )
+    ).scalars().all()
+    notes = [r.state | {"id": r.entity_id} for r in rows if r.state.get("doc_id") == entity_id and not r.state.get("deleted")]
+    notes.sort(key=lambda n: n.get("created_at") or "", reverse=True)
+    return notes
 
 
 @router.post("/{entity_id}/notes")
 async def add_doc_note(
     entity_id: str,
-    payload: NoteAddBody,
+    payload: NoteCreate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_doc(session, company_id, entity_id)
-    if not payload.text.strip():
+    await _get_doc(session, company_id, entity_id)
+    if not payload.note.strip():
         raise HTTPException(status_code=422, detail="Note text cannot be empty")
-    now = datetime.now(UTC).isoformat()
+    note_id = f"note:{uuid.uuid4()}"
     entry = await emit_event(
-        session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+        session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
         event_type="doc.note_added",
-        data={"text": payload.text.strip(), "created_at": now, "created_by": str(user.id)},
+        data={
+            "doc_id": entity_id,
+            "note_id": note_id,
+            "note": payload.note.strip(),
+            "author_id": str(user.id),
+            "author_name": getattr(user, "name", None) or user.email,
+            "created_at": datetime.now(UTC).isoformat(),
+        },
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, "id": note_id}
+
+
+@router.patch("/{entity_id}/notes/{note_id}")
+async def update_doc_note(
+    entity_id: str,
+    note_id: str,
+    payload: NoteUpdate,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await _get_doc(session, company_id, entity_id)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
+    if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
+        event_type="doc.note_updated",
+        data={"doc_id": entity_id, "note_id": note_id, "note": payload.note.strip(), "updated_at": datetime.now(UTC).isoformat()},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.delete("/{entity_id}/notes/{note_id}")
+async def delete_doc_note(
+    entity_id: str,
+    note_id: str,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await _get_doc(session, company_id, entity_id)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
+    if row is None or row.entity_type != "doc_note" or row.state.get("doc_id") != entity_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="doc_note",
+        event_type="doc.note_removed",
+        data={"doc_id": entity_id, "note_id": note_id},
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=str(uuid.uuid4()), metadata_={},
     )
@@ -1436,7 +1845,16 @@ async def import_doc(
 
 
 async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict) -> None:
-    """Create auto-JEs for imported docs that arrive in a final state.
+    """Create finalization JEs for imported docs that arrive in a non-draft state.
+
+    IMPORTANT: We never synthesize payment JEs from snapshot imports.
+    - The finalization JE (Dr AR / Cr Revenue) is correct to create from a snapshot:
+      it records historical revenue and the accounts receivable balance accurately.
+    - A payment JE requires a real payment_date and bank_account. Importers who have
+      payment history must emit explicit doc.payment.received events (Option A import).
+    - The doc projection reflects amount_paid / amount_outstanding from the snapshot
+      payload directly, so the UI shows correct paid/partial/unpaid status without
+      requiring a synthetic accounting entry.
 
     Uses doc-scoped idempotency keys - safe to call multiple times.
     """
@@ -1451,16 +1869,15 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
         await auto_je.create_for_doc_finalized(
             session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data,
         )
-        amount_paid = float(data.get("amount_paid", 0) or 0)
-        if amount_paid > 0:
-            await auto_je.create_for_doc_payment(
-                session, company_id=company_id, user_id=user_id, doc_id=entity_id,
-                amount=amount_paid, cumulative_paid=amount_paid,
-            )
 
     elif doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
         await auto_je.create_for_po_received(
             session, company_id=company_id, user_id=user_id, po_id=entity_id, doc=data, total=total,
+        )
+
+    elif doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
+        await auto_je.create_for_bill_conversion(
+            session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data,
         )
 
 
@@ -1883,6 +2300,27 @@ async def void_list(
     return {"event_id": entry.id}
 
 
+@lists_router.post("/{entity_id}/revert-to-draft")
+async def revert_list_to_draft(
+    entity_id: str,
+    payload: DocRevertBody,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_list(session, company_id, entity_id)
+    if row.state.get("status") != "sent":
+        raise HTTPException(status_code=409, detail="Only sent lists can be reverted to draft")
+    event_data: dict = {"reverted_by": str(user.id), "previous_status": "sent"}
+    if payload.reason:
+        event_data["reason"] = payload.reason
+    entry = await _emit_list(session, company_id, entity_id, "list.patched",
+                             {"status": "draft", **event_data}, user)
+    await session.commit()
+    return {"event_id": entry.id}
+
+
 @lists_router.delete("/{entity_id}")
 async def delete_list(
     entity_id: str,
@@ -1952,25 +2390,102 @@ async def duplicate_list(
     return {"event_id": entry.id, "id": new_entity_id}
 
 
+@lists_router.get("/{entity_id}/notes")
+async def list_list_notes(
+    entity_id: str,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> list[dict]:
+    await _get_list(session, company_id, entity_id)
+    rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "list_note",
+            )
+        )
+    ).scalars().all()
+    notes = [r.state | {"id": r.entity_id} for r in rows if r.state.get("list_id") == entity_id and not r.state.get("deleted")]
+    notes.sort(key=lambda n: n.get("created_at") or "", reverse=True)
+    return notes
+
+
 @lists_router.post("/{entity_id}/notes")
 async def add_list_note(
     entity_id: str,
-    payload: NoteAddBody,
+    payload: NoteCreate,
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_list(session, company_id, entity_id)
-    if not payload.text.strip():
+    await _get_list(session, company_id, entity_id)
+    if not payload.note.strip():
         raise HTTPException(status_code=422, detail="Note text cannot be empty")
-    now = datetime.now(UTC).isoformat()
-    entry = await _emit_list(
-        session, company_id, entity_id, "doc.note_added",
-        {"text": payload.text.strip(), "created_at": now, "created_by": str(user.id)},
-        user,
+    note_id = f"note:{uuid.uuid4()}"
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="list_note",
+        event_type="list.note_added",
+        data={
+            "list_id": entity_id,
+            "note_id": note_id,
+            "note": payload.note.strip(),
+            "author_id": str(user.id),
+            "author_name": getattr(user, "name", None) or user.email,
+            "created_at": datetime.now(UTC).isoformat(),
+        },
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, "id": note_id}
+
+
+@lists_router.patch("/{entity_id}/notes/{note_id}")
+async def update_list_note(
+    entity_id: str,
+    note_id: str,
+    payload: NoteUpdate,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await _get_list(session, company_id, entity_id)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
+    if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="list_note",
+        event_type="list.note_updated",
+        data={"list_id": entity_id, "note_id": note_id, "note": payload.note.strip(), "updated_at": datetime.now(UTC).isoformat()},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     await session.commit()
     return {"event_id": entry.id}
+
+
+@lists_router.delete("/{entity_id}/notes/{note_id}")
+async def delete_list_note(
+    entity_id: str,
+    note_id: str,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    await _get_list(session, company_id, entity_id)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": note_id})
+    if row is None or row.entity_type != "list_note" or row.state.get("list_id") != entity_id:
+        raise HTTPException(status_code=404, detail="Note not found")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=note_id, entity_type="list_note",
+        event_type="list.note_removed",
+        data={"list_id": entity_id, "note_id": note_id},
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
 
 
 @lists_router.post("/import")
@@ -2105,9 +2620,14 @@ async def fulfill_doc(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Fulfill a document: compute pick plan and deduct inventory."""
+    """Fulfill a document: compute pick plan and deduct inventory.
+
+    For inbound doc types (e.g. consignment_in) the pick plan is skipped -
+    goods already arrived at receive time; fulfillment only closes the doc.
+    """
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
+    doc_type = state.get("doc_type", "")
     if state.get("status") in UNFULFILLABLE_STATUSES:
         raise HTTPException(status_code=409, detail="Cannot fulfill a draft or voided document")
     if state.get("fulfillment_status") == "fulfilled":
@@ -2125,55 +2645,68 @@ async def fulfill_doc(
             detail="This document contains no stocked goods. Only service or non-SKU items are present - there is nothing to fulfill from inventory.",
         )
 
-    # Gather available inventory for SKUs in line items
-    skus: set[str] = set()
-    for li in state.get("line_items", []):
+    # Validate line quantities against unit precision (catches data saved before this rule existed)
+    unit_map = await _get_unit_map(session, company_id)
+    sell_by_map = await _get_item_sell_by_map(session, company_id)
+    for li in line_items_all:
         sku = li.get("sku") or ""
-        if sku and (li.get("sell_by") or "") not in ("service", "hour"):
-            skus.add(sku)
+        sell_by = li.get("sell_by") or (sell_by_map.get(sku) if sku else None)
+        qty = float(li.get("quantity", 0) or 0)
+        validate_line_quantity(qty, sell_by, unit_map, label=li.get("name") or sku or "Line item")
 
-    available_inv: list[dict] = []
-    if skus:
-        from sqlalchemy import select as _sel
-        rows = (await session.execute(
-            _sel(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
+    # Inbound docs (e.g. consignment_in): skip pick plan - no deduction needed.
+    # Goods arrived at receive time; fulfillment just marks the doc complete.
+    if doc_type in INBOUND_DOC_TYPES:
+        pick_result = PickResult(picks=[], unfulfilled=[], strategy="inbound")
+    else:
+        # Gather available inventory for SKUs in line items
+        skus: set[str] = set()
+        for li in state.get("line_items", []):
+            sku = li.get("sku") or ""
+            if sku and (li.get("sell_by") or "") not in ("service", "hour"):
+                skus.add(sku)
+
+        available_inv: list[dict] = []
+        if skus:
+            from sqlalchemy import select as _sel
+            rows = (await session.execute(
+                _sel(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_type == "item",
+                )
+            )).scalars().all()
+            for r in rows:
+                s = r.state
+                qty = float(s.get("quantity") or 0)
+                item_sku = s.get("sku") or ""
+                if qty <= 0 or not item_sku:
+                    continue
+                # Match exact or child prefix
+                matched = any(item_sku == sku or item_sku.startswith(f"{sku}.") for sku in skus)
+                if matched:
+                    available_inv.append({
+                        "entity_id": r.entity_id,
+                        "sku": item_sku,
+                        "quantity": qty,
+                        "created_at": s.get("created_at") or "",
+                        "expires_at": s.get("expires_at"),
+                        "cost_price": float(s.get("cost_price") or 0),
+                        "allow_splitting": bool(s.get("allow_splitting", True)),
+                    })
+
+        pick_result = compute_pick_plan(state.get("line_items", []), available_inv)
+
+        if pick_result.unfulfilled:
+            sku_to_name = {li.get("sku", ""): li.get("name", "Unknown") for li in state.get("line_items", [])}
+            shortages = []
+            for sh in pick_result.unfulfilled:
+                sku = sh.get("sku", "")
+                name = sku_to_name.get(sku, "Unknown")
+                shortages.append(f"  \u2022 {name} (SKU: {sku}): short by {sh.get('short_qty', 0)}")
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot fulfill: insufficient stock for the following items:\n" + "\n".join(shortages),
             )
-        )).scalars().all()
-        for r in rows:
-            s = r.state
-            qty = float(s.get("quantity") or 0)
-            item_sku = s.get("sku") or ""
-            if qty <= 0 or not item_sku:
-                continue
-            # Match exact or child prefix
-            matched = any(item_sku == sku or item_sku.startswith(f"{sku}.") for sku in skus)
-            if matched:
-                available_inv.append({
-                    "entity_id": r.entity_id,
-                    "sku": item_sku,
-                    "quantity": qty,
-                    "created_at": s.get("created_at") or "",
-                    "expires_at": s.get("expires_at"),
-                    "cost_price": float(s.get("cost_price") or 0),
-                    "allow_splitting": bool(s.get("allow_splitting", True)),
-                })
-
-    pick_result = compute_pick_plan(state.get("line_items", []), available_inv)
-
-    if pick_result.unfulfilled:
-        # Build a name lookup from line items for better error messages
-        sku_to_name = {li.get("sku", ""): li.get("name", "Unknown") for li in state.get("line_items", [])}
-        shortages = []
-        for sh in pick_result.unfulfilled:
-            sku = sh.get("sku", "")
-            name = sku_to_name.get(sku, "Unknown")
-            shortages.append(f"  \u2022 {name} (SKU: {sku}): short by {sh.get('short_qty', 0)}")
-        raise HTTPException(
-            status_code=409,
-            detail="Cannot fulfill: insufficient stock for the following items:\n" + "\n".join(shortages),
-        )
 
     from celerp.modules.slots import fire_lifecycle_strict
     await fire_lifecycle_strict("pre_fulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
@@ -2184,6 +2717,7 @@ async def fulfill_doc(
         pick_result=pick_result,
         company_id=company_id,
         user_id=user.id,
+        doc_type=doc_type,
     )
     await session.commit()
     return result
@@ -2255,6 +2789,18 @@ async def receive_return(
         raise HTTPException(status_code=409, detail="Cannot receive return on a draft or voided credit note")
     if not payload.items:
         raise HTTPException(status_code=422, detail="At least one item is required")
+
+    # Validate return quantities against CN line item sell_by precision
+    sell_by_map = await _get_item_sell_by_map(session, company_id)
+    cn_line_sell_by: dict[str, str] = {
+        li.get("sku", ""): li.get("sell_by") or ""
+        for li in (state.get("line_items") or [])
+        if li.get("sku")
+    }
+    unit_map = await _get_unit_map(session, company_id)
+    for it in payload.items:
+        sell_by = sell_by_map.get(it.sku or "") or cn_line_sell_by.get(it.sku or "") or None
+        validate_line_quantity(it.quantity, sell_by, unit_map, label=it.sku)
 
     # --- Resolve item metadata ---
     # Priority: sold inventory records (most authoritative - have cost_price + full attributes).

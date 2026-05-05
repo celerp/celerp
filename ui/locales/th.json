@@ -238,8 +238,7 @@
   "btn.submit": "ส่ง",
   "btn.test_connection": "ทดสอบการเชื่อมต่อ",
   "btn.transfer": "โอนย้าย",
-  "btn.u0001f5a8": "🖨",
-  "btn.u00d7": "\\u00d7",
+  "btn.u00d7": "×",
   "btn.u2705_confirm_create": "\\u2705 ยืนยันและสร้าง",
   "btn.u274c_discard": "\\u274c ทิ้ง",
   "btn.undo": "เลิกทำ",
@@ -423,8 +422,8 @@
   "inv.u0001f5d1_dispose": "🗑 ทิ้ง",
   "inv.u21a9_bring_back_in": "\\u21a9 นำกลับเข้ามา",
   "inv.u21a9_return_to_vendor": "\\u21a9 กลับไปยังผู้ขาย",
-  "inv.u23f3_expire": "\\u23f3 หมดอายุ",
-  "inv.u2702_split": "\\u2702 แยก",
+  "inv.u23f3_expire": "⏳ หมดอายุ",
+  "inv.u2702_split": "✂ แยก",
   "inv.splitting_disabled_hint": "การแยกสินค้าถูกปิดใช้งาน เปิดใช้งานได้ที่ อนุญาตการแยก ด้านบน",
   "inv.unknown_document_type": "ประเภทเอกสารที่ไม่รู้จัก",
   "label._add_item": "+ เพิ่มรายการ",
@@ -1145,5 +1144,7 @@
   "settings.password_changed": "เปลี่ยนรหัสผ่านเรียบร้อยแล้ว",
   "btn.change_password": "เปลี่ยนรหัสผ่าน",
   "status.all_issued": "ออกใบแจ้งหนี้แล้วทั้งหมด",
-  "nav.credit_notes": "ใบลดหนี้"
+  "nav.credit_notes": "ใบลดหนี้",
+  "btn.reset_columns": "รีเซ็ต",
+  "btn.reset_columns_title": "รีเซ็ตคอลัมน์เป็นค่าเริ่มต้น"
 }

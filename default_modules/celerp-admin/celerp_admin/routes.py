@@ -20,6 +20,9 @@ Usage:
 
 from __future__ import annotations
 
+import json
+import os
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -44,6 +47,9 @@ ALL_CHECKS = [
     "stale_projections",
     "unbalanced_jes",
     "zero_amount_jes",
+    "legacy_item_prices",
+    "inverted_doc_dates",
+    "fractional_piece_quantities",
 ]
 
 
@@ -91,15 +97,14 @@ async def _check_missing_jes(
                     existing_keys.add(fin_key)
                     fixed += 1
 
-            # Check payment JE (payment keys are cumulative-paid scoped)
+            # Check payment JE (payment keys are payment-index scoped)
             amount_paid = float(state.get("amount_paid", 0) or 0)
             if amount_paid > 0:
-                paid_key = str(int(round(amount_paid * 100)))
-                pay_key = je_idempotency_key(entity_id, "invoice.paid", "c")
+                pay_key = je_idempotency_key(entity_id, "invoice.paid:0", "c")
                 if pay_key not in existing_keys:
                     missing.append({"doc_id": entity_id, "trigger": "payment", "amount": amount_paid})
                     if fix:
-                        await _emit_payment_je(session, company_id, user_id, entity_id, amount_paid, state, cumulative_paid=amount_paid)
+                        await _emit_payment_je(session, company_id, user_id, entity_id, amount_paid, state, payment_index=len(state.get("payments", [])) - 1 if state.get("payments") else 0)
                         existing_keys.add(pay_key)
                         fixed += 1
 
@@ -112,7 +117,7 @@ async def _check_missing_jes(
                     existing_keys.add(rcv_key)
                     fixed += 1
 
-    return {"check": "missing_jes", "found": len(missing), "fixed": fixed, "details": missing[:50]}
+    return {"check": "missing_jes", "found": len(missing), "fixed": fixed, "auto_fixable": True, "details": missing[:50]}
 
 
 async def _check_duplicate_jes(
@@ -168,7 +173,7 @@ async def _check_duplicate_jes(
                 )
                 fixed += 1
 
-    return {"check": "duplicate_jes", "found": len(duplicates), "fixed": fixed, "details": duplicates[:50]}
+    return {"check": "duplicate_jes", "found": len(duplicates), "fixed": fixed, "auto_fixable": True, "details": duplicates[:50]}
 
 
 async def _check_ghost_events(
@@ -184,7 +189,7 @@ async def _check_ghost_events(
 
     ghosts = [{"entity_id": r[0], "count": r[1]} for r in rows]
     # Ghost events are flagged only - auto-fix is dangerous (which is canonical?)
-    return {"check": "ghost_events", "found": len(ghosts), "fixed": 0, "details": ghosts[:50],
+    return {"check": "ghost_events", "found": len(ghosts), "fixed": 0, "auto_fixable": False, "details": ghosts[:50],
             "note": "Ghost events require manual review - cannot auto-determine canonical record"}
 
 
@@ -215,7 +220,7 @@ async def _check_orphan_projections(
                     await session.delete(proj)
                     fixed += 1
 
-    return {"check": "orphan_projections", "found": len(orphans), "fixed": fixed, "details": orphans[:50]}
+    return {"check": "orphan_projections", "found": len(orphans), "fixed": fixed, "auto_fixable": True, "details": orphans[:50]}
 
 
 async def _check_stale_projections(
@@ -256,7 +261,7 @@ async def _check_stale_projections(
                 proj.state = replayed
                 fixed += 1
 
-    return {"check": "stale_projections", "found": len(stale), "fixed": fixed, "details": stale[:50]}
+    return {"check": "stale_projections", "found": len(stale), "fixed": fixed, "auto_fixable": True, "details": stale[:50]}
 
 
 async def _check_unbalanced_jes(
@@ -286,7 +291,7 @@ async def _check_unbalanced_jes(
                 "diff": float(total_debit - total_credit),
             })
     # Never auto-fix accounting data
-    return {"check": "unbalanced_jes", "found": len(unbalanced), "fixed": 0, "details": unbalanced[:50],
+    return {"check": "unbalanced_jes", "found": len(unbalanced), "fixed": 0, "auto_fixable": False, "details": unbalanced[:50],
             "note": "Unbalanced JEs require manual correction - will not auto-fix accounting data"}
 
 
@@ -332,7 +337,7 @@ async def _check_zero_amount_jes(
                     fixed += 1
                     break  # One void event per JE is enough
 
-    return {"check": "zero_amount_jes", "found": len(zeros), "fixed": fixed, "details": zeros[:50]}
+    return {"check": "zero_amount_jes", "found": len(zeros), "fixed": fixed, "auto_fixable": True, "details": zeros[:50]}
 
 
 # --- JE emission helpers (shared with import hook) ---
@@ -378,10 +383,10 @@ async def _emit_payment_je(
     amount: float,
     state: dict,
     *,
-    cumulative_paid: float | None = None,
+    payment_index: int = 0,
 ) -> None:
     ts = state.get("issue_date") or state.get("created_at")
-    paid_key = str(int(round((cumulative_paid or amount) * 100)))
+    paid_key = str(payment_index)
     je_id = f"je:auto:{doc_id}:pay:{paid_key}"
 
     await emit_event(
@@ -401,12 +406,11 @@ async def _emit_payment_je(
         actor_id=user_id,
         location_id=None,
         source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "invoice.paid", "c"),
+        idempotency_key=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "c"),
         metadata_={
             "trigger": "doc.payment.received",
             "doc_id": doc_id,
-            "payment_key": paid_key,
-            "cumulative_paid": cumulative_paid,
+            "payment_index": payment_index,
         },
     )
     await emit_event(
@@ -419,12 +423,11 @@ async def _emit_payment_je(
         actor_id=user_id,
         location_id=None,
         source="auto_je",
-        idempotency_key=je_idempotency_key(doc_id, "invoice.paid", "p"),
+        idempotency_key=je_idempotency_key(doc_id, f"invoice.paid:{paid_key}", "p"),
         metadata_={
             "trigger": "doc.payment.received",
             "doc_id": doc_id,
-            "payment_key": paid_key,
-            "cumulative_paid": cumulative_paid,
+            "payment_index": payment_index,
         },
     )
 
@@ -460,6 +463,269 @@ async def _emit_po_received_je(
 
 # --- Check dispatcher ---
 
+async def _check_legacy_item_prices(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find items where prices were stored as price_type/new_price (old seeder format)
+    instead of top-level cost_price/retail_price fields. Dashboard shows 0 for these.
+
+    Fix: emit item.pricing.set to map new_price -> the named price field.
+    """
+    items = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+
+    affected = []
+    fixed = 0
+    for item in items:
+        state = item.state
+        price_type = state.get("price_type")
+        new_price = state.get("new_price")
+        if price_type and new_price is not None and state.get(price_type) is None:
+            affected.append({"entity_id": item.entity_id, "price_type": price_type, "new_price": new_price})
+            if fix:
+                await emit_event(
+                    session,
+                    company_id=company_id,
+                    entity_id=item.entity_id,
+                    entity_type="item",
+                    event_type="item.pricing.set",
+                    data={"price_type": price_type, "new_price": float(new_price)},
+                    actor_id=user_id,
+                    location_id=None,
+                    source="doctor",
+                    idempotency_key=f"doctor:legacy-price:{item.entity_id}:{price_type}",
+                )
+                fixed += 1
+
+    return {"check": "legacy_item_prices", "found": len(affected), "fixed": fixed, "auto_fixable": True, "details": affected[:50]}
+
+
+async def _check_inverted_doc_dates(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find docs where due_date is set and is earlier than issue_date.
+
+    These can occur from data imported before backend validation was added (v1.0.10).
+    Fix: set due_date = issue_date (the user almost certainly only checked the
+    issue date field, so this is the least-surprising repair).
+    """
+    docs = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "doc",
+        )
+    )).scalars().all()
+
+    affected = []
+    fixed = 0
+    for doc in docs:
+        state = doc.state
+        issue = (state.get("issue_date") or "")[:10]
+        due = (state.get("due_date") or "")[:10]
+        if not (issue and due):
+            continue
+        if due >= issue:
+            continue
+        affected.append({
+            "entity_id": doc.entity_id,
+            "issue_date": issue,
+            "due_date": due,
+            "doc_type": state.get("doc_type"),
+            "ref_id": state.get("ref_id"),
+        })
+        if fix:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=doc.entity_id,
+                entity_type="doc",
+                event_type="doc.updated",
+                data={"fields_changed": {"due_date": {"old": due, "new": issue}}},
+                actor_id=user_id,
+                location_id=None,
+                source="doctor",
+                idempotency_key=f"doctor:inverted-due-date:{doc.entity_id}",
+            )
+            fixed += 1
+
+    return {"check": "inverted_doc_dates", "found": len(affected), "fixed": fixed, "auto_fixable": True, "details": affected[:50]}
+
+
+async def _check_fractional_piece_quantities(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find inventory items and document line items with fractional quantities for
+    units that require whole numbers (decimals=0, e.g. 'piece').
+
+    These arise from fulfillment splits on invoices created before quantity precision
+    validation was enforced (v1.0.10). This check is report-only (never auto-fixed)
+    because the correct quantity is ambiguous for finalized/voided documents.
+
+    Remediation guidance per finding:
+      doc_line (draft)    -> edit the line item quantity before finalizing
+      doc_line (final)    -> void and re-issue, or issue a credit note
+      item                -> adjust item quantity via the inventory screen
+    """
+    from decimal import Decimal, ROUND_HALF_UP
+    from celerp.services.units import DEFAULT_UNITS, build_unit_map
+
+    # Build unit map (company-specific if configured, else defaults)
+    from celerp.models.company import Company
+    company = await session.get(Company, company_id)
+    units = (company.settings or {}).get("units") if company else None
+    unit_map = build_unit_map(units if units else DEFAULT_UNITS)
+
+    # Only units with decimals=0 are affected
+    zero_decimal_units: set[str] = {name for name, cfg in unit_map.items() if cfg.get("decimals", 0) == 0}
+
+    def _has_fraction(qty: float) -> bool:
+        d = Decimal(str(qty))
+        return d != d.to_integral_value(rounding=ROUND_HALF_UP)
+
+    # Build SKU -> sell_by map from item projections (authoritative source)
+    items_rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+
+    sku_sell_by: dict[str, str] = {}
+    findings: list[dict] = []
+
+    # Check inventory items first
+    for row in items_rows:
+        state = row.state
+        sell_by = state.get("sell_by") or ""
+        sku = state.get("sku") or ""
+        if sku and sell_by:
+            sku_sell_by[sku] = sell_by
+        if sell_by not in zero_decimal_units:
+            continue
+        qty = float(state.get("quantity") or 0)
+        if not _has_fraction(qty):
+            continue
+        findings.append({
+            "kind": "item",
+            "item_id": row.entity_id,
+            "sku": sku,
+            "name": state.get("name") or sku,
+            "quantity": qty,
+            "sell_by": sell_by,
+            "action_required": "adjust_item_quantity",
+        })
+
+    # Check document line items
+    doc_rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "doc",
+        )
+    )).scalars().all()
+
+    for row in doc_rows:
+        state = row.state
+        doc_status = state.get("status") or ""
+        for li in (state.get("line_items") or []):
+            sku = li.get("sku") or ""
+            sell_by = li.get("sell_by") or (sku_sell_by.get(sku) if sku else "") or ""
+            if sell_by not in zero_decimal_units:
+                continue
+            qty = float(li.get("quantity") or 0)
+            if not _has_fraction(qty):
+                continue
+            if doc_status in ("draft", "proforma"):
+                action = "edit_line_item_quantity"
+            elif doc_status in ("void",):
+                action = "no_action_needed_doc_voided"
+            else:
+                action = "void_and_reissue_or_credit_note"
+            findings.append({
+                "kind": "doc_line",
+                "doc_id": row.entity_id,
+                "ref_id": state.get("ref_id"),
+                "doc_type": state.get("doc_type"),
+                "doc_status": doc_status,
+                "sku": sku,
+                "name": li.get("name") or li.get("description") or sku,
+                "quantity": qty,
+                "sell_by": sell_by,
+                "action_required": action,
+            })
+
+    return {
+        "check": "fractional_piece_quantities",
+        "found": len(findings),
+        "fixed": 0,
+        "auto_fixable": False,
+        "details": findings[:100],
+    }
+
+
+async def _write_upgrade_report(
+    results: list[dict],
+    company_id,
+    from_version: str,
+    session: AsyncSession,
+) -> str:
+    """Write a structured JSON upgrade report to disk and store the path in company settings.
+
+    Returns the absolute path of the written report file.
+    """
+    from celerp.models.company import Company
+    from celerp.config import settings as app_settings
+
+    to_version = getattr(app_settings, "version", "unknown")
+    now = datetime.now(timezone.utc)
+    timestamp = now.strftime("%Y%m%dT%H%M%SZ")
+
+    auto_fixed: dict = {}
+    manual_required: dict = {}
+
+    for r in results:
+        check = r["check"]
+        details = r.get("details") or []
+        if not details:
+            continue
+        if r.get("auto_fixable", False) and r.get("fixed", 0) > 0:
+            auto_fixed[check] = details
+        elif not r.get("auto_fixable", True) and r.get("found", 0) > 0:
+            manual_required[check] = details
+
+    report = {
+        "from_version": from_version,
+        "to_version": to_version,
+        "generated_at": now.isoformat(),
+        "company_id": str(company_id),
+        "auto_fixed": auto_fixed,
+        "manual_attention_required": manual_required,
+    }
+
+    # Determine report directory
+    data_dir = getattr(app_settings, "data_dir", None) or os.path.expanduser("~/.celerp")
+    report_dir = os.path.join(str(data_dir), "upgrade-reports", str(company_id))
+    os.makedirs(report_dir, exist_ok=True)
+    filename = f"{from_version}-to-{to_version}-{timestamp}.json"
+    report_path = os.path.join(report_dir, filename)
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, default=str)
+
+    # Store path in company settings for UI retrieval
+    company = await session.get(Company, company_id)
+    if company:
+        settings = dict(company.settings or {})
+        settings["upgrade_report_path"] = report_path
+        company.settings = settings
+        session.add(company)
+
+    return report_path
+
+
 _CHECK_FNS = {
     "missing_jes": _check_missing_jes,
     "duplicate_jes": _check_duplicate_jes,
@@ -468,6 +734,9 @@ _CHECK_FNS = {
     "stale_projections": _check_stale_projections,
     "unbalanced_jes": _check_unbalanced_jes,
     "zero_amount_jes": _check_zero_amount_jes,
+    "legacy_item_prices": _check_legacy_item_prices,
+    "inverted_doc_dates": _check_inverted_doc_dates,
+    "fractional_piece_quantities": _check_fractional_piece_quantities,
 }
 
 
@@ -476,6 +745,7 @@ async def run_doctor(
     fix: bool = Query(False, description="Apply repairs (default: dry-run report only)"),
     checks: str | None = Query(None, description="Comma-separated check names (default: all)"),
     rebuild: bool = Query(False, description="Rebuild all projections after fixes"),
+    from_version: str | None = Query(None, description="Previous version string - triggers upgrade report when provided with fix=true"),
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -500,7 +770,7 @@ async def run_doctor(
     total_found = sum(r["found"] for r in results)
     total_fixed = sum(r["fixed"] for r in results)
 
-    return {
+    response: dict = {
         "mode": "fix" if fix else "dry-run",
         "checks_run": check_names,
         "total_found": total_found,
@@ -508,6 +778,13 @@ async def run_doctor(
         "rebuilt": rebuild and fix,
         "results": results,
     }
+
+    # Write upgrade report when from_version is provided with fix=true
+    if fix and from_version:
+        report_path = await _write_upgrade_report(results, company_id, from_version, session)
+        response["upgrade_report"] = report_path
+
+    return response
 
 
 @router.get("/relay/status")

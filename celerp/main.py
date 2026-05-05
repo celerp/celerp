@@ -108,7 +108,7 @@ async def lifespan(_app: FastAPI):
     import os
     import uuid
     from pathlib import Path
-    Path("static/attachments").mkdir(parents=True, exist_ok=True)
+    (settings.data_dir / "static" / "attachments").mkdir(parents=True, exist_ok=True)
     try:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
@@ -143,6 +143,14 @@ async def lifespan(_app: FastAPI):
             # Run create_all again so module tables are created (idempotent).
             async with engine.begin() as conn:
                 await conn.run_sync(Base.metadata.create_all)
+            # Allow modules to backfill data for existing companies (e.g. seed
+            # chart of accounts when accounting module is first enabled on an
+            # instance that already has companies).
+            from celerp.modules.slots import fire_lifecycle as _fire
+            from celerp.db import SessionLocal as _SessionLocal
+            async with _SessionLocal() as _sess:
+                await _fire("on_modules_ready", session=_sess)
+                await _sess.commit()
 
     # Register kernel projection handler for sys.* events (not module-owned)
     from celerp.modules.slots import register as register_slot
@@ -258,4 +266,4 @@ app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
 app.include_router(notifications.router)
-app.mount("/static", StaticFiles(directory="static", check_dir=False), name="static")
+app.mount("/static", StaticFiles(directory=str(settings.data_dir / "static"), check_dir=False), name="static")

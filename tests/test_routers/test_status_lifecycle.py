@@ -96,7 +96,7 @@ async def test_revert_blocked_when_payments_exist(client):
     inv = await _create_invoice(client, token)
 
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 10})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 10, "bank_account": "1111"})
 
     # After partial payment the status is 'partial', which is not revertable
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
@@ -183,7 +183,7 @@ async def test_void_blocked_from_partial_status(client):
     inv = await _create_invoice(client, token, total=100.0)
 
     await client.post(f"/docs/{inv}/finalize", headers=_h(token))
-    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"amount": 40})
+    await client.post(f"/docs/{inv}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 40, "bank_account": "1111"})
 
     doc = (await client.get(f"/docs/{inv}", headers=_h(token))).json()
     assert doc["status"] == "partial"

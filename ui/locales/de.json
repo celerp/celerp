@@ -238,7 +238,6 @@
   "btn.submit": "Einreichen",
   "btn.test_connection": "Verbindung testen",
   "btn.transfer": "Übertragen",
-  "btn.u0001f5a8": "🖨",
   "btn.u00d7": "×",
   "btn.u2705_confirm_create": "✅ Bestätigen & Erstellen",
   "btn.u274c_discard": "❌ Verwerfen",
@@ -1145,5 +1144,7 @@
   "settings.password_changed": "Passwort erfolgreich geändert",
   "btn.change_password": "Passwort ändern",
   "status.all_issued": "Alle ausgestellten",
-  "nav.credit_notes": "Gutschriften"
+  "nav.credit_notes": "Gutschriften",
+  "btn.reset_columns": "Zurücksetzen",
+  "btn.reset_columns_title": "Spalten auf Standard zurücksetzen"
 }

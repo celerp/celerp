@@ -238,8 +238,7 @@
   "btn.submit": "يُقدِّم",
   "btn.test_connection": "اتصال الاختبار",
   "btn.transfer": "تحويل",
-  "btn.u0001f5a8": "🖨",
-  "btn.u00d7": "\\u00d7",
+  "btn.u00d7": "×",
   "btn.u2705_confirm_create": "\\u2705 التأكيد والإنشاء",
   "btn.u274c_discard": "\\u274c تجاهل",
   "btn.undo": "تراجع",
@@ -423,8 +422,8 @@
   "inv.u0001f5d1_dispose": "🗑 تخلص",
   "inv.u21a9_bring_back_in": "\\u21a9 أعد الدخول",
   "inv.u21a9_return_to_vendor": "\\u21a9 العودة إلى البائع",
-  "inv.u23f3_expire": "\\u23f3 انتهاء الصلاحية",
-  "inv.u2702_split": "\\u2702 سبليت",
+  "inv.u23f3_expire": "⏳ انتهاء الصلاحية",
+  "inv.u2702_split": "✂ سبليت",
   "inv.splitting_disabled_hint": "تقسيم هذا العنصر معطّل. فعّله من خيار «السماح بالتقسيم» أعلاه.",
   "inv.unknown_document_type": "نوع المستند غير معروف.",
   "label._add_item": "+ إضافة عنصر",
@@ -1145,5 +1144,7 @@
   "settings.password_changed": "تم تغيير كلمة المرور بنجاح",
   "btn.change_password": "تغيير كلمة المرور",
   "status.all_issued": "جميع الفواتير الصادرة",
-  "nav.credit_notes": "مذكرات الائتمان"
+  "nav.credit_notes": "مذكرات الائتمان",
+  "btn.reset_columns": "إعادة تعيين",
+  "btn.reset_columns_title": "إعادة تعيين الأعمدة إلى الإعدادات الافتراضية"
 }

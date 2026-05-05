@@ -534,10 +534,14 @@ class TestLabelsUIRoutes:
         assert r.status_code == 302
         assert "/settings/labels" in r.headers["location"]
 
-    def test_print_preview_route_removed(self):
+    def test_print_single_route_registered(self):
+        """GET /labels/print/{entity_id} must be registered (single-item HTML print route)."""
         c = self._bare_app()
         r = c.get("/labels/print/entity-123")
-        assert r.status_code == 404
+        # 200 (HTML) or 302 (auth redirect) - must not be 404
+        assert r.status_code in (200, 302), (
+            f"Expected 200 or 302, got {r.status_code}: route may not be registered"
+        )
 
     def test_settings_labels_unauthenticated_redirects(self):
         c = self._bare_app()

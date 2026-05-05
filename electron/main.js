@@ -22,12 +22,11 @@ const { execFileSync } = childProcess;
 const net = require("net");
 let EmbeddedPostgres; // loaded via dynamic import() - embedded-postgres is ESM-only
 
-// ── Asar path fixes for embedded-postgres ────────────────────────────────────
-// Electron does not reliably patch child_process.spawn() or fs.promises.chmod()
-// for asar paths. embedded-postgres resolves binary paths via __dirname inside
-// app.asar, then calls both on those paths. Both fail with ENOTDIR because the
-// OS sees app.asar as a file, not a directory.
-// Fix: rewrite .asar/ → .asar.unpacked/ before either operation hits the OS.
+// ── Asar path fix for embedded-postgres ─────────────────────────────────────
+// embedded-postgres resolves binary paths via __dirname inside app.asar, then
+// calls child_process.spawn() on those paths. This fails with ENOTDIR because
+// the OS sees app.asar as a file, not a directory.
+// Fix: rewrite .asar/ → .asar.unpacked/ before the spawn hits the OS.
 
 function rewriteAsarPath(p) {
   if (typeof p === "string" && p.includes("app.asar") && !p.includes("app.asar.unpacked")) {
@@ -44,10 +43,19 @@ childProcess.spawn = function spawn(cmd, args, opts) {
 };
 const spawn = childProcess.spawn;
 
-// Patch fs.promises.chmod globally — same reason as spawn above.
-const fsPromises = require("fs").promises;
-const _chmod = fsPromises.chmod.bind(fsPromises);
-fsPromises.chmod = (p, mode) => _chmod(rewriteAsarPath(p), mode);
+// Suppress fs.promises.chmod for embedded-postgres binary paths.
+// embedded-postgres calls chmod to ensure its binaries are executable, but:
+//   1. The afterPack hook already set +x before signing, so the bits are correct.
+//   2. The path it passes is the virtual app.asar path (not app.asar.unpacked),
+//      which the OS cannot chmod — it would throw ENOTDIR.
+//   3. On a signed/notarized build the OS would throw EPERM anyway.
+// Making chmod a no-op is safe: the binaries already have the right permissions.
+const _fsPromises = fs.promises;
+const _chmod = _fsPromises.chmod.bind(_fsPromises);
+_fsPromises.chmod = async function chmod(p, mode) {
+  if (typeof p === "string" && p.includes("@embedded-postgres")) return;
+  return _chmod(p, mode);
+};
 
 // Patch async-exit-hook before embedded-postgres loads so gracefulShutdown(done)
 // always receives a callable done. In some Electron exit paths async-exit-hook
@@ -273,6 +281,17 @@ function startApi(dbUrl, cfg) {
     apiPort = await getFreePort();
     const env = {
       ...process.env,
+      // Scrub Python environment variables that the user's shell may have set
+      // (pyenv, conda, Homebrew, virtualenv). If inherited, they redirect the
+      // bundled standalone Python to the wrong stdlib and crash uvicorn before
+      // it ever binds a port. This is the cause of "Port N never opened" when
+      // launching a notarized app from the terminal (Finder launch gets a clean
+      // environment and never triggers this).
+      PYTHONHOME: undefined,
+      PYTHONSTARTUP: undefined,
+      VIRTUAL_ENV: undefined,
+      CONDA_PREFIX: undefined,
+      CONDA_DEFAULT_ENV: undefined,
       DATABASE_URL: dbUrl,
       JWT_SECRET: getOrCreateJwtSecret(),
       PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
@@ -291,8 +310,16 @@ function startApi(dbUrl, cfg) {
       ["-m", "uvicorn", "celerp.main:app", "--host", "127.0.0.1", "--port", String(apiPort), "--timeout-graceful-shutdown", "3"],
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
+    let stderr = "";
+    apiProcess.stderr.on("data", (d) => { stderr += d.toString(); });
+    apiProcess.stdout.on("data", (d) => { stderr += d.toString(); });
     apiProcess.on("error", reject);
-    waitForPort(apiPort).then(resolve).catch(reject);
+    apiProcess.on("exit", (code) => {
+      if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}):\n${stderr.slice(-2000)}`));
+    });
+    waitForPort(apiPort).then(resolve).catch(() =>
+      reject(new Error(`API port ${apiPort} never opened:\n${stderr.slice(-2000)}`))
+    );
   });
 }
 
@@ -301,6 +328,13 @@ function startUi(dbUrl, cfg) {
     uiPort = await getFreePort();
     const env = {
       ...process.env,
+      // Scrub Python environment variables that the user's shell may have set.
+      // See startApi comment for full explanation.
+      PYTHONHOME: undefined,
+      PYTHONSTARTUP: undefined,
+      VIRTUAL_ENV: undefined,
+      CONDA_PREFIX: undefined,
+      CONDA_DEFAULT_ENV: undefined,
       API_URL: `http://127.0.0.1:${apiPort}`,
       DATABASE_URL: dbUrl,
       JWT_SECRET: getOrCreateJwtSecret(),
@@ -315,8 +349,16 @@ function startUi(dbUrl, cfg) {
       ["-m", "uvicorn", "ui.app:app", "--host", "127.0.0.1", "--port", String(uiPort), "--timeout-graceful-shutdown", "3"],
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
+    let stderr = "";
+    uiProcess.stderr.on("data", (d) => { stderr += d.toString(); });
+    uiProcess.stdout.on("data", (d) => { stderr += d.toString(); });
     uiProcess.on("error", reject);
-    waitForPort(uiPort).then(resolve).catch(reject);
+    uiProcess.on("exit", (code) => {
+      if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}):\n${stderr.slice(-2000)}`));
+    });
+    waitForPort(uiPort).then(resolve).catch(() =>
+      reject(new Error(`UI port ${uiPort} never opened:\n${stderr.slice(-2000)}`))
+    );
   });
 }
 
@@ -431,16 +473,22 @@ function setupAutoUpdater() {
     if (mainWindow) mainWindow.webContents.send("update-available", info);
   });
 
+  autoUpdater.on("update-not-available", () => {
+    if (mainWindow) mainWindow.webContents.send("update-not-available");
+  });
+
   autoUpdater.on("update-downloaded", (info) => {
     if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
   });
 
   autoUpdater.on("error", (err) => {
-    // Log only — update failures must never interrupt the user's work
+    // Log only — update failures must never interrupt the user's work.
+    // Also notify renderer so the UI can reset from "Checking..." state.
     console.error("[updater] error:", err?.message ?? String(err));
+    if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 
-  autoUpdater.checkForUpdates();
+  autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event above
 }
 
 function createWindow() {
@@ -495,7 +543,7 @@ function createWindow() {
 
 // check-for-updates: renderer triggers a manual update check via window.celerp.checkForUpdates()
 ipcMain.handle("check-for-updates", () => {
-  if (app.isPackaged) autoUpdater.checkForUpdates();
+  if (app.isPackaged) autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event
 });
 
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()

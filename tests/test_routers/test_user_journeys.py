@@ -589,7 +589,7 @@ async def test_crud_invoice_record_payment(client):
     token = await _reg(client)
     eid = await _invoice(client, token, total=100, tax=0, subtotal=100)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    r = await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 100})
+    r = await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
     assert r.status_code == 200
     state = (await client.get(f"/docs/{eid}", headers=_h(token))).json()
     assert state["status"] == "paid"
@@ -600,7 +600,7 @@ async def test_crud_invoice_partial_payment_status(client):
     token = await _reg(client)
     eid = await _invoice(client, token, total=200, tax=0, subtotal=200)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 100})
+    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
     state = (await client.get(f"/docs/{eid}", headers=_h(token))).json()
     assert state["status"] == "partial"
     assert state["amount_paid"] == 100
@@ -966,7 +966,7 @@ async def test_acct_trial_balance_balanced_after_payment(client):
     token = await _reg(client)
     eid = await _invoice(client, token, subtotal=100, tax=0, total=100)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 100})
+    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
     tb = (await client.get("/accounting/trial-balance", headers=_h(token))).json()
     assert _tb_balanced(tb)
 
@@ -1015,11 +1015,11 @@ async def test_acct_payment_creates_cash_debit(client):
     token = await _reg(client)
     eid = await _invoice(client, token, subtotal=200, tax=0, total=200)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 200})
+    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 200, "bank_account": "1111"})
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if eid in (e["data"].get("memo") or "") and "payment" in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
-    cash = next((x for x in entries if x["account"] == "1110"), None)
+    cash = next((x for x in entries if x["account"] == "1111"), None)
     assert cash is not None
     assert float(cash["debit"]) == 200
 
@@ -1029,7 +1029,7 @@ async def test_acct_payment_creates_ar_credit(client):
     token = await _reg(client)
     eid = await _invoice(client, token, subtotal=150, tax=0, total=150)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 150})
+    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 150, "bank_account": "1111"})
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if eid in (e["data"].get("memo") or "") and "payment" in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
@@ -1136,8 +1136,8 @@ async def test_acct_partial_payments_tb_balanced(client):
     h = _h(token)
     eid = await _invoice(client, token, subtotal=300, tax=0, total=300)
     await client.post(f"/docs/{eid}/finalize", headers=h)
-    await client.post(f"/docs/{eid}/payment", headers=h, json={"amount": 100})
-    await client.post(f"/docs/{eid}/payment", headers=h, json={"amount": 100})
+    await client.post(f"/docs/{eid}/payment", headers=h, json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
+    await client.post(f"/docs/{eid}/payment", headers=h, json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
     tb = (await client.get("/accounting/trial-balance", headers=h)).json()
     assert _tb_balanced(tb)
 
@@ -1229,7 +1229,7 @@ async def test_wf_full_invoice_lifecycle(client):
     await client.post(f"/docs/{eid}/finalize", headers=h)
     assert (await client.get(f"/docs/{eid}", headers=h)).json()["status"] == "final"
 
-    await client.post(f"/docs/{eid}/payment", headers=h, json={"amount": 535})
+    await client.post(f"/docs/{eid}/payment", headers=h, json={"payment_date": "2026-01-15", "amount": 535, "bank_account": "1111"})
     final = (await client.get(f"/docs/{eid}", headers=h)).json()
     assert final["status"] == "paid"
     assert final["amount_outstanding"] == 0
@@ -1468,9 +1468,9 @@ async def test_wf_multi_payment_to_paid(client):
     h = _h(token)
     eid = await _invoice(client, token, subtotal=300, tax=0, total=300)
     await client.post(f"/docs/{eid}/finalize", headers=h)
-    await client.post(f"/docs/{eid}/payment", headers=h, json={"amount": 100})
-    await client.post(f"/docs/{eid}/payment", headers=h, json={"amount": 100})
-    await client.post(f"/docs/{eid}/payment", headers=h, json={"amount": 100})
+    await client.post(f"/docs/{eid}/payment", headers=h, json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
+    await client.post(f"/docs/{eid}/payment", headers=h, json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
+    await client.post(f"/docs/{eid}/payment", headers=h, json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
     state = (await client.get(f"/docs/{eid}", headers=h)).json()
     assert state["status"] == "paid"
     assert state["amount_outstanding"] == 0
@@ -1653,7 +1653,7 @@ async def test_sf_docs_filter_by_status_paid(client):
     token = await _reg(client)
     eid = await _invoice(client, token, total=50, tax=0, subtotal=50)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 50})
+    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50, "bank_account": "1111"})
     docs = (await client.get("/docs?status=paid", headers=_h(token))).json()["items"]
     assert all(d["status"] == "paid" for d in docs)
 
@@ -1807,8 +1807,8 @@ async def test_edge_pay_already_paid_invoice_returns_error(client):
     token = await _reg(client)
     eid = await _invoice(client, token, total=50, tax=0, subtotal=50)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 50})
-    r = await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 1})
+    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50, "bank_account": "1111"})
+    r = await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 1, "bank_account": "1111"})
     assert r.status_code in {409, 422}
 
 
@@ -1826,7 +1826,7 @@ async def test_edge_void_already_void_doc_returns_error(client):
 async def test_edge_pay_draft_invoice_returns_409(client):
     token = await _reg(client)
     eid = await _invoice(client, token)
-    r = await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 50})
+    r = await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 50, "bank_account": "1111"})
     assert r.status_code == 409
 
 
@@ -1835,7 +1835,7 @@ async def test_edge_overpayment_rejected(client):
     token = await _reg(client)
     eid = await _invoice(client, token, total=100, tax=0, subtotal=100)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    r = await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 999})
+    r = await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 999, "bank_account": "1111"})
     assert r.status_code in {409, 422}
 
 
@@ -1853,7 +1853,7 @@ async def test_edge_void_paid_invoice_rejected(client):
     token = await _reg(client)
     eid = await _invoice(client, token, total=100, tax=0, subtotal=100)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
-    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"amount": 100})
+    await client.post(f"/docs/{eid}/payment", headers=_h(token), json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
     r = await client.post(f"/docs/{eid}/void", headers=_h(token), json={"reason": "no"})
     assert r.status_code == 409
 
@@ -2486,7 +2486,7 @@ async def test_rpt_ar_aging_paid_invoice_not_in_outstanding(client):
     h = _h(token)
     eid = await _invoice(client, token, total=100, tax=0, subtotal=100)
     await client.post(f"/docs/{eid}/finalize", headers=h)
-    await client.post(f"/docs/{eid}/payment", headers=h, json={"amount": 100})
+    await client.post(f"/docs/{eid}/payment", headers=h, json={"payment_date": "2026-01-15", "amount": 100, "bank_account": "1111"})
     ar = (await client.get("/reports/ar-aging", headers=h)).json()
     # The paid invoice should not appear with outstanding amount
     for line in ar.get("lines", []):

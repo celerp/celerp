@@ -93,3 +93,26 @@ def test_update_card_electron_mode_screenshot(page, ui_server):
     path = SCREENSHOT_DIR / "electron-mode.png"
     page.locator("#notif-panel").screenshot(path=str(path))
     assert path.exists(), "Electron-mode screenshot was not saved"
+
+
+def test_update_card_releases_url(page, ui_server):
+    """The Releases link must point to github.com/celerp/celerp/releases."""
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+    page.locator(".notif-bell-btn").click()
+    page.wait_for_selector("#notif-panel", state="visible")
+
+    link = page.locator(".update-card__releases-link")
+    href = link.get_attribute("href")
+    assert href == "https://github.com/celerp/celerp/releases", (
+        f"Wrong releases URL: {href}"
+    )
+
+
+def test_update_card_check_btn_present(page, ui_server):
+    """Check for updates button must be present in the card."""
+    page.goto(f"{ui_server}/", wait_until="domcontentloaded")
+    page.locator(".notif-bell-btn").click()
+    page.wait_for_selector("#notif-panel", state="visible")
+
+    btn = page.locator(".update-card__check-btn")
+    assert btn.count() == 1, "Check for updates button not found"

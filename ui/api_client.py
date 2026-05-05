@@ -363,9 +363,23 @@ async def global_search(token: str, q: str) -> dict:
 # Items
 # ---------------------------------------------------------------------------
 
+def _flatten_item_attrs(item: dict) -> dict:
+    """Promote item.attributes keys to the top level so data_table can read them directly.
+
+    Attribute keys never conflict with core item fields (they are schema-defined separately).
+    The original ``attributes`` key is preserved for callers that need the nested form.
+    """
+    attrs = item.get("attributes") or {}
+    if not attrs:
+        return item
+    return {**item, **attrs}
+
+
 async def list_items(token: str, params: dict | None = None) -> dict:
     async with _client(token) as c:
-        return _raise(await c.get("/items", params=params or {})).json()
+        raw = _raise(await c.get("/items", params=params or {})).json()
+    items = raw.get("items") or []
+    return {**raw, "items": [_flatten_item_attrs(i) for i in items]}
 
 
 async def get_item(token: str, entity_id: str) -> dict:
@@ -374,8 +388,20 @@ async def get_item(token: str, entity_id: str) -> dict:
 
 
 async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
-    """Patch item fields. Pass a flat {field: value} dict; wraps into {field: {old, new}} format."""
-    wrapped = {k: (v if isinstance(v, dict) and "new" in v else {"old": None, "new": v}) for k, v in fields_changed.items()}
+    """Patch item fields. Pass a flat {field: value} dict; wraps into {field: {old, new}} format.
+
+    Numeric fields (quantity, *_price) are coerced to float so projection state
+    never receives string values from inline edits.
+    """
+    _NUMERIC = lambda k: k == "quantity" or k.endswith("_price")
+    def _coerce(k, v):
+        if _NUMERIC(k) and v is not None:
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                pass
+        return v
+    wrapped = {k: (v if isinstance(v, dict) and "new" in v else {"old": None, "new": _coerce(k, v)}) for k, v in fields_changed.items()}
     async with _client(token) as c:
         return _raise(await c.patch(f"/items/{entity_id}", json={"fields_changed": wrapped})).json()
 
@@ -461,6 +487,12 @@ async def patch_doc(token: str, entity_id: str, data: dict) -> dict:
         return _raise(await c.patch(f"/docs/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
+async def renumber_doc(token: str, entity_id: str, ref_id: str) -> dict:
+    """Change the display number (ref_id) of any non-void document via /renumber endpoint."""
+    async with _client(token) as c:
+        return _raise(await c.post(f"/docs/{entity_id}/renumber", json={"ref_id": ref_id})).json()
+
+
 async def create_doc(token: str, data: dict) -> dict:
     async with _client(token) as c:
         return _raise(await c.post("/docs", json=data)).json()
@@ -494,6 +526,11 @@ async def void_doc(token: str, entity_id: str, reason: str | None = None) -> dic
 async def revert_doc_to_draft(token: str, entity_id: str, reason: str | None = None) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/revert-to-draft", json={"reason": reason})).json()
+
+
+async def revert_list_to_draft(token: str, entity_id: str, reason: str | None = None) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/revert-to-draft", json={"reason": reason})).json()
 
 
 async def unvoid_doc(token: str, entity_id: str) -> dict:
@@ -1041,14 +1078,44 @@ async def duplicate_list(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/lists/{entity_id}/duplicate", json={})).json()
 
 
-async def add_doc_note(token: str, entity_id: str, text: str) -> dict:
+async def list_doc_notes(token: str, entity_id: str) -> list[dict]:
     async with _client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/notes", json={"text": text})).json()
+        return _raise(await c.get(f"/docs/{entity_id}/notes")).json()
 
 
-async def add_list_note(token: str, entity_id: str, text: str) -> dict:
+async def add_doc_note(token: str, entity_id: str, note: str) -> dict:
     async with _client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/notes", json={"text": text})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/notes", json={"note": note})).json()
+
+
+async def update_doc_note(token: str, entity_id: str, note_id: str, note: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/docs/{entity_id}/notes/{note_id}", json={"note": note})).json()
+
+
+async def delete_doc_note(token: str, entity_id: str, note_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/docs/{entity_id}/notes/{note_id}")).json()
+
+
+async def list_list_notes(token: str, entity_id: str) -> list[dict]:
+    async with _client(token) as c:
+        return _raise(await c.get(f"/lists/{entity_id}/notes")).json()
+
+
+async def add_list_note(token: str, entity_id: str, note: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/notes", json={"note": note})).json()
+
+
+async def update_list_note(token: str, entity_id: str, note_id: str, note: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/lists/{entity_id}/notes/{note_id}", json={"note": note})).json()
+
+
+async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/lists/{entity_id}/notes/{note_id}")).json()
 
 
 async def export_lists_csv(token: str, params: dict | None = None) -> bytes:
@@ -1095,6 +1162,12 @@ async def transfer_item(token: str, entity_id: str, location_id: str) -> dict:
 
 
 async def set_item_price(token: str, entity_id: str, price_type: str, new_price: float) -> dict:
+    # Normalize price_type: accept either raw price list name ("Retail") or
+    # conventional key ("retail_price"). Always emit the conventional key so
+    # projection state is consistent with the item.pricing.set handler which
+    # writes current[price_type] directly.
+    if not price_type.endswith("_price"):
+        price_type = f"{price_type.lower()}_price"
     async with _client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/price", json={"price_type": price_type, "new_price": new_price})).json()
 
@@ -1666,3 +1739,16 @@ async def set_period_lock(token: str, lock_date: str | None) -> dict:
 async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post("/accounting/close-year", json={"fiscal_year_end": fiscal_year_end})).json()
+
+
+async def bulk_delete_contacts(token: str, contact_ids: list) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post("/crm/contacts/bulk/delete", json={"contact_ids": contact_ids})).json()
+
+
+async def merge_contacts(token: str, target_contact_id: str, source_contact_ids: list) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post("/crm/contacts/merge", json={
+            "target_contact_id": target_contact_id,
+            "source_contact_ids": source_contact_ids,
+        })).json()

@@ -1237,18 +1237,17 @@ async def seed_demo_items(
     for i, data in enumerate(items, start=1):
         entity_id = f"item:demo-{uuid.uuid4()}"
         sku = data.get("sku", f"DEMO-{i:03d}")
-        # Include prices in attributes so they land in the projection state
-        # even when the inventory module's projection handler isn't loaded yet
-        # (setup wizard calls reseed before the API restart that loads modules).
-        # _flatten_item() promotes attributes to top-level, so the API returns
-        # them as retail_price, wholesale_price, cost_price at the item root.
         prices = data.get("prices") or {}
-        price_attrs = {
+        # Build price fields keyed by lowercase price list name + "_price".
+        # These go directly into the item.created payload so they land at top-level
+        # in projection state even when the inventory module (and its item.pricing.set
+        # handler) is not yet loaded - which is always the case during initial
+        # registration (modules are enabled after the setup wizard completes).
+        price_fields = {
             f"{pl_name.lower()}_price": float(pv)
             for pl_name, pv in prices.items()
             if pv is not None
         }
-        item_attrs = {**data.get("attributes", {}), **price_attrs}
         payload = {
             "sku": sku,
             "name": data.get("name", f"[DEMO] Item {i}"),
@@ -1261,7 +1260,8 @@ async def seed_demo_items(
             "description": data.get("description", ""),
             "barcode": data.get("barcode"),
             "allow_splitting": data.get("allow_splitting", True),
-            "attributes": item_attrs,
+            "attributes": data.get("attributes") or {},
+            **price_fields,
         }
         # Strip None values to keep event data clean
         payload = {k: v for k, v in payload.items() if v is not None}
@@ -1277,8 +1277,3 @@ async def seed_demo_items(
             source="demo",
             idempotency_key=f"demo:item:{company_id}:{sku}",
         )
-        # Prices are included directly in item.created above so they land in the
-        # projection state regardless of whether the inventory module's handler
-        # is loaded (setup wizard calls reseed before the API restart).
-        # Separate item.pricing.set events are NOT emitted for demo items to
-        # avoid duplicate/conflicting state when the handler isn't available.
