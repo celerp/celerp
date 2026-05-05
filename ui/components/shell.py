@@ -442,7 +442,9 @@ document.addEventListener('DOMContentLoaded', function() {
       // PyPI path - fetch current version from /health, compare to PyPI
       fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
         var current = health.version || '';
-        if (versionEl) versionEl.textContent = current ? 'v' + current : 'Unknown';
+        var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current === '0.0.0+dev';
+        if (versionEl) versionEl.textContent = isDev ? 'Development build' : (current ? 'v' + current : 'Unknown');
+        if (isDev) { setState('Running from source - no updates', false); return; }
         return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
           var latest = pypi.info && pypi.info.version ? pypi.info.version : null;
           if (!latest) { setState('Up to date', false); return; }
@@ -586,8 +588,6 @@ def _topbar(companies: list[dict], lang: str = "en") -> FT:
                     Div(
                         Span("", cls="update-card__version"),
                         Span("", cls="update-card__state"),
-                        A(t("msg.releases"), href="https://github.com/celerp/celerp/releases",
-                          target="_blank", rel="noopener noreferrer", cls="update-card__releases-link"),
                         cls="update-card__info",
                     ),
                     Div(
@@ -600,6 +600,8 @@ def _topbar(companies: list[dict], lang: str = "en") -> FT:
                             cls="update-card__upgrade-cmd",
                             style="display:none;",
                         ),
+                        A(t("msg.releases"), href="https://github.com/celerp/celerp/releases",
+                          target="_blank", rel="noopener noreferrer", cls="update-card__releases-link"),
                         cls="update-card__actions",
                     ),
                     id="update-status-card",

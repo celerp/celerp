@@ -1941,3 +1941,72 @@ a:hover { text-decoration: underline; }
     color: var(--c-text);
 }
 .iti--separate-dial-code .iti__selected-dial-code { font-size: 13px; }
+
+/* ── Update status card ───────────────────────────────────────────── */
+.update-status-card {
+  border-top: 1px solid var(--c-border);
+  padding: 0.75rem 1rem;
+  font-size: 0.82rem;
+}
+.update-card__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.5rem;
+}
+.update-card__version {
+  font-weight: 600;
+  color: var(--c-text);
+}
+.update-card__state {
+  color: var(--c-text2);
+}
+.update-card__releases-link {
+  color: var(--c-primary);
+  text-decoration: none;
+  font-size: 0.78rem;
+}
+.update-card__releases-link:hover { text-decoration: underline; }
+.update-card__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.update-card__upgrade-cmd {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  background: var(--c-bg2);
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+}
+.update-card__cmd {
+  flex: 1;
+  font-size: 0.78rem;
+  background: none;
+  border: none;
+  color: var(--c-text);
+  font-family: var(--font-mono, monospace);
+}
+.update-card__copy-btn,
+.update-card__check-btn,
+.update-card__restart-btn {
+  font-size: 0.78rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 4px;
+  border: 1px solid var(--c-border);
+  background: var(--c-bg2);
+  color: var(--c-text);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.update-card__copy-btn:hover,
+.update-card__check-btn:hover,
+.update-card__restart-btn:hover { background: var(--c-hover); }
+.update-card__restart-btn {
+  background: var(--c-primary);
+  color: #fff;
+  border-color: var(--c-primary);
+}
+.update-card__restart-btn:hover { opacity: 0.9; }
