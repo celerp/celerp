@@ -1692,7 +1692,7 @@ def setup_routes(app):
         elif field == "currency":
             return currency_combobox_td(
                 value=val,
-                hidden_id=f"contact-currency-{contact_id}",
+                hidden_id="contact-currency-input",
                 patch_url=f"/contacts/{contact_id}/field/currency",
                 cancel_url=f"/contacts/{contact_id}/field/currency/display",
             )

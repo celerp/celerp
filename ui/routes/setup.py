@@ -127,6 +127,16 @@ def setup_routes(app):
             "address": str(form.get("address", "")).strip(),
         }
 
+        if data["currency"] not in CURRENCY_CODES:
+            try:
+                company = await api.get_company(token)
+            except APIError:
+                company = {}
+            return auth_shell(
+                _company_details_form(company, error=f"Invalid currency: {data['currency']!r}. Please select from the list.", lang=get_lang(request)),
+                title="Company setup - Celerp",
+            )
+
         try:
             await api.patch_company(token, data)
         except APIError as e:

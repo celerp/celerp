@@ -653,6 +653,37 @@ class TestCompanySwitcher:
         assert r.status_code in (302, 303)
         assert "login" in r.headers.get("location", "")
 
+    @pytest.mark.asyncio
+    async def test_setup_company_invalid_currency_shows_error(self, ui_client):
+        """POST /setup/company with free-text garbage currency → re-render form with error, no API call."""
+        with (
+            patch("ui.api_client.patch_company", new=AsyncMock()) as mock_patch,
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/setup/company",
+                data={"currency": "FFF", "timezone": "UTC"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"Invalid currency" in r.content
+        mock_patch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_setup_company_valid_currency_accepted(self, ui_client):
+        """POST /setup/company with a valid ISO code → patch called, redirect."""
+        with (
+            patch("ui.api_client.patch_company", new=AsyncMock()),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/setup/company",
+                data={"currency": "THB", "timezone": "Asia/Bangkok"},
+                cookies=_authed(),
+                follow_redirects=False,
+            )
+        assert r.status_code in (200, 302, 303)
+
 
 # ── Page rendering (authed) ──────────────────────────────────────────────────
 
@@ -2310,6 +2341,10 @@ class TestPhase2DeepPolish:
         assert b"combobox-wrap" in r.content
         assert b"THB" in r.content
         assert b'type="text"' in r.content  # search input
+        # hidden_id must not contain colons (breaks querySelectorAll)
+        import re
+        hidden_ids = re.findall(r'<input[^>]+type="hidden"[^>]+id="([^"]+)"', r.text)
+        assert all(":" not in hid for hid in hidden_ids), f"Colon in hidden input id: {hidden_ids}"
 
     @pytest.mark.asyncio
     async def test_contact_currency_field_patch_rejects_invalid_code(self, ui_client):
