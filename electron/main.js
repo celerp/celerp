@@ -303,6 +303,7 @@ function startApi(dbUrl, cfg) {
       CELERP_DATA_DIR: DATA_DIR,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
       CELERP_INSTALL_CHANNEL: "electron",
+      CELERP_API_PORT: String(apiPort),
       ...resolveStorageEnv(cfg),
     };
     apiProcess = spawn(
@@ -342,6 +343,8 @@ function startUi(dbUrl, cfg) {
       MODULE_DIR: MODULE_DIR,
       CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
+      CELERP_UI_PORT: String(uiPort),
+      CELERP_API_PORT: String(apiPort),
       ...resolveStorageEnv(cfg),
     };
     uiProcess = spawn(
