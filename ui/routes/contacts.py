@@ -17,6 +17,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.currency import currency_combobox_td, CURRENCY_CODES as _CURRENCY_CODES
+from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 from ui.routes.reports import _date_filter_bar, _parse_dates
@@ -1233,6 +1234,7 @@ def setup_routes(app):
             ),
             title=f"{contact_name} - Celerp",
             nav_active=nav_active_key,
+            extra_head=_phone_head_items(),
             request=request,
         )
 
@@ -1688,6 +1690,13 @@ def setup_routes(app):
                 cls="cell-input cell-input--select", autofocus=True,
                 onkeydown=_esc_js,
                 onchange="if(this.value==='__add_new__'){window.location.href='/settings/contacts?tab=payment-terms';return false;}",
+            )
+        elif field == "phone":
+            return phone_input_td(
+                value=val,
+                patch_url=f"/contacts/{contact_id}/field/phone",
+                cancel_url=f"/contacts/{contact_id}/field/phone/display",
+                field_id="contact-phone",
             )
         elif field == "currency":
             return currency_combobox_td(

@@ -2356,6 +2356,60 @@ class TestPhase2DeepPolish:
         mock_patch.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_contact_phone_field_edit_returns_iti_widget(self, ui_client):
+        """GET /contacts/{id}/field/phone/edit must return an intl-tel-input widget."""
+        contact = {**_CONTACTS[0], "phone": "+66812345678"}
+        with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
+            r = await ui_client.get("/contacts/ct:1/field/phone/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b"iti-wrap" in r.content           # wrapper div
+        assert b"iti-input" in r.content          # visible tel input
+        assert b'type="hidden"' in r.content      # hidden E.164 value input
+        assert b'name="value"' in r.content       # correct name for PATCH
+        assert b"intlTelInput" in r.content       # init script present
+        # hidden input id must not contain colons (breaks querySelectorAll)
+        import re
+        hidden_ids = re.findall(r'<input[^>]+type="hidden"[^>]+id="([^"]+)"', r.text)
+        assert hidden_ids, "No hidden input found"
+        assert all(":" not in hid for hid in hidden_ids), f"Colon in hidden id: {hidden_ids}"
+
+    @pytest.mark.asyncio
+    async def test_contact_phone_field_edit_empty_value(self, ui_client):
+        """Phone edit with no stored phone renders widget with empty value (no crash)."""
+        contact = {**_CONTACTS[0], "phone": None}
+        with patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)):
+            r = await ui_client.get("/contacts/ct:1/field/phone/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b"iti-wrap" in r.content
+
+    @pytest.mark.asyncio
+    async def test_company_phone_field_edit_returns_iti_widget(self, ui_client):
+        """GET /settings/company/phone/edit must return an intl-tel-input widget."""
+        company = {"phone": "+6621234567", "currency": "THB", "settings": {}}
+        with patch("ui.api_client.get_company", new=AsyncMock(return_value=company)):
+            r = await ui_client.get("/settings/company/phone/edit", cookies=_authed())
+        assert r.status_code == 200
+        assert b"iti-wrap" in r.content
+        assert b"intlTelInput" in r.content
+        assert b'name="value"' in r.content
+
+    @pytest.mark.asyncio
+    async def test_contact_detail_page_includes_phone_assets(self, ui_client):
+        """Contact detail page must include intl-tel-input CSS and JS in <head>."""
+        contact = {**_CONTACTS[0]}
+        with (
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "THB"})),
+            patch("ui.api_client.list_contact_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_contact_tags_vocabulary", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/contacts/ct:1", cookies=_authed())
+        assert r.status_code == 200
+        assert b"intlTelInput" in r.content       # JS asset in head
+        assert b"intlTelInput.min.css" in r.content  # CSS asset in head
+
+    @pytest.mark.asyncio
     async def test_docs_detail_field_patch(self, ui_client):
         updated = {**_DOC_DETAIL, "status": "paid"}
         with (

@@ -14,6 +14,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
 from ui.components.table import EMPTY, unwrap_address
 from ui.components.currency import CURRENCIES, CURRENCY_CODES, currency_label, currency_combobox_td
+from ui.components.phone import phone_input_td as _phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token
 from ui.config import get_role as _get_role
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
@@ -518,6 +519,14 @@ def setup_routes(app):
         except APIError as e:
             return P(f"Error: {e.detail}", cls="cell-error")
         val = str(company.get(field, "") or "")
+
+        if field == "phone":
+            return _phone_input_td(
+                value=val,
+                patch_url=f"/settings/company/phone",
+                cancel_url=f"/settings/company/phone/display",
+                field_id="company-phone",
+            )
 
         if field == "currency":
             return currency_combobox_td(

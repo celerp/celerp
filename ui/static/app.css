@@ -1925,3 +1925,19 @@ a:hover { text-decoration: underline; }
 .btn--ghost { background: transparent; border: 1px solid var(--c-border); color: var(--c-text-muted); border-radius: 4px; cursor: pointer; text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
 .btn--ghost:hover { background: var(--c-bg-hover); color: var(--c-text); border-color: var(--c-text-muted); }
 .btn--icon { padding: 0.3rem 0.4rem; line-height: 1; }
+
+/* ── intl-tel-input phone picker ─────────────────────────────────── */
+.iti-wrap { display: inline-block; }
+/* Override iti's default white bg to match our cell-input style */
+.iti { width: 100%; }
+.iti__tel-input.iti-input {
+    width: 100%;
+    padding-left: calc(var(--iti-flag-width, 20px) + 36px);
+    height: 32px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    font-size: 14px;
+    background: var(--c-bg);
+    color: var(--c-text);
+}
+.iti--separate-dial-code .iti__selected-dial-code { font-size: 13px; }

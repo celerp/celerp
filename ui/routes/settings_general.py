@@ -15,6 +15,7 @@ from ui.components.shell import base_shell, page_header, flash
 from ui.config import COOKIE_NAME, get_role as _get_role
 from ui.i18n import t, get_lang
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from ui.components.phone import phone_head_items as _phone_head_items
 
 # shared helpers imported from settings.py (keep DRY - only ONE copy)
 from ui.routes.settings import (
@@ -144,5 +145,6 @@ def setup_routes(app):
             title="Settings - Celerp",
             nav_active="settings",
             lang=lang,
+            extra_head=_phone_head_items(),
             request=request,
         )
