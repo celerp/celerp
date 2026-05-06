@@ -160,7 +160,7 @@ def _files_section(
             Tr(Td(P(t("label.no_files_yet"), cls="muted"), colspan="5"))
         ),
         id=f"files-table-{entity_id}",
-        cls="table table--compact",
+        cls="data-table data-table--compact",
     )
 
     # Upload dropzone
