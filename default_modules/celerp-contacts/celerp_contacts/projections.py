@@ -126,6 +126,7 @@ def apply_contact_event(state: dict, event_type: str, data: dict) -> dict:
             "size": data.get("size"),
             "description": data.get("description") or "",
             "document_tag": data.get("document_tag") or "",
+            "uploaded_at": data.get("uploaded_at") or "",
         })
     elif event_type == "crm.contact.file_tagged":
         for f in current.get("files", []):

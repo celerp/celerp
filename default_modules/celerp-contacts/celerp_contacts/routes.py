@@ -296,6 +296,7 @@ async def upload_contact_file(
             "size": meta["size"],
             "document_tag": None,
             "description": None,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
         },
         actor_id=user.id,
         location_id=None,

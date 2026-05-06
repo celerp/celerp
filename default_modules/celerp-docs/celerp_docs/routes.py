@@ -3260,6 +3260,7 @@ async def upload_doc_file(
             "size": meta["size"],
             "document_tag": None,
             "description": None,
+            "uploaded_at": datetime.now(UTC).isoformat(),
         },
         actor_id=user.id,
         location_id=None,

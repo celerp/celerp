@@ -199,3 +199,48 @@ async def test_doc_file_delete(client):
     doc = r.json()
     files = doc.get("files", [])
     assert not any(f.get("id") == fid for f in files), "File should be deleted"
+
+
+@pytest.mark.asyncio
+async def test_contact_file_has_uploaded_at(client):
+    """File projection entry must include uploaded_at timestamp."""
+    h = await _headers(client)
+    r = await client.post("/crm/contacts", json={"name": "UploadDate Test"}, headers=h)
+    assert r.status_code == 200
+    cid = r.json()["id"]
+
+    r = await client.post(
+        f"/crm/contacts/{cid}/files",
+        files={"file": ("ts_test.pdf", _SMALL_PDF, "application/pdf")},
+        headers=h,
+    )
+    assert r.status_code == 200
+    fid = r.json()["id"]
+
+    r = await client.get(f"/crm/contacts/{cid}", headers=h)
+    files = r.json().get("files", [])
+    match = next((f for f in files if f.get("id") == fid), None)
+    assert match is not None
+    assert match.get("uploaded_at"), f"uploaded_at missing from file entry: {match}"
+
+
+@pytest.mark.asyncio
+async def test_doc_file_has_uploaded_at(client):
+    """Doc file projection entry must include uploaded_at timestamp."""
+    h = await _headers(client)
+    doc_id = await _create_draft_doc(client, h)
+
+    r = await client.post(
+        f"/docs/{doc_id}/files",
+        files={"file": ("ts_doc.pdf", _SMALL_PDF, "application/pdf")},
+        headers=h,
+    )
+    assert r.status_code == 200
+    fid = r.json()["id"]
+
+    r = await client.get(f"/docs/{doc_id}", headers=h)
+    assert r.status_code == 200
+    files = r.json().get("files", [])
+    match = next((f for f in files if f.get("id") == fid), None)
+    assert match is not None
+    assert match.get("uploaded_at"), f"uploaded_at missing from doc file entry: {match}"

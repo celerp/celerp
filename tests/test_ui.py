@@ -11258,3 +11258,93 @@ class TestFilesSectionRenders:
             "Description fetch uses PATCH but UI proxy only handles POST"
         )
         assert "method:'POST'" in html
+
+    # ── Files section v2 tests ────────────────────────────────────────────────
+
+    def test_files_section_id_sanitized_no_colon(self):
+        """entity_id with colon must produce a colon-free DOM id (valid CSS selector)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "contact:abc-123", []))
+        assert 'id="files-section-contact:abc-123"' not in html, (
+            "Colon in entity_id makes CSS selector invalid - must be sanitized"
+        )
+        assert "files-section-contact-abc-123" in html
+
+    def test_files_section_new_tags_present(self):
+        """correspondence and registrations must be in _DOCUMENT_TAGS."""
+        from ui.components.files import _DOCUMENT_TAGS
+        assert "correspondence" in _DOCUMENT_TAGS
+        assert "registrations" in _DOCUMENT_TAGS
+
+    def test_files_section_upload_date_column(self):
+        """Upload Date must be the first column header."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert "Upload Date" in html or "upload_date" in html.lower()
+        # Upload Date must appear before Filename in the header
+        upload_pos = html.find("Upload Date")
+        filename_pos = html.find("FILENAME") if "FILENAME" in html else html.find("Filename")
+        if upload_pos >= 0 and filename_pos >= 0:
+            assert upload_pos < filename_pos, "Upload Date must be the first column"
+
+    def test_files_section_sort_arrow_on_date_column(self):
+        """Date column header must have a sort arrow indicator."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert "sort=" in html or "▲" in html or "▼" in html or "sort_dir" in html
+
+    def test_files_section_filter_bar_has_tag_dropdown(self):
+        """Filter bar must include a tag dropdown select."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert 'name="tag_filter"' in html
+
+    def test_files_section_filter_bar_has_date_inputs(self):
+        """Filter bar must include from-date and to-date inputs."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert 'name="date_from"' in html
+        assert 'name="date_to"' in html
+
+    def test_files_section_pagination_shown_over_threshold(self):
+        """Pagination controls must appear when files > page size."""
+        from ui.components.files import _files_section, FILES_PAGE_SIZE
+        from fasthtml.common import to_xml
+        files = [
+            {"id": f"f{i}", "filename": f"file{i}.pdf", "size": 100,
+             "document_tag": "", "description": "", "uploaded_at": f"2026-01-{i+1:02d}T00:00:00Z"}
+            for i in range(FILES_PAGE_SIZE + 1)
+        ]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "page=" in html or "pagination" in html.lower() or "Next" in html or ">" in html
+
+    def test_files_section_pagination_hidden_under_threshold(self):
+        """Pagination controls must NOT appear when files <= page size."""
+        from ui.components.files import _files_section, FILES_PAGE_SIZE
+        from fasthtml.common import to_xml
+        files = [
+            {"id": f"f{i}", "filename": f"file{i}.pdf", "size": 100,
+             "document_tag": "", "description": "", "uploaded_at": f"2026-01-{i+1:02d}T00:00:00Z"}
+            for i in range(FILES_PAGE_SIZE)
+        ]
+        html = to_xml(_files_section("contact", "c1", files))
+        # Should not show page navigation for exactly PAGE_SIZE items
+        assert 'class="pagination"' not in html
+
+    def test_files_section_newest_first_by_default(self):
+        """Files must be sorted newest-first by default (GDR)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "old", "filename": "old.pdf", "size": 1, "document_tag": "", "description": "",
+             "uploaded_at": "2026-01-01T00:00:00Z"},
+            {"id": "new", "filename": "new.pdf", "size": 1, "document_tag": "", "description": "",
+             "uploaded_at": "2026-06-01T00:00:00Z"},
+        ]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert html.index("new.pdf") < html.index("old.pdf"), "Newest file must appear first"

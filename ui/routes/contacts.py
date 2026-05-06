@@ -143,15 +143,9 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
 
 
 
-def _files_section(contact: dict, contact_id: str, tag_filter: str = "", search_filter: str = "") -> FT:
-    """Wrapper - delegates to shared component after applying local filters."""
-    files = contact.get("files", [])
-    if tag_filter:
-        files = [f for f in files if f.get("document_tag", "") == tag_filter]
-    if search_filter:
-        s = search_filter.lower()
-        files = [f for f in files if s in f.get("filename", "").lower()]
-    return _shared_files_section("contact", contact_id, files)
+def _files_section(contact: dict, contact_id: str, **kwargs) -> FT:
+    """Wrapper - delegates to shared component."""
+    return _shared_files_section("contact", contact_id, contact.get("files", []), **kwargs)
 
 
 def _contact_info_card(c: dict, *, oob: bool = False) -> FT:
@@ -1828,18 +1822,23 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         return _files_section(contact, contact_id)
 
-    @app.get("/contacts/{contact_id}/files/filter")
-    async def contact_files_filter(request: Request, contact_id: str):
+    @app.get("/contacts/{contact_id}/files/_section")
+    async def contact_files_section(request: Request, contact_id: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        tag_filter = str(request.query_params.get("tag_filter", "")).strip()
-        search_filter = str(request.query_params.get("search", "")).strip()
+        qp = request.query_params
         try:
             contact = await api.get_contact(token, contact_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _files_section(contact, contact_id, tag_filter=tag_filter, search_filter=search_filter)
+        return _files_section(contact, contact_id,
+            page=int(qp.get("page", "1") or "1"),
+            sort_dir=qp.get("sort_dir", "desc"),
+            tag_filter=qp.get("tag_filter", ""),
+            date_from=qp.get("date_from", ""),
+            date_to=qp.get("date_to", ""),
+        )
 
     @app.get("/contacts/{contact_id}/files/{file_id}/download")
     async def contact_download_file(request: Request, contact_id: str, file_id: str):

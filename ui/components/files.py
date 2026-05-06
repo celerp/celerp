@@ -16,13 +16,18 @@ from ui.i18n import t
 _DOCUMENT_TAGS: tuple[str, ...] = (
     "bills",
     "contracts",
+    "correspondence",
     "receipts",
+    "registrations",
     "certificates",
     "photos",
     "shipping",
     "legal",
     "other",
 )
+
+# Page size for file list pagination
+FILES_PAGE_SIZE = 20
 
 
 def _fmt_size(size: int) -> str:
@@ -35,6 +40,18 @@ def _tag_label(slug: str) -> str:
     return t(f"file_tag.{slug}") if slug else ""
 
 
+def _safe_id(entity_id: str) -> str:
+    """Return a colon-free DOM id fragment (colons are invalid in CSS selectors)."""
+    return entity_id.replace(":", "-")
+
+
+def _fmt_date(iso: str | None) -> str:
+    """Format ISO datetime to YYYY-MM-DD for display; return '--' if absent."""
+    if not iso:
+        return "--"
+    return iso[:10]
+
+
 def _files_section(
     entity_type: str,
     entity_id: str,
@@ -42,6 +59,11 @@ def _files_section(
     *,
     can_tag: bool = True,
     can_describe: bool = True,
+    page: int = 1,
+    sort_dir: str = "desc",
+    tag_filter: str = "",
+    date_from: str = "",
+    date_to: str = "",
 ) -> FT:
     """Render the files section for any entity.
 
@@ -51,30 +73,131 @@ def _files_section(
         files:       list of file dicts from the projection
         can_tag:     whether to show tag editing controls
         can_describe: whether to show description editing controls
+        page:        current page (1-indexed)
+        sort_dir:    "desc" (newest first) or "asc"
+        tag_filter:  filter to this tag slug
+        date_from:   filter uploaded_at >= this date (YYYY-MM-DD)
+        date_to:     filter uploaded_at <= this date (YYYY-MM-DD)
     """
     base_url = f"/{entity_type}s/{entity_id}/files"
+    sid = _safe_id(entity_id)  # safe DOM id fragment (no colons)
 
+    # ── Sort ─────────────────────────────────────────────────────────────────
+    def _uploaded_at_key(f: dict) -> str:
+        return f.get("uploaded_at") or ""
+
+    sorted_files = sorted(files, key=_uploaded_at_key, reverse=(sort_dir == "desc"))
+
+    # ── Filter ───────────────────────────────────────────────────────────────
+    if tag_filter:
+        sorted_files = [f for f in sorted_files if f.get("document_tag", "") == tag_filter]
+    if date_from:
+        sorted_files = [f for f in sorted_files if (f.get("uploaded_at") or "") >= date_from]
+    if date_to:
+        # date_to is inclusive: compare against date_to + "T23:59:59Z"
+        sorted_files = [f for f in sorted_files if (f.get("uploaded_at") or "")[:10] <= date_to]
+
+    # ── Pagination ────────────────────────────────────────────────────────────
+    total = len(sorted_files)
+    total_pages = max(1, (total + FILES_PAGE_SIZE - 1) // FILES_PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+    page_files = sorted_files[(page - 1) * FILES_PAGE_SIZE: page * FILES_PAGE_SIZE]
+
+    # ── Filter bar ───────────────────────────────────────────────────────────
+    # Build refresh URL with all current params (HTMX GET to proxy /_section)
+    def _filter_url(**overrides) -> str:
+        params = {"page": page, "sort_dir": sort_dir, "tag_filter": tag_filter,
+                  "date_from": date_from, "date_to": date_to}
+        params.update(overrides)
+        parts = "&".join(f"{k}={v}" for k, v in params.items() if v not in (None, "", 1) or k == "page")
+        return f"{base_url}/_section?{parts}" if parts else f"{base_url}/_section"
+
+    tag_opts = [Option(t("label.all_tags"), value="")] + [
+        Option(_tag_label(slug), value=slug, selected=(slug == tag_filter))
+        for slug in _DOCUMENT_TAGS
+    ]
+
+    next_sort = "asc" if sort_dir == "desc" else "desc"
+    sort_arrow = "▼" if sort_dir == "desc" else "▲"
+
+    filter_bar = Form(
+        Select(
+            *tag_opts,
+            name="tag_filter",
+            cls="form-input form-input--sm",
+            style="width:160px;",
+            hx_get=f"{base_url}/_section",
+            hx_target=f"#files-section-{sid}",
+            hx_swap="outerHTML",
+            hx_include=f"#files-filter-form-{sid}",
+            hx_trigger="change",
+        ),
+        Input(
+            type="date",
+            name="date_from",
+            value=date_from,
+            cls="form-input form-input--sm",
+            style="width:140px;",
+            hx_get=f"{base_url}/_section",
+            hx_target=f"#files-section-{sid}",
+            hx_swap="outerHTML",
+            hx_include=f"#files-filter-form-{sid}",
+            hx_trigger="change",
+        ),
+        Input(
+            type="date",
+            name="date_to",
+            value=date_to,
+            cls="form-input form-input--sm",
+            style="width:140px;",
+            hx_get=f"{base_url}/_section",
+            hx_target=f"#files-section-{sid}",
+            hx_swap="outerHTML",
+            hx_include=f"#files-filter-form-{sid}",
+            hx_trigger="change",
+        ),
+        Input(
+            type="search",
+            name="search",
+            placeholder=t("label.search"),
+            cls="form-input form-input--sm",
+            style="width:180px;",
+            hx_get=f"{base_url}/_section",
+            hx_target=f"#files-section-{sid}",
+            hx_swap="outerHTML",
+            hx_include=f"#files-filter-form-{sid}",
+            hx_trigger="input changed delay:300ms",
+        ),
+        # Hidden state fields
+        Input(type="hidden", name="sort_dir", value=sort_dir),
+        Input(type="hidden", name="page", value=str(page)),
+        id=f"files-filter-form-{sid}",
+        cls="files-filter-bar",
+        style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;",
+    )
+
+    # ── Table rows ────────────────────────────────────────────────────────────
     file_rows = []
-    for f in files:
+    for f in page_files:
         fid = f.get("id", "")
         fname = f.get("filename", "file")
         size = f.get("size", 0) or 0
         doc_tag = f.get("document_tag") or ""
         desc = f.get("description") or ""
+        uploaded_at = _fmt_date(f.get("uploaded_at"))
 
-        # Tag cell - DDE click-to-edit
         if can_tag:
-            tag_opts = [Option(t("label.no_tag"), value="")] + [
+            tag_opts_row = [Option(t("label.no_tag"), value="")] + [
                 Option(_tag_label(slug), value=slug, selected=(slug == doc_tag))
                 for slug in _DOCUMENT_TAGS
             ]
             tag_cell = Td(
                 Select(
-                    *tag_opts,
+                    *tag_opts_row,
                     name="document_tag",
                     cls="form-input form-input--xs file-tag-select",
                     hx_post=f"{base_url}/{fid}/tag",
-                    hx_target=f"#files-section-{entity_id}",
+                    hx_target=f"#files-section-{sid}",
                     hx_swap="outerHTML",
                     hx_trigger="change",
                 ),
@@ -82,7 +205,6 @@ def _files_section(
         else:
             tag_cell = Td(Span(_tag_label(doc_tag), cls="badge badge--muted") if doc_tag else Span())
 
-        # Description cell - DDE dblclick-to-edit
         if can_describe:
             desc_cell = Td(
                 Span(
@@ -98,8 +220,8 @@ def _files_section(
                             f"inp.onblur=function(){{var fd=new FormData();fd.append('description',inp.value);"
                             f"fetch('{base_url}/{fid}/description',{{method:'POST',body:fd}})"
                             f".then(function(r){{return r.text();}}).then(function(html){{"
-                            f"var sec=document.getElementById('files-section-{entity_id}');"
-                            f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{entity_id}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
+                            f"var sec=document.getElementById('files-section-{sid}');"
+                            f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
                             f"}})}};"
                             f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
                             f"if(e.key==='Escape'){{el.textContent=inp.value=el.dataset.orig;inp.blur();}}}};"
@@ -113,6 +235,7 @@ def _files_section(
             desc_cell = Td(Span(desc, cls="muted"))
 
         file_rows.append(Tr(
+            Td(Span(uploaded_at, cls="muted")),
             Td(A(fname, href=f"{base_url}/{fid}/download", cls="file-link")),
             tag_cell,
             desc_cell,
@@ -121,7 +244,7 @@ def _files_section(
                 Button(
                     "×",
                     hx_delete=f"{base_url}/{fid}",
-                    hx_target=f"#files-section-{entity_id}",
+                    hx_target=f"#files-section-{sid}",
                     hx_swap="outerHTML",
                     hx_confirm=f"{t('action.delete_file')}: {fname}?",
                     cls="btn btn--ghost btn--xs",
@@ -130,27 +253,24 @@ def _files_section(
             ),
         ))
 
-    # Search bar (client-side JS filter)
-    search_bar = Div(
-        Input(
-            type="search",
-            placeholder=t("label.search"),
-            cls="form-input form-input--sm",
-            style="width:200px;",
-            oninput=(
-                f"(function(q){{var rows=document.querySelectorAll('#files-table-{entity_id} tbody tr');"
-                f"rows.forEach(function(r){{var text=r.textContent.toLowerCase();"
-                f"r.style.display=text.includes(q.toLowerCase())?'':'none';}});"
-                f"}})(this.value)"
-            ),
+    # Date column header with sort arrow (clickable)
+    date_th = Th(
+        A(
+            f"{t('label.upload_date')} {sort_arrow}",
+            href="#",
+            hx_get=f"{base_url}/_section",
+            hx_target=f"#files-section-{sid}",
+            hx_swap="outerHTML",
+            hx_vals=f'{{"sort_dir":"{next_sort}","page":"1","tag_filter":"{tag_filter}","date_from":"{date_from}","date_to":"{date_to}"}}',
+            cls="sort-link",
+            style="white-space:nowrap;",
         ),
-        cls="files-search-bar",
-        style="margin-bottom:8px;",
     )
 
     table = Table(
         Thead(
             Tr(
+                date_th,
                 Th(t("th.filename")),
                 Th(t("label.tag")) if can_tag else Th(),
                 Th(t("label.file_description")) if can_describe else Th(),
@@ -159,17 +279,35 @@ def _files_section(
             )
         ),
         Tbody(*file_rows) if file_rows else Tbody(
-            Tr(Td(P(t("label.no_files_yet"), cls="muted"), colspan="5"))
+            Tr(Td(P(t("label.no_files_yet"), cls="muted"), colspan="6"))
         ),
-        id=f"files-table-{entity_id}",
+        id=f"files-table-{sid}",
         cls="data-table data-table--compact",
     )
 
-    # Upload dropzone
+    # ── Pagination ────────────────────────────────────────────────────────────
+    pagination = None
+    if total_pages > 1:
+        pager_items = []
+        for pg in range(1, total_pages + 1):
+            pager_items.append(
+                A(
+                    str(pg),
+                    href="#",
+                    cls=f"page-link{'  page-link--active' if pg == page else ''}",
+                    hx_get=f"{base_url}/_section",
+                    hx_target=f"#files-section-{sid}",
+                    hx_swap="outerHTML",
+                    hx_vals=f'{{"page":"{pg}","sort_dir":"{sort_dir}","tag_filter":"{tag_filter}","date_from":"{date_from}","date_to":"{date_to}"}}',
+                )
+            )
+        pagination = Div(*pager_items, cls="pagination", style="margin-top:8px;display:flex;gap:4px;")
+
+    # ── Upload dropzone ───────────────────────────────────────────────────────
     drop_js = f"""
 (function(){{
-  var zone=document.getElementById('file-drop-zone-{entity_id}');
-  var inp=document.getElementById('file-drop-input-{entity_id}');
+  var zone=document.getElementById('file-drop-zone-{sid}');
+  var inp=document.getElementById('file-drop-input-{sid}');
   if(!zone||!inp) return;
   function upload(file){{
     var fd=new FormData(); fd.append('file',file);
@@ -178,8 +316,8 @@ def _files_section(
     fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
       .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.text();}})
       .then(function(html){{
-        var sec=document.getElementById('files-section-{entity_id}');
-        if(sec) {{ sec.outerHTML=html; var ns=document.getElementById('files-section-{entity_id}'); if(ns&&window.htmx) htmx.process(ns); }}
+        var sec=document.getElementById('files-section-{sid}');
+        if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}
         else location.reload();
       }})
       .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
@@ -200,16 +338,22 @@ def _files_section(
     upload_zone = Div(
         Div("📁", cls="file-drop-icon"),
         Div(t("msg.drop_files_here"), cls="file-drop-text"),
-        Input(type="file", id=f"file-drop-input-{entity_id}", style="display:none"),
+        Input(type="file", id=f"file-drop-input-{sid}", style="display:none"),
         Script(drop_js),
         cls="file-drop-zone",
-        id=f"file-drop-zone-{entity_id}",
+        id=f"file-drop-zone-{sid}",
     )
 
-    return Div(
+    children = [
         H3(t("label.files"), cls="section-title"),
-        search_bar,
+        filter_bar,
         table,
-        upload_zone,
-        id=f"files-section-{entity_id}",
+    ]
+    if pagination:
+        children.append(pagination)
+    children.append(upload_zone)
+
+    return Div(
+        *children,
+        id=f"files-section-{sid}",
     )

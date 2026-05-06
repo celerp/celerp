@@ -2740,7 +2740,7 @@ celerpUpdateBulkAlloc();
             return P(str(e.detail), cls="cell-error")
         return _doc_files_section("doc", entity_id, doc.get("files", []))
 
-    @app.patch("/docs/{entity_id}/files/{file_id}/description")
+    @app.post("/docs/{entity_id}/files/{file_id}/description")
     async def doc_patch_file_description(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
@@ -2753,6 +2753,24 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
         return _doc_files_section("doc", entity_id, doc.get("files", []))
+
+    @app.get("/docs/{entity_id}/files/_section")
+    async def doc_files_section(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        qp = request.query_params
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, doc.get("files", []),
+            page=int(qp.get("page", "1") or "1"),
+            sort_dir=qp.get("sort_dir", "desc"),
+            tag_filter=qp.get("tag_filter", ""),
+            date_from=qp.get("date_from", ""),
+            date_to=qp.get("date_to", ""),
+        )
 
     @app.get("/docs/{entity_id}/files/{file_id}/download")
     async def doc_download_file(request: Request, entity_id: str, file_id: str):
