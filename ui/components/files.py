@@ -86,19 +86,20 @@ def _files_section(
         if can_describe:
             desc_cell = Td(
                 Span(
-                    desc or "",
+                    desc if desc else "--",
                     cls="file-desc muted",
                     title=t("label.dblclick_to_edit"),
                     **{
                         "ondblclick": (
                             f"(function(el){{var inp=document.createElement('input');"
-                            f"inp.type='text';inp.value=el.textContent.trim();"
+                            f"inp.type='text';"
+                            f"var cur=el.textContent.trim();inp.value=cur==='--'?'':cur;"
                             f"inp.className='form-input form-input--sm';inp.style='width:100%';"
                             f"inp.onblur=function(){{var fd=new FormData();fd.append('description',inp.value);"
                             f"fetch('{base_url}/{fid}/description',{{method:'POST',body:fd}})"
                             f".then(function(r){{return r.text();}}).then(function(html){{"
                             f"var sec=document.getElementById('files-section-{entity_id}');"
-                            f"if(sec)sec.outerHTML=html;else location.reload();"
+                            f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{entity_id}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
                             f"}})}};"
                             f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
                             f"if(e.key==='Escape'){{el.textContent=inp.value=el.dataset.orig;inp.blur();}}}};"
@@ -178,7 +179,7 @@ def _files_section(
       .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.text();}})
       .then(function(html){{
         var sec=document.getElementById('files-section-{entity_id}');
-        if(sec) sec.outerHTML=html;
+        if(sec) {{ sec.outerHTML=html; var ns=document.getElementById('files-section-{entity_id}'); if(ns&&window.htmx) htmx.process(ns); }}
         else location.reload();
       }})
       .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
