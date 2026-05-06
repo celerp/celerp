@@ -1853,15 +1853,6 @@ def _bulk_context_templates(
         is_navigate = action.get("action_type") == "navigate"
 
         if is_labels:
-            # Build filter params for "print all" fallback link
-            _LABEL_CAP = 100
-            count = min(total_items, _LABEL_CAP)
-            filter_qs_params = {k: v for k, v in (p or {}).items()
-                                if k in ("q", "status", "category", "sort", "dir") and v}
-            from urllib.parse import urlencode as _ue
-            print_all_href = "/labels/print-list" + (f"?{_ue(filter_qs_params)}" if filter_qs_params else "")
-            print_all_label = f"{t('btn._print_labels')} (all {count})" if total_items else t("btn._print_labels")
-
             form = Form(
                 # Template selector loaded via HTMX on first use
                 Select(
@@ -1881,13 +1872,7 @@ def _bulk_context_templates(
                 onsubmit="submitBulkAction(this)",
                 cls="display-contents",
             )
-            # "Print all filtered items" link as a secondary option
-            print_all_form = Form(
-                A(print_all_label, href=print_all_href, target="_blank",
-                  cls="btn btn--ghost btn--sm", style="white-space:nowrap"),
-                cls="display-contents",
-            )
-            module_tpls.append(Template(Div(form, print_all_form, cls="display-contents"), id=f"tpl-mod-{action_id}"))
+            module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
         elif is_navigate:
             form = Form(
                 Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),

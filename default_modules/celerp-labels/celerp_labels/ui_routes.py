@@ -1143,7 +1143,7 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 <body>
 <div class="no-print">
   <button onclick="window.print()" style="padding:8px 16px;cursor:pointer;font-size:14px;">🖨 Print</button>
-  <button onclick="history.back()" style="padding:8px 16px;cursor:pointer;font-size:14px;margin-left:8px;">← Back</button>
+  <button onclick="window.location.href='/inventory'" style="padding:8px 16px;cursor:pointer;font-size:14px;margin-left:8px;">← Back</button>
 </div>
 <div class="label-sheet">{"".join(label_rows)}</div>
 <script>window.onload = function() {{ window.print(); }};</script>
