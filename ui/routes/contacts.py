@@ -1838,6 +1838,7 @@ def setup_routes(app):
             tag_filter=qp.get("tag_filter", ""),
             date_from=qp.get("date_from", ""),
             date_to=qp.get("date_to", ""),
+            search=qp.get("search", ""),
         )
 
     @app.get("/contacts/{contact_id}/files/{file_id}/download")

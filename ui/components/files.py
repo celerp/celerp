@@ -64,20 +64,22 @@ def _files_section(
     tag_filter: str = "",
     date_from: str = "",
     date_to: str = "",
+    search: str = "",
 ) -> FT:
     """Render the files section for any entity.
 
     Args:
-        entity_type: e.g. "contact", "doc"
-        entity_id:   the entity's id
-        files:       list of file dicts from the projection
-        can_tag:     whether to show tag editing controls
+        entity_type:  e.g. "contact", "doc"
+        entity_id:    the entity's id
+        files:        list of file dicts from the projection
+        can_tag:      whether to show tag editing controls
         can_describe: whether to show description editing controls
-        page:        current page (1-indexed)
-        sort_dir:    "desc" (newest first) or "asc"
-        tag_filter:  filter to this tag slug
-        date_from:   filter uploaded_at >= this date (YYYY-MM-DD)
-        date_to:     filter uploaded_at <= this date (YYYY-MM-DD)
+        page:         current page (1-indexed)
+        sort_dir:     "desc" (newest first) or "asc"
+        tag_filter:   filter to this tag slug
+        date_from:    filter uploaded_at >= this date (YYYY-MM-DD)
+        date_to:      filter uploaded_at <= this date (YYYY-MM-DD)
+        search:       filter by filename, description, or linked_ref (case-insensitive substring)
     """
     base_url = f"/{entity_type}s/{entity_id}/files"
     sid = _safe_id(entity_id)  # safe DOM id fragment (no colons)
@@ -96,6 +98,14 @@ def _files_section(
     if date_to:
         # date_to is inclusive: compare against date_to + "T23:59:59Z"
         sorted_files = [f for f in sorted_files if (f.get("uploaded_at") or "")[:10] <= date_to]
+    if search:
+        q = search.lower()
+        sorted_files = [
+            f for f in sorted_files
+            if q in (f.get("filename") or "").lower()
+            or q in (f.get("description") or "").lower()
+            or q in (f.get("linked_ref") or "").lower()
+        ]
 
     # ── Pagination ────────────────────────────────────────────────────────────
     total = len(sorted_files)
@@ -104,14 +114,6 @@ def _files_section(
     page_files = sorted_files[(page - 1) * FILES_PAGE_SIZE: page * FILES_PAGE_SIZE]
 
     # ── Filter bar ───────────────────────────────────────────────────────────
-    # Build refresh URL with all current params (HTMX GET to proxy /_section)
-    def _filter_url(**overrides) -> str:
-        params = {"page": page, "sort_dir": sort_dir, "tag_filter": tag_filter,
-                  "date_from": date_from, "date_to": date_to}
-        params.update(overrides)
-        parts = "&".join(f"{k}={v}" for k, v in params.items() if v not in (None, "", 1) or k == "page")
-        return f"{base_url}/_section?{parts}" if parts else f"{base_url}/_section"
-
     tag_opts = [Option(t("label.all_tags"), value="")] + [
         Option(_tag_label(slug), value=slug, selected=(slug == tag_filter))
         for slug in _DOCUMENT_TAGS
@@ -120,6 +122,8 @@ def _files_section(
     next_sort = "asc" if sort_dir == "desc" else "desc"
     sort_arrow = "▼" if sort_dir == "desc" else "▲"
 
+    # Hidden fields carry all filter state so every individual control can
+    # include the form and get a complete refresh URL.
     filter_bar = Form(
         Select(
             *tag_opts,
@@ -133,11 +137,12 @@ def _files_section(
             hx_trigger="change",
         ),
         Input(
-            type="date",
+            type="text",
             name="date_from",
             value=date_from,
+            placeholder="YYYY-MM-DD",
             cls="form-input form-input--sm",
-            style="width:140px;",
+            style="width:130px;",
             hx_get=f"{base_url}/_section",
             hx_target=f"#files-section-{sid}",
             hx_swap="outerHTML",
@@ -145,11 +150,12 @@ def _files_section(
             hx_trigger="change",
         ),
         Input(
-            type="date",
+            type="text",
             name="date_to",
             value=date_to,
+            placeholder="YYYY-MM-DD",
             cls="form-input form-input--sm",
-            style="width:140px;",
+            style="width:130px;",
             hx_get=f"{base_url}/_section",
             hx_target=f"#files-section-{sid}",
             hx_swap="outerHTML",
@@ -159,6 +165,7 @@ def _files_section(
         Input(
             type="search",
             name="search",
+            value=search,
             placeholder=t("label.search"),
             cls="form-input form-input--sm",
             style="width:180px;",
@@ -166,15 +173,51 @@ def _files_section(
             hx_target=f"#files-section-{sid}",
             hx_swap="outerHTML",
             hx_include=f"#files-filter-form-{sid}",
-            hx_trigger="input changed delay:300ms",
+            # keyup+blur: keyup fires on each keystroke so the cursor stays in
+            # place; delay:400ms debounces; blur covers paste+clear
+            hx_trigger="keyup changed delay:400ms, blur",
         ),
-        # Hidden state fields
+        # Hidden state fields - keep current values across partial refreshes
         Input(type="hidden", name="sort_dir", value=sort_dir),
         Input(type="hidden", name="page", value=str(page)),
         id=f"files-filter-form-{sid}",
         cls="files-filter-bar",
         style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;",
     )
+
+    # ── Determine if "linked to" column is meaningful ─────────────────────────
+    # Show the column when any file has a linked_ref populated.
+    has_linked = any(f.get("linked_ref") for f in files)
+
+    # ── Column resize JS ─────────────────────────────────────────────────────
+    # Vanilla JS: drag resize handles between <th> elements.
+    # Injected once per section render; keyed by sid so multiple sections
+    # on the same page don't collide.
+    resize_js = f"""
+(function(){{
+  var table=document.getElementById('files-table-{sid}');
+  if(!table) return;
+  var ths=table.querySelectorAll('thead th');
+  ths.forEach(function(th,i){{
+    // Skip last column (delete button - fixed narrow)
+    if(i===ths.length-1) return;
+    var handle=document.createElement('div');
+    handle.className='col-resize-handle';
+    handle.style='position:absolute;right:0;top:0;bottom:0;width:5px;cursor:col-resize;z-index:1;';
+    th.style.position='relative';
+    th.appendChild(handle);
+    var startX,startW;
+    handle.addEventListener('mousedown',function(e){{
+      startX=e.pageX; startW=th.offsetWidth;
+      document.addEventListener('mousemove',onMove);
+      document.addEventListener('mouseup',onUp);
+      e.preventDefault();
+    }});
+    function onMove(e){{ th.style.width=(startW+e.pageX-startX)+'px'; }}
+    function onUp(){{ document.removeEventListener('mousemove',onMove); document.removeEventListener('mouseup',onUp); }}
+  }});
+}})();
+"""
 
     # ── Table rows ────────────────────────────────────────────────────────────
     file_rows = []
@@ -185,6 +228,8 @@ def _files_section(
         doc_tag = f.get("document_tag") or ""
         desc = f.get("description") or ""
         uploaded_at = _fmt_date(f.get("uploaded_at"))
+        linked_ref = f.get("linked_ref") or ""
+        linked_url = f.get("linked_url") or ""
 
         if can_tag:
             tag_opts_row = [Option(t("label.no_tag"), value="")] + [
@@ -234,11 +279,27 @@ def _files_section(
         else:
             desc_cell = Td(Span(desc, cls="muted"))
 
-        file_rows.append(Tr(
+        # "Linked to" cell - show only when column is visible
+        if has_linked:
+            if linked_ref:
+                linked_content = (
+                    A(linked_ref, href=linked_url, cls="doc-ref-link")
+                    if linked_url else
+                    Span(linked_ref, cls="badge badge--muted")
+                )
+            else:
+                linked_content = Span("--", cls="muted")
+            linked_cell = Td(linked_content)
+
+        row_cells = [
             Td(Span(uploaded_at, cls="muted")),
             Td(A(fname, href=f"{base_url}/{fid}/download", cls="file-link")),
             tag_cell,
             desc_cell,
+        ]
+        if has_linked:
+            row_cells.append(linked_cell)
+        row_cells += [
             Td(Span(_fmt_size(size), cls="muted")),
             Td(
                 Button(
@@ -251,9 +312,11 @@ def _files_section(
                     title=t("action.delete_file"),
                 ),
             ),
-        ))
+        ]
+        file_rows.append(Tr(*row_cells))
 
     # Date column header with sort arrow (clickable)
+    col_count = 6 + (1 if has_linked else 0)
     date_th = Th(
         A(
             f"{t('label.upload_date')} {sort_arrow}",
@@ -261,25 +324,29 @@ def _files_section(
             hx_get=f"{base_url}/_section",
             hx_target=f"#files-section-{sid}",
             hx_swap="outerHTML",
-            hx_vals=f'{{"sort_dir":"{next_sort}","page":"1","tag_filter":"{tag_filter}","date_from":"{date_from}","date_to":"{date_to}"}}',
+            hx_vals=f'{{"sort_dir":"{next_sort}","page":"1","tag_filter":"{tag_filter}","date_from":"{date_from}","date_to":"{date_to}","search":"{search}"}}',
             cls="sort-link",
             style="white-space:nowrap;",
         ),
     )
 
+    # Description column gets extra width via inline style
+    desc_th = Th(t("label.file_description") if can_describe else "", style="min-width:200px;")
+
+    header_cells = [
+        date_th,
+        Th(t("th.filename")),
+        Th(t("label.tag")) if can_tag else Th(),
+        desc_th,
+    ]
+    if has_linked:
+        header_cells.append(Th(t("label.linked_to")))
+    header_cells += [Th(t("th.size")), Th()]
+
     table = Table(
-        Thead(
-            Tr(
-                date_th,
-                Th(t("th.filename")),
-                Th(t("label.tag")) if can_tag else Th(),
-                Th(t("label.file_description")) if can_describe else Th(),
-                Th(t("th.size")),
-                Th(),
-            )
-        ),
+        Thead(Tr(*header_cells)),
         Tbody(*file_rows) if file_rows else Tbody(
-            Tr(Td(P(t("label.no_files_yet"), cls="muted"), colspan="6"))
+            Tr(Td(P(t("label.no_files_yet"), cls="muted"), colspan=str(col_count)))
         ),
         id=f"files-table-{sid}",
         cls="data-table data-table--compact",
@@ -298,7 +365,7 @@ def _files_section(
                     hx_get=f"{base_url}/_section",
                     hx_target=f"#files-section-{sid}",
                     hx_swap="outerHTML",
-                    hx_vals=f'{{"page":"{pg}","sort_dir":"{sort_dir}","tag_filter":"{tag_filter}","date_from":"{date_from}","date_to":"{date_to}"}}',
+                    hx_vals=f'{{"page":"{pg}","sort_dir":"{sort_dir}","tag_filter":"{tag_filter}","date_from":"{date_from}","date_to":"{date_to}","search":"{search}"}}',
                 )
             )
         pagination = Div(*pager_items, cls="pagination", style="margin-top:8px;display:flex;gap:4px;")
@@ -348,6 +415,7 @@ def _files_section(
         H3(t("label.files"), cls="section-title"),
         filter_bar,
         table,
+        Script(resize_js),
     ]
     if pagination:
         children.append(pagination)

@@ -628,6 +628,7 @@
   "label.to_email": "إلى (البريد الإلكتروني)",
   "label.total": "المجموع",
   "label.upload_csv": "تحميل CSV",
+  "label.linked_to": "مرتبط بـ",
   "label.upload_date": "تاريخ الرفع",
   "label.upload_file": "رفع ملف",
   "label.username": "اسم المستخدم",

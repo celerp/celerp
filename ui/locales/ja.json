@@ -628,6 +628,7 @@
   "label.to_email": "宛先（メール）",
   "label.total": "合計",
   "label.upload_csv": "CSV をアップロードする",
+  "label.linked_to": "リンク先",
   "label.upload_date": "アップロード日",
   "label.upload_file": "ファイルをアップロード",
   "label.username": "ユーザー名",

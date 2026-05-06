@@ -2764,12 +2764,19 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _doc_files_section("doc", entity_id, doc.get("files", []),
+        ref = doc.get("ref_id") or doc.get("doc_number") or ""
+        doc_url = f"/docs/{entity_id}"
+        enriched_files = [
+            {**f, "linked_ref": ref, "linked_url": doc_url}
+            for f in doc.get("files", [])
+        ]
+        return _doc_files_section("doc", entity_id, enriched_files,
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
             tag_filter=qp.get("tag_filter", ""),
             date_from=qp.get("date_from", ""),
             date_to=qp.get("date_to", ""),
+            search=qp.get("search", ""),
         )
 
     @app.get("/docs/{entity_id}/files/{file_id}/download")

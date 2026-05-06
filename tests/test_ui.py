@@ -11348,3 +11348,80 @@ class TestFilesSectionRenders:
         ]
         html = to_xml(_files_section("contact", "c1", files))
         assert html.index("new.pdf") < html.index("old.pdf"), "Newest file must appear first"
+
+    def test_files_section_search_filters_by_filename(self):
+        """search= must filter rows by filename (case-insensitive)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "invoice.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""},
+            {"id": "f2", "filename": "contract.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""},
+        ]
+        html = to_xml(_files_section("contact", "c1", files, search="inv"))
+        assert "invoice.pdf" in html
+        assert "contract.pdf" not in html
+
+    def test_files_section_search_filters_by_description(self):
+        """search= must filter rows by description text."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "warranty card", "uploaded_at": ""},
+            {"id": "f2", "filename": "b.pdf", "size": 1, "document_tag": "", "description": "shipping label", "uploaded_at": ""},
+        ]
+        html = to_xml(_files_section("contact", "c1", files, search="warranty"))
+        assert "a.pdf" in html
+        assert "b.pdf" not in html
+
+    def test_files_section_search_filters_by_linked_ref(self):
+        """search= must filter rows by linked_ref (document number)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "INV-0042"},
+            {"id": "f2", "filename": "b.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "PO-0007"},
+        ]
+        html = to_xml(_files_section("doc", "d1", files, search="INV"))
+        assert "a.pdf" in html
+        assert "b.pdf" not in html
+
+    def test_files_section_search_preserved_in_form(self):
+        """The search input must render with the current search value so HTMX refreshes preserve it."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""}]
+        html = to_xml(_files_section("contact", "c1", files, search="hello"))
+        assert 'value="hello"' in html
+
+    def test_files_section_linked_to_column_shown_when_data_present(self):
+        """Linked To column must appear when any file has linked_ref."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "INV-001", "linked_url": "/docs/d1"},
+        ]
+        html = to_xml(_files_section("doc", "d1", files))
+        assert "Linked To" in html or "linked_to" in html.lower()
+        assert "INV-001" in html
+
+    def test_files_section_linked_to_column_hidden_when_no_data(self):
+        """Linked To column must NOT appear when no file has a linked_ref."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""}]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "Linked To" not in html
+
+    def test_files_section_date_inputs_are_text_type(self):
+        """Date filter inputs must be type=text (not type=date) to avoid browser year-entry bug."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        # type="date" causes the Chrome year field to only accept 2 digits
+        assert 'name="date_from"' in html
+        assert 'name="date_to"' in html
+        # Verify they use text inputs, not date pickers
+        import re
+        date_inputs = re.findall(r'<input[^>]*name="date_from"[^>]*/?>|<input[^>]*name="date_to"[^>]*/?>',  html)
+        for inp in date_inputs:
+            assert 'type="date"' not in inp, f"Date filter must use type=text, not type=date: {inp}"

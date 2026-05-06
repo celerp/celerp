@@ -661,6 +661,7 @@
   "label.to_email": "To (email)",
   "label.total": "Total",
   "label.upload_csv": "Upload CSV",
+  "label.linked_to": "Linked To",
   "label.upload_date": "Upload Date",
   "label.upload_file": "Upload File",
   "label.username": "Username",

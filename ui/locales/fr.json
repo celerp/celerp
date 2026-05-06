@@ -628,6 +628,7 @@
   "label.to_email": "À (e-mail)",
   "label.total": "Total",
   "label.upload_csv": "Téléchargez CSV",
+  "label.linked_to": "Lié à",
   "label.upload_date": "Date d'envoi",
   "label.upload_file": "Télécharger un fichier",
   "label.username": "Nom d'utilisateur",
