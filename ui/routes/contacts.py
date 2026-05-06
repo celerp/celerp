@@ -143,9 +143,39 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
 
 
 
-def _files_section(contact: dict, contact_id: str, **kwargs) -> FT:
-    """Wrapper - delegates to shared component."""
-    return _shared_files_section("contact", contact_id, contact.get("files", []), **kwargs)
+def _collect_contact_files(contact: dict, docs: list[dict]) -> list[dict]:
+    """Merge contact-own files with files from related docs.
+
+    Contact files have no linked_ref (shown as '--').
+    Doc files are tagged with linked_ref=doc_number and linked_url=/docs/{id}.
+    File ids are unique across the merged list (dedup by id).
+    """
+    seen: set[str] = set()
+    result: list[dict] = []
+
+    for f in contact.get("files", []):
+        fid = f.get("id", "")
+        if fid not in seen:
+            seen.add(fid)
+            result.append({**f, "linked_ref": "", "linked_url": ""})
+
+    for doc in docs:
+        doc_id = doc.get("entity_id") or doc.get("id") or ""
+        ref = doc.get("ref_id") or doc.get("doc_number") or ""
+        url = f"/docs/{doc_id}" if doc_id else ""
+        for f in doc.get("files", []):
+            fid = f.get("id", "")
+            if fid not in seen:
+                seen.add(fid)
+                result.append({**f, "linked_ref": ref, "linked_url": url})
+
+    return result
+
+
+def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = None, **kwargs) -> FT:
+    """Wrapper - merges contact-own files with related doc files, then delegates to shared component."""
+    merged = _collect_contact_files(contact, docs or [])
+    return _shared_files_section("contact", contact_id, merged, **kwargs)
 
 
 def _contact_info_card(c: dict, *, oob: bool = False) -> FT:
@@ -407,7 +437,7 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
 
     # Files / upload section
     if contact is not None and contact_id:
-        files_content = _files_section(contact, contact_id)
+        files_content = _files_section(contact, contact_id, docs)
     else:
         files_content = ""
 
@@ -1767,9 +1797,11 @@ def setup_routes(app):
         if not file or not hasattr(file, "read"):
             try:
                 contact = await api.get_contact(token, contact_id)
+                docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
             except APIError:
                 contact = {"entity_id": contact_id}
-            return _files_section(contact, contact_id)
+                docs_resp = {"items": []}
+            return _files_section(contact, contact_id, docs_resp.get("items", []))
         description = str(form.get("description", "")).strip()
         document_tag = str(form.get("document_tag", "")).strip()
         content = await file.read()
@@ -1778,9 +1810,10 @@ def setup_routes(app):
         try:
             await api.upload_contact_file(token, contact_id, content, filename, content_type, description, document_tag)
             contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _files_section(contact, contact_id)
+        return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.delete("/contacts/{contact_id}/files/{file_id}")
     async def contact_delete_file(request: Request, contact_id: str, file_id: str):
@@ -1790,9 +1823,10 @@ def setup_routes(app):
         try:
             await api.delete_contact_file(token, contact_id, file_id)
             contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _files_section(contact, contact_id)
+        return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.post("/contacts/{contact_id}/files/{file_id}/tag")
     async def contact_tag_file(request: Request, contact_id: str, file_id: str):
@@ -1804,9 +1838,10 @@ def setup_routes(app):
         try:
             await api.tag_contact_file(token, contact_id, file_id, document_tag)
             contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _files_section(contact, contact_id)
+        return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.post("/contacts/{contact_id}/files/{file_id}/description")
     async def contact_patch_file_description(request: Request, contact_id: str, file_id: str):
@@ -1818,9 +1853,10 @@ def setup_routes(app):
         try:
             await api.patch_contact_file_description(token, contact_id, file_id, description)
             contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _files_section(contact, contact_id)
+        return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.get("/contacts/{contact_id}/files/_section")
     async def contact_files_section(request: Request, contact_id: str):
@@ -1830,9 +1866,10 @@ def setup_routes(app):
         qp = request.query_params
         try:
             contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _files_section(contact, contact_id,
+        return _files_section(contact, contact_id, docs_resp.get("items", []),
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
             tag_filter=qp.get("tag_filter", ""),

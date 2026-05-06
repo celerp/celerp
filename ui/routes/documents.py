@@ -17,7 +17,19 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
-from ui.components.files import _files_section as _doc_files_section
+from ui.components.files import _files_section as _shared_doc_files_section
+
+
+def _enrich_doc_files(doc: dict) -> list[dict]:
+    """Tag each file in a doc with its linked_ref and linked_url."""
+    doc_id = doc.get("entity_id") or doc.get("id") or ""
+    ref = doc.get("ref_id") or doc.get("doc_number") or ""
+    url = f"/docs/{doc_id}" if doc_id else ""
+    return [{**f, "linked_ref": ref, "linked_url": url} for f in doc.get("files", [])]
+
+
+def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kwargs):
+    return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
@@ -2701,7 +2713,7 @@ celerpUpdateBulkAlloc();
                 doc = await api.get_doc(token, entity_id)
             except APIError:
                 doc = {"entity_id": entity_id}
-            return _doc_files_section("doc", entity_id, doc.get("files", []))
+            return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
         description = str(form.get("description", "")).strip()
         document_tag = str(form.get("document_tag", "")).strip()
         content = await file.read()
@@ -2712,7 +2724,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _doc_files_section("doc", entity_id, doc.get("files", []))
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.delete("/docs/{entity_id}/files/{file_id}")
     async def doc_delete_file(request: Request, entity_id: str, file_id: str):
@@ -2724,7 +2736,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _doc_files_section("doc", entity_id, doc.get("files", []))
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/tag")
     async def doc_tag_file(request: Request, entity_id: str, file_id: str):
@@ -2738,7 +2750,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _doc_files_section("doc", entity_id, doc.get("files", []))
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/description")
     async def doc_patch_file_description(request: Request, entity_id: str, file_id: str):
@@ -2752,7 +2764,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _doc_files_section("doc", entity_id, doc.get("files", []))
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.get("/docs/{entity_id}/files/_section")
     async def doc_files_section(request: Request, entity_id: str):
@@ -2764,13 +2776,7 @@ celerpUpdateBulkAlloc();
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        ref = doc.get("ref_id") or doc.get("doc_number") or ""
-        doc_url = f"/docs/{entity_id}"
-        enriched_files = [
-            {**f, "linked_ref": ref, "linked_url": doc_url}
-            for f in doc.get("files", [])
-        ]
-        return _doc_files_section("doc", entity_id, enriched_files,
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc),
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
             tag_filter=qp.get("tag_filter", ""),
@@ -5285,7 +5291,7 @@ async function celerpCsvImport(input, entityId) {{
             Summary(
                 H2(t("label.files"), cls="internal-section-title"),
             ),
-            _doc_files_section("doc", entity_id, doc.get("files", [])),
+            _doc_files_section("doc", entity_id, _enrich_doc_files(doc)),
             cls="doc-internal",
         ),
         # --- History / Activity section ---

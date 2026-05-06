@@ -185,9 +185,8 @@ def _files_section(
         style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;",
     )
 
-    # ── Determine if "linked to" column is meaningful ─────────────────────────
-    # Show the column when any file has a linked_ref populated.
-    has_linked = any(f.get("linked_ref") for f in files)
+    # ── "Linked To" column is always shown (GDR: don't hide structure) ────────
+    has_linked = True
 
     # ── Column resize JS ─────────────────────────────────────────────────────
     # Vanilla JS: drag resize handles between <th> elements.

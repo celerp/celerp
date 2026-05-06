@@ -11404,13 +11404,13 @@ class TestFilesSectionRenders:
         assert "Linked To" in html or "linked_to" in html.lower()
         assert "INV-001" in html
 
-    def test_files_section_linked_to_column_hidden_when_no_data(self):
-        """Linked To column must NOT appear when no file has a linked_ref."""
+    def test_files_section_linked_to_column_always_shown(self):
+        """Linked To column must always appear (GDR: don't hide structure)."""
         from ui.components.files import _files_section
         from fasthtml.common import to_xml
         files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""}]
         html = to_xml(_files_section("contact", "c1", files))
-        assert "Linked To" not in html
+        assert "Linked To" in html or "linked_to" in html.lower()
 
     def test_files_section_date_inputs_are_text_type(self):
         """Date filter inputs must be type=text (not type=date) to avoid browser year-entry bug."""
@@ -11425,3 +11425,67 @@ class TestFilesSectionRenders:
         date_inputs = re.findall(r'<input[^>]*name="date_from"[^>]*/?>|<input[^>]*name="date_to"[^>]*/?>',  html)
         for inp in date_inputs:
             assert 'type="date"' not in inp, f"Date filter must use type=text, not type=date: {inp}"
+
+    def test_collect_contact_files_own_files_have_no_linked_ref(self):
+        """Contact-own files must have linked_ref='' (shown as '--' in UI)."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": [{"id": "f1", "filename": "a.pdf"}]}
+        result = _collect_contact_files(contact, [])
+        assert len(result) == 1
+        assert result[0]["linked_ref"] == ""
+        assert result[0]["linked_url"] == ""
+
+    def test_collect_contact_files_doc_files_get_linked_ref(self):
+        """Files from related docs must carry linked_ref and linked_url."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": []}
+        docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-0042", "doc_number": "INV-0042",
+                 "files": [{"id": "f2", "filename": "invoice.pdf"}]}]
+        result = _collect_contact_files(contact, docs)
+        assert len(result) == 1
+        assert result[0]["linked_ref"] == "INV-0042"
+        assert result[0]["linked_url"] == "/docs/d1"
+
+    def test_collect_contact_files_deduplicates_by_id(self):
+        """Same file id must not appear twice even if present in both contact and doc."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": [{"id": "shared", "filename": "dup.pdf"}]}
+        docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-001",
+                 "files": [{"id": "shared", "filename": "dup.pdf"}]}]
+        result = _collect_contact_files(contact, docs)
+        assert len(result) == 1
+
+    def test_collect_contact_files_merges_both_sources(self):
+        """When contact has own files AND doc files, both appear in result."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": [{"id": "cf1", "filename": "cert.pdf"}]}
+        docs = [{"id": "d1", "entity_id": "d1", "ref_id": "PO-007",
+                 "files": [{"id": "df1", "filename": "po.pdf"}]}]
+        result = _collect_contact_files(contact, docs)
+        assert len(result) == 2
+        ids = {r["id"] for r in result}
+        assert ids == {"cf1", "df1"}
+
+    def test_collect_contact_files_empty_doc_has_no_files(self):
+        """Docs with no files list must not cause errors."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": []}
+        docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-001"}]  # no 'files' key
+        result = _collect_contact_files(contact, docs)
+        assert result == []
+
+    def test_enrich_doc_files_attaches_ref_and_url(self):
+        """_enrich_doc_files must attach linked_ref and linked_url to each file."""
+        from ui.routes.documents import _enrich_doc_files
+        doc = {"entity_id": "d1", "ref_id": "INV-0099",
+               "files": [{"id": "f1", "filename": "receipt.pdf"}]}
+        result = _enrich_doc_files(doc)
+        assert len(result) == 1
+        assert result[0]["linked_ref"] == "INV-0099"
+        assert result[0]["linked_url"] == "/docs/d1"
+
+    def test_enrich_doc_files_empty_returns_empty(self):
+        """_enrich_doc_files with no files must return empty list."""
+        from ui.routes.documents import _enrich_doc_files
+        doc = {"entity_id": "d1", "ref_id": "INV-001"}
+        assert _enrich_doc_files(doc) == []
