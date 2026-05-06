@@ -1074,6 +1074,8 @@ a:hover { text-decoration: underline; }
   margin-bottom: 8px;
 }
 .bulk-toolbar.is-active { display: flex; }
+.bulk-context { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#bulk-action-result { margin-top: 6px; }
 .bulk-count { font-size: 14px; font-weight: 600; color: var(--c-accent); min-width: 72px; }
 .form-input--sm { padding: 4px 8px; font-size: 14px; height: 30px; }
 
@@ -2012,3 +2014,13 @@ a:hover { text-decoration: underline; }
   border-color: var(--c-primary);
 }
 .update-card__restart-btn:hover { opacity: 0.9; }
+
+/* ── Report KPI/summary bar ─────────────────────────────────────────── */
+.report-summary-bar { display: flex; gap: 1.5rem; flex-wrap: wrap; padding: 10px 14px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: 6px; margin-bottom: 12px; }
+.report-kpi { display: flex; flex-direction: column; gap: 2px; }
+.report-kpi__label { font-size: 11px; color: var(--c-text2); font-weight: 500; text-transform: uppercase; letter-spacing: 0.04em; }
+.report-kpi__value { font-size: 15px; font-weight: 700; color: var(--c-text); }
+.report-kpi__value--positive { color: var(--c-success, #16a34a); }
+.report-kpi__value--negative { color: var(--c-danger, #dc2626); }
+.cell--right { text-align: right; }
+.cell--muted { color: var(--c-text2); font-size: 12px; }
