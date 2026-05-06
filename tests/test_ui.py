@@ -10701,8 +10701,8 @@ class TestInventoryUXFixes:
         assert int(captured_params.get("limit", 0)) <= 100
 
     @pytest.mark.asyncio
-    async def test_print_all_labels_link_appears_when_labels_loaded(self, ui_client):
-        """'Print all labels' link appears in inventory toolbar when labels module is loaded."""
+    async def test_print_bulk_form_appears_when_labels_loaded(self, ui_client):
+        """Print-bulk form appears in inventory toolbar when labels module is loaded."""
         from celerp.modules.slots import register as register_slot, clear as clear_slots
         register_slot("bulk_action", {
             "label": "Print Labels",
@@ -10719,7 +10719,7 @@ class TestInventoryUXFixes:
             ):
                 r = await ui_client.get("/inventory", cookies=_authed())
             assert r.status_code == 200
-            assert "/labels/print-list" in r.text
+            assert "/labels/print-bulk" in r.text
         finally:
             clear_slots()
 
