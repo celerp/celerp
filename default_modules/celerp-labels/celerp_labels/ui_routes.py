@@ -1114,7 +1114,7 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
 <title>Print Labels</title>
 <style>
 body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
-.label-sheet {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+.label-sheet {{ display: flex; flex-wrap: wrap; gap: 0; }}
 .label-item {{
   border: 1px solid #999;
   padding: 4px 6px;
@@ -1136,7 +1136,7 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 @media print {{
   .no-print {{ display: none; }}
   body {{ padding: 0; margin: 0; }}
-  .label-sheet {{ gap: 4px; padding: 4px; }}
+  .label-sheet {{ gap: 0; padding: 0; }}
 }}
 </style>
 </head>
