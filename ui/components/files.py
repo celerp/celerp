@@ -73,7 +73,7 @@ def _files_section(
                     *tag_opts,
                     name="document_tag",
                     cls="form-input form-input--xs file-tag-select",
-                    hx_patch=f"{base_url}/{fid}/tag",
+                    hx_post=f"{base_url}/{fid}/tag",
                     hx_target=f"#files-section-{entity_id}",
                     hx_swap="outerHTML",
                     hx_trigger="change",
@@ -93,12 +93,13 @@ def _files_section(
                         "ondblclick": (
                             f"(function(el){{var inp=document.createElement('input');"
                             f"inp.type='text';inp.value=el.textContent.trim();"
-                            f"inp.className='form-input form-input--sm';"
-                            f"inp.style='width:100%';"
-                            f"inp.onblur=function(){{var fd=new FormData();"
-                            f"fd.append('description',inp.value);"
-                            f"fetch('{base_url}/{fid}/description',{{method:'PATCH',body:fd}})"
-                            f".then(()=>htmx.trigger('#files-section-{entity_id}','refresh'));}};"
+                            f"inp.className='form-input form-input--sm';inp.style='width:100%';"
+                            f"inp.onblur=function(){{var fd=new FormData();fd.append('description',inp.value);"
+                            f"fetch('{base_url}/{fid}/description',{{method:'POST',body:fd}})"
+                            f".then(function(r){{return r.text();}}).then(function(html){{"
+                            f"var sec=document.getElementById('files-section-{entity_id}');"
+                            f"if(sec)sec.outerHTML=html;else htmx.trigger('#files-section-{entity_id}','refresh');"
+                            f"}})}};"
                             f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
                             f"if(e.key==='Escape'){{el.textContent=inp.value=el.dataset.orig;inp.blur();}}}};"
                             f"el.dataset.orig=el.textContent;el.replaceWith(inp);inp.focus();"
@@ -111,7 +112,7 @@ def _files_section(
             desc_cell = Td(Span(desc, cls="muted"))
 
         file_rows.append(Tr(
-            Td(A(fname, href=f"{base_url}/{fid}", cls="file-link")),
+            Td(A(fname, href=f"{base_url}/{fid}/download", cls="file-link")),
             tag_cell,
             desc_cell,
             Td(Span(_fmt_size(size), cls="muted")),
@@ -174,8 +175,12 @@ def _files_section(
     var txt=zone.querySelector('.file-drop-text');
     if(txt) txt.textContent='{t("msg.uploading")}...';
     fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
-      .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.json();}})
-      .then(function(){{htmx.trigger('#files-section-{entity_id}','refresh');}})
+      .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.text();}})
+      .then(function(html){{
+        var sec=document.getElementById('files-section-{entity_id}');
+        if(sec) sec.outerHTML=html;
+        else htmx.trigger('#files-section-{entity_id}','refresh');
+      }})
       .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
   }}
   zone.addEventListener('click',function(e){{

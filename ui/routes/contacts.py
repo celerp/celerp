@@ -1814,6 +1814,20 @@ def setup_routes(app):
             return P(str(e.detail), cls="cell-error")
         return _files_section(contact, contact_id)
 
+    @app.post("/contacts/{contact_id}/files/{file_id}/description")
+    async def contact_patch_file_description(request: Request, contact_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        description = str(form.get("description", "")).strip()
+        try:
+            await api.patch_contact_file_description(token, contact_id, file_id, description)
+            contact = await api.get_contact(token, contact_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _files_section(contact, contact_id)
+
     @app.get("/contacts/{contact_id}/files/filter")
     async def contact_files_filter(request: Request, contact_id: str):
         token = _token(request)

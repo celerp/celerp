@@ -11212,3 +11212,49 @@ class TestFilesSectionRenders:
         html = to_xml(_files_section("doc", "d1", files))
         assert "/docs/d1/files" in html
         assert "files-section-d1" in html
+
+    def test_files_section_upload_js_no_json_parse(self):
+        """Upload JS must NOT call .json() - proxy returns HTML, not JSON."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        # Must use r.text() not r.json()
+        assert "r.text()" in html or "r.json()" not in html, (
+            "Upload JS calls r.json() but proxy returns HTML - this causes "
+            "'Unexpected token < ... is not valid JSON' in the browser"
+        )
+        assert "r.json()" not in html, (
+            "Upload JS must not call r.json(); proxy returns HTML fragment"
+        )
+
+    def test_files_section_tag_uses_hx_post(self):
+        """Tag select must use hx-post not hx-patch (proxy only has POST handler)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": ""}]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert 'hx-patch="/contacts/c1/files/f1/tag"' not in html, (
+            "Tag select uses hx-patch but UI proxy only handles POST"
+        )
+        assert 'hx-post="/contacts/c1/files/f1/tag"' in html
+
+    def test_files_section_download_link_uses_download_suffix(self):
+        """Download link must use /download suffix to hit the UI proxy correctly."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": ""}]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "/contacts/c1/files/f1/download" in html, (
+            "Download link should point to /download proxy, not raw /files/f1"
+        )
+
+    def test_files_section_description_js_no_patch(self):
+        """Description inline edit must use POST not PATCH (proxy only has POST handler)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "desc"}]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "method:'PATCH'" not in html, (
+            "Description fetch uses PATCH but UI proxy only handles POST"
+        )
+        assert "method:'POST'" in html

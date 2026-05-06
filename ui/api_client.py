@@ -1455,6 +1455,11 @@ async def tag_contact_file(token: str, contact_id: str, file_id: str, document_t
         return _raise(await c.post(f"/crm/contacts/{contact_id}/files/{file_id}/tag", data={"document_tag": document_tag})).json()
 
 
+async def patch_contact_file_description(token: str, contact_id: str, file_id: str, description: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/crm/contacts/{contact_id}/files/{file_id}/description", data={"description": description})).json()
+
+
 async def delete_contact_file(token: str, contact_id: str, file_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.delete(f"/crm/contacts/{contact_id}/files/{file_id}")).json()
@@ -1464,6 +1469,33 @@ async def download_contact_file(token: str, contact_id: str, file_id: str) -> ht
     async with _client(token) as c:
         r = _raise(await c.get(f"/crm/contacts/{contact_id}/files/{file_id}"))
         return r
+
+
+async def upload_doc_file(token: str, entity_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
+    async with _client(token) as c:
+        files = {"file": (filename, file_data, content_type)}
+        data = {"description": description, "document_tag": document_tag}
+        return _raise(await c.post(f"/docs/{entity_id}/files", files=files, data=data)).json()
+
+
+async def tag_doc_file(token: str, entity_id: str, file_id: str, document_tag: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/docs/{entity_id}/files/{file_id}/tag", data={"document_tag": document_tag})).json()
+
+
+async def patch_doc_file_description(token: str, entity_id: str, file_id: str, description: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/docs/{entity_id}/files/{file_id}/description", data={"description": description})).json()
+
+
+async def delete_doc_file(token: str, entity_id: str, file_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/docs/{entity_id}/files/{file_id}")).json()
+
+
+async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
+    async with _client(token) as c:
+        return _raise(await c.get(f"/docs/{entity_id}/files/{file_id}"))
 
 
 async def patch_location(token: str, location_id: str, data: dict) -> dict:

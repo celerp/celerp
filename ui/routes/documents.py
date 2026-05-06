@@ -2687,6 +2687,85 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
         return _render_receive_goods_section(doc)
 
+    # ── Doc file management (upload / delete / tag / description / download) ──
+
+    @app.post("/docs/{entity_id}/files")
+    async def doc_upload_file(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        file = form.get("file")
+        if not file or not hasattr(file, "read"):
+            try:
+                doc = await api.get_doc(token, entity_id)
+            except APIError:
+                doc = {"entity_id": entity_id}
+            return _doc_files_section("doc", entity_id, doc.get("files", []))
+        description = str(form.get("description", "")).strip()
+        document_tag = str(form.get("document_tag", "")).strip()
+        content = await file.read()
+        filename = getattr(file, "filename", "upload")
+        content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
+        try:
+            await api.upload_doc_file(token, entity_id, content, filename, content_type, description, document_tag)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, doc.get("files", []))
+
+    @app.delete("/docs/{entity_id}/files/{file_id}")
+    async def doc_delete_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            await api.delete_doc_file(token, entity_id, file_id)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, doc.get("files", []))
+
+    @app.post("/docs/{entity_id}/files/{file_id}/tag")
+    async def doc_tag_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        document_tag = str(form.get("document_tag", "")).strip()
+        try:
+            await api.tag_doc_file(token, entity_id, file_id, document_tag)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, doc.get("files", []))
+
+    @app.patch("/docs/{entity_id}/files/{file_id}/description")
+    async def doc_patch_file_description(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        description = str(form.get("description", "")).strip()
+        try:
+            await api.patch_doc_file_description(token, entity_id, file_id, description)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, doc.get("files", []))
+
+    @app.get("/docs/{entity_id}/files/{file_id}/download")
+    async def doc_download_file(request: Request, entity_id: str, file_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            r = await api.download_doc_file(token, entity_id, file_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _R(content=r.content, status_code=r.status_code, headers=dict(r.headers))
+
     @app.get("/lists")
     async def lists_page(request: Request):
         token = _token(request)
