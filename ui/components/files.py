@@ -98,7 +98,7 @@ def _files_section(
                             f"fetch('{base_url}/{fid}/description',{{method:'POST',body:fd}})"
                             f".then(function(r){{return r.text();}}).then(function(html){{"
                             f"var sec=document.getElementById('files-section-{entity_id}');"
-                            f"if(sec)sec.outerHTML=html;else htmx.trigger('#files-section-{entity_id}','refresh');"
+                            f"if(sec)sec.outerHTML=html;else location.reload();"
                             f"}})}};"
                             f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
                             f"if(e.key==='Escape'){{el.textContent=inp.value=el.dataset.orig;inp.blur();}}}};"
@@ -179,7 +179,7 @@ def _files_section(
       .then(function(html){{
         var sec=document.getElementById('files-section-{entity_id}');
         if(sec) sec.outerHTML=html;
-        else htmx.trigger('#files-section-{entity_id}','refresh');
+        else location.reload();
       }})
       .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
   }}
@@ -211,7 +211,4 @@ def _files_section(
         table,
         upload_zone,
         id=f"files-section-{entity_id}",
-        hx_get=f"{base_url}/_section",
-        hx_trigger="refresh",
-        hx_swap="outerHTML",
     )
