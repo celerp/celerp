@@ -196,7 +196,7 @@ async def lifespan(_app: FastAPI):
     if settings.gateway_token and settings.backup_encryption_key and settings.backup_enabled:
         from celerp.services import backup_scheduler
         backup_scheduler.start()
-        log.info("Backup scheduler started")
+        log.debug("Backup scheduler started")
 
     # Start AI file cleanup background task
     from celerp.ai.cleanup import run_cleanup_loop

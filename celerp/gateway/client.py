@@ -124,7 +124,7 @@ class GatewayClient:
     # ── Internal ───────────────────────────────────────────────────────
 
     async def _connect_and_serve(self) -> None:
-        log.info("Connecting to gateway at %s", self._url)
+        log.debug("Connecting to gateway at %s", self._url)
         self._relay_status = "connecting"
         async with websockets.connect(self._url, ping_interval=_PING_INTERVAL) as ws:
             self._ws = ws

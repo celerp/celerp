@@ -90,7 +90,7 @@ async def _db_backup_loop() -> None:
     from celerp.config import settings
     while True:
         wait = _seconds_until(settings.backup_hour)
-        log.info("Next DB backup in %.0f seconds", wait)
+        log.debug("Next DB backup in %.0f seconds", wait)
         await asyncio.sleep(wait)
 
         from celerp.services.backup import run_backup
@@ -127,7 +127,7 @@ async def _file_backup_loop() -> None:
     from celerp.config import settings
     while True:
         wait = _seconds_until_weekday(6, settings.backup_hour + 1)  # Sunday
-        log.info("Next file backup in %.0f seconds", wait)
+        log.debug("Next file backup in %.0f seconds", wait)
         await asyncio.sleep(wait)
 
         from celerp.services.backup_files import run_file_backup
@@ -163,10 +163,10 @@ def start() -> None:
     global _db_task, _file_task
     if _db_task is None or _db_task.done():
         _db_task = asyncio.create_task(_db_backup_loop())
-        log.info("DB backup scheduler started")
+        log.debug("DB backup scheduler started")
     if _file_task is None or _file_task.done():
         _file_task = asyncio.create_task(_file_backup_loop())
-        log.info("File backup scheduler started")
+        log.debug("File backup scheduler started")
 
 
 def stop() -> None:
