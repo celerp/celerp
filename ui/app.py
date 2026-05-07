@@ -121,7 +121,7 @@ class TokenRefreshMiddleware:
                     (k, v) for k, v in scope.get("headers", [])
                     if k.lower() != b"cookie"
                 ] + [(b"cookie", cookie_header.encode())]
-            except _APIError:
+            except Exception:
                 pass
 
         # Case 2: access token present but past half-life
@@ -129,7 +129,7 @@ class TokenRefreshMiddleware:
             from ui.api_client import refresh_access_token, APIError as _APIError
             try:
                 new_access, new_refresh = await refresh_access_token(refresh_token)
-            except _APIError:
+            except Exception:
                 pass
 
         if new_access and new_refresh:
