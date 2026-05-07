@@ -108,12 +108,14 @@ async def cloud_disconnect() -> dict:
     """
     from celerp.config import settings as _s, read_config, write_config
     from celerp.gateway import client as _gw
+    from celerp.gateway.state import set_session_token as _set_session_token
 
     gw = _gw.get_client()
     if gw is not None:
         gw.stop()
         _gw.set_client(None)
 
+    _set_session_token("")  # must clear before touching config (gate reads this)
     _s.gateway_token = ""
     _s.celerp_public_url = ""
 

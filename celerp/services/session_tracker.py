@@ -16,10 +16,12 @@ import time
 from pathlib import Path
 
 _WINDOW_SECONDS: int = 15 * 60  # match access token TTL
+_SAVE_INTERVAL: float = 30.0    # max disk-write frequency during active sessions
 
 # In-memory mirror - kept in sync with the file on every write.
 _activity: dict[tuple[str, str], float] = {}
 _loaded: bool = False
+_last_save: float = 0.0
 
 
 def _sessions_path() -> Path | None:
@@ -64,16 +66,12 @@ def _save() -> None:
         pass
 
 
-_SAVE_INTERVAL: float = 30.0  # write to disk at most once per 30s per session
-_last_save: float = 0.0
-
-
 def record(user_id: str, company_id: str = "") -> None:
     """Call on every authenticated API request."""
     global _last_save
     _load()
-    _activity[(company_id, user_id)] = time.time()
     now = time.time()
+    _activity[(company_id, user_id)] = now
     if now - _last_save >= _SAVE_INTERVAL:
         _last_save = now
         _save()

@@ -106,6 +106,45 @@ async def test_cloud_disconnect_stops_client_and_clears_token(client):
 
 
 @pytest.mark.asyncio
+async def test_cloud_disconnect_clears_session_token(client):
+    """Disconnect must clear the in-memory session token.
+
+    Regression: without this, get_session_token() remains truthy after disconnect,
+    bypassing the single-user login gate so concurrent logins are allowed even
+    when the relay is no longer connected.
+    """
+    import celerp.gateway.state as gw_state
+    from celerp.services.session_tracker import clear as _clear_tracker, record as _record
+
+    token = await _register(client, "disc-session")
+    gw = _mock_gw("active")
+
+    from celerp.config import settings as _s
+    _s.gateway_token = "old-token"
+    gw_state.set_session_token("live-session-token")
+
+    with (
+        patch("celerp.gateway.client.get_client", return_value=gw),
+        patch("celerp.gateway.client.set_client"),
+        patch("celerp.config.write_config"),
+        patch("celerp.config.read_config", return_value={"cloud": {"token": "old-token"}}),
+    ):
+        r = await client.post("/settings/cloud-disconnect", headers=_h(token))
+
+    assert r.status_code == 200
+    # Session token must be cleared so the login gate activates.
+    # Check the underlying variable (conftest patches get_session_token globally).
+    assert gw_state._session_token == "", "session_token must be cleared on disconnect"
+
+    # Verify the login gate now actually fires (patch relay token to empty, as disconnect does)
+    _clear_tracker()
+    _record("00000000-0000-0000-0000-000000000099", company_id="")
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r2 = await client.post("/auth/login", json={"email": "cloud-disc-session@test.local", "password": "pw"})
+    assert r2.status_code == 409, f"Gate should fire after disconnect, got {r2.status_code}"
+
+
+@pytest.mark.asyncio
 async def test_cloud_disconnect_no_op_when_already_disconnected(client):
     """Disconnect with no active client returns success without error."""
     token = await _register(client, "disc-noop")
