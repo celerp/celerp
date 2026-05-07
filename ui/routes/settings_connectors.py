@@ -184,8 +184,7 @@ async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> t
     Returns (connectors, error_detail) - error_detail is "" on success."""
     from ui.api_client import get_connectors_catalog
     try:
-        result = await get_connectors_catalog(token)
-        return result, ""
+        return await get_connectors_catalog(token)
     except Exception as exc:
         return [], str(exc)
 

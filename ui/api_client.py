@@ -1839,8 +1839,9 @@ async def cloud_claim(token: str, payload: dict) -> dict:
         return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
 
 
-async def get_connectors_catalog(token: str) -> list[dict]:
-    """GET /settings/connectors-catalog — proxy relay /api/connectors via API process (has gateway token)."""
+async def get_connectors_catalog(token: str) -> tuple[list[dict], str]:
+    """GET /settings/connectors-catalog — proxy relay /api/connectors via API process (has gateway token).
+    Returns (connectors, error_detail). error_detail is "" on success."""
     async with _client(token) as c:
         data = _raise(await c.get("/settings/connectors-catalog")).json()
-    return data.get("connectors", [])
+    return data.get("connectors", []), data.get("error", "")
