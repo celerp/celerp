@@ -150,6 +150,10 @@ async def run_file_backup(label: str | None = None):
     if not settings.backup_encryption_key:
         return BackupResult(ok=False, size_bytes=0, error="BACKUP_ENCRYPTION_KEY is not configured")
 
+    from celerp.gateway.state import get_session_token
+    if not get_session_token():
+        return BackupResult(ok=False, size_bytes=0, error="Relay not connected - skipping backup")
+
     try:
         dirs = [Path("static/attachments"), Path("data/ai_uploads")]
         manifest_path = Path("data/backup_manifest.json")

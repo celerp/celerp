@@ -103,6 +103,8 @@ async def _db_backup_loop() -> None:
         )
         if result.ok:
             log.info("Daily DB backup succeeded (%d bytes)", result.size_bytes)
+        elif result.error and "Relay not connected" in result.error:
+            log.info("Daily DB backup skipped: %s", result.error)
         else:
             log.error("Daily DB backup failed: %s - retrying in 1 hour", result.error)
             await asyncio.sleep(3600)
@@ -138,6 +140,8 @@ async def _file_backup_loop() -> None:
         )
         if result.ok:
             log.info("Weekly file backup succeeded (%d bytes)", result.size_bytes)
+        elif result.error and "Relay not connected" in result.error:
+            log.info("Weekly file backup skipped: %s", result.error)
         else:
             log.error("Weekly file backup failed: %s - retrying in 1 hour", result.error)
             await asyncio.sleep(3600)
