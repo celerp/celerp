@@ -27,6 +27,21 @@ from celerp.routers import health, notifications, system
 
 import celerp.models  # noqa: F401 - ensures kernel models (UserCompany, ImportBatch, DocShareToken) are registered
 
+# ---------------------------------------------------------------------------
+# Suppress CancelledError tracebacks from uvicorn on graceful shutdown.
+# When the graceful-shutdown timeout fires, uvicorn cancels in-flight SSE
+# tasks. Starlette's listen_for_disconnect coroutine raises CancelledError
+# which uvicorn logs as "Exception in ASGI application". This is harmless
+# but noisy - filter it out.
+# ---------------------------------------------------------------------------
+class _SuppressShutdownCancelledError(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info and record.exc_info[0] is asyncio.CancelledError:
+            return False
+        return True
+
+logging.getLogger("uvicorn.error").addFilter(_SuppressShutdownCancelledError())
+
 # Module system (opt-in: no-op if MODULE_DIR not set)
 import os as _os
 _MODULE_DIR = _os.environ.get("MODULE_DIR", "")

@@ -178,4 +178,4 @@ def stop() -> None:
         _file_task.cancel()
     _db_task = None
     _file_task = None
-    log.info("Backup scheduler stopped")
+    log.debug("Backup scheduler stopped")
