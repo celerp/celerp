@@ -309,40 +309,54 @@ async def sales_report(
 
     elif group_by == "price_range":
         _BUCKETS = [(0, 1000, "0-1000"), (1001, 5000, "1001-5000"), (5001, 20000, "5001-20000"), (20001, None, "20000+")]
-        data_pr: dict[str, dict] = {
-            label: {"item_count": 0, "qty_sold": Decimal(0), "total_revenue": Decimal(0), "total_cost": Decimal(0)}
-            for _, _, label in _BUCKETS
-        }
+        # Aggregate per unique item (by item_id or item_name fallback)
+        data_pr: dict[str, dict] = {}
         for inv in invoices:
             for li in inv.get("line_items", []):
+                item_id = li.get("item_id") or ""
+                item_name = li.get("item_name") or li.get("description") or li.get("name") or ""
+                key = item_id or item_name or "__unknown__"
                 unit_price = _parse_d(li.get("unit_price") or li.get("price") or 0)
                 qty = _parse_d(li.get("quantity") or 1)
                 line_total = _parse_d(li.get("total") or (unit_price * qty))
                 cost_price = _parse_d(li.get("cost_price") or 0)
-                label = _BUCKETS[-1][2]
-                for lo, hi, lbl in _BUCKETS:
+                bucket = _BUCKETS[-1][2]
+                for _lo, hi, lbl in _BUCKETS:
                     if hi is None or unit_price <= hi:
-                        label = lbl
+                        bucket = lbl
                         break
-                data_pr[label]["item_count"] += 1
-                data_pr[label]["qty_sold"] += qty
-                data_pr[label]["total_revenue"] += line_total
-                data_pr[label]["total_cost"] += cost_price * qty
+                if key not in data_pr:
+                    data_pr[key] = {
+                        "item_id": item_id,
+                        "item_name": item_name,
+                        "unit_price": unit_price,
+                        "price_range": bucket,
+                        "qty_sold": Decimal(0),
+                        "total_revenue": Decimal(0),
+                        "total_cost": Decimal(0),
+                    }
+                data_pr[key]["qty_sold"] += qty
+                data_pr[key]["total_revenue"] += line_total
+                data_pr[key]["total_cost"] += cost_price * qty
         lines = []
-        for _, _, label in _BUCKETS:
-            d_pr = data_pr[label]
-            rev = float(d_pr["total_revenue"])
-            cost = float(d_pr["total_cost"])
+        for entry in data_pr.values():
+            rev = float(entry["total_revenue"])
+            cost = float(entry["total_cost"])
             gp = rev - cost
             lines.append({
-                "price_range": label,
-                "item_count": d_pr["item_count"],
-                "qty_sold": float(d_pr["qty_sold"]),
+                "item_id": entry["item_id"],
+                "item_name": entry["item_name"],
+                "unit_price": float(entry["unit_price"]),
+                "price_range": entry["price_range"],
+                "qty_sold": float(entry["qty_sold"]),
                 "total_revenue": rev,
                 "total_cost": cost,
                 "gross_profit": gp,
                 "margin_pct": round(gp / rev * 100, 1) if rev else 0,
             })
+        # Sort by price range bucket order then item name
+        _bucket_order = {lbl: i for i, (_, _, lbl) in enumerate(_BUCKETS)}
+        lines.sort(key=lambda l: (_bucket_order.get(l["price_range"], 99), l["item_name"].lower()))
 
     else:  # period
         def _period_key(ts: str) -> str:

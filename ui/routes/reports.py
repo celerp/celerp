@@ -450,13 +450,14 @@ def _normalize_line(line: dict, group_by: str) -> dict:
             "_link": "",
         }
     elif group_by == "price_range":
-        pr = line.get("price_range") or line.get("label", "")
         base = {
-            "label": pr,
-            "item_count": line.get("item_count", 0),
+            "label": line.get("item_name") or line.get("label", ""),
+            "price_range": line.get("price_range", ""),
+            "unit_price": line.get("unit_price", 0),
             "qty_sold": line.get("qty_sold", 0),
             "total": line.get("total_revenue") or line.get("total", 0),
-            "_link": f"/docs?price_range={pr}",
+            "_id": line.get("item_id", ""),
+            "_link": f"/inventory/{line.get('item_id', '')}" if line.get("item_id") else "",
         }
     else:
         base = {
@@ -549,8 +550,9 @@ def _sales_view_columns(group_by: str, is_purchases: bool = False) -> list[tuple
         return cols
     if group_by == "price_range":
         return [
-            ("Price Range", "label", ""),
-            ("# Items", "item_count", "cell--right"),
+            ("Item", "label", ""),
+            ("Price Range", "price_range", ""),
+            ("Unit Price", "unit_price", "cell--number"),
             ("Qty Sold", "qty_sold", "cell--right"),
             ("Revenue", "total", "cell--number"),
             ("Cost", "total_cost", "cell--number"),
@@ -597,7 +599,7 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
         val = l.get(key)
         if val is None:
             return Td(EMPTY, cls=css)
-        if key in ("total", "total_cost", "gross_profit", "avg_price", "avg_unit_cost"):
+        if key in ("total", "total_cost", "gross_profit", "avg_price", "avg_unit_cost", "unit_price"):
             return Td(fmt_money(val, currency), cls=css)
         if key == "margin_pct":
             v = float(val or 0)
@@ -686,6 +688,7 @@ def _group_by_filter(active: str, base_url: str, first_option: str = "customer")
         hx_target="#main-content",
         hx_swap="outerHTML",
         hx_include="this",
+        hx_push_url="true",
         cls="filter-select",
     )
 
