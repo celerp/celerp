@@ -296,3 +296,130 @@ async def cloud_reconnect_api() -> dict:
         await asyncio.sleep(0.2)
 
     return {"connected": True, "relay_status": new_gw.relay_status, "public_url": _s.celerp_public_url}
+
+
+@router.get("/settings/cloud-instance-id")
+async def cloud_instance_id() -> dict:
+    """Return the canonical instance_id from the API process."""
+    from celerp.config import ensure_instance_id
+    return {"instance_id": ensure_instance_id()}
+
+
+@router.post("/settings/cloud-send-otp")
+async def cloud_send_otp_api(payload: dict) -> dict:
+    """Proxy /billing/claim/send-otp to relay using API-process instance_id."""
+    import httpx
+    from celerp.config import settings as _s, ensure_instance_id
+
+    email = payload.get("email", "").strip()
+    if not email:
+        return {"error": "Email required."}
+
+    iid = ensure_instance_id()
+    relay_base = _relay_http_base(_s)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(
+                f"{relay_base}/billing/claim/send-otp",
+                json={"email": email, "instance_id": iid},
+            )
+    except httpx.ConnectError:
+        return {"error": f"Cannot reach {relay_base} - check your internet connection."}
+    except httpx.TimeoutException:
+        return {"error": f"Connection to {relay_base} timed out."}
+    except Exception as exc:
+        return {"error": f"Connection error: {type(exc).__name__}: {exc}"}
+
+    if r.status_code == 200:
+        return {"ok": True, "instance_id": iid}
+    try:
+        detail = r.json().get("detail", r.text[:80])
+    except Exception:
+        detail = r.text[:80]
+    return {"error": str(detail), "status_code": r.status_code, "instance_id": iid}
+
+
+@router.post("/settings/cloud-claim")
+async def cloud_claim_api(payload: dict) -> dict:
+    """Proxy /billing/claim to relay using API-process instance_id, then activate."""
+    import httpx
+    from celerp.config import settings as _s, ensure_instance_id
+
+    email = payload.get("email", "").strip()
+    subscription_id = payload.get("subscription_id") or None
+    otp_code = payload.get("otp_code") or None
+
+    if not email:
+        return {"error": "Email required."}
+
+    iid = ensure_instance_id()
+    relay_base = _relay_http_base(_s)
+
+    claim_payload: dict = {"email": email}
+    if subscription_id:
+        claim_payload["subscription_id"] = subscription_id
+    if otp_code:
+        claim_payload["otp_code"] = otp_code
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(
+                f"{relay_base}/billing/claim",
+                json=claim_payload,
+                headers={"X-Instance-ID": iid},
+            )
+    except httpx.ConnectError:
+        return {"error": f"Cannot reach {relay_base} - check your internet connection or firewall."}
+    except httpx.TimeoutException:
+        return {"error": f"Connection to {relay_base} timed out."}
+    except Exception as exc:
+        return {"error": f"Connection error: {type(exc).__name__}: {exc}"}
+
+    if r.status_code == 401:
+        try:
+            detail = r.json().get("detail", {})
+        except Exception:
+            detail = {}
+        if isinstance(detail, dict):
+            return {"otp_error": True, "code": detail.get("code", "otp_invalid"), "attempts_left": detail.get("attempts_left", 0), "instance_id": iid}
+        return {"otp_error": True, "code": str(detail), "attempts_left": 0, "instance_id": iid}
+
+    if r.status_code == 400:
+        try:
+            detail = r.json().get("detail", "")
+        except Exception:
+            detail = ""
+        if detail == "otp_required":
+            return {"otp_required": True, "instance_id": iid}
+        return {"error": r.text[:80], "instance_id": iid}
+
+    if r.status_code == 404:
+        return {"error": "No subscription found for that email. Check the address and try again.", "instance_id": iid}
+    if r.status_code == 429:
+        return {"error": "Too many attempts. Try again in an hour.", "instance_id": iid}
+    if r.status_code == 403:
+        return {"error": "Email does not match the selected subscription.", "instance_id": iid}
+    if r.status_code != 200:
+        return {"error": r.text[:80], "instance_id": iid}
+
+    data = r.json()
+
+    if data.get("requires_selection"):
+        return {"requires_selection": True, "matches": data["matches"], "instance_id": iid}
+
+    # Claim succeeded — activate immediately (same process, same iid)
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as ac:
+            act_resp = await ac.post(f"{relay_base}/auth/activate", json={"instance_id": iid})
+        if act_resp.status_code == 200:
+            act_data = act_resp.json()
+            token = act_data["gateway_token"]
+            await _apply_gateway_token_api(token, iid, public_url=act_data.get("public_url"), tos_version=act_data.get("tos_version"))
+            import celerp.gateway.client as _gw_mod
+            gw = _gw_mod.get_client()
+            return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": act_data.get("public_url", ""), "instance_id": iid}
+    except Exception:
+        pass
+
+    return {"linked": True, "instance_id": iid}

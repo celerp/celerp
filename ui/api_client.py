@@ -1825,3 +1825,21 @@ async def reconnect_relay(token: str) -> dict:
     """POST /settings/cloud-reconnect — restart gateway WS using existing token."""
     async with _client(token) as c:
         return _raise(await c.post("/settings/cloud-reconnect")).json()
+
+
+async def get_instance_id(token: str) -> str:
+    """GET /settings/cloud-instance-id — return canonical instance_id from API process."""
+    async with _client(token) as c:
+        return _raise(await c.get("/settings/cloud-instance-id")).json()["instance_id"]
+
+
+async def send_otp(token: str, email: str) -> dict:
+    """POST /settings/cloud-send-otp — send OTP via API process (correct instance_id)."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-send-otp", json={"email": email})).json()
+
+
+async def cloud_claim(token: str, payload: dict) -> dict:
+    """POST /settings/cloud-claim — claim + activate via API process (correct instance_id)."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-claim", json=payload)).json()

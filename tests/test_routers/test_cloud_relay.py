@@ -334,3 +334,105 @@ async def test_cloud_accept_tos_restarts_client(client):
     old_gw.stop.assert_called_once()
     # tos_version should have been written to config
     mock_write.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# /settings/cloud-claim (API process owns iid for both claim + activate)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cloud_claim_success_activates_immediately(client):
+    """Successful claim + activate in single API-process call."""
+    token = await _register(client, "claim-ok")
+
+    claim_resp = MagicMock()
+    claim_resp.status_code = 200
+    claim_resp.json.return_value = {"claimed": True}
+
+    act_resp = MagicMock()
+    act_resp.status_code = 200
+    act_resp.json.return_value = {
+        "gateway_token": "gw-claimed",
+        "public_url": "https://claimed.celerp.app",
+        "tos_version": "2025-01",
+    }
+
+    gw = _mock_gw("active")
+
+    call_count = 0
+    async def _post(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return claim_resp if "billing/claim" in url else act_resp
+
+    with (
+        patch("httpx.AsyncClient") as mock_httpx,
+        patch("celerp.gateway.client.get_client", return_value=None),
+        patch("celerp.gateway.client.set_client"),
+        patch("celerp.gateway.client.GatewayClient", return_value=gw),
+        patch("celerp.config.write_config"),
+        patch("celerp.config.read_config", return_value={"cloud": {}}),
+        patch("asyncio.create_task"),
+    ):
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(side_effect=_post)
+        r = await client.post(
+            "/settings/cloud-claim",
+            headers=_h(token),
+            json={"email": "test@example.com", "otp_code": "123456"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["connected"] is True
+    assert data.get("instance_id")  # canonical iid returned
+
+
+@pytest.mark.asyncio
+async def test_cloud_claim_otp_invalid(client):
+    """Returns otp_error dict when relay rejects OTP."""
+    token = await _register(client, "claim-otp-bad")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 401
+    mock_resp.json.return_value = {"detail": {"code": "otp_invalid", "attempts_left": 2}}
+
+    with patch("httpx.AsyncClient") as mock_httpx:
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=mock_resp)
+        r = await client.post(
+            "/settings/cloud-claim",
+            headers=_h(token),
+            json={"email": "test@example.com", "otp_code": "wrong"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["otp_error"] is True
+    assert data["attempts_left"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cloud_send_otp_proxies_via_api(client):
+    """send-otp uses canonical instance_id from API process."""
+    token = await _register(client, "otp-send")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"ok": True}
+
+    with patch("httpx.AsyncClient") as mock_httpx:
+        sent_payload = {}
+        async def capture_post(url, **kwargs):
+            sent_payload.update(kwargs.get("json", {}))
+            return mock_resp
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(side_effect=capture_post)
+        r = await client.post(
+            "/settings/cloud-send-otp",
+            headers=_h(token),
+            json={"email": "user@example.com"},
+        )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data.get("ok") is True
+    # instance_id in sent payload must match what API process provides
+    assert sent_payload.get("instance_id") == data.get("instance_id")

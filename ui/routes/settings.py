@@ -1670,133 +1670,86 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-send-otp")
     async def cloud_send_otp(request: Request):
-        """HTMX: send OTP code to email, then swap in OTP entry form."""
-        import httpx
-        from celerp.config import ensure_instance_id
+        """HTMX: send OTP via API process (uses canonical instance_id)."""
+        import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
-        iid = ensure_instance_id()
+        ui_token = _token(request)
 
         if not email:
-            return _cloud_relay_unconnected(iid, error="Please enter an email address.")
+            from celerp.config import ensure_instance_id
+            return _cloud_relay_unconnected(ensure_instance_id(), error="Please enter an email address.")
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(
-                    f"{_RELAY_BASE}/billing/claim/send-otp",
-                    json={"email": email, "instance_id": iid},
-                )
-        except httpx.ConnectError:
-            return _cloud_relay_unconnected(iid, error=f"Cannot reach {_RELAY_BASE} - check your internet connection.")
-        except httpx.TimeoutException:
-            return _cloud_relay_unconnected(iid, error=f"Connection to {_RELAY_BASE} timed out.")
+            data = await _api.send_otp(ui_token, email)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Connection error: {type(exc).__name__}: {exc}")
+            from celerp.config import ensure_instance_id
+            return _cloud_relay_unconnected(ensure_instance_id(), error=f"Could not reach API: {exc}")
 
-        if r.status_code == 429:
-            return _cloud_relay_unconnected(iid, error="Too many code requests. Try again later.")
-        if r.status_code != 200:
-            return _cloud_relay_unconnected(iid, error=f"Error sending code: {r.text[:80]}")
+        iid = data.get("instance_id", "")
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
 
         return _cloud_claim_otp_form(email, iid)
 
     @app.post("/settings/cloud-claim")
     async def cloud_claim(request: Request):
-        """HTMX: verify OTP + link subscription by email then immediately activate.
+        """HTMX: verify OTP + link subscription + activate - all via API process.
 
-        Handles three cases:
-        1. OTP submit (claim_email + otp_code) — verify OTP then claim by email.
-           - 1 match  → claim + activate immediately
-           - 0 matches → error
-           - N matches → render selection UI (no DB write yet)
-        2. Confirm submit (claim_email + subscription_id + otp_code) — claims by ID.
-        3. otp_required (400) → shouldn't happen in normal flow; show OTP form.
+        Using the API process ensures the same instance_id is used for both
+        the /billing/claim relay call and the subsequent /auth/activate call.
         """
-        import httpx
-        from celerp.config import ensure_instance_id
+        import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
         subscription_id = str(form.get("subscription_id", "")).strip() or None
         otp_code = str(form.get("otp_code", "")).strip() or None
-        iid = ensure_instance_id()
-        import ui.api_client as _api
         ui_token = _token(request)
 
         if not email:
-            return _cloud_relay_unconnected(iid, error="Please enter an email address.")
+            from celerp.config import ensure_instance_id
+            return _cloud_relay_unconnected(ensure_instance_id(), error="Please enter an email address.")
 
-        payload: dict = {"email": email}
+        claim_payload: dict = {"email": email}
         if subscription_id:
-            payload["subscription_id"] = subscription_id
+            claim_payload["subscription_id"] = subscription_id
         if otp_code:
-            payload["otp_code"] = otp_code
+            claim_payload["otp_code"] = otp_code
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(
-                    f"{_RELAY_BASE}/billing/claim",
-                    json=payload,
-                    headers={"X-Instance-ID": iid},
-                )
-        except httpx.ConnectError:
-            return _cloud_relay_unconnected(iid, error=f"Cannot reach {_RELAY_BASE} - check your internet connection or firewall.")
-        except httpx.TimeoutException:
-            return _cloud_relay_unconnected(iid, error=f"Connection to {_RELAY_BASE} timed out.")
+            data = await _api.cloud_claim(ui_token, claim_payload)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Connection error: {type(exc).__name__}: {exc}")
+            from celerp.config import ensure_instance_id
+            return _cloud_relay_unconnected(ensure_instance_id(), error=f"Could not reach API: {exc}")
 
-        # OTP error handling
-        if r.status_code == 401:
-            detail = r.json().get("detail", "")
-            if isinstance(detail, dict):
-                code = detail.get("code", "")
-                attempts_left = detail.get("attempts_left", 0)
-            else:
-                code = detail
-                attempts_left = 0
+        iid = data.get("instance_id", "")
+
+        if data.get("otp_error"):
+            code = data.get("code", "otp_invalid")
+            attempts_left = data.get("attempts_left", 0)
             if code == "otp_invalid":
                 return _cloud_claim_otp_form(
                     email, iid,
                     error=f"Incorrect code. {attempts_left} attempt{'s' if attempts_left != 1 else ''} left.",
                 )
-            # otp_expired or otp_invalid_max_attempts
-            return _cloud_relay_unconnected(
-                iid, error="Code expired or too many wrong attempts. Request a new code."
-            )
+            return _cloud_relay_unconnected(iid, error="Code expired or too many wrong attempts. Request a new code.")
 
-        if r.status_code == 400:
-            detail = r.json().get("detail", "")
-            if detail == "otp_required":
-                return _cloud_claim_otp_form(email, iid)
-            return _cloud_relay_unconnected(iid, error=f"Error: {r.text[:80]}")
+        if data.get("otp_required"):
+            return _cloud_claim_otp_form(email, iid)
 
-        if r.status_code == 404:
-            return _cloud_relay_unconnected(iid, error="No subscription found for that email. Check the address and try again.")
-        if r.status_code == 429:
-            return _cloud_relay_unconnected(iid, error="Too many attempts. Try again in an hour.")
-        if r.status_code == 403:
-            return _cloud_relay_unconnected(iid, error="Email does not match the selected subscription.")
-        if r.status_code != 200:
-            return _cloud_relay_unconnected(iid, error=f"Error: {r.text[:80]}")
-
-        data = r.json()
-
-        # Multiple matches — show selection UI
         if data.get("requires_selection"):
             return _cloud_claim_selection(data["matches"], email, iid, otp_code=otp_code)
 
-        # Claim succeeded — activate immediately via API
-        try:
-            act_data = await _api.activate_relay(ui_token)
-            if act_data.get("connected") or act_data.get("relay_status"):
-                return _cloud_relay_tab(
-                    relay_status=act_data.get("relay_status", "connecting"),
-                    public_url=act_data.get("public_url", ""),
-                )
-        except Exception:
-            pass
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
 
-        # Claim succeeded but activate failed — surface hint
+        if data.get("connected"):
+            return _cloud_relay_tab(
+                relay_status=data.get("relay_status", "connecting"),
+                public_url=data.get("public_url", ""),
+            )
+
+        # Claim succeeded but activate pending (rare: relay linkage happened but WS not up yet)
         return _cloud_relay_unconnected(
             iid,
             error=None,
