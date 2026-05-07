@@ -486,19 +486,17 @@ def setup_routes(app):
         # Fetch relay status from the API process (the gateway client lives there)
         relay_status = "inactive"
         public_url = ""
-        has_token = False
         try:
             rs = await _api.get_relay_status(token)
             relay_status = rs.get("relay_status", "inactive")
             public_url = rs.get("public_url", "")
-            has_token = bool(rs.get("gateway_token_set", False))
         except (_APIError, Exception):
             lc = _local_get_client()
             relay_status = lc.relay_status if lc else "inactive"
         gw_ok = relay_status in ("active", "tos_required", "connecting", "error")
 
-        # If not connected and no token, show value-prop landing
-        if not gw_ok and not has_token:
+        # If not connected, show value-prop landing
+        if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
             return base_shell(
@@ -511,7 +509,7 @@ def setup_routes(app):
                 request=request,
             )
 
-        # Connected, or disconnected-but-has-token - show tabs
+        # Connected or connecting - show tabs
         tab = request.query_params.get("tab", "status")
         has_team = _has_team_features()
 
@@ -521,7 +519,7 @@ def setup_routes(app):
             from ui.routes.settings_connectors import connectors_tab_content
             content = await connectors_tab_content(lang)
         else:
-            content = Div(_cloud_relay_tab(relay_status=relay_status, public_url=public_url, has_token=has_token or gw_ok), _backup_summary_card(gw_ok=gw_ok))
+            content = Div(_cloud_relay_tab(relay_status=relay_status, public_url=public_url), _backup_summary_card(gw_ok=gw_ok))
             tab = "status"
 
         return base_shell(
