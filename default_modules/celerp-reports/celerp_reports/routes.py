@@ -28,6 +28,19 @@ def _parse_d(val: str | None) -> Decimal:
         return Decimal(0)
 
 
+def _doc_cogs(inv: dict) -> Decimal:
+    """Compute COGS for a document from its line_items (cost_price * quantity).
+
+    Falls back to cost_total field if present (legacy/future use).
+    """
+    if inv.get("cost_total"):
+        return _parse_d(inv["cost_total"])
+    return sum(
+        _parse_d(li.get("cost_price") or 0) * _parse_d(li.get("quantity") or 0)
+        for li in (inv.get("line_items") or [])
+    )
+
+
 def _in_range(ts: str | None, date_from: str | None, date_to: str | None) -> bool:
     if not ts:
         return True
@@ -251,7 +264,7 @@ async def sales_report(
             data[cid]["name"] = inv.get("contact_name") or inv.get("customer_name") or cid
             data[cid]["invoice_count"] += 1
             data[cid]["total_revenue"] += _parse_d(inv.get("total"))
-            data[cid]["total_cost"] += _parse_d(inv.get("cost_total"))
+            data[cid]["total_cost"] += _doc_cogs(inv)
         lines = []
         for cid, d in sorted(data.items(), key=lambda x: -x[1]["total_revenue"]):
             rev = float(d["total_revenue"])
@@ -278,7 +291,7 @@ async def sales_report(
                 data[iid]["name"] = line.get("name") or line.get("description") or iid
                 data[iid]["qty_sold"] += _parse_d(line.get("quantity") or 1)
                 data[iid]["total_revenue"] += _parse_d(line.get("line_total") or line.get("price") or 0)
-                data[iid]["total_cost"] += _parse_d(line.get("cost_total") or 0)
+                data[iid]["total_cost"] += _parse_d(line.get("cost_price") or 0) * _parse_d(line.get("quantity") or 0)
         lines = []
         for iid, d in sorted(data.items(), key=lambda x: -x[1]["qty_sold"]):
             rev = float(d["total_revenue"])
@@ -296,17 +309,25 @@ async def sales_report(
 
     elif group_by == "price_range":
         _BUCKETS = [(0, 1000, "0-1000"), (1001, 5000, "1001-5000"), (5001, 20000, "5001-20000"), (20001, None, "20000+")]
-        data_pr: dict[str, dict] = {label: {"invoice_count": 0, "total_revenue": Decimal(0), "total_cost": Decimal(0)} for _, _, label in _BUCKETS}
+        data_pr: dict[str, dict] = {
+            label: {"item_count": 0, "qty_sold": Decimal(0), "total_revenue": Decimal(0), "total_cost": Decimal(0)}
+            for _, _, label in _BUCKETS
+        }
         for inv in invoices:
-            total = _parse_d(inv.get("total"))
-            label = _BUCKETS[-1][2]
-            for lo, hi, lbl in _BUCKETS:
-                if hi is None or total <= hi:
-                    label = lbl
-                    break
-            data_pr[label]["invoice_count"] += 1
-            data_pr[label]["total_revenue"] += total
-            data_pr[label]["total_cost"] += _parse_d(inv.get("cost_total"))
+            for li in inv.get("line_items", []):
+                unit_price = _parse_d(li.get("unit_price") or li.get("price") or 0)
+                qty = _parse_d(li.get("quantity") or 1)
+                line_total = _parse_d(li.get("total") or (unit_price * qty))
+                cost_price = _parse_d(li.get("cost_price") or 0)
+                label = _BUCKETS[-1][2]
+                for lo, hi, lbl in _BUCKETS:
+                    if hi is None or unit_price <= hi:
+                        label = lbl
+                        break
+                data_pr[label]["item_count"] += 1
+                data_pr[label]["qty_sold"] += qty
+                data_pr[label]["total_revenue"] += line_total
+                data_pr[label]["total_cost"] += cost_price * qty
         lines = []
         for _, _, label in _BUCKETS:
             d_pr = data_pr[label]
@@ -315,10 +336,12 @@ async def sales_report(
             gp = rev - cost
             lines.append({
                 "price_range": label,
-                "invoice_count": d_pr["invoice_count"],
+                "item_count": d_pr["item_count"],
+                "qty_sold": float(d_pr["qty_sold"]),
                 "total_revenue": rev,
                 "total_cost": cost,
                 "gross_profit": gp,
+                "margin_pct": round(gp / rev * 100, 1) if rev else 0,
             })
 
     else:  # period
@@ -343,7 +366,7 @@ async def sales_report(
             key = _period_key(ts)
             data[key]["invoice_count"] += 1
             data[key]["total_revenue"] += _parse_d(inv.get("total"))
-            data[key]["total_cost"] += _parse_d(inv.get("cost_total"))
+            data[key]["total_cost"] += _doc_cogs(inv)
         lines = []
         for key in sorted(data):
             rev = float(data[key]["total_revenue"])

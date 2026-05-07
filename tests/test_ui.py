@@ -11489,3 +11489,33 @@ class TestFilesSectionRenders:
         from ui.routes.documents import _enrich_doc_files
         doc = {"entity_id": "d1", "ref_id": "INV-001"}
         assert _enrich_doc_files(doc) == []
+
+
+def test_token_refresh_middleware_propagates_cancellation():
+    """Pure ASGI middleware must not swallow CancelledError on shutdown."""
+    import asyncio
+    import pytest
+
+    from ui.app import TokenRefreshMiddleware
+
+    async def inner_app(scope, receive, send):
+        raise asyncio.CancelledError()
+
+    middleware = TokenRefreshMiddleware(inner_app)
+
+    # Public path - fast-tracks to inner_app which raises CancelledError
+    async def run_public():
+        scope = {"type": "http", "headers": [], "query_string": b"", "method": "GET",
+                 "path": "/login", "raw_path": b"/login"}
+        with pytest.raises(asyncio.CancelledError):
+            await middleware(scope, None, None)
+
+    # Non-public path with no cookies - proceeds to inner_app which raises CancelledError
+    async def run_private():
+        scope = {"type": "http", "headers": [], "query_string": b"", "method": "GET",
+                 "path": "/dashboard", "raw_path": b"/dashboard"}
+        with pytest.raises(asyncio.CancelledError):
+            await middleware(scope, None, None)
+
+    asyncio.run(run_public())
+    asyncio.run(run_private())

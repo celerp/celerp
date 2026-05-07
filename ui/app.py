@@ -15,7 +15,6 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from fasthtml.common import FastHTML, Beforeware, RedirectResponse
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.staticfiles import StaticFiles
 from starlette.requests import Request
 from starlette.responses import Response
@@ -74,8 +73,8 @@ def _token_needs_refresh(access_token: str) -> bool:
         return False
 
 
-class TokenRefreshMiddleware(BaseHTTPMiddleware):
-    """Sliding-window JWT refresh.
+class TokenRefreshMiddleware:
+    """Pure ASGI sliding-window JWT refresh middleware.
 
     Two refresh scenarios handled on every authenticated request:
 
@@ -90,15 +89,22 @@ class TokenRefreshMiddleware(BaseHTTPMiddleware):
     In both cases, new cookies are set on the response.
     """
 
-    async def dispatch(self, request: Request, call_next) -> Response:
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+
+        request = Request(scope, receive)
         path = request.url.path
-        # Skip auth-free paths
         if any(path == p or path.startswith(p + "/") for p in _PUBLIC):
-            return await call_next(request)
+            await self._app(scope, receive, send)
+            return
 
         access_token = request.cookies.get(COOKIE_NAME)
         refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
-
         new_access: str | None = None
         new_refresh: str | None = None
 
@@ -107,8 +113,6 @@ class TokenRefreshMiddleware(BaseHTTPMiddleware):
             from ui.api_client import refresh_access_token, APIError as _APIError
             try:
                 new_access, new_refresh = await refresh_access_token(refresh_token)
-                # Patch cookie header so route handler sees the new access token
-                scope = request.scope
                 existing = dict(request.cookies)
                 existing[COOKIE_NAME] = new_access
                 existing[REFRESH_COOKIE_NAME] = new_refresh
@@ -118,26 +122,47 @@ class TokenRefreshMiddleware(BaseHTTPMiddleware):
                     if k.lower() != b"cookie"
                 ] + [(b"cookie", cookie_header.encode())]
             except _APIError:
-                pass  # Let request proceed — route will redirect to /login
+                pass
 
-        response = await call_next(request)
-
-        # Case 2: access token present but past half-life — exchange after response
+        # Case 2: access token present but past half-life
         if not new_access and access_token and refresh_token and _token_needs_refresh(access_token):
             from ui.api_client import refresh_access_token, APIError as _APIError
             try:
                 new_access, new_refresh = await refresh_access_token(refresh_token)
             except _APIError:
-                pass  # Non-fatal: current token still valid until hard expiry
+                pass
 
         if new_access and new_refresh:
             from celerp.config import settings as _settings
             max_age = int(_settings.access_token_expire_minutes) * 60
             domain = cookie_domain(request)
-            response.set_cookie(COOKIE_NAME, new_access, httponly=True, samesite="lax", max_age=max_age, secure=_settings.cookie_secure, domain=domain)
-            response.set_cookie(REFRESH_COOKIE_NAME, new_refresh, httponly=True, samesite="lax", max_age=86400 * 30, secure=_settings.cookie_secure, domain=domain)
 
-        return response
+            def _make_set_cookie(name, value, http_only, max_age_, secure, samesite):
+                parts = [f"{name}={value}", f"Max-Age={max_age_}", f"SameSite={samesite}", "Path=/"]
+                if http_only:
+                    parts.append("HttpOnly")
+                if secure:
+                    parts.append("Secure")
+                if domain:
+                    parts.append(f"Domain={domain}")
+                return "; ".join(parts)
+
+            extra_cookies = [
+                _make_set_cookie(COOKIE_NAME, new_access, True, max_age, _settings.cookie_secure, "lax"),
+                _make_set_cookie(REFRESH_COOKIE_NAME, new_refresh, True, 86400 * 30, _settings.cookie_secure, "lax"),
+            ]
+
+            async def send_with_cookies(message):
+                if message["type"] == "http.response.start":
+                    headers = list(message.get("headers", []))
+                    for cookie_val in extra_cookies:
+                        headers.append((b"set-cookie", cookie_val.encode()))
+                    message = {**message, "headers": headers}
+                await send(message)
+
+            await self._app(scope, receive, send_with_cookies)
+        else:
+            await self._app(scope, receive, send)
 
 
 app = FastHTML(
@@ -150,12 +175,18 @@ app.add_middleware(TokenRefreshMiddleware)
 
 # ── i18n middleware: set context language per request ───────────────────────────
 
-class I18nMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        from ui.i18n import get_lang, set_lang
-        lang = get_lang(request)
-        set_lang(lang)
-        return await call_next(request)
+class I18nMiddleware:
+    """Pure ASGI middleware: sets context language per request."""
+
+    def __init__(self, app):
+        self._app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            from ui.i18n import get_lang, set_lang
+            request = Request(scope, receive)
+            set_lang(get_lang(request))
+        await self._app(scope, receive, send)
 
 app.add_middleware(I18nMiddleware)
 
@@ -254,12 +285,8 @@ _CONDITIONAL_UI: list[tuple[str, str]] = [
     ("celerp-accounting",  "ui.routes.accounting_import"),
     ("celerp-docs",        "ui.routes.documents"),
     # ui.routes.lists omitted: list routes are registered by ui.routes.documents
-    ("celerp-inventory",   "ui.routes.inventory"),
     ("celerp-labels",      "celerp_labels.ui_routes"),
-    ("celerp-contacts",    "ui.routes.contacts"),
-    ("celerp-accounting",  "ui.routes.accounting"),
     ("celerp-accounting",  "ui.routes.reconciliation"),
-    ("celerp-subscriptions", "ui.routes.subscriptions"),
     ("celerp-dashboard",   "ui.routes.dashboard"),
 ]
 

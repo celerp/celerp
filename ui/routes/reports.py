@@ -302,7 +302,7 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
         custom_form,
     ]
     if settings_link:
-        parts.append(A("gear", href=settings_link, cls="settings-gear", title="Related settings"))
+        parts.append(A("⚙", href=settings_link, cls="settings-gear", title="Related settings"))
 
     return Div(*parts, cls="date-filter-bar")
 
@@ -372,7 +372,7 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
 
     def _th(label_txt: str, key: str) -> FT:
         nd = "asc" if (sort == key and sort_dir == "desc") else "desc"
-        marker = " ^" if (sort == key and sort_dir == "asc") else (" v" if sort == key else "")
+        marker = " ▲" if (sort == key and sort_dir == "asc") else (" ▼" if sort == key else "")
         return Th(A(f"{label_txt}{marker}", href=f"?sort={key}&dir={nd}", cls="sort-link"))
 
     def _row(l: dict) -> FT:
@@ -453,8 +453,9 @@ def _normalize_line(line: dict, group_by: str) -> dict:
         pr = line.get("price_range") or line.get("label", "")
         base = {
             "label": pr,
-            "count": line.get("invoice_count") or line.get("po_count") or line.get("count", 0),
-            "total": line.get("total_revenue") or line.get("total_spend") or line.get("total", 0),
+            "item_count": line.get("item_count", 0),
+            "qty_sold": line.get("qty_sold", 0),
+            "total": line.get("total_revenue") or line.get("total", 0),
             "_link": f"/docs?price_range={pr}",
         }
     else:
@@ -549,10 +550,12 @@ def _sales_view_columns(group_by: str, is_purchases: bool = False) -> list[tuple
     if group_by == "price_range":
         return [
             ("Price Range", "label", ""),
-            ("# Invoices", "count", "cell--right"),
+            ("# Items", "item_count", "cell--right"),
+            ("Qty Sold", "qty_sold", "cell--right"),
             ("Revenue", "total", "cell--number"),
             ("Cost", "total_cost", "cell--number"),
             ("Gross Profit", "gross_profit", "cell--number"),
+            ("Margin %", "margin_pct", "cell--right"),
         ]
     # fallback
     return [("Group", "label", ""), ("Count", "count", "cell--right"), ("Amount", "total", "cell--number")]
@@ -587,7 +590,7 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
 
     def _th(label_txt: str, key: str) -> FT:
         nd = "asc" if (sort == key and sort_dir == "desc") else "desc"
-        marker = " ^" if (sort == key and sort_dir == "asc") else (" v" if sort == key else "")
+        marker = " ▲" if (sort == key and sort_dir == "asc") else (" ▼" if sort == key else "")
         return Th(A(f"{label_txt}{marker}", href=f"?sort={key}&dir={nd}", cls="sort-link"))
 
     def _cell(l: dict, key: str, css: str) -> FT:
