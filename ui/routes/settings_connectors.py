@@ -179,20 +179,13 @@ async def _fetch_access_token(relay_url: str, instance_id: str, platform: str) -
         raise RuntimeError("Cannot reach relay server. Check your internet connection.")
 
 
-async def _fetch_catalog(relay_url: str, instance_id: str) -> list[dict]:
-    """Fetch connector catalog from relay. Returns empty list on failure."""
-    import httpx
+async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> list[dict]:
+    """Fetch connector catalog via API process proxy (which holds the gateway token)."""
+    from ui.api_client import get_connectors_catalog
     try:
-        async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.get(
-                f"{relay_url}/api/connectors",
-                params={"instance_id": instance_id},
-            )
-            if r.status_code == 200:
-                return r.json().get("connectors", [])
+        return await get_connectors_catalog(token)
     except Exception:
-        pass
-    return []
+        return []
 
 
 async def _get_last_runs(company_id: str) -> dict[str, object]:
@@ -395,7 +388,7 @@ def _connector_card(
     )
 
 
-async def connectors_tab_content(lang: str = "en") -> FT:
+async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
     """Render the full connectors tab (catalog grouped by category)."""
     from celerp.config import ensure_instance_id
     from celerp.gateway.client import get_client
@@ -405,7 +398,7 @@ async def connectors_tab_content(lang: str = "en") -> FT:
     relay_url = RELAY_URL
     iid = ensure_instance_id()
 
-    catalog = await _fetch_catalog(relay_url, iid)
+    catalog = await _fetch_catalog(relay_url, iid, token=token)
 
     if not catalog:
         return Div(
@@ -502,7 +495,7 @@ def setup_routes(app):
             await session.commit()
 
         # Re-render the card
-        catalog = await _fetch_catalog(RELAY_URL, iid)
+        catalog = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         config = await _get_connector_config(iid, platform)
@@ -546,7 +539,7 @@ def setup_routes(app):
             )
             await session.commit()
 
-        catalog = await _fetch_catalog(RELAY_URL, iid)
+        catalog = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         config = await _get_connector_config(iid, platform)
@@ -585,7 +578,7 @@ def setup_routes(app):
                 cls="connector-card",
             )
 
-        catalog = await _fetch_catalog(RELAY_URL, iid)
+        catalog = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid, lang=lang)
@@ -703,7 +696,7 @@ def setup_routes(app):
             )
 
         # Create connector config with defaults
-        catalog = await _fetch_catalog(RELAY_URL, iid)
+        catalog = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         config = await _ensure_connector_config(iid, platform, c_data.get("category", "website"))
         last_runs = await _get_last_runs(iid)

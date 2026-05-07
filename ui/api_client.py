@@ -1837,3 +1837,10 @@ async def cloud_claim(token: str, payload: dict) -> dict:
     """POST /settings/cloud-claim — claim + activate via API process (correct instance_id)."""
     async with _client(token) as c:
         return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
+
+
+async def get_connectors_catalog(token: str) -> list[dict]:
+    """GET /settings/connectors-catalog — proxy relay /api/connectors via API process (has gateway token)."""
+    async with _client(token) as c:
+        data = _raise(await c.get("/settings/connectors-catalog")).json()
+    return data.get("connectors", [])

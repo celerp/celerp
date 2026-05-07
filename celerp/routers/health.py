@@ -407,3 +407,34 @@ async def cloud_claim_api(payload: dict) -> dict:
         pass
 
     return {"linked": True, "instance_id": iid}
+
+
+@router.get("/settings/connectors-catalog")
+async def connectors_catalog_api() -> dict:
+    """Proxy relay /api/connectors using the stored gateway token (API process only)."""
+    import httpx
+    from celerp.config import settings as _s, ensure_instance_id
+
+    iid = ensure_instance_id()
+    token = _s.gateway_token
+    if not token:
+        return {"error": "Not connected to relay.", "connectors": []}
+
+    relay_base = _relay_http_base(_s)
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            r = await c.get(
+                f"{relay_base}/api/connectors",
+                params={"instance_id": iid},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.ConnectError:
+        return {"error": f"Cannot reach {relay_base}.", "connectors": []}
+    except httpx.TimeoutException:
+        return {"error": "Relay timed out.", "connectors": []}
+    except Exception as exc:
+        return {"error": str(exc), "connectors": []}
+
+    if r.status_code == 200:
+        return {"connectors": r.json().get("connectors", [])}
+    return {"error": f"Relay returned {r.status_code}.", "connectors": []}
