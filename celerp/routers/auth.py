@@ -147,8 +147,8 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
 
     return {
-        "access_token": create_access_token(str(user.id), str(company.id), user.role),
-        "refresh_token": create_refresh_token(str(user.id), str(company.id), user.role),
+        "access_token": create_access_token(str(user.id), str(company.id), user.role, user.email),
+        "refresh_token": create_refresh_token(str(user.id), str(company.id), user.role, user.email),
     }
 
 
@@ -173,8 +173,8 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
         raise HTTPException(status_code=409, detail="direct_connection_limit")
 
     return {
-        "access_token": create_access_token(str(user.id), str(user.company_id), user.role),
-        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role),
+        "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
+        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
     }
 
 
@@ -190,8 +190,8 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     _clear_tracker()
 
     return {
-        "access_token": create_access_token(str(user.id), str(user.company_id), user.role),
-        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role),
+        "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
+        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
     }
 
 
@@ -222,8 +222,8 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     return {
-        "access_token": create_access_token(user_id, company_id, role),
-        "refresh_token": create_refresh_token(user_id, company_id, role),
+        "access_token": create_access_token(user_id, company_id, role, user.email),
+        "refresh_token": create_refresh_token(user_id, company_id, role, user.email),
     }
 
 

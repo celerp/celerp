@@ -66,6 +66,6 @@ def get_user_email(request) -> str | None:
         payload_b64 = token.split(".")[1]
         payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
         claims = _json.loads(payload_bytes)
-        return claims.get("sub") or None
+        return claims.get("email") or None
     except Exception:
         return None
