@@ -436,3 +436,117 @@ async def test_cloud_send_otp_proxies_via_api(client):
     assert data.get("ok") is True
     # instance_id in sent payload must match what API process provides
     assert sent_payload.get("instance_id") == data.get("instance_id")
+
+
+# ---------------------------------------------------------------------------
+# /settings/connectors-catalog
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_connectors_catalog_not_connected_returns_error(client):
+    """Returns error dict (not 5xx) when no gateway_token is configured."""
+    token = await _register(client, "conn-notoken")
+
+    with patch("celerp.config.settings") as mock_settings:
+        mock_settings.gateway_token = ""
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        r = await client.get("/settings/connectors-catalog", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+    assert data["connectors"] == []
+
+
+@pytest.mark.asyncio
+async def test_connectors_catalog_success(client):
+    """Returns connector list when relay responds with catalog."""
+    token = await _register(client, "conn-success")
+
+    fake_catalog = [
+        {"id": "shopify", "name": "Shopify", "category": "website", "connected": False},
+        {"id": "quickbooks", "name": "QuickBooks", "category": "accounting", "connected": False},
+    ]
+
+    tok_resp = MagicMock()
+    tok_resp.status_code = 200
+    tok_resp.json.return_value = {"access_token": "relay-jwt-xyz"}
+
+    cat_resp = MagicMock()
+    cat_resp.status_code = 200
+    cat_resp.json.return_value = {"connectors": fake_catalog}
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
+         patch("httpx.AsyncClient") as mock_httpx:
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+
+        call_count = {"n": 0}
+        async def fake_request(url, **kwargs):
+            call_count["n"] += 1
+            if "/auth/token" in url:
+                return tok_resp
+            return cat_resp
+
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(side_effect=fake_request)
+        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(return_value=cat_resp)
+
+        r = await client.get("/settings/connectors-catalog", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" not in data
+    assert len(data["connectors"]) == 2
+    assert data["connectors"][0]["id"] == "shopify"
+
+
+@pytest.mark.asyncio
+async def test_connectors_catalog_relay_token_exchange_failure(client):
+    """Returns error dict when relay refuses the API key (auth/token returns 401)."""
+    token = await _register(client, "conn-badkey")
+
+    bad_tok_resp = MagicMock()
+    bad_tok_resp.status_code = 401
+    bad_tok_resp.json.return_value = {"detail": "Invalid API key"}
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
+         patch("httpx.AsyncClient") as mock_httpx:
+        mock_settings.gateway_token = "bad-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=bad_tok_resp)
+        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock()
+
+        r = await client.get("/settings/connectors-catalog", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+    assert data["connectors"] == []
+
+
+@pytest.mark.asyncio
+async def test_connectors_catalog_relay_unreachable(client):
+    """Returns error dict on ConnectError (no crash, no 500)."""
+    import httpx as _httpx
+    token = await _register(client, "conn-unreachable")
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid-abc"), \
+         patch("httpx.AsyncClient") as mock_httpx:
+        mock_settings.gateway_token = "some-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(
+            side_effect=_httpx.ConnectError("Connection refused")
+        )
+        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock()
+
+        r = await client.get("/settings/connectors-catalog", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" in data
+    assert data["connectors"] == []

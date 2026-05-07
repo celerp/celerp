@@ -411,22 +411,28 @@ async def cloud_claim_api(payload: dict) -> dict:
 
 @router.get("/settings/connectors-catalog")
 async def connectors_catalog_api() -> dict:
-    """Proxy relay /api/connectors using the stored gateway token (API process only)."""
+    """Proxy relay /api/connectors using a fresh relay JWT (API process only)."""
     import httpx
     from celerp.config import settings as _s, ensure_instance_id
 
     iid = ensure_instance_id()
-    token = _s.gateway_token
-    if not token:
+    api_key = _s.gateway_token  # this is the permanent API key, not a JWT
+    if not api_key:
         return {"error": "Not connected to relay.", "connectors": []}
 
     relay_base = _relay_http_base(_s)
     try:
         async with httpx.AsyncClient(timeout=8.0) as c:
+            # Exchange API key for short-lived JWT
+            tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
+            if tok_r.status_code != 200:
+                return {"error": f"Could not authenticate with relay ({tok_r.status_code}).", "connectors": []}
+            jwt = tok_r.json()["access_token"]
+
             r = await c.get(
                 f"{relay_base}/api/connectors",
                 params={"instance_id": iid},
-                headers={"Authorization": f"Bearer {token}"},
+                headers={"Authorization": f"Bearer {jwt}"},
             )
     except httpx.ConnectError:
         return {"error": f"Cannot reach {relay_base}.", "connectors": []}
