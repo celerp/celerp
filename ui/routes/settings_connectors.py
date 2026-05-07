@@ -179,13 +179,15 @@ async def _fetch_access_token(relay_url: str, instance_id: str, platform: str) -
         raise RuntimeError("Cannot reach relay server. Check your internet connection.")
 
 
-async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> list[dict]:
-    """Fetch connector catalog via API process proxy (which holds the gateway token)."""
+async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> tuple[list[dict], str]:
+    """Fetch connector catalog via API process proxy (which holds the gateway token).
+    Returns (connectors, error_detail) - error_detail is "" on success."""
     from ui.api_client import get_connectors_catalog
     try:
-        return await get_connectors_catalog(token)
-    except Exception:
-        return []
+        result = await get_connectors_catalog(token)
+        return result, ""
+    except Exception as exc:
+        return [], str(exc)
 
 
 async def _get_last_runs(company_id: str) -> dict[str, object]:
@@ -398,13 +400,14 @@ async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
     relay_url = RELAY_URL
     iid = ensure_instance_id()
 
-    catalog = await _fetch_catalog(relay_url, iid, token=token)
+    catalog, _fetch_err = await _fetch_catalog(relay_url, iid, token=token)
 
     if not catalog:
         return Div(
             P(t("connectors.fetch_error", lang,
                 default="Could not load connectors from relay. Check your connection."),
               cls="flash flash--warning"),
+            P(f"Debug: {_fetch_err or 'empty catalog returned'}", cls="flash flash--warning", style="font-size:0.8em;opacity:0.7"),
             cls="settings-card",
         )
 
@@ -495,7 +498,7 @@ def setup_routes(app):
             await session.commit()
 
         # Re-render the card
-        catalog = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         config = await _get_connector_config(iid, platform)
@@ -539,7 +542,7 @@ def setup_routes(app):
             )
             await session.commit()
 
-        catalog = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         config = await _get_connector_config(iid, platform)
@@ -578,7 +581,7 @@ def setup_routes(app):
                 cls="connector-card",
             )
 
-        catalog = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid, lang=lang)
@@ -696,7 +699,7 @@ def setup_routes(app):
             )
 
         # Create connector config with defaults
-        catalog = await _fetch_catalog(RELAY_URL, iid, token=token)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         config = await _ensure_connector_config(iid, platform, c_data.get("category", "website"))
         last_runs = await _get_last_runs(iid)
