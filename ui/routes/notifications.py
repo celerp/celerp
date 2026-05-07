@@ -77,8 +77,14 @@ def setup_routes(app):
             return StreamingResponse(_empty(), media_type="text/event-stream")
 
         async def _stream():
-            _RETRY_DELAYS = [1, 2, 4, 8]  # seconds between connect attempts
-            for attempt, delay in enumerate(_RETRY_DELAYS + [None]):
+            # Yield a keepalive immediately to commit the 200 response and
+            # prevent any subsequent exception from becoming a 500.
+            yield ": keepalive\n\n"
+
+            _RETRY_DELAYS = [1, 2, 4, 8, 16]
+            for delay in _RETRY_DELAYS:
+                if await request.is_disconnected():
+                    return
                 try:
                     async with httpx.AsyncClient(base_url=API_BASE, timeout=None) as c:
                         async with c.stream(
@@ -93,17 +99,11 @@ def setup_routes(app):
                                 if await request.is_disconnected():
                                     return
                                 yield chunk
-                    return  # clean close - don't retry
+                    return  # clean stream close - stop retrying
                 except (asyncio.CancelledError, GeneratorExit):
                     return
-                except httpx.ConnectError:
-                    # API not ready yet (startup race) or went away - retry with backoff
-                    if delay is None or await request.is_disconnected():
-                        return
-                    await asyncio.sleep(delay)
                 except Exception:
-                    # Any other error - send keepalive and stop
-                    yield "data: {}\n\n"
-                    return
+                    # API not ready or temporary error - wait then retry
+                    await asyncio.sleep(delay)
 
         return StreamingResponse(_stream(), media_type="text/event-stream")
