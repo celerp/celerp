@@ -168,34 +168,50 @@ async def test_change_password_requires_auth(client):
 
 
 @pytest.mark.asyncio
-async def test_single_user_gate_blocks_second_login(client):
-    """Without relay session token: second login is rejected with 409."""
+async def test_single_user_gate_blocks_different_user_same_company(client):
+    """Gate: user B cannot log into a company where user A is already active (no relay).
+
+    Creates admin + second user in same company, seeds tracker with admin,
+    then verifies second user login returns 409 when relay is not connected.
+    """
     from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker
 
-    await client.post(
+    r_reg = await client.post(
         "/auth/register",
-        json={"company_name": "GateCo", "email": "gate@test.com", "name": "Admin", "password": "longpass123"},
+        json={"company_name": "GateCo", "email": "gate_admin@test.com", "name": "Admin", "password": "longpass123"},
     )
+    assert r_reg.status_code == 200
 
     _clear_tracker()
-    r1 = await client.post("/auth/login", json={"email": "gate@test.com", "password": "longpass123"})
+    r1 = await client.post("/auth/login", json={"email": "gate_admin@test.com", "password": "longpass123"})
     assert r1.status_code == 200
-    token = r1.json()["access_token"]
+    admin_token = r1.json()["access_token"]
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
 
-    # Seed the tracker by making an authenticated request
-    await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token}"})
+    # Seed tracker with admin activity
+    await client.get("/auth/my-companies", headers=admin_headers)
 
-    # No relay session token -> gate fires
+    # Create a second user in the same company (role must be a valid ROLE_LEVELS key)
+    r_user = await client.post(
+        "/companies/me/users", headers=admin_headers,
+        json={"email": "gate_user2@test.com", "name": "User2", "password": "longpass123", "role": "operator"},
+    )
+    assert r_user.status_code == 200, f"Failed to create second user: {r_user.text}"
+
+    # Second user login with no relay -> 409
     with patch("celerp.gateway.state.get_session_token", return_value=""):
-        r2 = await client.post("/auth/login", json={"email": "gate@test.com", "password": "longpass123"})
-    assert r2.status_code == 409
+        r2 = await client.post("/auth/login", json={"email": "gate_user2@test.com", "password": "longpass123"})
+    assert r2.status_code == 409, f"Expected 409 but got {r2.status_code}: {r2.text}"
     assert r2.json()["detail"] == "direct_connection_limit"
 
 
 @pytest.mark.asyncio
-async def test_single_user_gate_same_user_second_window_blocked(client):
-    """Same user logging in from a second window is also blocked when no relay."""
+async def test_single_user_gate_allows_same_user_relogin(client):
+    """Gate: same user can re-login even while active (exclude=self).
+
+    This lets them open a new tab without being locked out of their own account.
+    """
     from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker
 
@@ -212,26 +228,33 @@ async def test_single_user_gate_same_user_second_window_blocked(client):
 
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "gate2@test.com", "password": "longpass123"})
-    assert r2.status_code == 409
+    assert r2.status_code == 200, f"Same-user re-login should succeed, got {r2.status_code}: {r2.text}"
 
 
 @pytest.mark.asyncio
 async def test_single_user_gate_passes_with_relay(client):
-    """With a live relay session token, the gate does not fire."""
+    """With relay connected, a second user can log in freely."""
     from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker
 
-    await client.post(
+    r_reg = await client.post(
         "/auth/register",
         json={"company_name": "GateCo3", "email": "gate3@test.com", "name": "Admin", "password": "longpass123"},
     )
+    assert r_reg.status_code == 200
 
     _clear_tracker()
     r1 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
     assert r1.status_code == 200
-    token = r1.json()["access_token"]
-    await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token}"})
+    admin_headers = {"Authorization": f"Bearer {r1.json()['access_token']}"}
+    await client.get("/auth/my-companies", headers=admin_headers)
+
+    r_user = await client.post(
+        "/companies/me/users", headers=admin_headers,
+        json={"email": "gate3b@test.com", "name": "User2", "password": "longpass123", "role": "operator"},
+    )
+    assert r_user.status_code == 200, f"Failed to create user: {r_user.text}"
 
     with patch("celerp.gateway.state.get_session_token", return_value="live-token-abc"):
-        r2 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
+        r2 = await client.post("/auth/login", json={"email": "gate3b@test.com", "password": "longpass123"})
     assert r2.status_code == 200
