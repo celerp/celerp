@@ -518,7 +518,7 @@ def setup_routes(app):
             from ui.routes.settings_connectors import connectors_tab_content
             content = await connectors_tab_content(lang)
         else:
-            content = Div(_cloud_relay_tab(), _backup_summary_card(gw_ok=gw_ok))
+            content = Div(_cloud_relay_tab(relay_status=relay_status), _backup_summary_card(gw_ok=gw_ok))
             tab = "status"
 
         return base_shell(

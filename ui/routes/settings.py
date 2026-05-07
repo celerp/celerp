@@ -3317,17 +3317,26 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
-def _cloud_relay_tab() -> FT:
-    """Cloud Relay settings tab. Auto-attempts activation; falls back to subscribe/claim UI."""
+def _cloud_relay_tab(relay_status: str | None = None) -> FT:
+    """Cloud Relay settings tab. Auto-attempts activation; falls back to subscribe/claim UI.
+
+    relay_status: if provided, use this value instead of querying get_client() (needed
+    when called from the UI process where get_client() is always None).
+    """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
     gw = get_client()
 
-    if gw is not None and gw.relay_status == "tos_required":
-        return _tos_acceptance_card(gw.required_tos_version)
+    # Use caller-supplied relay_status if provided (cross-process UI/API split),
+    # otherwise fall back to local in-process client (Electron single-process mode).
+    if relay_status is None:
+        relay_status = gw.relay_status if gw else "inactive"
 
-    if gw is not None:
-        relay_status = gw.relay_status
+    required_tos = getattr(gw, "required_tos_version", "") if gw else ""
+    if relay_status == "tos_required":
+        return _tos_acceptance_card(required_tos)
+
+    if relay_status not in ("inactive",) or gw is not None:
         badge_cls = {
             "active": "badge--active",
             "connecting": "badge--warning",
