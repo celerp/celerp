@@ -1431,113 +1431,35 @@ def setup_routes(app):
 
     _RELAY_BASE = _relay_base()
 
-    async def _apply_gateway_token(
-        token: str, iid: str, public_url: str | None = None, tos_version: str | None = None,
-    ) -> None:
-        """Apply a gateway token in-process, start WS client, persist to config.toml.
-
-        Waits up to 3 s for the WS handshake to complete so the UI can render
-        the correct relay_status on the first response.
-        """
-        import asyncio
-        from celerp.config import settings as _s, read_config, write_config
-        from celerp.gateway import client as _gw
-        _s.gateway_token = token
-        _s.gateway_instance_id = iid
-        if public_url:
-            _s.celerp_public_url = public_url
-
-        # Auto-generate backup encryption key if not already set
-        if not _s.backup_encryption_key:
-            import base64, secrets as _secrets
-            key = base64.b64encode(_secrets.token_bytes(32)).decode()
-            _s.backup_encryption_key = key
-
-        # Persist config BEFORE starting WS client (client reads tos_version from config)
-        try:
-            cfg = read_config()
-            if cfg:
-                cloud = cfg.setdefault("cloud", {})
-                cloud["token"] = token
-                cloud["instance_id"] = iid
-                if public_url:
-                    cloud["public_url"] = public_url
-                if tos_version:
-                    cloud["tos_version"] = tos_version
-                if _s.backup_encryption_key:
-                    cloud["backup_encryption_key"] = _s.backup_encryption_key
-                write_config(cfg)
-        except Exception:
-            pass
-
-        if _gw.get_client() is None:
-            gw = _gw.GatewayClient(
-                gateway_token=token,
-                instance_id=iid,
-                gateway_url=_s.gateway_url,
-            )
-            _gw.set_client(gw)
-            asyncio.create_task(gw.run())
-            # Wait briefly for WS handshake so UI shows correct status
-            for _ in range(15):
-                if gw.relay_status == "active":
-                    break
-                await asyncio.sleep(0.2)
-
-        # Start backup scheduler if not running
-        if _s.backup_enabled and _s.backup_encryption_key:
-            from celerp.services import backup_scheduler
-            backup_scheduler.start()
-
     @app.post("/settings/cloud-activate")
     async def cloud_activate(request: Request):
-        """HTMX: call relay /auth/activate, apply token in-process, reload tab."""
-        import httpx
+        """HTMX: proxy to API process to call relay /auth/activate + start gateway."""
+        import ui.api_client as _api
         from celerp.config import ensure_instance_id
 
         iid = ensure_instance_id()
+        ui_token = _token(request)
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(f"{_RELAY_BASE}/auth/activate", json={"instance_id": iid})
-        except httpx.ConnectError:
-            return _cloud_relay_unconnected(
-                iid,
-                error=f"Cannot reach {_RELAY_BASE} - check your internet connection or firewall.",
-            )
-        except httpx.TimeoutException:
-            return _cloud_relay_unconnected(
-                iid,
-                error=f"Connection to {_RELAY_BASE} timed out. The relay may be temporarily unavailable.",
-            )
+            data = await _api.activate_relay(ui_token)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Could not reach relay: {type(exc).__name__}: {exc}")
+            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
 
-        if r.status_code == 404:
-            return _cloud_relay_unconnected(
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
+
+        if data.get("reconnect"):
+            return _cloud_reconnect_confirm(
                 iid,
-                error="No active subscription found for this instance. Subscribe first, or link by email below.",
+                data["gateway_token"],
+                data.get("public_url"),
+                data.get("tos_version"),
             )
-        if r.status_code == 402:
-            return _cloud_relay_unconnected(
-                iid,
-                error=r.json().get("detail", "Subscription not active."),
-            )
-        if r.status_code != 200:
-            return _cloud_relay_unconnected(iid, error=f"Relay returned {r.status_code}: {r.text[:120]}")
 
-        data = r.json()
-        token = data["gateway_token"]
-        public_url = data.get("public_url")
-        tos_version = data.get("tos_version")
-        is_reconnect = data.get("reconnect", False)
-
-        if is_reconnect:
-            # Previously connected instance — confirm before applying, offer to switch
-            return _cloud_reconnect_confirm(iid, token, public_url, tos_version)
-
-        await _apply_gateway_token(token, iid, public_url=public_url, tos_version=tos_version)
-        return _cloud_relay_tab()
+        return _cloud_relay_tab(
+            relay_status=data.get("relay_status", "connecting"),
+            public_url=data.get("public_url", ""),
+        )
 
     def _cloud_reconnect_confirm(
         iid: str, token: str, public_url: str | None, tos_version: str | None
@@ -1581,17 +1503,27 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-reconnect-confirm")
     async def cloud_reconnect_confirm(request: Request):
-        """HTMX: apply a previously-retrieved gateway token (reconnect confirmation)."""
+        """HTMX: apply a previously-retrieved gateway token via API (reconnect confirmation)."""
+        import ui.api_client as _api
         from celerp.config import ensure_instance_id
         form = await request.form()
-        token = str(form.get("_reconnect_token", "")).strip()
+        gw_token = str(form.get("_reconnect_token", "")).strip()
         public_url = str(form.get("_reconnect_public_url", "")).strip() or None
         tos_version = str(form.get("_reconnect_tos_version", "")).strip() or None
         iid = ensure_instance_id()
-        if not token:
+        if not gw_token:
             return _cloud_relay_unconnected(iid, error="Reconnect token missing. Please try again.")
-        await _apply_gateway_token(token, iid, public_url=public_url, tos_version=tos_version)
-        return _cloud_relay_tab()
+        ui_token = _token(request)
+        try:
+            data = await _api.apply_relay_token(ui_token, {"gateway_token": gw_token, "public_url": public_url, "tos_version": tos_version})
+        except Exception as exc:
+            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
+        return _cloud_relay_tab(
+            relay_status=data.get("relay_status", "connecting"),
+            public_url=data.get("public_url", ""),
+        )
 
     def _cloud_claim_selection(matches: list[dict], email: str, iid: str, otp_code: str | None = None) -> FT:
         """Render the subscription selection UI when multiple subs match an email.
@@ -1783,6 +1715,8 @@ def setup_routes(app):
         subscription_id = str(form.get("subscription_id", "")).strip() or None
         otp_code = str(form.get("otp_code", "")).strip() or None
         iid = ensure_instance_id()
+        import ui.api_client as _api
+        ui_token = _token(request)
 
         if not email:
             return _cloud_relay_unconnected(iid, error="Please enter an email address.")
@@ -1847,17 +1781,14 @@ def setup_routes(app):
         if data.get("requires_selection"):
             return _cloud_claim_selection(data["matches"], email, iid, otp_code=otp_code)
 
-        # Claim succeeded — activate immediately
+        # Claim succeeded — activate immediately via API
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r2 = await c.post(f"{_RELAY_BASE}/auth/activate", json={"instance_id": iid})
-            if r2.status_code == 200:
-                data2 = r2.json()
-                token = data2["gateway_token"]
-                await _apply_gateway_token(
-                    token, iid, public_url=data2.get("public_url"), tos_version=data2.get("tos_version"),
+            act_data = await _api.activate_relay(ui_token)
+            if act_data.get("connected") or act_data.get("relay_status"):
+                return _cloud_relay_tab(
+                    relay_status=act_data.get("relay_status", "connecting"),
+                    public_url=act_data.get("public_url", ""),
                 )
-                return _cloud_relay_tab()
         except Exception:
             pass
 
@@ -1886,43 +1817,19 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
-        """HTMX: record TOS acceptance, reconnect gateway, re-render tab."""
-        import asyncio
-        from celerp.config import settings as _s, read_config, write_config
-        from celerp.gateway import client as _gw
-
-        gw = _gw.get_client()
-        tos_version = gw.required_tos_version if gw is not None else ""
-
-        # Persist accepted TOS version to config.toml
+        """HTMX: record TOS acceptance via API, reconnect gateway, re-render tab."""
+        import ui.api_client as _api
+        from celerp.config import ensure_instance_id
+        ui_token = _token(request)
+        iid = ensure_instance_id()
         try:
-            cfg = read_config() or {}
-            cloud = cfg.setdefault("cloud", {})
-            cloud["tos_version"] = tos_version
-            write_config(cfg)
-        except Exception:
-            pass
-
-        # Stop existing client and start fresh (will now send accepted tos_version)
-        if gw is not None:
-            gw.stop()
-            _gw.set_client(None)
-
-        new_gw = _gw.GatewayClient(
-            gateway_token=_s.gateway_token,
-            instance_id=_s.gateway_instance_id,
-            gateway_url=_s.gateway_url,
+            data = await _api.accept_relay_tos(ui_token)
+        except Exception as exc:
+            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+        return _cloud_relay_tab(
+            relay_status=data.get("relay_status", "connecting"),
+            public_url=data.get("public_url", ""),
         )
-        _gw.set_client(new_gw)
-        asyncio.create_task(new_gw.run())
-
-        # Wait briefly for WS handshake
-        for _ in range(15):
-            if new_gw.relay_status == "active":
-                break
-            await asyncio.sleep(0.2)
-
-        return _cloud_relay_tab()
 
     @app.get("/settings/email-status")
     async def email_status_fragment(request: Request):

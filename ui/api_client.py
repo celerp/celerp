@@ -1801,3 +1801,21 @@ async def disconnect_relay(token: str) -> dict:
     """POST /settings/cloud-disconnect — stop gateway client, clear config."""
     async with _client(token) as c:
         return _raise(await c.post("/settings/cloud-disconnect")).json()
+
+
+async def activate_relay(token: str) -> dict:
+    """POST /settings/cloud-activate — call relay /auth/activate, start gateway."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-activate")).json()
+
+
+async def apply_relay_token(token: str, payload: dict) -> dict:
+    """POST /settings/cloud-apply-token — apply pre-fetched gateway token."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-apply-token", json=payload)).json()
+
+
+async def accept_relay_tos(token: str) -> dict:
+    """POST /settings/cloud-accept-tos — persist TOS, restart gateway client."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-accept-tos")).json()

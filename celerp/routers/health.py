@@ -122,3 +122,149 @@ async def cloud_disconnect() -> dict:
         pass
 
     return {"disconnected": True}
+
+
+def _relay_http_base(s) -> str:
+    return s.gateway_http_url or s.gateway_url.replace("wss://", "https://").replace("ws://", "http://").replace("/ws/connect", "")
+
+
+async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None = None, tos_version: str | None = None) -> None:
+    """Apply a gateway token in the API process: persist config, start WS client."""
+    import asyncio
+    from celerp.config import settings as _s, read_config, write_config
+    from celerp.gateway import client as _gw
+
+    _s.gateway_token = token
+    _s.gateway_instance_id = iid
+    if public_url:
+        _s.celerp_public_url = public_url
+
+    if not _s.backup_encryption_key:
+        import base64, secrets as _secrets
+        _s.backup_encryption_key = base64.b64encode(_secrets.token_bytes(32)).decode()
+
+    try:
+        cfg = read_config()
+        if cfg:
+            cloud = cfg.setdefault("cloud", {})
+            cloud["token"] = token
+            cloud["instance_id"] = iid
+            if public_url:
+                cloud["public_url"] = public_url
+            if tos_version:
+                cloud["tos_version"] = tos_version
+            if _s.backup_encryption_key:
+                cloud["backup_encryption_key"] = _s.backup_encryption_key
+            write_config(cfg)
+    except Exception:
+        pass
+
+    if _gw.get_client() is None:
+        gw = _gw.GatewayClient(
+            gateway_token=token,
+            instance_id=iid,
+            gateway_url=_s.gateway_url,
+        )
+        _gw.set_client(gw)
+        asyncio.create_task(gw.run())
+        for _ in range(15):
+            if gw.relay_status == "active":
+                break
+            await asyncio.sleep(0.2)
+
+    if _s.backup_enabled and _s.backup_encryption_key:
+        from celerp.services import backup_scheduler
+        backup_scheduler.start()
+
+
+@router.post("/settings/cloud-activate")
+async def cloud_activate_api() -> dict:
+    """Call relay /auth/activate, apply token, start gateway client. Returns status."""
+    import httpx
+    from celerp.config import settings as _s, ensure_instance_id
+
+    iid = ensure_instance_id()
+    relay_base = _relay_http_base(_s)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as c:
+            r = await c.post(f"{relay_base}/auth/activate", json={"instance_id": iid})
+    except httpx.ConnectError:
+        return {"error": f"Cannot reach {relay_base} - check your internet connection or firewall."}
+    except httpx.TimeoutException:
+        return {"error": f"Connection to {relay_base} timed out."}
+    except Exception as exc:
+        return {"error": f"Could not reach relay: {type(exc).__name__}: {exc}"}
+
+    if r.status_code == 404:
+        return {"error": "No active subscription found for this instance. Subscribe first, or link by email below."}
+    if r.status_code == 402:
+        return {"error": r.json().get("detail", "Subscription not active.")}
+    if r.status_code != 200:
+        return {"error": f"Relay returned {r.status_code}: {r.text[:120]}"}
+
+    data = r.json()
+    token = data["gateway_token"]
+    public_url = data.get("public_url")
+    tos_version = data.get("tos_version")
+    reconnect = data.get("reconnect", False)
+
+    if reconnect:
+        return {"reconnect": True, "gateway_token": token, "public_url": public_url, "tos_version": tos_version}
+
+    await _apply_gateway_token_api(token, iid, public_url=public_url, tos_version=tos_version)
+    gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
+    return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": public_url or ""}
+
+
+@router.post("/settings/cloud-apply-token")
+async def cloud_apply_token_api(payload: dict) -> dict:
+    """Apply a pre-fetched gateway token (reconnect confirmation flow)."""
+    from celerp.config import ensure_instance_id
+
+    token = payload.get("gateway_token", "")
+    public_url = payload.get("public_url") or None
+    tos_version = payload.get("tos_version") or None
+    iid = ensure_instance_id()
+    if not token:
+        return {"error": "gateway_token missing"}
+    await _apply_gateway_token_api(token, iid, public_url=public_url, tos_version=tos_version)
+    gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
+    return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": public_url or ""}
+
+
+@router.post("/settings/cloud-accept-tos")
+async def cloud_accept_tos_api() -> dict:
+    """Persist TOS acceptance, restart gateway client with new tos_version."""
+    import asyncio
+    from celerp.config import settings as _s, read_config, write_config
+    from celerp.gateway import client as _gw
+
+    gw = _gw.get_client()
+    tos_version = gw.required_tos_version if gw is not None else ""
+
+    try:
+        cfg = read_config() or {}
+        cloud = cfg.setdefault("cloud", {})
+        cloud["tos_version"] = tos_version
+        write_config(cfg)
+    except Exception:
+        pass
+
+    if gw is not None:
+        gw.stop()
+        _gw.set_client(None)
+
+    new_gw = _gw.GatewayClient(
+        gateway_token=_s.gateway_token,
+        instance_id=_s.gateway_instance_id,
+        gateway_url=_s.gateway_url,
+    )
+    _gw.set_client(new_gw)
+    asyncio.create_task(new_gw.run())
+    for _ in range(15):
+        if new_gw.relay_status == "active":
+            break
+        await asyncio.sleep(0.2)
+
+    return {"relay_status": new_gw.relay_status, "public_url": _s.celerp_public_url}
