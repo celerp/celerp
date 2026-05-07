@@ -395,15 +395,13 @@ def _infrastructure_tab() -> FT:
     )
 
 
-def _backup_summary_card() -> FT:
+def _backup_summary_card(gw_ok: bool = False) -> FT:
     """Compact backup status card for the cloud settings page.
 
     Always shows local export/import. When cloud-connected and backup module
     loaded, also shows last backup results and a link to the full backup tab.
     """
-    from celerp.gateway.client import get_client
     from ui.components.backup import local_backup_buttons
-    gw_ok = get_client() is not None
 
     # Local backup section (always visible)
     local_section = Div(
@@ -480,12 +478,24 @@ def setup_routes(app):
         if (r := _check_role(request, "admin")):
             return r
 
-        from celerp.gateway.client import get_client
-        gw = get_client()
+        from celerp.gateway.client import get_client as _local_get_client
+        import ui.api_client as _api
+        from ui.api_client import APIError as _APIError
         lang = get_lang(request)
 
+        # Fetch relay status from the API process (the gateway client lives there)
+        relay_status = "inactive"
+        try:
+            rs = await _api.get_relay_status(token)
+            relay_status = rs.get("status", "inactive")
+        except (_APIError, Exception):
+            # Fallback: check local process (Electron single-process mode)
+            lc = _local_get_client()
+            relay_status = lc.relay_status if lc else "inactive"
+        gw_ok = relay_status in ("active", "tos_required", "connecting", "error")
+
         # If not connected, show the full value-prop landing
-        if gw is None or gw.relay_status not in ("active", "tos_required", "connecting", "error"):
+        if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
             return base_shell(
@@ -508,7 +518,7 @@ def setup_routes(app):
             from ui.routes.settings_connectors import connectors_tab_content
             content = await connectors_tab_content(lang)
         else:
-            content = Div(_cloud_relay_tab(), _backup_summary_card())
+            content = Div(_cloud_relay_tab(), _backup_summary_card(gw_ok=gw_ok))
             tab = "status"
 
         return base_shell(
