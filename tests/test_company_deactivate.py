@@ -19,6 +19,8 @@ async def _add_user(client: AsyncClient, admin_token: str, email: str = "staff@d
         json={"name": "Staff", "email": email, "password": "pass1234", "role": role},
     )
     assert r.status_code == 200, r.text
+    from celerp.services.session_tracker import clear as _clear_tracker
+    _clear_tracker()  # gate is universal; clear so new user can log in
     r2 = await client.post("/auth/login", json={"email": email, "password": "pass1234"})
     assert r2.status_code == 200, r2.text
     return r2.json()["access_token"]

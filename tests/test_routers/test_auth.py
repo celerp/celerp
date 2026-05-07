@@ -119,7 +119,9 @@ async def test_change_password(client):
     r3 = await client.post("/auth/login", json={"email": "pw@pw.com", "password": "oldpass123"})
     assert r3.status_code == 401
 
-    # New password works
+    # New password works - clear tracker first (first login still active in window)
+    from celerp.services.session_tracker import clear as _clear_tracker
+    _clear_tracker()
     r4 = await client.post("/auth/login", json={"email": "pw@pw.com", "password": "newpass456"})
     assert r4.status_code == 200
 
@@ -191,9 +193,8 @@ async def test_single_user_gate_blocks_any_concurrent_user(client):
     # Directly seed tracker with a different user (simulates another active session)
     _record("00000000-0000-0000-0000-000000000001", company_id="")
 
-    # Login attempt with no relay -> 409 because another user is active
-    with patch("celerp.gateway.state.get_session_token", return_value=""):
-        r = await client.post("/auth/login", json={"email": "gate_admin@test.com", "password": "longpass123"})
+    # Login attempt -> 409 because another user is active
+    r = await client.post("/auth/login", json={"email": "gate_admin@test.com", "password": "longpass123"})
     assert r.status_code == 409, f"Expected 409 but got {r.status_code}: {r.text}"
     assert r.json()["detail"] == "direct_connection_limit"
 
@@ -211,19 +212,13 @@ async def test_single_user_gate_empty_tracker_allows_login(client):
 
     _clear_tracker()
 
-    with patch("celerp.gateway.state.get_session_token", return_value=""):
-        r = await client.post("/auth/login", json={"email": "gate2@test.com", "password": "longpass123"})
+    r = await client.post("/auth/login", json={"email": "gate2@test.com", "password": "longpass123"})
     assert r.status_code == 200, f"Empty tracker should allow login, got {r.status_code}: {r.text}"
 
 
 @pytest.mark.asyncio
-async def test_single_user_gate_allows_same_user_relogin(client):
-    """Gate: same user can re-login even while they are active (exclude=self).
-
-    exclude=user.id: the user's own activity does not count against them.
-    This lets a user reload their tab without being locked out.
-    """
-    from unittest.mock import patch
+async def test_single_user_gate_blocks_same_user_relogin(client):
+    """Gate: same user attempting re-login while already active is blocked (no exclude=self)."""
     from celerp.services.session_tracker import clear as _clear_tracker, record as _record
     import base64, json as _json
 
@@ -243,16 +238,14 @@ async def test_single_user_gate_allows_same_user_relogin(client):
     # Seed tracker with THIS user (simulates their own existing session)
     _record(user_id, company_id="")
 
-    # Same user re-login -> should succeed (exclude=self)
-    with patch("celerp.gateway.state.get_session_token", return_value=""):
-        r2 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
-    assert r2.status_code == 200, f"Same-user re-login should succeed, got {r2.status_code}: {r2.text}"
+    # Same user re-login -> now blocked (universal gate, no self-exclusion)
+    r2 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
+    assert r2.status_code == 409, f"Same-user re-login should be blocked, got {r2.status_code}: {r2.text}"
 
 
 @pytest.mark.asyncio
-async def test_single_user_gate_passes_with_relay(client):
-    """With relay connected (non-empty session token), the gate does not fire."""
-    from unittest.mock import patch
+async def test_single_user_gate_fires_regardless_of_relay(client):
+    """Gate always fires when another user is active - relay connection does not bypass it."""
     from celerp.services.session_tracker import clear as _clear_tracker, record as _record
 
     await client.post(
@@ -264,7 +257,6 @@ async def test_single_user_gate_passes_with_relay(client):
     # Seed tracker with another user
     _record("00000000-0000-0000-0000-000000000002", company_id="")
 
-    # With relay token, gate does not fire even with active users
-    with patch("celerp.gateway.state.get_session_token", return_value="live-token-abc"):
-        r = await client.post("/auth/login", json={"email": "gate4@test.com", "password": "longpass123"})
-    assert r.status_code == 200, f"Relay present should bypass gate, got {r.status_code}: {r.text}"
+    # Gate fires even when relay is connected
+    r = await client.post("/auth/login", json={"email": "gate4@test.com", "password": "longpass123"})
+    assert r.status_code == 409, f"Gate should fire regardless of relay, got {r.status_code}: {r.text}"

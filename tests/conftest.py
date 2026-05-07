@@ -374,21 +374,15 @@ async def client(session: AsyncSession):
     except Exception:
         pass
     _set_session_token("")  # ensure clean gateway state
-    # Set a mock relay client so concurrent login gate is bypassed.
-    # Tests that specifically test the gate patch _client back to None.
-    from unittest.mock import MagicMock
-    from celerp.gateway.client import set_client as _set_client, get_client as _get_client
-    _saved_client = _get_client()
-    _set_client(MagicMock())
+    # Set a mock relay client (used by relay-dependent code paths in tests).
+    # The concurrent login gate no longer checks relay state - it is bypassed in tests
+    # because the tracker is cleared at teardown (_clear_tracker below), so each test
+    # starts with an empty tracker.
     app.dependency_overrides[get_session] = lambda: session
-    # Simulate a connected gateway so direct_connection_limit gate does not fire in tests.
-    # We patch the underlying _client variable (not get_client) so that inner tests can
-    # still override it to None when specifically testing the gate behavior.
     with patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()
     _clear_tracker()
-    _set_client(_saved_client)
     _set_session_token(_saved_token or "")

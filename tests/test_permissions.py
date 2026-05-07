@@ -30,12 +30,14 @@ async def _register_admin(client) -> str:
 
 async def _invite_user(client, admin_headers: dict, email: str, role: str) -> str:
     """Create a user with the given role and return their access token."""
+    from celerp.services.session_tracker import clear as _clear_tracker
     r = await client.post(
         "/companies/me/users",
         json={"email": email, "name": role.title(), "role": role, "password": "pw123"},
         headers=admin_headers,
     )
     assert r.status_code == 200, r.text
+    _clear_tracker()  # clear so the new user can log in (gate is universal)
     r2 = await client.post("/auth/login", json={"email": email, "password": "pw123"})
     assert r2.status_code == 200, r2.text
     return r2.json()["access_token"]

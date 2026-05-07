@@ -104,6 +104,7 @@ async def test_cloud_status_connected_relay_unreachable(client):
         patch("celerp.config.settings.gateway_instance_id", "inst-123"),
         patch("celerp.config.settings.gateway_http_url", ""),
         patch("httpx.AsyncClient", return_value=mock_inner_client),
+        patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
     ):
         r = await client.get("/settings/cloud-status")
     assert r.status_code == 200
@@ -140,10 +141,11 @@ async def test_cloud_status_connected_relay_ok(client):
     with (
         patch("celerp.config.settings.gateway_token", "tok"),
         patch("celerp.config.settings.gateway_url", "wss://relay.celerp.com/ws/connect"),
-        patch.object(gw_state, "_session_token", "sess-token"),
+        patch("celerp.gateway.state.get_session_token", return_value="sess-token"),
         patch("celerp.config.settings.gateway_instance_id", "inst-abc"),
         patch("celerp.config.settings.gateway_http_url", "https://relay.celerp.com"),
         patch("httpx.AsyncClient", return_value=mock_inner_client),
+        patch("celerp.gateway.client.get_client", return_value=MagicMock(relay_status="active")),
     ):
         r = await client.get("/settings/cloud-status")
     assert r.status_code == 200
