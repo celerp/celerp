@@ -1806,18 +1806,33 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
-        """HTMX: disconnect from Cloud Relay via API process, re-render tab."""
+        """HTMX: pause gateway WS connection. Token stays in config."""
         import ui.api_client as _api
-        from celerp.config import ensure_instance_id
-
         token = _token(request)
         try:
             await _api.disconnect_relay(token)
         except Exception:
-            pass  # Best-effort: proceed to show unconnected UI regardless
+            pass
+        # Show disconnected-but-reconnectable state (token still in config)
+        return _cloud_relay_tab(relay_status="inactive", public_url=None, has_token=True)
 
+    @app.post("/settings/cloud-reconnect")
+    async def cloud_reconnect(request: Request):
+        """HTMX: restart gateway WS using existing token in config."""
+        import ui.api_client as _api
+        from celerp.config import ensure_instance_id
+        ui_token = _token(request)
         iid = ensure_instance_id()
-        return _cloud_relay_unconnected(iid)
+        try:
+            data = await _api.reconnect_relay(ui_token)
+        except Exception as exc:
+            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
+        return _cloud_relay_tab(
+            relay_status=data.get("relay_status", "connecting"),
+            public_url=data.get("public_url", ""),
+        )
 
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
@@ -3214,31 +3229,33 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
-def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None) -> FT:
-    """Cloud Relay settings tab. Auto-attempts activation; falls back to subscribe/claim UI.
+def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None, has_token: bool | None = None) -> FT:
+    """Cloud Relay settings tab.
 
-    relay_status: if provided, use this value instead of querying get_client() (needed
-    when called from the UI process where get_client() is always None).
-    public_url: if provided, use this value instead of reading settings directly (cross-process).
+    relay_status: caller-supplied (cross-process split); falls back to local get_client().
+    public_url: caller-supplied; falls back to local config.
+    has_token: True = show Reconnect button (disconnected but credentials exist).
+               None = auto-detect from local config.
     """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
     gw = get_client()
 
-    # Use caller-supplied relay_status if provided (cross-process UI/API split),
-    # otherwise fall back to local in-process client (Electron single-process mode).
     if relay_status is None:
         relay_status = gw.relay_status if gw else "inactive"
 
-    # Use caller-supplied public_url if provided, otherwise read from local config.
     if public_url is None:
         public_url = getattr(_cfg, "celerp_public_url", "")
+
+    if has_token is None:
+        has_token = bool(getattr(_cfg, "gateway_token", ""))
 
     required_tos = getattr(gw, "required_tos_version", "") if gw else ""
     if relay_status == "tos_required":
         return _tos_acceptance_card(required_tos)
 
-    if relay_status not in ("inactive",) or gw is not None:
+    is_connected = relay_status not in ("inactive",) or gw is not None
+    if is_connected:
         badge_cls = {
             "active": "badge--active",
             "connecting": "badge--warning",
@@ -3284,7 +3301,22 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
             cls="settings-card",
         )
 
-    # Not connected — render subscribe/claim UI
+    # Disconnected but token exists — show Reconnect (no need for subscribe flow)
+    if has_token:
+        return Div(
+            H3(t("settings.tab_cloud_relay"), cls="settings-section-title"),
+            P("Disconnected. Your subscription credentials are saved.", cls="settings-hint"),
+            Button("Reconnect",
+                cls="btn btn--primary",
+                hx_post="/settings/cloud-reconnect",
+                hx_target="#cloud-relay-tab",
+                hx_swap="outerHTML",
+            ),
+            id="cloud-relay-tab",
+            cls="settings-card",
+        )
+
+    # No token — render subscribe/claim UI
     iid = ensure_instance_id()
     return _cloud_relay_unconnected(iid)
 

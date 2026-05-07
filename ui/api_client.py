@@ -1819,3 +1819,9 @@ async def accept_relay_tos(token: str) -> dict:
     """POST /settings/cloud-accept-tos — persist TOS, restart gateway client."""
     async with _client(token) as c:
         return _raise(await c.post("/settings/cloud-accept-tos")).json()
+
+
+async def reconnect_relay(token: str) -> dict:
+    """POST /settings/cloud-reconnect — restart gateway WS using existing token."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-reconnect")).json()

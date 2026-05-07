@@ -50,7 +50,7 @@ async def cloud_status() -> dict:
     relay_status = gw.relay_status if gw else "inactive"
     connected = relay_status in ("active", "tos_required", "connecting", "error")
     if not connected:
-        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "public_url": settings.celerp_public_url}
+        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token)}
 
     # Try to fetch relay status from cloud
     tier: str | None = None
@@ -85,6 +85,7 @@ async def cloud_status() -> dict:
         "email_quota": email_quota,
         "email_used": email_used,
         "public_url": settings.celerp_public_url,
+        "gateway_token_set": bool(settings.gateway_token),
     }
 
 
@@ -100,26 +101,18 @@ async def email_status() -> dict:
 
 @router.post("/settings/cloud-disconnect")
 async def cloud_disconnect() -> dict:
-    """Stop the gateway client, clear token and public_url from config and memory."""
-    from celerp.config import settings as _s, read_config, write_config
+    """Stop the gateway WebSocket client without clearing credentials.
+
+    Disconnect = pause the connection. The token and instance_id stay in
+    config so the next startup (or reconnect button) can resume without
+    a re-claim flow. Use the relay billing portal to fully unsubscribe.
+    """
     from celerp.gateway import client as _gw
 
     gw = _gw.get_client()
     if gw is not None:
         gw.stop()
         _gw.set_client(None)
-
-    _s.gateway_token = ""
-    _s.celerp_public_url = ""
-
-    try:
-        cfg = read_config()
-        if cfg and "cloud" in cfg:
-            cfg["cloud"]["token"] = ""
-            cfg["cloud"].pop("public_url", None)
-            write_config(cfg)
-    except Exception:
-        pass
 
     return {"disconnected": True}
 
@@ -273,3 +266,33 @@ async def cloud_accept_tos_api() -> dict:
         await asyncio.sleep(0.2)
 
     return {"relay_status": new_gw.relay_status, "public_url": _s.celerp_public_url}
+
+
+@router.post("/settings/cloud-reconnect")
+async def cloud_reconnect_api() -> dict:
+    """Re-start the gateway WS client using the existing token in config."""
+    import asyncio
+    from celerp.config import settings as _s
+    from celerp.gateway import client as _gw
+
+    if not _s.gateway_token:
+        return {"error": "No token in config. Use Connect to link a subscription first."}
+
+    gw = _gw.get_client()
+    if gw is not None:
+        gw.stop()
+        _gw.set_client(None)
+
+    new_gw = _gw.GatewayClient(
+        gateway_token=_s.gateway_token,
+        instance_id=_s.gateway_instance_id,
+        gateway_url=_s.gateway_url,
+    )
+    _gw.set_client(new_gw)
+    asyncio.create_task(new_gw.run())
+    for _ in range(15):
+        if new_gw.relay_status == "active":
+            break
+        await asyncio.sleep(0.2)
+
+    return {"connected": True, "relay_status": new_gw.relay_status, "public_url": _s.celerp_public_url}

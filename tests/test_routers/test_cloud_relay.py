@@ -80,8 +80,8 @@ async def test_cloud_status_connected(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_cloud_disconnect_stops_client_and_clears_token(client):
-    """Disconnect stops gw client and clears gateway_token from settings."""
+async def test_cloud_disconnect_stops_client_preserves_token(client):
+    """Disconnect stops gw client but preserves gateway_token in settings."""
     token = await _register(client, "disc")
     gw = _mock_gw("active")
 
@@ -92,8 +92,6 @@ async def test_cloud_disconnect_stops_client_and_clears_token(client):
     with (
         patch("celerp.gateway.client.get_client", return_value=gw),
         patch("celerp.gateway.client.set_client") as mock_set,
-        patch("celerp.config.write_config"),
-        patch("celerp.config.read_config", return_value={"cloud": {"token": "old-token"}}),
     ):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
 
@@ -101,8 +99,9 @@ async def test_cloud_disconnect_stops_client_and_clears_token(client):
     assert r.json()["disconnected"] is True
     gw.stop.assert_called_once()
     mock_set.assert_called_once_with(None)
-    assert _s.gateway_token == ""
-    assert _s.celerp_public_url == ""
+    # Token and URL must NOT be cleared
+    assert _s.gateway_token == "old-token"
+    assert _s.celerp_public_url == "https://test.celerp.app"
 
 
 @pytest.mark.asyncio
@@ -113,6 +112,46 @@ async def test_cloud_disconnect_no_op_when_already_disconnected(client):
         r = await client.post("/settings/cloud-disconnect", headers=_h(token))
     assert r.status_code == 200
     assert r.json()["disconnected"] is True
+
+
+# ---------------------------------------------------------------------------
+# /settings/cloud-reconnect
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_cloud_reconnect_restarts_client_with_existing_token(client):
+    """Reconnect re-starts gateway WS using existing token without re-claiming."""
+    token = await _register(client, "reconnect-ok")
+    gw = _mock_gw("active")
+
+    from celerp.config import settings as _s
+    _s.gateway_token = "saved-token"
+    _s.gateway_instance_id = "test-iid"
+
+    with (
+        patch("celerp.gateway.client.get_client", return_value=None),
+        patch("celerp.gateway.client.set_client"),
+        patch("celerp.gateway.client.GatewayClient", return_value=gw),
+        patch("asyncio.create_task"),
+    ):
+        r = await client.post("/settings/cloud-reconnect", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["connected"] is True
+    assert data["relay_status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_cloud_reconnect_error_when_no_token(client):
+    """Reconnect returns error when no token in config."""
+    token = await _register(client, "reconnect-notoken")
+    from celerp.config import settings as _s
+    _s.gateway_token = ""
+    with patch("celerp.gateway.client.get_client", return_value=None):
+        r = await client.post("/settings/cloud-reconnect", headers=_h(token))
+    assert r.status_code == 200
+    assert "error" in r.json()
 
 
 # ---------------------------------------------------------------------------
