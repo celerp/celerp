@@ -406,7 +406,6 @@ async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
             P(t("connectors.fetch_error", lang,
                 default="Could not load connectors from relay. Check your connection."),
               cls="flash flash--warning"),
-            P(f"Debug: {_fetch_err or 'empty catalog returned'}", cls="flash flash--warning", style="font-size:0.8em;opacity:0.7"),
             cls="settings-card",
         )
 
