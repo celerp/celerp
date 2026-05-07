@@ -308,7 +308,20 @@ async def sales_report(
             })
 
     elif group_by == "price_range":
-        _BUCKETS = [(0, 1000, "0-1000"), (1001, 5000, "1001-5000"), (5001, 20000, "5001-20000"), (20001, None, "20000+")]
+        _BUCKETS = [
+            (0, 10, "0-10"),
+            (11, 25, "11-25"),
+            (26, 50, "26-50"),
+            (51, 100, "51-100"),
+            (101, 200, "101-200"),
+            (201, 500, "201-500"),
+            (501, 1000, "501-1000"),
+            (1001, 2500, "1001-2500"),
+            (2501, 5000, "2501-5000"),
+            (5001, 15000, "5001-15000"),
+            (15001, 50000, "15001-50000"),
+            (50001, None, "50000+"),
+        ]
         # Aggregate per unique item (by item_id or item_name fallback)
         data_pr: dict[str, dict] = {}
         for inv in invoices:
@@ -480,25 +493,60 @@ async def purchases_report(
         ]
 
     elif group_by == "price_range":
-        _BUCKETS_PO = [(0, 1000, "0-1000"), (1001, 5000, "1001-5000"), (5001, 20000, "5001-20000"), (20001, None, "20000+")]
-        data_pr_po: dict[str, dict] = {label: {"po_count": 0, "total_spend": Decimal(0)} for _, _, label in _BUCKETS_PO}
-        for po in pos:
-            total = _parse_d(po.get("total"))
-            label = _BUCKETS_PO[-1][2]
-            for lo, hi, lbl in _BUCKETS_PO:
-                if hi is None or total <= hi:
-                    label = lbl
-                    break
-            data_pr_po[label]["po_count"] += 1
-            data_pr_po[label]["total_spend"] += total
-        lines = [
-            {
-                "price_range": label,
-                "po_count": data_pr_po[label]["po_count"],
-                "total_spend": float(data_pr_po[label]["total_spend"]),
-            }
-            for _, _, label in _BUCKETS_PO
+        _BUCKETS_PO = [
+            (0, 10, "0-10"),
+            (11, 25, "11-25"),
+            (26, 50, "26-50"),
+            (51, 100, "51-100"),
+            (101, 200, "101-200"),
+            (201, 500, "201-500"),
+            (501, 1000, "501-1000"),
+            (1001, 2500, "1001-2500"),
+            (2501, 5000, "2501-5000"),
+            (5001, 15000, "5001-15000"),
+            (15001, 50000, "15001-50000"),
+            (50001, None, "50000+"),
         ]
+        _bucket_order_po = {lbl: i for i, (_, _, lbl) in enumerate(_BUCKETS_PO)}
+        data_pr_po: dict[str, dict] = {}
+        for po in pos:
+            for li in po.get("line_items", []):
+                item_id = li.get("item_id") or ""
+                item_name = li.get("item_name") or li.get("description") or li.get("name") or ""
+                key = item_id or item_name or "__unknown__"
+                unit_price = _parse_d(li.get("unit_price") or li.get("price") or 0)
+                qty = _parse_d(li.get("quantity") or 1)
+                line_total = _parse_d(li.get("total") or (unit_price * qty))
+                cost_price = _parse_d(li.get("cost_price") or 0)
+                bucket = _BUCKETS_PO[-1][2]
+                for _lo, hi, lbl in _BUCKETS_PO:
+                    if hi is None or unit_price <= hi:
+                        bucket = lbl
+                        break
+                if key not in data_pr_po:
+                    data_pr_po[key] = {
+                        "item_id": item_id,
+                        "item_name": item_name,
+                        "unit_price": unit_price,
+                        "price_range": bucket,
+                        "qty_purchased": Decimal(0),
+                        "total_spend": Decimal(0),
+                        "total_cost": Decimal(0),
+                    }
+                data_pr_po[key]["qty_purchased"] += qty
+                data_pr_po[key]["total_spend"] += line_total
+                data_pr_po[key]["total_cost"] += cost_price * qty
+        lines = []
+        for entry in data_pr_po.values():
+            lines.append({
+                "item_id": entry["item_id"],
+                "item_name": entry["item_name"],
+                "unit_price": float(entry["unit_price"]),
+                "price_range": entry["price_range"],
+                "qty_purchased": float(entry["qty_purchased"]),
+                "total_spend": float(entry["total_spend"]),
+            })
+        lines.sort(key=lambda l: (_bucket_order_po.get(l["price_range"], 99), l["item_name"].lower()))
 
     else:  # period
         def _period_key(ts: str) -> str:

@@ -455,7 +455,8 @@ def _normalize_line(line: dict, group_by: str) -> dict:
             "price_range": line.get("price_range", ""),
             "unit_price": line.get("unit_price", 0),
             "qty_sold": line.get("qty_sold", 0),
-            "total": line.get("total_revenue") or line.get("total", 0),
+            "qty_purchased": line.get("qty_purchased", 0),
+            "total": line.get("total_revenue") or line.get("total_spend") or line.get("total", 0),
             "_id": line.get("item_id", ""),
             "_link": f"/inventory/{line.get('item_id', '')}" if line.get("item_id") else "",
         }
@@ -549,6 +550,14 @@ def _sales_view_columns(group_by: str, is_purchases: bool = False) -> list[tuple
             cols += [("Cost", "total_cost", "cell--number"), ("Gross Profit", "gross_profit", "cell--number")]
         return cols
     if group_by == "price_range":
+        if is_purchases:
+            return [
+                ("Item", "label", ""),
+                ("Price Range", "price_range", ""),
+                ("Unit Price", "unit_price", "cell--number"),
+                ("Qty Purchased", "qty_purchased", "cell--right"),
+                ("Spend", "total", "cell--number"),
+            ]
         return [
             ("Item", "label", ""),
             ("Price Range", "price_range", ""),
