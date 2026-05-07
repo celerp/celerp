@@ -1792,6 +1792,6 @@ async def merge_contacts(token: str, target_contact_id: str, source_contact_ids:
 
 
 async def get_relay_status(token: str) -> dict:
-    """GET /admin/relay/status — returns {status, gateway_connected}."""
+    """GET /settings/cloud-status — returns {connected, relay_status, ...}."""
     async with _client(token) as c:
-        return _raise(await c.get("/admin/relay/status")).json()
+        return _raise(await c.get("/settings/cloud-status")).json()

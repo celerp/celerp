@@ -487,7 +487,7 @@ def setup_routes(app):
         relay_status = "inactive"
         try:
             rs = await _api.get_relay_status(token)
-            relay_status = rs.get("status", "inactive")
+            relay_status = rs.get("relay_status", "inactive")
         except (_APIError, Exception):
             # Fallback: check local process (Electron single-process mode)
             lc = _local_get_client()
