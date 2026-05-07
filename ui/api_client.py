@@ -1845,3 +1845,12 @@ async def get_connectors_catalog(token: str) -> tuple[list[dict], str]:
     async with _client(token) as c:
         data = _raise(await c.get("/settings/connectors-catalog")).json()
     return data.get("connectors", []), data.get("error", "")
+
+
+async def get_connector_authorize_url(token: str, platform: str, shop: str = "") -> dict:
+    """GET /settings/connectors/{platform}/authorize-url — returns {authorize_url} or {error}."""
+    params = {}
+    if shop:
+        params["shop"] = shop
+    async with _client(token) as c:
+        return _raise(await c.get(f"/settings/connectors/{platform}/authorize-url", params=params)).json()

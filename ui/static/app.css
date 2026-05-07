@@ -2025,3 +2025,80 @@ a:hover { text-decoration: underline; }
 .report-kpi__value--negative { color: var(--c-danger, #dc2626); }
 .cell--right { text-align: right; }
 .cell--muted { color: var(--c-text2); font-size: 12px; }
+
+/* ── Connector Cards ──────────────────────────────────────────────────────── */
+.connector-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 20px 24px;
+  margin-bottom: 16px;
+  transition: box-shadow 0.15s;
+}
+.connector-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.connector-card--coming-soon { opacity: 0.6; }
+.connector-card--connected { border-color: var(--success, #22c55e); }
+
+.connector-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.connector-icon { font-size: 2rem; line-height: 1; flex-shrink: 0; }
+.connector-info { flex: 1; }
+.connector-name-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.connector-name { font-size: 1.05rem; font-weight: 600; }
+.connector-desc { margin: 4px 0 0; color: var(--text-muted); font-size: 0.875rem; }
+
+.connector-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 2px 9px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+.connector-badge--connected { background: #dcfce7; color: #166534; }
+.connector-badge--idle      { background: var(--surface-alt, #f3f4f6); color: var(--text-muted); }
+.connector-badge--soon      { background: #fef9c3; color: #854d0e; }
+
+.connector-entity-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.connector-entity-pill {
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--surface-alt, #f3f4f6);
+  color: var(--text-secondary, #6b7280);
+  text-transform: capitalize;
+}
+
+.connector-steps {
+  margin: 0 0 16px 0;
+  padding-left: 20px;
+  color: var(--text-secondary, #6b7280);
+  font-size: 0.875rem;
+}
+.connector-step { margin-bottom: 4px; }
+
+.connector-connected-details { margin-bottom: 14px; }
+.connector-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+  color: var(--text-secondary, #6b7280);
+}
+.connector-meta-label { font-weight: 500; }
+
+.connector-action-area { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+
+.connector-section-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin: 24px 0 10px;
+}

@@ -444,3 +444,47 @@ async def connectors_catalog_api() -> dict:
     if r.status_code == 200:
         return {"connectors": r.json().get("connectors", [])}
     return {"error": f"Relay returned {r.status_code}.", "connectors": []}
+
+
+@router.get("/settings/connectors/{platform}/authorize-url")
+async def connector_authorize_url(platform: str, shop: str = "") -> dict:
+    """Get OAuth authorize URL for a connector platform via API process (holds gateway token)."""
+    import httpx
+    from celerp.config import settings as _s, ensure_instance_id
+
+    api_key = _s.gateway_token
+    if not api_key:
+        return {"error": "Not connected to relay."}
+
+    relay_base = _relay_http_base(_s)
+    iid = ensure_instance_id()
+
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as c:
+            tok_r = await c.post(f"{relay_base}/auth/token", json={"api_key": api_key})
+            if tok_r.status_code != 200:
+                return {"error": f"Could not authenticate with relay ({tok_r.status_code})."}
+            jwt = tok_r.json()["access_token"]
+
+            params = {"instance_id": iid}
+            if shop:
+                params["shop"] = shop
+            r = await c.get(
+                f"{relay_base}/oauth/{platform}/authorize",
+                params=params,
+                headers={"Authorization": f"Bearer {jwt}"},
+            )
+    except httpx.ConnectError:
+        return {"error": f"Cannot reach relay."}
+    except httpx.TimeoutException:
+        return {"error": "Relay timed out."}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    if r.status_code == 200:
+        return {"authorize_url": r.json().get("authorize_url", "")}
+    try:
+        detail = r.json().get("detail", r.text[:120])
+    except Exception:
+        detail = r.text[:120]
+    return {"error": detail}

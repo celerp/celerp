@@ -550,3 +550,91 @@ async def test_connectors_catalog_relay_unreachable(client):
     data = r.json()
     assert "error" in data
     assert data["connectors"] == []
+
+
+# ---------------------------------------------------------------------------
+# /settings/connectors/{platform}/authorize-url
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_connector_authorize_url_success(client):
+    """Returns authorize_url for a valid platform when connected."""
+    token = await _register(client, "auth-url-ok")
+
+    tok_resp = MagicMock()
+    tok_resp.status_code = 200
+    tok_resp.json.return_value = {"access_token": "relay-jwt-abc"}
+
+    url_resp = MagicMock()
+    url_resp.status_code = 200
+    url_resp.json.return_value = {"authorize_url": "https://accounts.intuit.com/oauth2/v1/authorize?state=xyz"}
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch("httpx.AsyncClient") as mock_httpx:
+        mock_settings.gateway_token = "my-api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=tok_resp)
+        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(return_value=url_resp)
+
+        r = await client.get("/settings/connectors/quickbooks/authorize-url", headers=_h(token))
+
+    assert r.status_code == 200
+    data = r.json()
+    assert "error" not in data
+    assert "authorize_url" in data
+    assert "intuit.com" in data["authorize_url"]
+
+
+@pytest.mark.asyncio
+async def test_connector_authorize_url_not_connected(client):
+    """Returns error when no gateway_token configured."""
+    token = await _register(client, "auth-url-notoken")
+
+    with patch("celerp.config.settings") as mock_settings:
+        mock_settings.gateway_token = ""
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+        r = await client.get("/settings/connectors/shopify/authorize-url", headers=_h(token))
+
+    assert r.status_code == 200
+    assert "error" in r.json()
+
+
+@pytest.mark.asyncio
+async def test_connector_authorize_url_shopify_passes_shop(client):
+    """Shopify authorize URL request forwards the shop param to the relay."""
+    token = await _register(client, "auth-url-shopify")
+
+    tok_resp = MagicMock()
+    tok_resp.status_code = 200
+    tok_resp.json.return_value = {"access_token": "relay-jwt-shopify"}
+
+    url_resp = MagicMock()
+    url_resp.status_code = 200
+    url_resp.json.return_value = {"authorize_url": "https://my-shop.myshopify.com/admin/oauth/authorize?client_id=abc"}
+
+    captured_params = {}
+
+    async def fake_get(url, **kwargs):
+        captured_params.update(kwargs.get("params", {}))
+        return url_resp
+
+    with patch("celerp.config.settings") as mock_settings, \
+         patch("celerp.config.ensure_instance_id", return_value="test-iid"), \
+         patch("httpx.AsyncClient") as mock_httpx:
+        mock_settings.gateway_token = "api-key"
+        mock_settings.celerp_relay_url = "https://relay.celerp.com"
+
+        mock_httpx.return_value.__aenter__.return_value.post = AsyncMock(return_value=tok_resp)
+        mock_httpx.return_value.__aenter__.return_value.get = AsyncMock(side_effect=fake_get)
+
+        r = await client.get(
+            "/settings/connectors/shopify/authorize-url",
+            params={"shop": "my-shop.myshopify.com"},
+            headers=_h(token),
+        )
+
+    assert r.status_code == 200
+    assert "authorize_url" in r.json()
+    assert captured_params.get("shop") == "my-shop.myshopify.com"
