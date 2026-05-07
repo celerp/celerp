@@ -260,3 +260,38 @@ async def test_single_user_gate_fires_regardless_of_relay(client):
     # Gate fires even when relay is connected
     r = await client.post("/auth/login", json={"email": "gate4@test.com", "password": "longpass123"})
     assert r.status_code == 409, f"Gate should fire regardless of relay, got {r.status_code}: {r.text}"
+
+
+@pytest.mark.asyncio
+async def test_single_user_gate_survives_tracker_reload(client, tmp_path):
+    """Gate persists across tracker in-memory wipe (simulates process reload in dev mode).
+
+    Regression: uvicorn --reload wipes in-memory _activity on config.toml write
+    (e.g. after cloud disconnect). Gate must still fire after reload because
+    session_tracker persists to .active_sessions.json next to config.toml.
+    """
+    import celerp.services.session_tracker as _tracker
+
+    await client.post(
+        "/auth/register",
+        json={"company_name": "ReloadCo", "email": "reload@test.com", "name": "Admin", "password": "longpass123"},
+    )
+
+    # First login - seeds the file-backed tracker
+    r1 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
+    assert r1.status_code == 200
+
+    # Simulate process reload: wipe in-memory state but keep the file
+    old_loaded = _tracker._loaded
+    old_activity = dict(_tracker._activity)
+    _tracker._activity.clear()
+    _tracker._loaded = False  # force re-load from file on next call
+
+    try:
+        # Gate must still fire after in-memory wipe (reads from file)
+        r2 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
+        assert r2.status_code == 409, f"Gate should persist after tracker reload, got {r2.status_code}: {r2.text}"
+    finally:
+        # Restore so teardown clear() works correctly
+        _tracker._activity.update(old_activity)
+        _tracker._loaded = True

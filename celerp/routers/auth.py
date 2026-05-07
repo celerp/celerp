@@ -167,10 +167,11 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
     if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    from celerp.services.session_tracker import active_user_ids as _active_ids
+    from celerp.services.session_tracker import active_user_ids as _active_ids, record as _record
     if _active_ids():
         raise HTTPException(status_code=409, detail="direct_connection_limit")
 
+    _record(str(user.id), str(user.company_id))
     return {
         "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
         "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
