@@ -96,3 +96,29 @@ async def email_status() -> dict:
         "smtp_configured": bool(settings.smtp_host),
         "gateway_connected": bool(settings.gateway_token),
     }
+
+
+@router.post("/settings/cloud-disconnect")
+async def cloud_disconnect() -> dict:
+    """Stop the gateway client, clear token and public_url from config and memory."""
+    from celerp.config import settings as _s, read_config, write_config
+    from celerp.gateway import client as _gw
+
+    gw = _gw.get_client()
+    if gw is not None:
+        gw.stop()
+        _gw.set_client(None)
+
+    _s.gateway_token = ""
+    _s.celerp_public_url = ""
+
+    try:
+        cfg = read_config()
+        if cfg and "cloud" in cfg:
+            cfg["cloud"]["token"] = ""
+            cfg["cloud"].pop("public_url", None)
+            write_config(cfg)
+    except Exception:
+        pass
+
+    return {"disconnected": True}

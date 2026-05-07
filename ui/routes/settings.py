@@ -1871,29 +1871,15 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
-        """HTMX: disconnect from Cloud Relay, clear config, re-render tab."""
-        from celerp.config import settings as _s, read_config, write_config, ensure_instance_id
-        from celerp.gateway import client as _gw
+        """HTMX: disconnect from Cloud Relay via API process, re-render tab."""
+        import ui.api_client as _api
+        from celerp.config import ensure_instance_id
 
-        # Stop the gateway client
-        gw = _gw.get_client()
-        if gw is not None:
-            gw.stop()
-            _gw.set_client(None)
-
-        # Clear settings in memory
-        _s.gateway_token = ""
-        _s.celerp_public_url = ""
-
-        # Clear config.toml
+        token = _token(request)
         try:
-            cfg = read_config()
-            if cfg and "cloud" in cfg:
-                cfg["cloud"]["token"] = ""
-                cfg["cloud"].pop("public_url", None)
-                write_config(cfg)
+            await _api.disconnect_relay(token)
         except Exception:
-            pass
+            pass  # Best-effort: proceed to show unconnected UI regardless
 
         iid = ensure_instance_id()
         return _cloud_relay_unconnected(iid)
