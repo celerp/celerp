@@ -169,22 +169,15 @@ async def test_change_password_requires_auth(client):
 
 @pytest.mark.asyncio
 async def test_single_user_gate_blocks_second_login(client):
-    """Without relay: a second login from a different session is rejected with 409.
-
-    The gate fires when get_client() is None AND active_user_ids() is non-empty.
-    We patch _client to None to simulate no relay, make one request to seed the
-    tracker, then verify a fresh login returns 409.
-    """
+    """Without relay session token: second login is rejected with 409."""
     from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker
 
-    # Register a user specifically for this test
     await client.post(
         "/auth/register",
         json={"company_name": "GateCo", "email": "gate@test.com", "name": "Admin", "password": "longpass123"},
     )
 
-    # First login - succeeds (tracker is empty)
     _clear_tracker()
     r1 = await client.post("/auth/login", json={"email": "gate@test.com", "password": "longpass123"})
     assert r1.status_code == 200
@@ -193,8 +186,8 @@ async def test_single_user_gate_blocks_second_login(client):
     # Seed the tracker by making an authenticated request
     await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token}"})
 
-    # Second login attempt with no relay -> should be blocked
-    with patch("celerp.gateway.client._client", None):
+    # No relay session token -> gate fires
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "gate@test.com", "password": "longpass123"})
     assert r2.status_code == 409
     assert r2.json()["detail"] == "direct_connection_limit"
@@ -202,7 +195,7 @@ async def test_single_user_gate_blocks_second_login(client):
 
 @pytest.mark.asyncio
 async def test_single_user_gate_same_user_second_window_blocked(client):
-    """Same user logging in from a second window is also blocked (no relay)."""
+    """Same user logging in from a second window is also blocked when no relay."""
     from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker
 
@@ -217,16 +210,15 @@ async def test_single_user_gate_same_user_second_window_blocked(client):
     token = r1.json()["access_token"]
     await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token}"})
 
-    # Same user, second login attempt - should now be blocked too (no exclude)
-    with patch("celerp.gateway.client._client", None):
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "gate2@test.com", "password": "longpass123"})
     assert r2.status_code == 409
 
 
 @pytest.mark.asyncio
 async def test_single_user_gate_passes_with_relay(client):
-    """With relay connected, the gate does not fire and second login succeeds."""
-    from unittest.mock import patch, MagicMock
+    """With a live relay session token, the gate does not fire."""
+    from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker
 
     await client.post(
@@ -240,7 +232,6 @@ async def test_single_user_gate_passes_with_relay(client):
     token = r1.json()["access_token"]
     await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token}"})
 
-    # With relay present, gate should not fire
-    with patch("celerp.gateway.client._client", MagicMock()):
+    with patch("celerp.gateway.state.get_session_token", return_value="live-token-abc"):
         r2 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
     assert r2.status_code == 200

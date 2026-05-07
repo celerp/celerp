@@ -215,14 +215,15 @@ async def test_reports_purchases_price_range(client):
     """GET /reports/purchases?group_by=price_range groups POs into price buckets."""
     tok = await _reg(client)
 
-    for total in [500, 3000, 10000, 25000]:
+    for i, (unit_price, total) in enumerate([(400, 400), (3000, 3000), (10000, 10000), (25000, 25000)]):
         await client.post("/docs", headers=_h(tok), json={
             "doc_type": "purchase_order",
             "contact_id": "sup-pr",
-            "line_items": [],
+            "line_items": [{"name": f"Item{i}", "quantity": 1, "unit_price": unit_price, "line_total": total, "cost_total": total}],
             "subtotal": total,
             "tax": 0,
             "total": total,
+            "status": "final",
         })
 
     r = await client.get("/reports/purchases?group_by=price_range", headers=_h(tok))
@@ -230,10 +231,12 @@ async def test_reports_purchases_price_range(client):
     body = r.json()
     assert "lines" in body
     price_ranges = {ln["price_range"] for ln in body["lines"]}
-    assert "0-1000" in price_ranges
-    assert "1001-5000" in price_ranges
-    assert "5001-20000" in price_ranges
-    assert "20000+" in price_ranges
+    # 12 psychological tiers: 500 -> "201-500", 3000 -> "2501-5000",
+    # 10000 -> "5001-15000", 25000 -> "15001-50000"
+    assert "201-500" in price_ranges
+    assert "2501-5000" in price_ranges
+    assert "5001-15000" in price_ranges
+    assert "15001-50000" in price_ranges
 
 
 # ---------------------------------------------------------------------------

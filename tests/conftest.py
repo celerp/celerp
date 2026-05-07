@@ -384,7 +384,8 @@ async def client(session: AsyncSession):
     # Simulate a connected gateway so direct_connection_limit gate does not fire in tests.
     # We patch the underlying _client variable (not get_client) so that inner tests can
     # still override it to None when specifically testing the gate behavior.
-    with patch("celerp.gateway.client._client", MagicMock()):
+    with patch("celerp.gateway.client._client", MagicMock()), \
+         patch("celerp.gateway.state.get_session_token", return_value="test-session-token"):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()
