@@ -3317,11 +3317,12 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
-def _cloud_relay_tab(relay_status: str | None = None) -> FT:
+def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None) -> FT:
     """Cloud Relay settings tab. Auto-attempts activation; falls back to subscribe/claim UI.
 
     relay_status: if provided, use this value instead of querying get_client() (needed
     when called from the UI process where get_client() is always None).
+    public_url: if provided, use this value instead of reading settings directly (cross-process).
     """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
@@ -3331,6 +3332,10 @@ def _cloud_relay_tab(relay_status: str | None = None) -> FT:
     # otherwise fall back to local in-process client (Electron single-process mode).
     if relay_status is None:
         relay_status = gw.relay_status if gw else "inactive"
+
+    # Use caller-supplied public_url if provided, otherwise read from local config.
+    if public_url is None:
+        public_url = getattr(_cfg, "celerp_public_url", "")
 
     required_tos = getattr(gw, "required_tos_version", "") if gw else ""
     if relay_status == "tos_required":
@@ -3358,10 +3363,9 @@ def _cloud_relay_tab(relay_status: str | None = None) -> FT:
             )),
         ]
         # Show team URL (subdomain) if configured
-        pub_url = getattr(_cfg, "celerp_public_url", "")
-        if pub_url:
+        if public_url:
             rows.append(Tr(Td(t("settings.team_url"), cls="detail-label"), Td(
-                A(pub_url, href=pub_url, target="_blank", cls="cell--mono"),
+                A(public_url, href=public_url, target="_blank", cls="cell--mono"),
                 P(t("settings.share_this_url_with_your_team_members_to_access_ce"), cls="settings-hint",
                   style="margin:4px 0 0;"),
             )))

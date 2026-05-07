@@ -50,7 +50,7 @@ async def cloud_status() -> dict:
     relay_status = gw.relay_status if gw else "inactive"
     connected = relay_status in ("active", "tos_required", "connecting", "error")
     if not connected:
-        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0}
+        return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "public_url": settings.celerp_public_url}
 
     # Try to fetch relay status from cloud
     tier: str | None = None
@@ -77,7 +77,15 @@ async def cloud_status() -> dict:
     except Exception:
         pass
 
-    return {"connected": True, "relay_status": relay_status, "tier": tier, "last_backup": last_backup, "email_quota": email_quota, "email_used": email_used}
+    return {
+        "connected": True,
+        "relay_status": relay_status,
+        "tier": tier,
+        "last_backup": last_backup,
+        "email_quota": email_quota,
+        "email_used": email_used,
+        "public_url": settings.celerp_public_url,
+    }
 
 
 @router.get("/settings/email-status")

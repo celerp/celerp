@@ -485,9 +485,11 @@ def setup_routes(app):
 
         # Fetch relay status from the API process (the gateway client lives there)
         relay_status = "inactive"
+        public_url = ""
         try:
             rs = await _api.get_relay_status(token)
             relay_status = rs.get("relay_status", "inactive")
+            public_url = rs.get("public_url", "")
         except (_APIError, Exception):
             # Fallback: check local process (Electron single-process mode)
             lc = _local_get_client()
@@ -518,7 +520,7 @@ def setup_routes(app):
             from ui.routes.settings_connectors import connectors_tab_content
             content = await connectors_tab_content(lang)
         else:
-            content = Div(_cloud_relay_tab(relay_status=relay_status), _backup_summary_card(gw_ok=gw_ok))
+            content = Div(_cloud_relay_tab(relay_status=relay_status, public_url=public_url), _backup_summary_card(gw_ok=gw_ok))
             tab = "status"
 
         return base_shell(
