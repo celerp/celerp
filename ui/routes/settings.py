@@ -1437,13 +1437,17 @@ def setup_routes(app):
         import ui.api_client as _api
         from celerp.config import ensure_instance_id
 
-        iid = ensure_instance_id()
         ui_token = _token(request)
+        # iid from UI process as fallback for error rendering only
+        iid = ensure_instance_id()
 
         try:
             data = await _api.activate_relay(ui_token)
         except Exception as exc:
             return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+
+        # Use instance_id from API response if present (canonical process)
+        iid = data.get("instance_id") or iid
 
         if err := data.get("error"):
             return _cloud_relay_unconnected(iid, error=err)

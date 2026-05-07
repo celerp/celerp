@@ -197,7 +197,12 @@ async def cloud_activate_api() -> dict:
         return {"error": f"Could not reach relay: {type(exc).__name__}: {exc}"}
 
     if r.status_code == 404:
-        return {"error": "No active subscription found for this instance. Subscribe first, or link by email below."}
+        body = ""
+        try:
+            body = r.json().get("detail", "")
+        except Exception:
+            body = r.text[:120]
+        return {"error": f"No active subscription found for this instance ({iid}). {body} Subscribe first, or link by email below.", "instance_id": iid}
     if r.status_code == 402:
         return {"error": r.json().get("detail", "Subscription not active.")}
     if r.status_code != 200:
@@ -210,11 +215,11 @@ async def cloud_activate_api() -> dict:
     reconnect = data.get("reconnect", False)
 
     if reconnect:
-        return {"reconnect": True, "gateway_token": token, "public_url": public_url, "tos_version": tos_version}
+        return {"reconnect": True, "gateway_token": token, "public_url": public_url, "tos_version": tos_version, "instance_id": iid}
 
     await _apply_gateway_token_api(token, iid, public_url=public_url, tos_version=tos_version)
     gw = __import__("celerp.gateway.client", fromlist=["get_client"]).get_client()
-    return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": public_url or ""}
+    return {"connected": True, "relay_status": gw.relay_status if gw else "connecting", "public_url": public_url or "", "instance_id": iid}
 
 
 @router.post("/settings/cloud-apply-token")
