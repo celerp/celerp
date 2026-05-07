@@ -10,7 +10,7 @@ PLUGIN_MANIFEST = {
     "author": "Celerp",
     "depends_on": ["celerp-accounting", "celerp-docs", "celerp-inventory"],
     "api_routes": "celerp_reports.api_setup",
-    "ui_routes": "celerp_reports.ui_routes",
+    "ui_routes": "ui.routes.reports",
     "slots": {
         "nav": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "label_key": "nav.reports", "order": 51, "min_role": "manager"},
     },

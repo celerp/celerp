@@ -685,3 +685,6 @@ def _group_by_filter(active: str, base_url: str, first_option: str = "customer")
         hx_include="this",
         cls="filter-select",
     )
+
+# Alias for module loader compatibility
+setup_ui_routes = setup_routes

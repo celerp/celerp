@@ -259,7 +259,6 @@ _CONDITIONAL_UI: list[tuple[str, str]] = [
     ("celerp-contacts",    "ui.routes.contacts"),
     ("celerp-accounting",  "ui.routes.accounting"),
     ("celerp-accounting",  "ui.routes.reconciliation"),
-    ("celerp-reports",     "ui.routes.reports"),
     ("celerp-subscriptions", "ui.routes.subscriptions"),
     ("celerp-dashboard",   "ui.routes.dashboard"),
 ]
