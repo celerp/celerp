@@ -1689,6 +1689,7 @@ a:hover { text-decoration: underline; }
 .lang-switcher:hover { border-color: var(--c-text2); }
 /* When lang-switcher present, it takes the margin-left:auto; notif-wrap doesn't need it */
 .lang-switcher-wrap ~ .notif-wrap { margin-left: 0.5rem; }
+.topbar-user-email { font-size: 0.72rem; color: var(--c-text2); background: var(--c-bg3, var(--c-bg)); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 0.15rem 0.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; flex-shrink: 1; }
 
 /* ── Notification bell + panel ────────────────────────────────────────── */
 .notif-wrap { position: relative; margin-left: auto; }

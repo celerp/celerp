@@ -479,7 +479,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
 def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """Outer chrome: sidebar nav + top header + content area."""
+    from ui.config import get_user_email
     role = get_role(request) if request is not None else "owner"
+    user_email = get_user_email(request) if request is not None else None
     if request is not None:
         lang = get_lang(request)
     head_items = [
@@ -501,7 +503,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
             Div(
                 _sidebar(nav_active, lang=lang, role=role, request=request),
                 Div(
-                    _topbar(companies or [], lang=lang),
+                    _topbar(companies or [], lang=lang, user_email=user_email),
                     _HEALTH_BANNER_HTML,
                     _GLOBAL_UI_ERROR_HTML,
                     Main(*content, id="main-content", cls="main-content"),
@@ -519,7 +521,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
     )
 
 
-def _topbar(companies: list[dict], lang: str = "en") -> FT:
+def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None) -> FT:
     """Top bar with hamburger toggle, global search, and optional company switcher."""
     parts: list[FT] = [
         Button("☰", cls="sidebar-toggle", type="button"),
@@ -614,6 +616,9 @@ def _topbar(companies: list[dict], lang: str = "en") -> FT:
             cls="notif-wrap",
         ),
     )
+    # User email indicator
+    if user_email:
+        parts.append(Span(user_email, cls="topbar-user-email", title=f"Logged in as {user_email}"))
     return Div(*parts, cls="topbar")
 
 

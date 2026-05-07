@@ -52,3 +52,20 @@ def get_role(request) -> str:
         return _ROLE_MIGRATION.get(raw_role, raw_role)
     except Exception:
         return "viewer"
+
+
+def get_user_email(request) -> str | None:
+    """Decode the 'sub' (email) claim from the JWT cookie without signature verification."""
+    import base64
+    import json as _json
+
+    token = get_token(request)
+    if not token:
+        return None
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
+        claims = _json.loads(payload_bytes)
+        return claims.get("sub") or None
+    except Exception:
+        return None
