@@ -1797,6 +1797,12 @@ async def get_relay_status(token: str) -> dict:
         return _raise(await c.get("/settings/cloud-status")).json()
 
 
+async def get_backup_status(token: str) -> dict:
+    """GET /settings/backup-status — returns scheduler state from API process."""
+    async with _client(token) as c:
+        return _raise(await c.get("/settings/backup-status")).json()
+
+
 async def disconnect_relay(token: str) -> dict:
     """POST /settings/cloud-disconnect — stop gateway client, clear config."""
     async with _client(token) as c:

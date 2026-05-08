@@ -111,7 +111,12 @@ def setup_routes(app):
             elif tab == "modules":
                 content = _modules_tab(modules, restart_pending=False)
             elif tab == "backup":
-                content = _backup_tab()
+                backup_data: dict | None = None
+                try:
+                    backup_data = await api.get_backup_status(token)
+                except Exception:
+                    pass
+                content = _backup_tab(backup_data=backup_data)
             else:
                 try:
                     loc_resp = await api.get_locations(token)

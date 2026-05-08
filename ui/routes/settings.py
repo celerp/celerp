@@ -2259,7 +2259,7 @@ def _settings_content(
     if tab == "import-history":
         return _import_history_tab(import_batches or [])
     if tab == "backup":
-        return _backup_tab(lang=lang)
+        return _backup_tab(lang=lang, backup_data=None)
     if tab == "ai":
         return _ai_tab()
     if tab == "connectors":
@@ -3273,7 +3273,7 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
     return _cloud_relay_unconnected(iid)
 
 
-def _backup_tab(lang: str = "en") -> FT:
+def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     """Cloud Backup settings tab - full history UI with export/import."""
     from celerp.config import settings as _cfg
     from celerp.gateway.client import get_client
@@ -3304,16 +3304,20 @@ def _backup_tab(lang: str = "en") -> FT:
         )
 
     # ── Status summary ────────────────────────────────────────────────
-    from celerp.services import backup_scheduler
-    db_status = backup_scheduler.last_db_result()
-    fl_status = backup_scheduler.last_file_result()
-    next_db = backup_scheduler.next_db_run_utc()
-    next_fl = backup_scheduler.next_file_run_utc()
+    # backup_data is fetched from the API process by the caller to avoid
+    # reading stale module-level state in the UI process.
+    _bd = backup_data or {}
+    _db = _bd.get("db") or {}
+    _fl = _bd.get("file") or {}
+    scheduler_running = _bd.get("running", False)
+    next_db_iso: str | None = _bd.get("next_db_utc")
+    next_fl_iso: str | None = _bd.get("next_file_utc")
 
-    def _time_until(dt) -> str:
-        if dt is None:
+    def _time_until(iso: str | None) -> str:
+        if iso is None:
             return "not scheduled"
         from datetime import datetime, timezone
+        dt = datetime.fromisoformat(iso)
         delta = dt - datetime.now(timezone.utc)
         hours = int(delta.total_seconds() // 3600)
         mins = int((delta.total_seconds() % 3600) // 60)
@@ -3323,30 +3327,33 @@ def _backup_tab(lang: str = "en") -> FT:
 
     status_rows = [
         Tr(Td(t("settings.scheduler"), cls="detail-label"), Td(
-            Span(t("settings.running"), cls="badge badge--active") if backup_scheduler._db_task and not backup_scheduler._db_task.done()
+            Span(t("settings.running"), cls="badge badge--active") if scheduler_running
             else Span(t("settings.stopped"), cls="badge badge--inactive"),
         )),
-        Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(next_db))),
-        Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(next_fl))),
+        Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(next_db_iso))),
+        Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(next_fl_iso))),
     ]
 
     # Last DB result
-    if db_status.ok is not None:
-        if db_status.ok:
+    db_ok = _db.get("ok")
+    if db_ok is not None:
+        if db_ok:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(
                 Span("OK", cls="badge badge--active"),
-                Span(f" - {db_status.size_bytes / 1024**2:.1f} MB", cls="settings-hint"),
+                Span(f" - {(_db.get('size_bytes') or 0) / 1024**2:.1f} MB", cls="settings-hint"),
             )))
         else:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(
                 Span(t("settings.failed"), cls="badge badge--error"),
-                Span(f" - {db_status.error}", cls="settings-hint"),
+                Span(f" - {_db.get('error', '')}", cls="settings-hint"),
             )))
 
     # Last file result
-    if fl_status.ok is not None:
-        if fl_status.ok:
-            if fl_status.size_bytes == 0:
+    fl_ok = _fl.get("ok")
+    if fl_ok is not None:
+        if fl_ok:
+            fl_bytes = _fl.get("size_bytes") or 0
+            if fl_bytes == 0:
                 status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
                     Span("OK", cls="badge badge--active"),
                     Span(" - no changes", cls="settings-hint"),
@@ -3354,12 +3361,12 @@ def _backup_tab(lang: str = "en") -> FT:
             else:
                 status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
                     Span("OK", cls="badge badge--active"),
-                    Span(f" - {fl_status.size_bytes / 1024**2:.1f} MB", cls="settings-hint"),
+                    Span(f" - {fl_bytes / 1024**2:.1f} MB", cls="settings-hint"),
                 )))
         else:
             status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
                 Span(t("settings.failed"), cls="badge badge--error"),
-                Span(f" - {fl_status.error}", cls="settings-hint"),
+                Span(f" - {_fl.get('error', '')}", cls="settings-hint"),
             )))
 
     status_section = Div(
