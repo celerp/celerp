@@ -111,7 +111,7 @@ async def _inventory_content(
     return Div(
         _category_tabs(category_counts, p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
-        _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p),
+        _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
         _bulk_toolbar(locations, p, total_items),
         Div(
             _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
@@ -1995,19 +1995,29 @@ def _vertical_status_card_defs(vertical: str) -> list[tuple[str, str, str]]:
     return _VERTICAL_STATUS_CARDS.get(vertical, _DEFAULT_STATUS_CARDS)
 
 
-def _inventory_status_cards(count_by_status: dict, active_status: str, vertical: str = "", p: dict | None = None) -> FT:
+def _inventory_status_cards(count_by_status: dict, active_status: str, vertical: str = "", p: dict | None = None, lang: str = "en") -> FT:
     """Status cards driven by backend count_by_status dict (scoped to active category/status filter).
 
-    Passes current non-status params (e.g. category, q) as base_url so clicking a card
-    preserves the active category filter instead of resetting to All.
+    When a specific status filter is active (sold/archived/etc.), shows a single
+    'All' card with the total count for that filtered view instead of the
+    available/reserved breakdown (which would all be 0 and is meaningless).
     """
+    base_state = {k: v for k, v in _base_state(p or {}).items() if k != "status"}
+    base_url = "/inventory" + (f"?{urlencode(base_state)}" if base_state else "")
+
+    # When viewing a specific hidden/archived status, the available/reserved card
+    # defs are irrelevant. Show a single total card instead.
+    _HIDDEN = {"sold", "archived", "merged", "expired", "disposed"}
+    if active_status and active_status not in ("", "all"):
+        total = sum(count_by_status.values())
+        cards = [{"label": t("chip.total", lang), "count": total, "status": active_status, "color": "gray"}]
+        return status_cards(cards, base_url, active_status)
+
     _CARD_DEFS = _vertical_status_card_defs(vertical)
     cards = [
         {"label": label, "count": count_by_status.get(key, 0), "status": key, "color": color}
         for key, label, color in _CARD_DEFS
     ]
-    base_state = {k: v for k, v in _base_state(p or {}).items() if k != "status"}
-    base_url = "/inventory" + (f"?{urlencode(base_state)}" if base_state else "")
     return status_cards(cards, base_url, active_status or None)
 
 

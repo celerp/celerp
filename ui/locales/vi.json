@@ -1199,5 +1199,6 @@
   "msg.relay_connected": "Đã kết nối relay",
   "msg.relay_not_connected": "Chưa kết nối truy cập web",
   "chip.sold": "Đã bán",
-  "chip.archived": "Đã lưu trữ"
+  "chip.archived": "Đã lưu trữ",
+  "chip.total": "Tổng"
 }

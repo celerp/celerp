@@ -1199,5 +1199,6 @@
   "msg.relay_connected": "متصل بالمرحّل",
   "msg.relay_not_connected": "غير متصل بالويب",
   "chip.sold": "مباع",
-  "chip.archived": "مؤرشف"
+  "chip.archived": "مؤرشف",
+  "chip.total": "الإجمالي"
 }

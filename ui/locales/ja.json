@@ -1199,5 +1199,6 @@
   "msg.relay_connected": "リレーに接続済み",
   "msg.relay_not_connected": "Webアクセスなし",
   "chip.sold": "売却済み",
-  "chip.archived": "アーカイブ"
+  "chip.archived": "アーカイブ",
+  "chip.total": "合計"
 }

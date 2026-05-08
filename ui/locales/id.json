@@ -1199,5 +1199,6 @@
   "msg.relay_connected": "Terhubung ke relay",
   "msg.relay_not_connected": "Tidak terhubung ke akses web",
   "chip.sold": "Terjual",
-  "chip.archived": "Diarsipkan"
+  "chip.archived": "Diarsipkan",
+  "chip.total": "Total"
 }

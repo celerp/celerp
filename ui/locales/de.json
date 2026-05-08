@@ -1199,5 +1199,6 @@
   "msg.relay_connected": "Mit Relay verbunden",
   "msg.relay_not_connected": "Kein Webzugang",
   "chip.sold": "Verkauft",
-  "chip.archived": "Archiviert"
+  "chip.archived": "Archiviert",
+  "chip.total": "Gesamt"
 }
