@@ -1238,5 +1238,7 @@
   "th.version": "Version",
   "th.weight": "Weight",
   "th.when": "When",
-  "th.wholesale": "Wholesale"
+  "th.wholesale": "Wholesale",
+  "msg.relay_connected": "Connected to relay",
+  "msg.relay_not_connected": "Not connected to web access"
 }

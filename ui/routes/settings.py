@@ -1465,6 +1465,41 @@ def setup_routes(app):
             public_url=data.get("public_url", ""),
         )
 
+    @app.get("/topbar-relay-status")
+    async def topbar_relay_status(request: Request):
+        """HTMX fragment: return the relay dot span for the topbar user menu."""
+        import httpx
+        from fasthtml.common import to_xml
+        from ui.config import API_BASE, get_lang
+        token = _token(request)
+        lang = get_lang(request)
+        data: dict = {}
+        try:
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            async with httpx.AsyncClient(base_url=API_BASE, timeout=2.0) as c:
+                r = await c.get("/settings/cloud-status", headers=headers)
+                if r.status_code == 200:
+                    data = r.json()
+        except Exception:
+            pass
+        connected = bool(data.get("connected"))
+        public_url = data.get("public_url") or ""
+        dot_cls = "relay-dot relay-dot--on" if connected else "relay-dot relay-dot--off"
+        if connected and public_url:
+            dot_title = f"{t('msg.relay_connected', lang)}: {public_url}"
+            dot_href = public_url
+            dot_target = "_blank"
+        else:
+            dot_title = t("msg.relay_not_connected", lang)
+            dot_href = "/settings/cloud"
+            dot_target = "_self"
+        dot = Span(
+            A(Span(cls=dot_cls, title=dot_title), href=dot_href, target=dot_target,
+              cls="relay-dot-link", onclick="event.stopPropagation()"),
+            id="relay-dot-wrap",
+        )
+        return Response(to_xml(dot), media_type="text/html")
+
     def _cloud_reconnect_confirm(
         iid: str, token: str, public_url: str | None, tos_version: str | None
     ) -> FT:

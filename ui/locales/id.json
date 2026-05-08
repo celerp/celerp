@@ -1195,5 +1195,7 @@
   "connectors.webhook_active": "Webhook active",
   "connectors.webhook_inactive": "Webhook inactive",
   "connectors.shop_url_placeholder": "https://mystore.myshopify.com",
-  "connectors.authorize_error": "Could not get authorization URL. Please try again."
+  "connectors.authorize_error": "Could not get authorization URL. Please try again.",
+  "msg.relay_connected": "Terhubung ke relay",
+  "msg.relay_not_connected": "Tidak terhubung ke akses web"
 }

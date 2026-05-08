@@ -479,9 +479,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
 def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """Outer chrome: sidebar nav + top header + content area."""
-    from ui.config import get_user_email
+    from ui.config import get_user_email, get_relay_info
     role = get_role(request) if request is not None else "owner"
     user_email = get_user_email(request) if request is not None else None
+    relay_info: dict = {}
     if request is not None:
         lang = get_lang(request)
     head_items = [
@@ -494,6 +495,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Script(_CLIENT_JS),
         Script(_HEALTH_BANNER_JS),
         Script(_NOTIFICATION_JS),
+        Script(_USER_MENU_JS),
     ]
     if extra_head:
         head_items.extend(extra_head)
@@ -503,7 +505,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
             Div(
                 _sidebar(nav_active, lang=lang, role=role, request=request),
                 Div(
-                    _topbar(companies or [], lang=lang, user_email=user_email),
+                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
                     _GLOBAL_UI_ERROR_HTML,
                     Main(*content, id="main-content", cls="main-content"),
@@ -521,7 +523,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
     )
 
 
-def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None) -> FT:
+def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None) -> FT:
     """Top bar with hamburger toggle, global search, and optional company switcher."""
     parts: list[FT] = [
         Button("☰", cls="sidebar-toggle", type="button"),
@@ -616,14 +618,73 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             cls="notif-wrap",
         ),
     )
-    # User email indicator
+    # User email + relay indicator + logout dropdown
     if user_email:
-        parts.append(Span(user_email, cls="topbar-user-email", title=f"Logged in as {user_email}"))
+        _ri = relay_info or {}
+        connected = bool(_ri.get("connected"))
+        public_url = _ri.get("public_url") or ""
+        dot_cls = "relay-dot relay-dot--on" if connected else "relay-dot relay-dot--off"
+        if connected and public_url:
+            dot_title = f"{t('msg.relay_connected', lang)}: {public_url}"
+            dot_href = public_url
+            dot_target = "_blank"
+        else:
+            dot_title = t("msg.relay_not_connected", lang)
+            dot_href = "/settings/cloud"
+            dot_target = "_self"
+        parts.append(
+            Div(
+                # Trigger: relay dot + email text (whole pill is the toggle)
+                Div(
+                    # Relay dot loaded async via HTMX so it doesn't block page render
+                    Span(
+                        Span(cls="relay-dot relay-dot--off", title=""),
+                        id="relay-dot-wrap",
+                        hx_get="/topbar-relay-status",
+                        hx_trigger="load",
+                        hx_swap="outerHTML",
+                    ),
+                    Span(user_email, cls="user-menu__email-text"),
+                    cls="user-menu__trigger",
+                    onclick="toggleUserMenu()",
+                ),
+                # Dropdown
+                Div(
+                    A(
+                        "⎋ " + t("nav.logout", lang),
+                        href="/logout",
+                        cls="user-menu__item user-menu__item--logout",
+                        onclick="event.preventDefault();fetch('/logout',{method:'POST',credentials:'same-origin'}).then(()=>window.location='/login')",
+                    ),
+                    id="user-menu-panel",
+                    cls="user-menu__panel",
+                    style="display:none;",
+                ),
+                cls="user-menu",
+            )
+        )
     return Div(*parts, cls="topbar")
 
 
 # Kernel-level nav entries always present (no module required)
 _KERNEL_NAV: list[dict] = []
+
+_USER_MENU_JS = """
+(function(){
+  window.toggleUserMenu = function() {
+    var panel = document.getElementById('user-menu-panel');
+    if (!panel) return;
+    var visible = panel.style.display !== 'none';
+    panel.style.display = visible ? 'none' : '';
+  };
+  document.addEventListener('click', function(e) {
+    var panel = document.getElementById('user-menu-panel');
+    if (panel && !e.target.closest('.user-menu')) {
+      panel.style.display = 'none';
+    }
+  });
+})();
+"""
 
 _SIDEBAR_JS = """
 (function(){
@@ -806,8 +867,6 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
         *empty_state,
         Div(
             *settings_link,
-            A(t("nav.logout", lang), href="/logout", cls="nav-link nav-link--logout",
-              onclick="event.preventDefault();fetch('/logout',{method:'POST',credentials:'same-origin'}).then(()=>window.location='/login')"),
             cls="sidebar-footer",
         ),
         Script(_SIDEBAR_JS),

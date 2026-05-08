@@ -69,3 +69,24 @@ def get_user_email(request) -> str | None:
         return claims.get("email") or None
     except Exception:
         return None
+
+
+async def get_relay_info(request) -> dict:
+    """Return relay status info for the topbar indicator.
+
+    Returns a dict with keys:
+      connected (bool), public_url (str | None)
+
+    Best-effort: any failure returns connected=False.
+    """
+    token = get_token(request)
+    if not token:
+        return {"connected": False, "public_url": None}
+    try:
+        from ui.api_client import get_relay_status
+        data = await get_relay_status(token)
+        connected = data.get("connected", False)
+        public_url = data.get("public_url") or None
+        return {"connected": bool(connected), "public_url": public_url}
+    except Exception:
+        return {"connected": False, "public_url": None}
