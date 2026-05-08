@@ -1470,7 +1470,8 @@ def setup_routes(app):
         """HTMX fragment: return the relay dot span for the topbar user menu."""
         import httpx
         from fasthtml.common import to_xml
-        from ui.config import API_BASE, get_lang
+        from ui.config import API_BASE
+        from ui.i18n import get_lang
         token = _token(request)
         lang = get_lang(request)
         data: dict = {}
