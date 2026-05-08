@@ -385,6 +385,9 @@ async def get_valuation(
         "wholesale_total": float(price_totals.get("Wholesale", 0)),
         "retail_total": float(price_totals.get("Retail", 0)),
         "category_counts": dict(sorted(category_counts.items(), key=lambda x: -x[1])),
+        # total_scoped_count is always active_item_count - used for the "All" tab
+        # (some items may have no category and won't appear in category_counts)
+        "total_scoped_count": active_item_count,
         "count_by_status": count_by_status,
     }
 

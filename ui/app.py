@@ -9,10 +9,21 @@ Run:
 
 from __future__ import annotations
 
+import logging
 import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+# Suppress noisy per-request access log lines for long-polling/SSE endpoints.
+class _SuppressSSEAccess(logging.Filter):
+    _SUPPRESSED = frozenset(["/notifications/stream"])
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(path in msg for path in self._SUPPRESSED)
+
+logging.getLogger("uvicorn.access").addFilter(_SuppressSSEAccess())
 
 from fasthtml.common import FastHTML, Beforeware, RedirectResponse
 from starlette.staticfiles import StaticFiles

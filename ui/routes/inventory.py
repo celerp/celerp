@@ -101,6 +101,7 @@ async def _inventory_content(
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
 
     category_counts = valuation.get("category_counts", {})
+    total_scoped = valuation.get("total_scoped_count", sum(category_counts.values()))
     count_by_status = valuation.get("count_by_status", {})
     active_cat = p.get("category", "")
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
@@ -109,7 +110,7 @@ async def _inventory_content(
     total_items = valuation.get("item_count", 0)
 
     return Div(
-        _category_tabs(category_counts, p),
+        _category_tabs(category_counts, p, total_scoped=total_scoped),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
         _bulk_toolbar(locations, p, total_items),
@@ -2033,8 +2034,8 @@ def _inventory_empty_state(p: dict) -> FT:
     return empty_state_cta("No items in inventory.", "Import from CSV", "/inventory/import")
 
 
-def _category_tabs(category_counts: dict, p: dict) -> FT:
-    if not category_counts:
+def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = None) -> FT:
+    if not category_counts and not total_scoped:
         return ""
 
     def _url(category: str = "") -> str:
@@ -2045,7 +2046,8 @@ def _category_tabs(category_counts: dict, p: dict) -> FT:
             state.pop("category", None)
         return "/inventory" + (f"?{urlencode(state)}" if state else "")
 
-    total = sum(category_counts.values())
+    # Use total_scoped_count so items without a category still count in "All"
+    total = total_scoped if total_scoped is not None else sum(category_counts.values())
     tabs = [
         A(
             f"All ({total})",
