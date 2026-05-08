@@ -1205,5 +1205,8 @@
   "btn.create_company": "Create company",
   "settings.new_company_name_placeholder": "Company name",
   "setup.new_company_title": "New company",
-  "setup.new_company_subtitle": "Enter a name for your new company workspace."
+  "setup.new_company_subtitle": "Enter a name for your new company workspace.",
+  "settings.your_companies": "Your companies",
+  "settings.current_company": "Current",
+  "btn.switch": "Switch"
 }

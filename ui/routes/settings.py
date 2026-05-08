@@ -507,6 +507,39 @@ def setup_routes(app):
             return _password_form(error=e.detail, lang=lang)
         return _password_form(success=t("settings.password_changed", lang), lang=lang)
 
+    @app.get("/settings/company/companies-list")
+    async def company_settings_companies_list(request: Request):
+        """HTMX fragment: list of all user's companies with switch links."""
+        from fasthtml.common import to_xml
+        token = _token(request)
+        if not token:
+            return Response(content="", media_type="text/html")
+        lang = get_lang(request)
+        try:
+            resp = await api.my_companies(token)
+            companies = resp.get("items", []) if isinstance(resp, dict) else resp
+        except Exception:
+            return Response(content="", media_type="text/html")
+        rows = []
+        for c in companies:
+            name = c.get("company_name", "")
+            role = c.get("role", "")
+            cid = c.get("company_id", "")
+            is_current = c.get("is_current", False)
+            rows.append(Tr(
+                Td(name + (" ✓" if is_current else ""), cls="detail-label"),
+                Td(role, cls="settings-hint"),
+                Td(
+                    Span(t("settings.current_company", lang), cls="badge badge--active") if is_current
+                    else Form(
+                        Button(t("btn.switch", lang), type="submit", cls="btn btn--xs btn--secondary"),
+                        method="post", action=f"/switch-company/{cid}",
+                    )
+                ),
+            ))
+        content = Table(*rows, cls="detail-table") if rows else P(t("msg.no_results", lang), cls="settings-hint")
+        return Response(to_xml(content), media_type="text/html")
+
     # ── Company PATCH endpoints ──────────────────────────────────────
     @app.get("/settings/company/{field}/edit")
     async def company_field_edit(request: Request, field: str):
@@ -1464,6 +1497,37 @@ def setup_routes(app):
             relay_status=data.get("relay_status", "connecting"),
             public_url=data.get("public_url", ""),
         )
+
+    @app.get("/topbar-company-switcher")
+    async def topbar_company_switcher(request: Request):
+        """HTMX fragment: company switcher pill for the topbar. Renders empty when only 1 company."""
+        from fasthtml.common import to_xml
+        token = _token(request)
+        if not token:
+            return Response(content="", media_type="text/html")
+        try:
+            resp = await api.my_companies(token)
+            companies = resp.get("items", []) if isinstance(resp, dict) else resp
+        except Exception:
+            return Response(content="", media_type="text/html")
+        if len(companies) <= 1:
+            return Response(content="", media_type="text/html")
+        current = companies[0].get("company_name", "")
+        widget = Div(
+            Button(
+                current,
+                " ▾",
+                hx_get="/switch-company",
+                hx_target="#company-picker-panel",
+                hx_swap="innerHTML",
+                hx_trigger="click",
+                cls="company-switcher-btn",
+            ),
+            Div(id="company-picker-panel", cls="company-picker-panel"),
+            id="topbar-company-switcher",
+            cls="company-switcher",
+        )
+        return Response(to_xml(widget), media_type="text/html")
 
     @app.get("/topbar-relay-status")
     async def topbar_relay_status(request: Request):
@@ -2447,6 +2511,13 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en")
                 _preference_display_cell(key, flat.get(key)),
             ) for key, label in prefs],
             cls="detail-table",
+        ),
+        H3(t("settings.your_companies", lang), cls="settings-section-title"),
+        Div(
+            id="settings-companies-list",
+            hx_get="/settings/company/companies-list",
+            hx_trigger="load",
+            hx_swap="innerHTML",
         ),
         H3(t("page.danger_zone"), cls="settings-section-title settings-section-title--danger"),
         Div(

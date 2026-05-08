@@ -570,24 +570,17 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             cls="global-search-wrap",
         ),
     ]
-    if len(companies) > 1:
-        current = companies[0].get("company_name", "") if companies else ""
-        parts.append(
-            Div(
-                Button(
-                    current,
-                    " ▾",
-                    hx_get="/switch-company",
-                    hx_target="#company-picker-panel",
-                    hx_swap="innerHTML",
-                    hx_trigger="click",
-                    cls="company-switcher-btn",
-                ),
-                Div(id="company-picker-panel", cls="company-picker-panel"),
-                cls="company-switcher",
-            ),
-        )
-    # Language switcher (always present; globe + 2-letter codes like website)
+    # Company switcher — lazy-loaded so it appears on every page without
+    # per-route my_companies() calls. Renders nothing when only one company.
+    parts.append(
+        Div(
+            id="topbar-company-switcher",
+            hx_get="/topbar-company-switcher",
+            hx_trigger="load",
+            hx_swap="outerHTML",
+        ),
+    )
+    # Language switcher
     parts.append(
         Div(
             Span("🌐", cls="lang-switcher__globe"),
