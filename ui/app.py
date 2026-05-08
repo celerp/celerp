@@ -183,6 +183,15 @@ app = FastHTML(
 
 app.add_middleware(TokenRefreshMiddleware)
 
+# Re-apply the SSE access-log filter on startup, after uvicorn has configured its loggers.
+@app.on_event("startup")
+async def _suppress_sse_access_log():
+    _f = _SuppressSSEAccess()
+    _uvicorn_access = logging.getLogger("uvicorn.access")
+    # Remove any duplicate instances first (reload-safe)
+    _uvicorn_access.filters = [f for f in _uvicorn_access.filters if not isinstance(f, _SuppressSSEAccess)]
+    _uvicorn_access.addFilter(_f)
+
 
 # ── i18n middleware: set context language per request ───────────────────────────
 
