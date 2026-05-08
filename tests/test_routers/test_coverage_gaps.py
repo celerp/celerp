@@ -317,12 +317,22 @@ async def test_reports_ap_aging_all_buckets(client):
 
 @pytest.mark.asyncio
 async def test_reports_invoice_analysis_price_range(client):
-    """Covers group_by=price_range for invoice (sales) analysis (lines 297-320)."""
+    """Covers group_by=price_range for invoice (sales) analysis."""
     tok = await _reg(client)
 
-    # Create invoices in multiple price ranges and finalize them
-    for amt in [500, 2000, 10000, 25000]:
-        inv_id = await _doc(client, tok, doc_type="invoice", total=amt)
+    # Create invoices with actual line items so price_range grouping has data
+    for unit_price in [500, 2000, 10000, 25000]:
+        body = {
+            "doc_type": "invoice",
+            "contact_id": "c:1",
+            "line_items": [{"description": f"Item {unit_price}", "quantity": 1, "unit_price": unit_price, "total": unit_price}],
+            "subtotal": unit_price,
+            "tax": 0,
+            "total": unit_price,
+        }
+        r = await client.post("/docs", headers=_h(tok), json=body)
+        assert r.status_code == 200
+        inv_id = r.json()["id"]
         await client.post(f"/docs/{inv_id}/send", headers=_h(tok), json={})
         await client.post(f"/docs/{inv_id}/finalize", headers=_h(tok))
 
@@ -335,15 +345,25 @@ async def test_reports_invoice_analysis_price_range(client):
 
 @pytest.mark.asyncio
 async def test_reports_po_analysis_price_range(client):
-    """Covers group_by=price_range for PO (purchases) analysis (lines 444-460)."""
+    """Covers group_by=price_range for PO (purchases) analysis."""
     tok = await _reg(client)
 
-    for amt in [800, 3000, 8000, 30000]:
-        await _doc(client, tok, doc_type="purchase_order", total=amt)
+    for unit_price in [800, 3000, 8000, 30000]:
+        body = {
+            "doc_type": "purchase_order",
+            "contact_id": "c:1",
+            "line_items": [{"description": f"Item {unit_price}", "quantity": 1, "unit_price": unit_price, "total": unit_price}],
+            "subtotal": unit_price,
+            "tax": 0,
+            "total": unit_price,
+            "status": "final",
+        }
+        r = await client.post("/docs", headers=_h(tok), json=body)
+        assert r.status_code == 200
 
-    r = await client.get("/reports/purchases?group_by=price_range", headers=_h(tok))
-    assert r.status_code == 200
-    data = r.json()
+    resp = await client.get("/reports/purchases?group_by=price_range", headers=_h(tok))
+    assert resp.status_code == 200
+    data = resp.json()
     assert "lines" in data
     assert len(data["lines"]) > 0
 

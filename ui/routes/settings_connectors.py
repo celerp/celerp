@@ -179,20 +179,14 @@ async def _fetch_access_token(relay_url: str, instance_id: str, platform: str) -
         raise RuntimeError("Cannot reach relay server. Check your internet connection.")
 
 
-async def _fetch_catalog(relay_url: str, instance_id: str) -> list[dict]:
-    """Fetch connector catalog from relay. Returns empty list on failure."""
-    import httpx
+async def _fetch_catalog(relay_url: str, instance_id: str, token: str = "") -> tuple[list[dict], str]:
+    """Fetch connector catalog via API process proxy (which holds the gateway token).
+    Returns (connectors, error_detail) - error_detail is "" on success."""
+    from ui.api_client import get_connectors_catalog
     try:
-        async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.get(
-                f"{relay_url}/api/connectors",
-                params={"instance_id": instance_id},
-            )
-            if r.status_code == 200:
-                return r.json().get("connectors", [])
-    except Exception:
-        pass
-    return []
+        return await get_connectors_catalog(token)
+    except Exception as exc:
+        return [], str(exc)
 
 
 async def _get_last_runs(company_id: str) -> dict[str, object]:
@@ -266,6 +260,38 @@ async def _ensure_connector_config(company_id: str, connector: str, category: st
     return config
 
 
+_HOW_IT_WORKS: dict[str, list[str]] = {
+    "shopify": [
+        "Enter your Shopify store domain below",
+        "Authorize Celerp in the Shopify OAuth flow",
+        "Products, orders, and customers sync automatically",
+    ],
+    "woocommerce": [
+        "Enter your WooCommerce store URL",
+        "Paste your REST API consumer key and secret",
+        "Choose sync direction and frequency",
+    ],
+    "quickbooks": [
+        "Click Connect to open QuickBooks authorization",
+        "Sign in and grant access to your company file",
+        "Invoices, contacts, and items sync on your schedule",
+    ],
+    "xero": [
+        "Click Connect to open Xero authorization",
+        "Select the Xero organization to link",
+        "Invoices, contacts, and items sync on your schedule",
+    ],
+}
+
+_ENTITY_LABELS: dict[str, str] = {
+    "products": "Products",
+    "orders": "Orders",
+    "contacts": "Contacts",
+    "inventory": "Inventory",
+    "invoices": "Invoices",
+}
+
+
 def _connector_card(
     c: dict,
     last_run,
@@ -279,123 +305,168 @@ def _connector_card(
     connected = c.get("connected", False)
     icon = _CONNECTOR_ICONS.get(cid, "🔌")
     category = c.get("category", "website")
+    name = c.get("name", cid)
+    description = c.get("description", "")
+    entities = c.get("entities", [])
 
-    # Direction and frequency from config
-    direction = (config.direction if config else SyncDirection.BOTH.value)
-    frequency = (config.sync_frequency if config else _DEFAULT_FREQUENCY.get(category, SyncFrequency.MANUAL).value)
+    direction = config.direction if config else SyncDirection.BOTH.value
+    frequency = config.sync_frequency if config else _DEFAULT_FREQUENCY.get(category, SyncFrequency.MANUAL).value
 
-    # Entity chips
-    entities_row = Div(
-        *[_entity_chip(e) for e in c.get("entities", [])],
-        cls="connector-entities",
+    # ── Status badge ──────────────────────────────────────────────────────────
+    if connected:
+        status_badge = Span("● " + t("connectors.connected", lang), cls="connector-badge connector-badge--connected")
+    elif coming_soon:
+        status_badge = Span(t("connectors.coming_soon", lang), cls="connector-badge connector-badge--soon")
+    else:
+        status_badge = Span("○ " + t("connectors.not_connected", lang), cls="connector-badge connector-badge--idle")
+
+    # ── Synced entities pills ─────────────────────────────────────────────────
+    entity_pills = Div(
+        *[Span(_ENTITY_LABELS.get(e, e), cls="connector-entity-pill") for e in entities],
+        cls="connector-entity-row",
     )
 
-    # Status area
-    status_row = Div(
-        _status_badge(connected, lang),
-        _coming_soon_badge(lang) if coming_soon else "",
-        _webhook_status(connected, category, lang),
-        cls="connector-status-row",
-    )
+    # ── How it works steps ────────────────────────────────────────────────────
+    steps = _HOW_IT_WORKS.get(cid, [])
+    steps_section = Ol(
+        *[Li(s, cls="connector-step") for s in steps],
+        cls="connector-steps",
+    ) if steps and not connected else Span()
 
-    # Direction toggle (only when connected)
-    dir_row = _direction_toggle(cid, direction, lang) if connected else Span()
+    # ── Connected details ─────────────────────────────────────────────────────
+    connected_details = Span()
+    if connected:
+        sync_info = _last_sync_info(last_run)
+        dir_row = _direction_toggle(cid, direction, lang)
+        freq_row = _frequency_select(cid, frequency, lang) if category == ConnectorCategory.ACCOUNTING.value else Span()
+        connected_details = Div(
+            Div(
+                Span(t("connectors.last_sync", lang) + ": ", cls="connector-meta-label"),
+                Div(sync_info, id=f"connector-sync-info-{cid}", cls="connector-meta-value"),
+                cls="connector-meta-row",
+            ),
+            dir_row,
+            freq_row,
+            cls="connector-connected-details",
+        )
 
-    # Frequency selector (only for accounting connectors when connected)
-    freq_row = Span()
-    if connected and category == ConnectorCategory.ACCOUNTING.value:
-        freq_row = _frequency_select(cid, frequency, lang)
-
-    # Last sync
-    sync_info = _last_sync_info(last_run)
-
-    # Action buttons
+    # ── Action area ───────────────────────────────────────────────────────────
     if coming_soon:
-        action_btns = Div(
-            Button(t("connectors.connect", lang, default="Connect"),
-                   cls="btn btn--sm btn--outline", disabled=True),
-            cls="connector-actions",
+        action_area = Div(
+            Span(t("connectors.coming_soon", lang), cls="connector-badge connector-badge--soon"),
+            cls="connector-action-area",
         )
     elif connected:
-        action_btns = Div(
+        action_area = Div(
             Button(
-                t("connectors.disconnect", lang, default="Disconnect"),
-                cls="btn btn--sm btn--outline btn--danger",
-                hx_delete=f"/settings/connectors/{cid}/disconnect",
-                hx_target=f"#connector-card-{cid}",
-                hx_swap="outerHTML",
-                hx_confirm=t("connectors.disconnect_confirm", lang, default="Disconnect and remove stored tokens?"),
-            ),
-            Button(
-                t("connectors.sync_now", lang, default="Sync Now"),
+                t("connectors.sync_now", lang),
                 cls="btn btn--sm btn--primary",
                 hx_post=f"/settings/connectors/{cid}/sync",
                 hx_target=f"#connector-sync-info-{cid}",
                 hx_swap="innerHTML",
-                hx_indicator=f"#connector-sync-spinner-{cid}",
             ),
-            Span("⏳", id=f"connector-sync-spinner-{cid}",
-                 cls="htmx-indicator", style="margin-left:6px;display:none;"),
-            cls="connector-actions",
+            Button(
+                t("connectors.disconnect", lang),
+                cls="btn btn--sm btn--outline btn--danger",
+                style="margin-left:8px;",
+                hx_delete=f"/settings/connectors/{cid}/disconnect",
+                hx_target=f"#connector-card-{cid}",
+                hx_swap="outerHTML",
+                hx_confirm=t("connectors.disconnect_confirm", lang),
+            ),
+            cls="connector-action-area",
         )
     elif c.get("auth_type") == "oauth":
-        oauth_url = f"{relay_url}/oauth/{cid}/initiate?instance_id={instance_id}"
-        action_btns = Div(
-            A(
-                t("connectors.connect", lang, default="Connect"),
-                href=oauth_url,
-                target="_blank",
-                cls="btn btn--sm btn--primary",
-            ),
-            cls="connector-actions",
-        )
+        if cid == "shopify":
+            # Shopify needs the shop domain first
+            action_area = Div(
+                Form(
+                    Input(
+                        name="shop",
+                        placeholder=t("connectors.shop_url_placeholder", lang),
+                        cls="input input--sm",
+                        style="flex:1;min-width:220px;",
+                    ),
+                    Button(
+                        t("connectors.connect", lang),
+                        type="submit",
+                        cls="btn btn--sm btn--primary",
+                        style="margin-left:8px;white-space:nowrap;",
+                    ),
+                    hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                    hx_target=f"#connector-card-{cid}",
+                    hx_swap="outerHTML",
+                    style="display:flex;align-items:center;gap:4px;",
+                ),
+                cls="connector-action-area",
+            )
+        else:
+            action_area = Div(
+                Button(
+                    t("connectors.connect", lang),
+                    cls="btn btn--sm btn--primary",
+                    hx_get=f"/settings/connectors/{cid}/oauth-redirect",
+                    hx_target=f"#connector-card-{cid}",
+                    hx_swap="outerHTML",
+                ),
+                cls="connector-action-area",
+            )
     else:
-        action_btns = Div(
+        # API key auth (WooCommerce)
+        action_area = Div(
             Form(
                 Input(name="store_url", placeholder="https://mystore.com",
-                      cls="input input--sm", style="width:220px;"),
+                      cls="input input--sm", style="flex:1;min-width:200px;"),
                 Input(name="consumer_key", placeholder="Consumer Key",
-                      cls="input input--sm", style="width:180px;margin-left:6px;"),
+                      cls="input input--sm", style="width:160px;"),
                 Input(name="consumer_secret", placeholder="Consumer Secret",
-                      type="password", cls="input input--sm",
-                      style="width:180px;margin-left:6px;"),
-                Button(t("connectors.connect", lang, default="Connect"),
-                       type="submit", cls="btn btn--sm btn--primary",
-                       style="margin-left:6px;"),
+                      type="password", cls="input input--sm", style="width:160px;"),
+                Button(t("connectors.connect", lang),
+                       type="submit", cls="btn btn--sm btn--primary"),
                 hx_post=f"/settings/connectors/{cid}/connect-apikey",
                 hx_target=f"#connector-card-{cid}",
                 hx_swap="outerHTML",
-                style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;",
+                style="display:flex;align-items:center;flex-wrap:wrap;gap:6px;",
             ),
-            cls="connector-actions",
+            cls="connector-action-area",
         )
 
+    # ── Card assembly ─────────────────────────────────────────────────────────
     card_cls = "connector-card"
     if coming_soon:
         card_cls += " connector-card--coming-soon"
+    if connected:
+        card_cls += " connector-card--connected"
 
     return Div(
+        # Header row: icon + name + status
         Div(
             Span(icon, cls="connector-icon"),
             Div(
-                Strong(c.get("name", cid)),
-                P(c.get("description", ""), cls="connector-desc settings-hint"),
+                Div(
+                    Strong(name, cls="connector-name"),
+                    status_badge,
+                    cls="connector-name-row",
+                ),
+                P(description, cls="connector-desc"),
                 cls="connector-info",
             ),
             cls="connector-header",
         ),
-        entities_row,
-        status_row,
-        dir_row,
-        freq_row,
-        Div(sync_info, id=f"connector-sync-info-{cid}"),
-        action_btns,
+        # Entity pills
+        entity_pills,
+        # How it works (pre-connect only)
+        steps_section,
+        # Connected details (post-connect)
+        connected_details,
+        # Action area
+        action_area,
         id=f"connector-card-{cid}",
         cls=card_cls,
     )
 
 
-async def connectors_tab_content(lang: str = "en") -> FT:
+async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
     """Render the full connectors tab (catalog grouped by category)."""
     from celerp.config import ensure_instance_id
     from celerp.gateway.client import get_client
@@ -405,7 +476,7 @@ async def connectors_tab_content(lang: str = "en") -> FT:
     relay_url = RELAY_URL
     iid = ensure_instance_id()
 
-    catalog = await _fetch_catalog(relay_url, iid)
+    catalog, _fetch_err = await _fetch_catalog(relay_url, iid, token=token)
 
     if not catalog:
         return Div(
@@ -439,8 +510,8 @@ async def connectors_tab_content(lang: str = "en") -> FT:
         ]
         sections.append(
             Div(
-                H3(cat_name, cls="settings-section-title"),
-                Div(*cards, cls="connector-cards-grid"),
+                P(cat_name, cls="connector-section-title"),
+                *cards,
             )
         )
 
@@ -463,6 +534,32 @@ def setup_routes(app):
         from ui.i18n import get_lang
         lang = get_lang(request)
         return await connectors_tab_content(lang)
+
+    @app.get("/settings/connectors/{platform}/oauth-redirect")
+    async def connector_oauth_redirect(request: Request, platform: str, shop: str = ""):
+        """HTMX: get OAuth authorize URL and return JS to open it in a new tab."""
+        token = _token(request)
+        if not token:
+            return Span(t("error.unauthorized"), cls="flash flash--warning")
+        if (r := _check_role(request, "admin")):
+            return r
+        lang = get_lang(request)
+
+        from ui.api_client import get_connector_authorize_url
+        try:
+            result = await get_connector_authorize_url(token, platform, shop=shop)
+        except Exception as exc:
+            return Span(str(exc), cls="flash flash--warning")
+
+        if "error" in result:
+            return Span(result["error"], cls="flash flash--warning")
+
+        url = result.get("authorize_url", "")
+        if not url:
+            return Span(t("connectors.authorize_error", lang), cls="flash flash--warning")
+
+        # Return script that opens the URL; card stays as-is (user returns after OAuth)
+        return Script(f"window.open({url!r}, '_blank', 'noopener');")
 
     @app.post("/settings/connectors/{platform}/direction")
     async def connector_set_direction(request: Request, platform: str):
@@ -502,7 +599,7 @@ def setup_routes(app):
             await session.commit()
 
         # Re-render the card
-        catalog = await _fetch_catalog(RELAY_URL, iid)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         config = await _get_connector_config(iid, platform)
@@ -546,7 +643,7 @@ def setup_routes(app):
             )
             await session.commit()
 
-        catalog = await _fetch_catalog(RELAY_URL, iid)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         config = await _get_connector_config(iid, platform)
@@ -585,7 +682,7 @@ def setup_routes(app):
                 cls="connector-card",
             )
 
-        catalog = await _fetch_catalog(RELAY_URL, iid)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         last_runs = await _get_last_runs(iid)
         return _connector_card(c_data, last_runs.get(platform), RELAY_URL, iid, lang=lang)
@@ -703,7 +800,7 @@ def setup_routes(app):
             )
 
         # Create connector config with defaults
-        catalog = await _fetch_catalog(RELAY_URL, iid)
+        catalog, _fetch_err = await _fetch_catalog(RELAY_URL, iid, token=token)
         c_data = next((c for c in catalog if c["id"] == platform), {"id": platform, "name": platform})
         config = await _ensure_connector_config(iid, platform, c_data.get("category", "website"))
         last_runs = await _get_last_runs(iid)

@@ -30,6 +30,8 @@ async def _register_manager(client: AsyncClient, admin_token: str) -> str:
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert r.status_code == 200, r.text
+    from celerp.services.session_tracker import clear as _clear_tracker
+    _clear_tracker()  # gate is universal; clear so new user can log in
     r2 = await client.post(
         "/auth/login",
         json={"email": "mgr@verticals.test", "password": "testpass123"},

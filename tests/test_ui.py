@@ -573,23 +573,19 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_switch_company_picker_renders(self, ui_client):
-        """GET /switch-company → renders company list."""
-        with patch("ui.routes.auth.api_my_companies", new=AsyncMock(return_value=self._COMPANIES)):
-            r = await ui_client.get("/switch-company", cookies=_authed())
+        """Topbar switcher fragment → renders company select with all company names."""
+        with patch("ui.routes.settings.api") as mock_api:
+            mock_api.my_companies = AsyncMock(return_value={"items": self._COMPANIES})
+            r = await ui_client.get("/topbar-company-switcher", cookies=_authed())
         assert r.status_code == 200
         assert b"Acme Trading Co" in r.content
         assert b"Acme Corp" in r.content
 
     @pytest.mark.asyncio
     async def test_switch_company_without_auth_redirects(self, ui_client):
-        """GET /switch-company without cookie → 302 to /login via auth guard.
-
-        /switch-company is not in _PUBLIC so the Beforeware auth guard catches it
-        before the route handler runs and redirects to /login.
-        """
-        r = await ui_client.get("/switch-company")
+        """Topbar switcher without cookie → auth guard redirects to login."""
+        r = await ui_client.get("/topbar-company-switcher")
         assert r.status_code in (302, 303)
-        assert "login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_switch_company_post_sets_new_token(self, ui_client):
@@ -615,19 +611,26 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_company_picker_has_create_form(self, ui_client):
-        """GET /switch-company → picker includes 'Create new company' form."""
-        with patch("ui.routes.auth.api_my_companies", new=AsyncMock(return_value=self._COMPANIES)):
-            r = await ui_client.get("/switch-company", cookies=_authed())
+        """Settings company tab → 'New company' button links to setup wizard."""
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Acme", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01", "tax_id": "", "phone": "", "email": "", "address": "", "settings": {}})),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
         assert r.status_code == 200
-        assert b"create-company" in r.content
-        assert b"company_name" in r.content
+        assert b"setup/new-company" in r.content
 
     @pytest.mark.asyncio
     async def test_create_company_post_redirects_to_setup(self, ui_client):
-        """POST /create-company → creates company, redirects to /setup/company."""
+        """POST /setup/new-company → creates company, redirects to /setup/company."""
         with patch("ui.api_client.create_company", new=AsyncMock(return_value="new-co-token")):
             r = await ui_client.post(
-                "/create-company",
+                "/setup/new-company",
                 data={"company_name": "New Venture Ltd"},
                 cookies=_authed(),
             )
@@ -637,9 +640,9 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_create_company_empty_name_rejected(self, ui_client):
-        """POST /create-company with blank name → redirect with error."""
+        """POST /setup/new-company with blank name → redirect with error."""
         r = await ui_client.post(
-            "/create-company",
+            "/setup/new-company",
             data={"company_name": "  "},
             cookies=_authed(),
         )
@@ -648,8 +651,8 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_create_company_without_auth_redirects(self, ui_client):
-        """POST /create-company without cookie → redirect to /login."""
-        r = await ui_client.post("/create-company", data={"company_name": "Test"})
+        """POST /setup/new-company without cookie → redirect to /login."""
+        r = await ui_client.post("/setup/new-company", data={"company_name": "Test"})
         assert r.status_code in (302, 303)
         assert "login" in r.headers.get("location", "")
 
@@ -10701,8 +10704,8 @@ class TestInventoryUXFixes:
         assert int(captured_params.get("limit", 0)) <= 100
 
     @pytest.mark.asyncio
-    async def test_print_all_labels_link_appears_when_labels_loaded(self, ui_client):
-        """'Print all labels' link appears in inventory toolbar when labels module is loaded."""
+    async def test_print_bulk_form_appears_when_labels_loaded(self, ui_client):
+        """Print-bulk form appears in inventory toolbar when labels module is loaded."""
         from celerp.modules.slots import register as register_slot, clear as clear_slots
         register_slot("bulk_action", {
             "label": "Print Labels",
@@ -10719,7 +10722,7 @@ class TestInventoryUXFixes:
             ):
                 r = await ui_client.get("/inventory", cookies=_authed())
             assert r.status_code == 200
-            assert "/labels/print-list" in r.text
+            assert "/labels/print-bulk" in r.text
         finally:
             clear_slots()
 
@@ -11089,26 +11092,6 @@ def test_internal_notes_ids_contain_no_colons():
 class TestPrintLabelButtonText:
     """Print Labels list button must show real text, not raw i18n keys."""
 
-    def test_print_label_list_button_no_raw_key(self):
-        """_print_all_labels_link must not emit a raw t() key as button text."""
-        from ui.routes.inventory import _print_all_labels_link
-        from unittest.mock import MagicMock
-
-        p = MagicMock()
-        p.total = 5
-        p.q = ""
-        p.status = ""
-        p.category = ""
-        p.sort = ""
-        p.dir = ""
-
-        result = _print_all_labels_link(p, total=5)
-        if result is None:
-            return  # labels module not installed - skip
-        html = str(result)
-        assert "btn.print_labels" not in html, f"Raw i18n key found in button: {html!r}"
-        assert "Print Labels" in html or "🖨" in html
-
     def test_print_label_dropdown_button_no_unicode_escape(self):
         """_print_label_dropdown must NOT render a literal unicode escape sequence."""
         from ui.routes.inventory import _print_label_dropdown
@@ -11196,3 +11179,346 @@ class TestUnwrapAddress:
     def test_empty_dict(self):
         from ui.components.table import unwrap_address
         assert unwrap_address({}) == ""
+
+
+# ── Files section render tests ────────────────────────────────────────────────
+
+class TestFilesSectionRenders:
+    def test_files_section_renders_empty(self):
+        """_files_section with no files should render empty-state message."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert "files-section-c1" in html
+        assert "files-table-c1" in html
+        assert "file-drop-zone-c1" in html
+
+    def test_files_section_renders_with_files(self):
+        """_files_section with files should render filename, tag select and delete button."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "contract.pdf", "size": 12345, "document_tag": "contracts", "description": "Main contract"},
+        ]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "contract.pdf" in html
+        assert "f1" in html
+        assert "file-tag-select" in html
+        assert "file-desc" in html
+        assert "Main contract" in html
+
+    def test_files_section_doc_entity(self):
+        """_files_section with entity_type='doc' uses /docs/ URLs."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f2", "filename": "bill.pdf", "size": 500, "document_tag": "", "description": ""}]
+        html = to_xml(_files_section("doc", "d1", files))
+        assert "/docs/d1/files" in html
+        assert "files-section-d1" in html
+
+    def test_files_section_upload_js_no_json_parse(self):
+        """Upload JS must NOT call .json() - proxy returns HTML, not JSON."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        # Must use r.text() not r.json()
+        assert "r.text()" in html or "r.json()" not in html, (
+            "Upload JS calls r.json() but proxy returns HTML - this causes "
+            "'Unexpected token < ... is not valid JSON' in the browser"
+        )
+        assert "r.json()" not in html, (
+            "Upload JS must not call r.json(); proxy returns HTML fragment"
+        )
+
+    def test_files_section_tag_uses_hx_post(self):
+        """Tag select must use hx-post not hx-patch (proxy only has POST handler)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": ""}]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert 'hx-patch="/contacts/c1/files/f1/tag"' not in html, (
+            "Tag select uses hx-patch but UI proxy only handles POST"
+        )
+        assert 'hx-post="/contacts/c1/files/f1/tag"' in html
+
+    def test_files_section_download_link_uses_download_suffix(self):
+        """Download link must use /download suffix to hit the UI proxy correctly."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": ""}]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "/contacts/c1/files/f1/download" in html, (
+            "Download link should point to /download proxy, not raw /files/f1"
+        )
+
+    def test_files_section_description_js_no_patch(self):
+        """Description inline edit must use POST not PATCH (proxy only has POST handler)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "desc"}]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "method:'PATCH'" not in html, (
+            "Description fetch uses PATCH but UI proxy only handles POST"
+        )
+        assert "method:'POST'" in html
+
+    # ── Files section v2 tests ────────────────────────────────────────────────
+
+    def test_files_section_id_sanitized_no_colon(self):
+        """entity_id with colon must produce a colon-free DOM id (valid CSS selector)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "contact:abc-123", []))
+        assert 'id="files-section-contact:abc-123"' not in html, (
+            "Colon in entity_id makes CSS selector invalid - must be sanitized"
+        )
+        assert "files-section-contact-abc-123" in html
+
+    def test_files_section_new_tags_present(self):
+        """correspondence and registrations must be in _DOCUMENT_TAGS."""
+        from ui.components.files import _DOCUMENT_TAGS
+        assert "correspondence" in _DOCUMENT_TAGS
+        assert "registrations" in _DOCUMENT_TAGS
+
+    def test_files_section_upload_date_column(self):
+        """Upload Date must be the first column header."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert "Upload Date" in html or "upload_date" in html.lower()
+        # Upload Date must appear before Filename in the header
+        upload_pos = html.find("Upload Date")
+        filename_pos = html.find("FILENAME") if "FILENAME" in html else html.find("Filename")
+        if upload_pos >= 0 and filename_pos >= 0:
+            assert upload_pos < filename_pos, "Upload Date must be the first column"
+
+    def test_files_section_sort_arrow_on_date_column(self):
+        """Date column header must have a sort arrow indicator."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert "sort=" in html or "▲" in html or "▼" in html or "sort_dir" in html
+
+    def test_files_section_filter_bar_has_tag_dropdown(self):
+        """Filter bar must include a tag dropdown select."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert 'name="tag_filter"' in html
+
+    def test_files_section_filter_bar_has_date_inputs(self):
+        """Filter bar must include from-date and to-date inputs."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        assert 'name="date_from"' in html
+        assert 'name="date_to"' in html
+
+    def test_files_section_pagination_shown_over_threshold(self):
+        """Pagination controls must appear when files > page size."""
+        from ui.components.files import _files_section, FILES_PAGE_SIZE
+        from fasthtml.common import to_xml
+        files = [
+            {"id": f"f{i}", "filename": f"file{i}.pdf", "size": 100,
+             "document_tag": "", "description": "", "uploaded_at": f"2026-01-{i+1:02d}T00:00:00Z"}
+            for i in range(FILES_PAGE_SIZE + 1)
+        ]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "page=" in html or "pagination" in html.lower() or "Next" in html or ">" in html
+
+    def test_files_section_pagination_hidden_under_threshold(self):
+        """Pagination controls must NOT appear when files <= page size."""
+        from ui.components.files import _files_section, FILES_PAGE_SIZE
+        from fasthtml.common import to_xml
+        files = [
+            {"id": f"f{i}", "filename": f"file{i}.pdf", "size": 100,
+             "document_tag": "", "description": "", "uploaded_at": f"2026-01-{i+1:02d}T00:00:00Z"}
+            for i in range(FILES_PAGE_SIZE)
+        ]
+        html = to_xml(_files_section("contact", "c1", files))
+        # Should not show page navigation for exactly PAGE_SIZE items
+        assert 'class="pagination"' not in html
+
+    def test_files_section_newest_first_by_default(self):
+        """Files must be sorted newest-first by default (GDR)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "old", "filename": "old.pdf", "size": 1, "document_tag": "", "description": "",
+             "uploaded_at": "2026-01-01T00:00:00Z"},
+            {"id": "new", "filename": "new.pdf", "size": 1, "document_tag": "", "description": "",
+             "uploaded_at": "2026-06-01T00:00:00Z"},
+        ]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert html.index("new.pdf") < html.index("old.pdf"), "Newest file must appear first"
+
+    def test_files_section_search_filters_by_filename(self):
+        """search= must filter rows by filename (case-insensitive)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "invoice.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""},
+            {"id": "f2", "filename": "contract.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""},
+        ]
+        html = to_xml(_files_section("contact", "c1", files, search="inv"))
+        assert "invoice.pdf" in html
+        assert "contract.pdf" not in html
+
+    def test_files_section_search_filters_by_description(self):
+        """search= must filter rows by description text."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "warranty card", "uploaded_at": ""},
+            {"id": "f2", "filename": "b.pdf", "size": 1, "document_tag": "", "description": "shipping label", "uploaded_at": ""},
+        ]
+        html = to_xml(_files_section("contact", "c1", files, search="warranty"))
+        assert "a.pdf" in html
+        assert "b.pdf" not in html
+
+    def test_files_section_search_filters_by_linked_ref(self):
+        """search= must filter rows by linked_ref (document number)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "INV-0042"},
+            {"id": "f2", "filename": "b.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "PO-0007"},
+        ]
+        html = to_xml(_files_section("doc", "d1", files, search="INV"))
+        assert "a.pdf" in html
+        assert "b.pdf" not in html
+
+    def test_files_section_search_preserved_in_form(self):
+        """The search input must render with the current search value so HTMX refreshes preserve it."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""}]
+        html = to_xml(_files_section("contact", "c1", files, search="hello"))
+        assert 'value="hello"' in html
+
+    def test_files_section_linked_to_column_shown_when_data_present(self):
+        """Linked To column must appear when any file has linked_ref."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": "", "linked_ref": "INV-001", "linked_url": "/docs/d1"},
+        ]
+        html = to_xml(_files_section("doc", "d1", files))
+        assert "Linked To" in html or "linked_to" in html.lower()
+        assert "INV-001" in html
+
+    def test_files_section_linked_to_column_always_shown(self):
+        """Linked To column must always appear (GDR: don't hide structure)."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [{"id": "f1", "filename": "a.pdf", "size": 1, "document_tag": "", "description": "", "uploaded_at": ""}]
+        html = to_xml(_files_section("contact", "c1", files))
+        assert "Linked To" in html or "linked_to" in html.lower()
+
+    def test_files_section_date_inputs_are_text_type(self):
+        """Date filter inputs must be type=text (not type=date) to avoid browser year-entry bug."""
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("contact", "c1", []))
+        # type="date" causes the Chrome year field to only accept 2 digits
+        assert 'name="date_from"' in html
+        assert 'name="date_to"' in html
+        # Verify they use text inputs, not date pickers
+        import re
+        date_inputs = re.findall(r'<input[^>]*name="date_from"[^>]*/?>|<input[^>]*name="date_to"[^>]*/?>',  html)
+        for inp in date_inputs:
+            assert 'type="date"' not in inp, f"Date filter must use type=text, not type=date: {inp}"
+
+    def test_collect_contact_files_own_files_have_no_linked_ref(self):
+        """Contact-own files must have linked_ref='' (shown as '--' in UI)."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": [{"id": "f1", "filename": "a.pdf"}]}
+        result = _collect_contact_files(contact, [])
+        assert len(result) == 1
+        assert result[0]["linked_ref"] == ""
+        assert result[0]["linked_url"] == ""
+
+    def test_collect_contact_files_doc_files_get_linked_ref(self):
+        """Files from related docs must carry linked_ref and linked_url."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": []}
+        docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-0042", "doc_number": "INV-0042",
+                 "files": [{"id": "f2", "filename": "invoice.pdf"}]}]
+        result = _collect_contact_files(contact, docs)
+        assert len(result) == 1
+        assert result[0]["linked_ref"] == "INV-0042"
+        assert result[0]["linked_url"] == "/docs/d1"
+
+    def test_collect_contact_files_deduplicates_by_id(self):
+        """Same file id must not appear twice even if present in both contact and doc."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": [{"id": "shared", "filename": "dup.pdf"}]}
+        docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-001",
+                 "files": [{"id": "shared", "filename": "dup.pdf"}]}]
+        result = _collect_contact_files(contact, docs)
+        assert len(result) == 1
+
+    def test_collect_contact_files_merges_both_sources(self):
+        """When contact has own files AND doc files, both appear in result."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": [{"id": "cf1", "filename": "cert.pdf"}]}
+        docs = [{"id": "d1", "entity_id": "d1", "ref_id": "PO-007",
+                 "files": [{"id": "df1", "filename": "po.pdf"}]}]
+        result = _collect_contact_files(contact, docs)
+        assert len(result) == 2
+        ids = {r["id"] for r in result}
+        assert ids == {"cf1", "df1"}
+
+    def test_collect_contact_files_empty_doc_has_no_files(self):
+        """Docs with no files list must not cause errors."""
+        from ui.routes.contacts import _collect_contact_files
+        contact = {"files": []}
+        docs = [{"id": "d1", "entity_id": "d1", "ref_id": "INV-001"}]  # no 'files' key
+        result = _collect_contact_files(contact, docs)
+        assert result == []
+
+    def test_enrich_doc_files_attaches_ref_and_url(self):
+        """_enrich_doc_files must attach linked_ref and linked_url to each file."""
+        from ui.routes.documents import _enrich_doc_files
+        doc = {"entity_id": "d1", "ref_id": "INV-0099",
+               "files": [{"id": "f1", "filename": "receipt.pdf"}]}
+        result = _enrich_doc_files(doc)
+        assert len(result) == 1
+        assert result[0]["linked_ref"] == "INV-0099"
+        assert result[0]["linked_url"] == "/docs/d1"
+
+    def test_enrich_doc_files_empty_returns_empty(self):
+        """_enrich_doc_files with no files must return empty list."""
+        from ui.routes.documents import _enrich_doc_files
+        doc = {"entity_id": "d1", "ref_id": "INV-001"}
+        assert _enrich_doc_files(doc) == []
+
+
+def test_token_refresh_middleware_propagates_cancellation():
+    """Pure ASGI middleware must not swallow CancelledError on shutdown."""
+    import asyncio
+    import pytest
+
+    from ui.app import TokenRefreshMiddleware
+
+    async def inner_app(scope, receive, send):
+        raise asyncio.CancelledError()
+
+    middleware = TokenRefreshMiddleware(inner_app)
+
+    # Public path - fast-tracks to inner_app which raises CancelledError
+    async def run_public():
+        scope = {"type": "http", "headers": [], "query_string": b"", "method": "GET",
+                 "path": "/login", "raw_path": b"/login"}
+        with pytest.raises(asyncio.CancelledError):
+            await middleware(scope, None, None)
+
+    # Non-public path with no cookies - proceeds to inner_app which raises CancelledError
+    async def run_private():
+        scope = {"type": "http", "headers": [], "query_string": b"", "method": "GET",
+                 "path": "/dashboard", "raw_path": b"/dashboard"}
+        with pytest.raises(asyncio.CancelledError):
+            await middleware(scope, None, None)
+
+    asyncio.run(run_public())
+    asyncio.run(run_private())

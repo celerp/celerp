@@ -36,10 +36,11 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(subject: str, company_id: str, role: str) -> str:
+def create_access_token(subject: str, company_id: str, role: str, email: str = "") -> str:
     expire_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     payload = {
         "sub": subject,
+        "email": email,
         "company_id": company_id,
         "role": role,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=expire_minutes),
@@ -47,9 +48,10 @@ def create_access_token(subject: str, company_id: str, role: str) -> str:
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
 
 
-def create_refresh_token(subject: str, company_id: str, role: str) -> str:
+def create_refresh_token(subject: str, company_id: str, role: str, email: str = "") -> str:
     payload = {
         "sub": subject,
+        "email": email,
         "company_id": company_id,
         "role": role,
         "type": "refresh",
@@ -104,7 +106,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSe
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
     from celerp.services.session_tracker import record as _record_activity
-    _record_activity(str(user.id))
+    _record_activity(str(user.id), company_id=str(company_id))
 
     return user
 

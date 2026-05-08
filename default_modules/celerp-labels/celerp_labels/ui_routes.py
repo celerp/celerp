@@ -1114,7 +1114,7 @@ def _printable_label_sheet(items: list[dict], template: dict | None) -> object:
 <title>Print Labels</title>
 <style>
 body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
-.label-sheet {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+.label-sheet {{ display: flex; flex-wrap: wrap; gap: 0; }}
 .label-item {{
   border: 1px solid #999;
   padding: 4px 6px;
@@ -1136,14 +1136,14 @@ body {{ font-family: sans-serif; margin: 0; padding: 1rem; }}
 @media print {{
   .no-print {{ display: none; }}
   body {{ padding: 0; margin: 0; }}
-  .label-sheet {{ gap: 4px; padding: 4px; }}
+  .label-sheet {{ gap: 0; padding: 0; }}
 }}
 </style>
 </head>
 <body>
 <div class="no-print">
   <button onclick="window.print()" style="padding:8px 16px;cursor:pointer;font-size:14px;">🖨 Print</button>
-  <button onclick="history.back()" style="padding:8px 16px;cursor:pointer;font-size:14px;margin-left:8px;">← Back</button>
+  <button onclick="window.location.href='/inventory'" style="padding:8px 16px;cursor:pointer;font-size:14px;margin-left:8px;">← Back</button>
 </div>
 <div class="label-sheet">{"".join(label_rows)}</div>
 <script>window.onload = function() {{ window.print(); }};</script>
@@ -1467,6 +1467,24 @@ def setup_ui_routes(app) -> None:
             templates = await _seed_presets_if_empty(request)
             template = templates[0] if templates else None
         return _printable_label_sheet([item_data] if item_data else [], template)
+
+    @app.get("/labels/template-options")
+    async def labels_template_options(request: Request):
+        """Return <option> elements for label templates (HTMX fragment for bulk toolbar select)."""
+        templates = await _fetch_templates(request)
+        from fasthtml.common import Option, NotStr
+        if not templates:
+            return NotStr('<option value="" disabled selected>No templates - create one in Settings</option>')
+        opts = "".join(
+            f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
+            for tpl in templates
+        )
+        # Pre-select first template
+        first_id = templates[0]["id"]
+        first_name = templates[0]["name"]
+        return NotStr(f'<option value="{first_id}" selected>{first_name}</option>' +
+                      "".join(f'<option value="{tpl["id"]}">{tpl["name"]}</option>'
+                               for tpl in templates[1:]))
 
     @app.post("/labels/print-bulk")
     async def labels_print_bulk(request: Request):

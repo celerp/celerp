@@ -77,24 +77,33 @@ def setup_routes(app):
             return StreamingResponse(_empty(), media_type="text/event-stream")
 
         async def _stream():
-            try:
-                async with httpx.AsyncClient(base_url=API_BASE, timeout=None) as c:
-                    async with c.stream(
-                        "GET",
-                        "/notifications/stream",
-                        headers={
-                            "Authorization": f"Bearer {token}",
-                            "Accept": "text/event-stream",
-                        },
-                    ) as resp:
-                        async for chunk in resp.aiter_bytes():
-                            if await request.is_disconnected():
-                                return
-                            yield chunk
-            except asyncio.CancelledError:
-                # Server shutdown or client disconnect — exit cleanly
-                return
-            except (httpx.ConnectError, httpx.TimeoutException):
-                yield "data: {}\n\n"
+            # Yield a keepalive immediately to commit the 200 response and
+            # prevent any subsequent exception from becoming a 500.
+            yield ": keepalive\n\n"
+
+            _RETRY_DELAYS = [1, 2, 4, 8, 16]
+            for delay in _RETRY_DELAYS:
+                if await request.is_disconnected():
+                    return
+                try:
+                    async with httpx.AsyncClient(base_url=API_BASE, timeout=None) as c:
+                        async with c.stream(
+                            "GET",
+                            "/notifications/stream",
+                            headers={
+                                "Authorization": f"Bearer {token}",
+                                "Accept": "text/event-stream",
+                            },
+                        ) as resp:
+                            async for chunk in resp.aiter_bytes():
+                                if await request.is_disconnected():
+                                    return
+                                yield chunk
+                    return  # clean stream close - stop retrying
+                except (asyncio.CancelledError, GeneratorExit):
+                    return
+                except Exception:
+                    # API not ready or temporary error - wait then retry
+                    await asyncio.sleep(delay)
 
         return StreamingResponse(_stream(), media_type="text/event-stream")

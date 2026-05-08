@@ -27,6 +27,44 @@ from celerp.routers import health, notifications, system
 
 import celerp.models  # noqa: F401 - ensures kernel models (UserCompany, ImportBatch, DocShareToken) are registered
 
+# ---------------------------------------------------------------------------
+# Suppress CancelledError tracebacks from uvicorn on graceful shutdown.
+# When the graceful-shutdown timeout fires, uvicorn cancels in-flight SSE
+# tasks. Starlette's listen_for_disconnect coroutine raises CancelledError
+# which uvicorn logs as "Exception in ASGI application". This is harmless
+# but noisy - filter it out.
+# ---------------------------------------------------------------------------
+class _SuppressShutdownCancelledError(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.exc_info and record.exc_info[0] is asyncio.CancelledError:
+            return False
+        return True
+
+logging.getLogger("uvicorn.error").addFilter(_SuppressShutdownCancelledError())
+
+# Suppress all API-process access logs (this port is internal; UI process is
+# what users connect to). Also suppress httpx relay noise and port 8000 startup
+# line so the visible startup message is only the UI's port 8080.
+_orig_logger_handle = logging.Logger.handle
+
+def _filtered_logger_handle(self, record):
+    try:
+        msg = record.getMessage()
+        # Drop all uvicorn.access lines (internal API, not user-facing)
+        if self.name == "uvicorn.access":
+            return
+        # Drop httpx logs for relay/billing calls (chatty 401s etc.)
+        if self.name in ("httpx", "httpcore") or self.name.startswith("httpx.") or self.name.startswith("httpcore."):
+            return
+        # Drop "Uvicorn running on http://0.0.0.0:8000" startup line
+        if self.name == "uvicorn.error" and "0.0.0.0:8000" in msg:
+            return
+    except Exception:
+        pass
+    _orig_logger_handle(self, record)
+
+logging.Logger.handle = _filtered_logger_handle
+
 # Module system (opt-in: no-op if MODULE_DIR not set)
 import os as _os
 _MODULE_DIR = _os.environ.get("MODULE_DIR", "")
@@ -181,7 +219,7 @@ async def lifespan(_app: FastAPI):
     if settings.gateway_token and settings.backup_encryption_key and settings.backup_enabled:
         from celerp.services import backup_scheduler
         backup_scheduler.start()
-        log.info("Backup scheduler started")
+        log.debug("Backup scheduler started")
 
     # Start AI file cleanup background task
     from celerp.ai.cleanup import run_cleanup_loop

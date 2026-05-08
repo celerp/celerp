@@ -82,12 +82,39 @@ function toggleRowMenu(id) {
   var menu = document.getElementById('menu-' + id);
   if (!menu) return;
   var wasOpen = menu.classList.contains('open');
-  document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
-  if (!wasOpen) menu.classList.add('open');
+  document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) {
+    m.classList.remove('open');
+    m.style.cssText = '';
+  });
+  if (!wasOpen) {
+    // Position fixed relative to button so table overflow: hidden can't clip it
+    var btn = menu.previousElementSibling;
+    if (btn) {
+      var r = btn.getBoundingClientRect();
+      // Anchor to right edge of button; flip upward if too close to bottom
+      var menuH = 200; // estimated max height
+      var spaceBelow = window.innerHeight - r.bottom;
+      menu.style.position = 'fixed';
+      menu.style.right = (window.innerWidth - r.right) + 'px';
+      menu.style.left = 'auto';
+      if (spaceBelow < menuH) {
+        menu.style.bottom = (window.innerHeight - r.top) + 'px';
+        menu.style.top = 'auto';
+      } else {
+        menu.style.top = r.bottom + 'px';
+        menu.style.bottom = 'auto';
+      }
+      menu.style.zIndex = '9999';
+    }
+    menu.classList.add('open');
+  }
 }
 document.addEventListener('click', function(e) {
   if (!e.target.closest('.row-menu')) {
-    document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
+    document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) {
+      m.classList.remove('open');
+      m.style.cssText = '';
+    });
   }
   if (!e.target.closest('.combobox-wrap')) {
     document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
@@ -479,7 +506,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
 def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies: list[dict] | None = None, extra_head: list | None = None, lang: str = "en", request=None) -> FT:
     """Outer chrome: sidebar nav + top header + content area."""
+    from ui.config import get_user_email, get_relay_info
     role = get_role(request) if request is not None else "owner"
+    user_email = get_user_email(request) if request is not None else None
+    relay_info: dict = {}
     if request is not None:
         lang = get_lang(request)
     head_items = [
@@ -492,6 +522,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
         Script(_CLIENT_JS),
         Script(_HEALTH_BANNER_JS),
         Script(_NOTIFICATION_JS),
+        Script(_USER_MENU_JS),
     ]
     if extra_head:
         head_items.extend(extra_head)
@@ -501,7 +532,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
             Div(
                 _sidebar(nav_active, lang=lang, role=role, request=request),
                 Div(
-                    _topbar(companies or [], lang=lang),
+                    _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
                     _GLOBAL_UI_ERROR_HTML,
                     Main(*content, id="main-content", cls="main-content"),
@@ -519,7 +550,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
     )
 
 
-def _topbar(companies: list[dict], lang: str = "en") -> FT:
+def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None) -> FT:
     """Top bar with hamburger toggle, global search, and optional company switcher."""
     parts: list[FT] = [
         Button("☰", cls="sidebar-toggle", type="button"),
@@ -539,24 +570,17 @@ def _topbar(companies: list[dict], lang: str = "en") -> FT:
             cls="global-search-wrap",
         ),
     ]
-    if len(companies) > 1:
-        current = companies[0].get("company_name", "") if companies else ""
-        parts.append(
-            Div(
-                Button(
-                    current,
-                    " ▾",
-                    hx_get="/switch-company",
-                    hx_target="#company-picker-panel",
-                    hx_swap="innerHTML",
-                    hx_trigger="click",
-                    cls="company-switcher-btn",
-                ),
-                Div(id="company-picker-panel", cls="company-picker-panel"),
-                cls="company-switcher",
-            ),
-        )
-    # Language switcher (always present; globe + 2-letter codes like website)
+    # Company switcher — lazy-loaded so it appears on every page without
+    # per-route my_companies() calls. Renders nothing when only one company.
+    parts.append(
+        Div(
+            id="topbar-company-switcher",
+            hx_get="/topbar-company-switcher",
+            hx_trigger="load",
+            hx_swap="outerHTML",
+        ),
+    )
+    # Language switcher
     parts.append(
         Div(
             Span("🌐", cls="lang-switcher__globe"),
@@ -614,11 +638,73 @@ def _topbar(companies: list[dict], lang: str = "en") -> FT:
             cls="notif-wrap",
         ),
     )
+    # User email + relay indicator + logout dropdown
+    if user_email:
+        _ri = relay_info or {}
+        connected = bool(_ri.get("connected"))
+        public_url = _ri.get("public_url") or ""
+        dot_cls = "relay-dot relay-dot--on" if connected else "relay-dot relay-dot--off"
+        if connected and public_url:
+            dot_title = f"{t('msg.relay_connected', lang)}: {public_url}"
+            dot_href = public_url
+            dot_target = "_blank"
+        else:
+            dot_title = t("msg.relay_not_connected", lang)
+            dot_href = "/settings/cloud"
+            dot_target = "_self"
+        parts.append(
+            Div(
+                # Email pill = dropdown trigger
+                Div(
+                    Span(user_email, cls="user-menu__email-text"),
+                    cls="user-menu__trigger",
+                    onclick="toggleUserMenu()",
+                ),
+                # Dropdown
+                Div(
+                    A(
+                        "⎋ " + t("nav.logout", lang),
+                        href="/logout",
+                        cls="user-menu__item user-menu__item--logout",
+                        onclick="event.preventDefault();fetch('/logout',{method:'POST',credentials:'same-origin'}).then(()=>window.location='/login')",
+                    ),
+                    id="user-menu-panel",
+                    cls="user-menu__panel",
+                    style="display:none;",
+                ),
+                # Relay dot — separate element to the right of the email pill
+                Span(
+                    Span(cls="relay-dot relay-dot--off", title=""),
+                    id="relay-dot-wrap",
+                    hx_get="/topbar-relay-status",
+                    hx_trigger="load",
+                    hx_swap="outerHTML",
+                ),
+                cls="user-menu",
+            )
+        )
     return Div(*parts, cls="topbar")
 
 
 # Kernel-level nav entries always present (no module required)
 _KERNEL_NAV: list[dict] = []
+
+_USER_MENU_JS = """
+(function(){
+  window.toggleUserMenu = function() {
+    var panel = document.getElementById('user-menu-panel');
+    if (!panel) return;
+    var visible = panel.style.display !== 'none';
+    panel.style.display = visible ? 'none' : '';
+  };
+  document.addEventListener('click', function(e) {
+    var panel = document.getElementById('user-menu-panel');
+    if (panel && !e.target.closest('.user-menu')) {
+      panel.style.display = 'none';
+    }
+  });
+})();
+"""
 
 _SIDEBAR_JS = """
 (function(){
@@ -801,8 +887,6 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
         *empty_state,
         Div(
             *settings_link,
-            A(t("nav.logout", lang), href="/logout", cls="nav-link nav-link--logout",
-              onclick="event.preventDefault();fetch('/logout',{method:'POST',credentials:'same-origin'}).then(()=>window.location='/login')"),
             cls="sidebar-footer",
         ),
         Script(_SIDEBAR_JS),

@@ -18,7 +18,9 @@ from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 
 
-
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 async def _get_fiscal_and_currency(token: str) -> tuple[str, str | None]:
     """Fetch company fiscal_year_start and currency; defaults on any error."""
@@ -30,12 +32,24 @@ async def _get_fiscal_and_currency(token: str) -> tuple[str, str | None]:
 
 
 async def _get_fiscal(token: str) -> str:
-    """Fetch company fiscal_year_start; default to '01-01' on any error."""
     fy, _ = await _get_fiscal_and_currency(token)
     return fy
 
 
+def _is_htmx(request: Request) -> bool:
+    return request.headers.get("HX-Request") == "true"
 
+
+def _page_or_fragment(request: Request, *content, title: str, nav_active: str) -> FT:
+    """Return full shell or HTMX fragment depending on request type."""
+    if _is_htmx(request):
+        return Div(*content, id="main-content", cls="main-content")
+    return base_shell(*content, title=title, nav_active=nav_active, request=request)
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
 
 def setup_routes(app):
 
@@ -67,14 +81,12 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             data = {"lines": [], "buckets": {}}
-        return base_shell(
+        content = [
             page_header("AR Aging", A(t("label.back"), href="/reports", cls="btn btn--secondary")),
             _date_filter_bar("/reports/ar-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
             _aging_view(data, "AR", sort=sort, sort_dir=sort_dir, currency=currency),
-            title="AR Aging - Celerp",
-            nav_active="reports",
-            request=request,
-        )
+        ]
+        return _page_or_fragment(request, *content, title="AR Aging - Celerp", nav_active="reports")
 
     @app.get("/reports/ap-aging")
     async def ap_aging(request: Request):
@@ -91,14 +103,12 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             data = {"lines": [], "buckets": {}}
-        return base_shell(
+        content = [
             page_header("AP Aging", A(t("label.back"), href="/reports", cls="btn btn--secondary")),
             _date_filter_bar("/reports/ap-aging", date_from, date_to, preset, settings_link="/settings/sales?tab=terms", lang=get_lang(request)),
             _aging_view(data, "AP", sort=sort, sort_dir=sort_dir, currency=currency),
-            title="AP Aging - Celerp",
-            nav_active="reports",
-            request=request,
-        )
+        ]
+        return _page_or_fragment(request, *content, title="AP Aging - Celerp", nav_active="reports")
 
     @app.get("/reports/sales")
     async def sales_report(request: Request):
@@ -122,7 +132,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             data = {"lines": [], "group_by": group_by, "total": 0}
 
-        return base_shell(
+        content = [
             page_header(
                 "Sales Report",
                 _group_by_filter(group_by, "/reports/sales"),
@@ -133,10 +143,8 @@ def setup_routes(app):
                              extra_params=f"&group_by={group_by}",
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency),
-            title="Sales Report - Celerp",
-            nav_active="reports",
-            request=request,
-        )
+        ]
+        return _page_or_fragment(request, *content, title="Sales Report - Celerp", nav_active="reports")
 
     @app.get("/reports/purchases")
     async def purchases_report(request: Request):
@@ -160,7 +168,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             data = {"lines": [], "group_by": group_by, "total": 0}
 
-        return base_shell(
+        content = [
             page_header(
                 "Purchases Report",
                 _group_by_filter(group_by, "/reports/purchases", first_option="supplier"),
@@ -171,10 +179,8 @@ def setup_routes(app):
                              extra_params=f"&group_by={group_by}",
                              lang=get_lang(request)),
             _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency),
-            title="Purchases Report - Celerp",
-            nav_active="reports",
-            request=request,
-        )
+        ]
+        return _page_or_fragment(request, *content, title="Purchases Report - Celerp", nav_active="reports")
 
     @app.get("/reports/expiring")
     async def expiring_report(request: Request):
@@ -189,18 +195,13 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            data = {"count": 0, "days_threshold": days, "items": []}
+            data = {"count": 0, "days_threshold": days, "lines": []}
 
-        return base_shell(
+        content = [
             page_header("Expiring Items", A(t("label.back"), href="/reports", cls="btn btn--secondary")),
-            _date_filter_bar("/reports/expiring", date_from, date_to, preset,
-                             extra_params=f"&days={days}",
-                             lang=get_lang(request)),
-            _expiring_view(data),
-            title="Expiring Items - Celerp",
-            nav_active="reports",
-            request=request,
-        )
+            _expiring_view(data, days=days),
+        ]
+        return _page_or_fragment(request, *content, title="Expiring Items - Celerp", nav_active="reports")
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +209,6 @@ def setup_routes(app):
 # ---------------------------------------------------------------------------
 
 def _date_presets(lang: str = "en") -> list[tuple[str, str]]:
-    """Return date preset (key, label) pairs translated to the given language."""
     return [
         ("this_month", t("filter.this_month", lang)),
         ("last_3m", t("filter.last_3m", lang)),
@@ -222,23 +222,17 @@ def _date_presets(lang: str = "en") -> list[tuple[str, str]]:
 
 
 def _fy_start(fiscal_year_start: str, reference: date) -> date:
-    """Return the start date of the fiscal year that contains `reference`.
-
-    fiscal_year_start: "MM-DD" string (e.g. "04-01" for April 1).
-    """
     try:
         month, day = int(fiscal_year_start[:2]), int(fiscal_year_start[3:5])
     except (ValueError, IndexError):
         month, day = 1, 1
     candidate = reference.replace(month=month, day=day)
-    # If candidate is in the future relative to reference, step back one year
     if candidate > reference:
         candidate = candidate.replace(year=candidate.year - 1)
     return candidate
 
 
 def _resolve_preset(preset: str, fiscal_year_start: str = "01-01") -> tuple[str, str]:
-    """Return (date_from, date_to) for a preset name. Empty strings mean no filter."""
     today = date.today()
     if preset == "this_month":
         return (today.replace(day=1).isoformat(), today.isoformat())
@@ -256,16 +250,10 @@ def _resolve_preset(preset: str, fiscal_year_start: str = "01-01") -> tuple[str,
         last_start = _fy_start(fiscal_year_start, this_start - timedelta(days=1))
         last_end = this_start - timedelta(days=1)
         return (last_start.isoformat(), last_end.isoformat())
-    # "all" or unknown
     return ("", "")
 
 
 def _parse_dates(request: Request, fiscal_year_start: str = "01-01") -> tuple[str, str, str]:
-    """Extract date_from, date_to, preset from request. Returns (from, to, preset).
-
-    If both dates are present and date_from > date_to the values are swapped so
-    that callers never receive an inverted range (e.g. from a bad URL).
-    """
     preset = request.query_params.get("preset", "")
     if preset and preset != "custom":
         date_from, date_to = _resolve_preset(preset, fiscal_year_start)
@@ -276,14 +264,12 @@ def _parse_dates(request: Request, fiscal_year_start: str = "01-01") -> tuple[st
         if date_from and date_to and date_from > date_to:
             date_from, date_to = date_to, date_from
         return date_from, date_to, "custom"
-    # Default: this fiscal year
     dflt_from, dflt_to = _resolve_preset("this_fy", fiscal_year_start)
     return dflt_from, dflt_to, "this_fy"
 
 
 def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset: str,
                      settings_link: str = "", extra_params: str = "", lang: str = "en") -> FT:
-    """Reusable date range filter bar with presets and custom inputs."""
     preset_links = []
     for key, label in _date_presets(lang):
         if key == "custom":
@@ -293,11 +279,9 @@ def _date_filter_bar(base_url: str, date_from: str, date_to: str, active_preset:
             A(label, href=href, cls=f"preset-btn {'preset-btn--active' if key == active_preset else ''}"),
         )
 
-    # max/min keep the browser picker constrained; the inline script keeps them
-    # in sync as the user picks so from can never exceed to and vice-versa.
     custom_form = Form(
         Input(type="date", name="from", value=date_from, max=date_to or "", cls="date-input", id="dfb-from"),
-        Span("–", cls="date-sep"),
+        Span("--", cls="date-sep"),
         Input(type="date", name="to", value=date_to, min=date_from or "", cls="date-input", id="dfb-to"),
         Button(t("btn.apply"), type="submit", cls="btn btn--secondary btn--sm"),
         Script(
@@ -355,7 +339,7 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
         total = float(l.get("total", 0) or l.get("outstanding", 0) or 0)
         if total != 0:
             return True
-        for k in ("customer_name", "contact_name", "customer_id", "contact_id"):
+        for k in ("customer_name", "contact_name", "customer_id", "contact_id", "supplier_name", "supplier_id"):
             if str(l.get(k, "") or "").strip() and str(l.get(k, "") or "").strip() != "unknown":
                 return True
         return False
@@ -369,7 +353,11 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
         return float(l.get("total", 0) or l.get("outstanding", 0) or 0)
 
     def _get_contact(l: dict) -> str:
-        return str(l.get("customer_name", "") or l.get("contact_name", "") or l.get("customer_id", "") or l.get("contact_id", "") or EMPTY)
+        return str(l.get("customer_name", "") or l.get("supplier_name", "") or l.get("contact_name", "") or
+                   l.get("customer_id", "") or l.get("supplier_id", "") or l.get("contact_id", "") or EMPTY)
+
+    def _get_contact_id(l: dict) -> str:
+        return str(l.get("customer_id", "") or l.get("supplier_id", "") or l.get("contact_id", "") or "")
 
     sort_keys = {
         "contact": lambda l: _get_contact(l).lower(),
@@ -388,8 +376,11 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
         return Th(A(f"{label_txt}{marker}", href=f"?sort={key}&dir={nd}", cls="sort-link"))
 
     def _row(l: dict) -> FT:
+        cid = _get_contact_id(l)
+        name = _get_contact(l)
+        contact_cell = Td(A(name, href=f"/crm/contacts/{cid}", cls="link") if cid and cid not in ("unlinked", "Unlinked", "unknown") else name)
         return Tr(
-            Td(_get_contact(l)),
+            contact_cell,
             Td(fmt_money(l.get('current', 0), currency), cls="cell--number"),
             Td(fmt_money(l.get('d30', 0), currency), cls="cell--number"),
             Td(fmt_money(l.get('d60', 0), currency), cls="cell--number"),
@@ -409,78 +400,182 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
     return Div(
         bucket_totals,
         Table(
-            Thead(Tr(_th("Contact", "contact"), _th("Current", "current"), _th("1-30", "d30"), _th("31-60", "d60"), _th("61-90", "d90"), _th("90+", "d90plus"), _th("Total", "outstanding"))),
+            Thead(Tr(
+                _th("Contact", "contact"),
+                _th("Current", "current"),
+                _th("1-30", "d30"),
+                _th("31-60", "d60"),
+                _th("61-90", "d90"),
+                _th("90+", "d90plus"),
+                _th("Total", "outstanding"),
+            )),
             Tbody(*[_row(l) for l in lines]),
             cls="data-table",
         ),
     )
 
 
-def _age_badge(bucket: str) -> FT:
-    cls_map = {
-        "current": "badge--active",
-        "1-30": "badge--warning",
-        "31-60": "badge--warning",
-        "61-90": "badge--alert",
-        "90+": "badge--danger",
-    }
-    return Span(bucket, cls=f"badge {cls_map.get(bucket, 'badge--neutral')}")
-
-
 def _normalize_line(line: dict, group_by: str) -> dict:
-    """Normalize backend line data to {label, count, total} for display."""
+    """Normalize backend line to display dict, passing through all extra fields."""
+    base: dict
     if group_by == "customer":
-        return {
+        base = {
             "label": line.get("customer_name") or line.get("label", ""),
             "count": line.get("invoice_count") or line.get("count", 0),
             "total": line.get("total_revenue") or line.get("total", 0),
             "_id": line.get("customer_id", ""),
-            "_link": f"/docs?type=invoice",
+            "_link": "/docs?type=invoice",
         }
-    if group_by == "supplier":
-        return {
+    elif group_by == "supplier":
+        base = {
             "label": line.get("supplier_name") or line.get("label", ""),
             "count": line.get("po_count") or line.get("count", 0),
             "total": line.get("total_spend") or line.get("total", 0),
             "_id": line.get("supplier_id", ""),
-            "_link": f"/docs?type=purchase_order",
+            "_link": "/docs?type=purchase_order",
         }
-    if group_by == "item":
-        return {
+    elif group_by == "item":
+        base = {
             "label": line.get("item_name") or line.get("label", ""),
             "count": line.get("qty_sold") or line.get("qty_purchased") or line.get("count", 0),
             "total": line.get("total_revenue") or line.get("total_spend") or line.get("total", 0),
             "_id": line.get("item_id", ""),
             "_link": f"/inventory/{line.get('item_id', '')}",
         }
-    if group_by == "period":
-        return {
+    elif group_by == "period":
+        base = {
             "label": line.get("period") or line.get("label", ""),
             "count": line.get("invoice_count") or line.get("po_count") or line.get("count", 0),
             "total": line.get("total_revenue") or line.get("total_spend") or line.get("total", 0),
             "_link": "",
         }
-    if group_by == "price_range":
-        pr = line.get("price_range") or line.get("label", "")
-        return {
-            "label": pr,
-            "count": line.get("invoice_count") or line.get("po_count") or line.get("count", 0),
+    elif group_by == "price_range":
+        base = {
+            "label": line.get("item_name") or line.get("label", ""),
+            "price_range": line.get("price_range", ""),
+            "unit_price": line.get("unit_price", 0),
+            "qty_sold": line.get("qty_sold", 0),
+            "qty_purchased": line.get("qty_purchased", 0),
             "total": line.get("total_revenue") or line.get("total_spend") or line.get("total", 0),
-            "_link": f"/docs?price_range={pr}",
+            "_id": line.get("item_id", ""),
+            "_link": f"/inventory/{line.get('item_id', '')}" if line.get("item_id") else "",
         }
-    # fallback (already normalized)
-    return {
-        "label": line.get("label", ""),
-        "count": line.get("count", 0),
-        "total": line.get("total", 0),
-        "_link": "",
-    }
+    else:
+        base = {
+            "label": line.get("label", ""),
+            "count": line.get("count", 0),
+            "total": line.get("total", 0),
+            "_link": "",
+        }
+    # Pass through all remaining fields from the original line
+    for k, v in line.items():
+        if k not in base:
+            base[k] = v
+    return base
+
+
+def _kpi(label: str, value: str, cls_suffix: str = "") -> FT:
+    return Div(
+        Span(label, cls="report-kpi__label"),
+        Span(value, cls=f"report-kpi__value{cls_suffix}"),
+        cls="report-kpi",
+    )
+
+
+def _summary_bar(data: dict, currency: str | None, group_by: str) -> FT:
+    """Render the KPI summary bar for sales/purchases reports."""
+    total_rev = float(data.get("total_revenue") or data.get("total_spend") or data.get("total", 0))
+    total_cost = float(data.get("total_cost", 0) or 0)
+    gross_profit = float(data.get("gross_profit", 0) or 0)
+    is_purchases = bool(data.get("total_spend") and not data.get("total_revenue"))
+
+    kpis = []
+    if is_purchases:
+        kpis.append(_kpi("Total Spend", fmt_money(total_rev, currency)))
+    else:
+        kpis.append(_kpi("Total Revenue", fmt_money(total_rev, currency)))
+    if total_cost:
+        kpis.append(_kpi("Total Cost", fmt_money(total_cost, currency)))
+    if gross_profit:
+        gp_cls = " report-kpi__value--positive" if gross_profit >= 0 else " report-kpi__value--negative"
+        kpis.append(_kpi("Gross Profit", fmt_money(gross_profit, currency), gp_cls))
+        if total_rev:
+            margin = gross_profit / total_rev * 100
+            margin_cls = " report-kpi__value--positive" if margin >= 0 else " report-kpi__value--negative"
+            kpis.append(_kpi("Margin %", f"{margin:.1f}%", margin_cls))
+
+    return Div(*kpis, cls="report-summary-bar")
+
+
+def _sales_view_columns(group_by: str, is_purchases: bool = False) -> list[tuple[str, str, str]]:
+    """Return list of (header, key, css_class) for the report table columns."""
+    if group_by == "customer":
+        return [
+            ("Customer", "label", ""),
+            ("# Invoices", "count", "cell--right"),
+            ("Revenue", "total", "cell--number"),
+            ("Cost", "total_cost", "cell--number"),
+            ("Gross Profit", "gross_profit", "cell--number"),
+            ("Margin %", "margin_pct", "cell--right"),
+        ]
+    if group_by == "supplier":
+        return [
+            ("Supplier", "label", ""),
+            ("# Orders", "count", "cell--right"),
+            ("Spend", "total", "cell--number"),
+        ]
+    if group_by == "item":
+        if is_purchases:
+            return [
+                ("Item", "label", ""),
+                ("Qty Purchased", "qty_purchased", "cell--right"),
+                ("Avg Unit Cost", "avg_unit_cost", "cell--number"),
+                ("Total Spend", "total", "cell--number"),
+            ]
+        return [
+            ("Item", "label", ""),
+            ("Qty Sold", "qty_sold", "cell--right"),
+            ("Avg Price", "avg_price", "cell--number"),
+            ("Revenue", "total", "cell--number"),
+            ("Cost", "total_cost", "cell--number"),
+            ("Gross Profit", "gross_profit", "cell--number"),
+            ("Margin %", "margin_pct", "cell--right"),
+        ]
+    if group_by == "period":
+        label = "Period"
+        count_hdr = "# Orders" if is_purchases else "# Invoices"
+        amount_hdr = "Spend" if is_purchases else "Revenue"
+        cols = [(label, "label", ""), (count_hdr, "count", "cell--right"), (amount_hdr, "total", "cell--number")]
+        if not is_purchases:
+            cols += [("Cost", "total_cost", "cell--number"), ("Gross Profit", "gross_profit", "cell--number")]
+        return cols
+    if group_by == "price_range":
+        if is_purchases:
+            return [
+                ("Item", "label", ""),
+                ("Price Range", "price_range", ""),
+                ("Unit Price", "unit_price", "cell--number"),
+                ("Qty Purchased", "qty_purchased", "cell--right"),
+                ("Spend", "total", "cell--number"),
+            ]
+        return [
+            ("Item", "label", ""),
+            ("Price Range", "price_range", ""),
+            ("Unit Price", "unit_price", "cell--number"),
+            ("Qty Sold", "qty_sold", "cell--right"),
+            ("Revenue", "total", "cell--number"),
+            ("Cost", "total_cost", "cell--number"),
+            ("Gross Profit", "gross_profit", "cell--number"),
+            ("Margin %", "margin_pct", "cell--right"),
+        ]
+    # fallback
+    return [("Group", "label", ""), ("Count", "count", "cell--right"), ("Amount", "total", "cell--number")]
 
 
 def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", currency: str | None = None) -> FT:
     raw_lines = data.get("lines", [])
-    total_rev = float(data.get("total_revenue") or data.get("total_spend") or data.get("total", 0))
     group_by = data.get("group_by", "")
+    is_purchases = bool(data.get("total_spend") and not data.get("total_revenue"))
 
     def _is_meaningful(l: dict) -> bool:
         if float(l.get("total", 0) or 0) != 0:
@@ -495,63 +590,92 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
     if not lines:
         return empty_state_cta("No data for this period. Try adjusting the date range.")
 
-    sort_keys = {
+    cols = _sales_view_columns(group_by, is_purchases)
+
+    sort_key_map = {
         "group": lambda l: str(l.get("label", "") or ""),
         "count": lambda l: float(l.get("count", 0) or 0),
         "amount": lambda l: float(l.get("total", 0) or 0),
     }
-    lines = sorted(lines, key=sort_keys.get(sort, sort_keys["amount"]), reverse=(sort_dir == "desc"))
+    lines = sorted(lines, key=sort_key_map.get(sort, sort_key_map["amount"]), reverse=(sort_dir == "desc"))
 
     def _th(label_txt: str, key: str) -> FT:
         nd = "asc" if (sort == key and sort_dir == "desc") else "desc"
         marker = " ▲" if (sort == key and sort_dir == "asc") else (" ▼" if sort == key else "")
         return Th(A(f"{label_txt}{marker}", href=f"?sort={key}&dir={nd}", cls="sort-link"))
 
-    def _row(l: dict) -> FT:
+    def _cell(l: dict, key: str, css: str) -> FT:
+        val = l.get(key)
+        if val is None:
+            return Td(EMPTY, cls=css)
+        if key in ("total", "total_cost", "gross_profit", "avg_price", "avg_unit_cost", "unit_price"):
+            return Td(fmt_money(val, currency), cls=css)
+        if key == "margin_pct":
+            v = float(val or 0)
+            color_cls = " report-kpi__value--positive" if v >= 0 else " report-kpi__value--negative"
+            return Td(Span(f"{v:.1f}%", cls=f"report-kpi__value{color_cls}"), cls=css)
         link = l.get("_link", "")
-        label_cell = Td(A(l.get("label", "") or EMPTY, href=link, cls="link") if link else (l.get("label", "") or EMPTY))
-        return Tr(
-            label_cell,
-            Td(str(l.get("count", "")) or EMPTY),
-            Td(fmt_money(l.get('total', 0), currency), cls="cell--number"),
-        )
+        if key == "label" and link:
+            return Td(A(str(val) or EMPTY, href=link, cls="link"), cls=css)
+        return Td(str(val) if val != "" else EMPTY, cls=css)
 
-    header_label = {
-        "customer": "Customer", "supplier": "Supplier", "item": "Item",
-        "period": "Period", "price_range": "Price Range",
-    }.get(group_by, "Group")
+    def _row(l: dict) -> FT:
+        return Tr(*[_cell(l, key, css) for _, key, css in cols])
+
+    th_row = Tr(*[_th(hdr, "group" if key == "label" else ("count" if key == "count" else "amount" if key == "total" else key)) for hdr, key, _ in cols])
 
     return Div(
-        Div(Span(f"Total: {fmt_money(total_rev, currency)}", cls="val-chip"), cls="valuation-bar"),
+        _summary_bar(data, currency, group_by),
         Table(
-            Thead(Tr(_th(header_label, "group"), _th("Count", "count"), _th("Amount", "amount"))),
+            Thead(th_row),
             Tbody(*[_row(l) for l in lines]),
             cls="data-table",
         ),
     )
 
 
-def _expiring_view(data: dict) -> FT:
+def _expiring_view(data: dict, days: int = 30) -> FT:
     count = data.get("count", 0)
-    items = data.get("items", [])
-    days = data.get("days_threshold", 30)
+    items = data.get("lines", [])
+    threshold = data.get("days_threshold", days)
+
+    days_select = Select(
+        *[Option(f"{d} days", value=str(d), selected=(d == threshold)) for d in [7, 14, 30, 60, 90]],
+        name="days",
+        hx_get="/reports/expiring",
+        hx_trigger="change",
+        hx_target="#main-content",
+        hx_swap="outerHTML",
+        hx_include="this",
+        cls="filter-select",
+    )
 
     if not items:
-        return empty_state_cta("No data for this period. Try adjusting the date range.")
+        return Div(
+            Div(days_select, cls="filter-bar"),
+            empty_state_cta("No items expiring in this timeframe."),
+        )
 
     def _row(i: dict) -> FT:
+        dr = i.get("days_remaining")
         return Tr(
             Td(i.get("sku", "") or EMPTY),
             Td(i.get("name", "") or EMPTY),
-            Td((i.get("expiry_date") or "")[:10] or EMPTY),
-            Td(str(i.get("days_left", "")) or EMPTY),
+            Td(i.get("category", "") or EMPTY),
+            Td((i.get("expires_at") or "")[:10] or EMPTY),
+            Td(str(dr) if dr is not None else EMPTY),
             Td(Span(i.get("status", "") or EMPTY, cls=f"badge badge--{i.get('status', '')}" if i.get("status") else "")),
         )
 
     return Div(
-        Div(Span(f"{count} items expiring within {days} days", cls="val-chip val-chip--alert"), cls="valuation-bar"),
+        Div(
+            Span(f"{count} items expiring within {threshold} days", cls="val-chip val-chip--alert"),
+            days_select,
+            cls="valuation-bar",
+            style="gap:12px",
+        ),
         Table(
-            Thead(Tr(Th("SKU"), Th(t("th.name")), Th(t("th.expiry")), Th(t("th.days_left")), Th(t("th.status")))),
+            Thead(Tr(Th("SKU"), Th(t("th.name")), Th(t("th.category")), Th(t("th.expiry")), Th(t("th.days_left")), Th(t("th.status")))),
             Tbody(*[_row(i) for i in items]),
             cls="data-table",
         ),
@@ -571,7 +695,11 @@ def _group_by_filter(active: str, base_url: str, first_option: str = "customer")
         hx_get=base_url,
         hx_trigger="change",
         hx_target="#main-content",
-        hx_swap="innerHTML",
+        hx_swap="outerHTML",
         hx_include="this",
+        hx_push_url="true",
         cls="filter-select",
     )
+
+# Alias for module loader compatibility
+setup_ui_routes = setup_routes

@@ -21,12 +21,10 @@ from starlette.responses import FileResponse
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
+from celerp.services.attachments import remove_attachment, store_upload
 from celerp.services.auth import get_current_company_id, get_current_user
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
-
-_MAX_FILE_BYTES = 10 * 1024 * 1024  # 10 MB
-_DATA_DIR = os.environ.get("CELERP_DATA_DIR", "data")
 
 
 # ── Pydantic models ───────────────────────────────────────────────────────────
@@ -259,15 +257,17 @@ async def tag_contact(contact_id: str, payload: TagBody, company_id: str = Depen
 # ── Files ─────────────────────────────────────────────────────────────────────
 
 
-def _uploads_dir(contact_id: str) -> Path:
-    return Path(_DATA_DIR) / "uploads" / "contacts" / contact_id
+def _get_contact_file(files: list[dict], file_id: str) -> dict:
+    match = next((f for f in files if f.get("id") == file_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return match
 
 
 @router.post("/contacts/{contact_id}/files")
 async def upload_contact_file(
     contact_id: str,
     file: UploadFile,
-    description: str = Form(""),
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -276,20 +276,11 @@ async def upload_contact_file(
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
 
-    content = await file.read()
-    if len(content) > _MAX_FILE_BYTES:
-        raise HTTPException(status_code=413, detail=f"File exceeds {_MAX_FILE_BYTES // 1024 // 1024} MB limit")
+    try:
+        meta = await store_upload(company_id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
 
-    file_id = str(uuid.uuid4())
-    filename = file.filename or f"file_{file_id}"
-    content_type = file.content_type or "application/octet-stream"
-
-    dest_dir = _uploads_dir(contact_id)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{file_id}_{filename}"
-    dest.write_bytes(content)
-
-    now = datetime.now(timezone.utc).isoformat()
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -297,12 +288,15 @@ async def upload_contact_file(
         entity_type="contact",
         event_type="crm.contact.file_attached",
         data={
-            "file_id": file_id,
-            "filename": filename,
-            "content_type": content_type,
-            "size": len(content),
-            "uploaded_at": now,
-            "description": description,
+            "entity_id": contact_id,
+            "entity_type": "contact",
+            "file_id": meta["id"],
+            "filename": meta["filename"],
+            "mime": meta["mime"],
+            "size": meta["size"],
+            "document_tag": None,
+            "description": None,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
         },
         actor_id=user.id,
         location_id=None,
@@ -311,13 +305,70 @@ async def upload_contact_file(
         metadata_={},
     )
     await session.commit()
-    return {
-        "event_id": entry.id,
-        "file_id": file_id,
-        "filename": filename,
-        "content_type": content_type,
-        "size": len(content),
-    }
+    return {"event_id": entry.id, **meta}
+
+
+@router.post("/contacts/{contact_id}/files/{file_id}/tag")
+async def tag_contact_file(
+    contact_id: str,
+    file_id: str,
+    document_tag: str = Form(""),
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Update the document_tag on an existing uploaded file."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+    if row is None or row.entity_type != "contact":
+        raise HTTPException(status_code=404, detail="Not found")
+    _get_contact_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=contact_id,
+        entity_type="contact",
+        event_type="crm.contact.file_tagged",
+        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id, "document_tag": document_tag},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+    return (updated.state if updated else {}) | {"id": contact_id}
+
+
+@router.patch("/contacts/{contact_id}/files/{file_id}/description")
+async def update_contact_file_description(
+    contact_id: str,
+    file_id: str,
+    description: str = Form(""),
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+    if row is None or row.entity_type != "contact":
+        raise HTTPException(status_code=404, detail="Not found")
+    _get_contact_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=contact_id,
+        entity_type="contact",
+        event_type="crm.contact.file_description_updated",
+        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id, "description": description},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+    return (updated.state if updated else {}) | {"id": contact_id}
 
 
 @router.get("/contacts/{contact_id}/files/{file_id}")
@@ -331,19 +382,17 @@ async def download_contact_file(
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
 
-    files = row.state.get("files", [])
-    match = next((f for f in files if f.get("file_id") == file_id), None)
-    if match is None:
-        raise HTTPException(status_code=404, detail="File not found")
-
-    dest = _uploads_dir(contact_id) / f"{file_id}_{match['filename']}"
+    match = _get_contact_file(row.state.get("files", []), file_id)
+    url = match.get("url", "")
+    # Local backend: url = /static/attachments/<company_id>/<file>
+    dest = Path(url.lstrip("/"))
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File missing from disk")
 
     return FileResponse(
         path=str(dest),
         filename=match["filename"],
-        media_type=match.get("content_type", "application/octet-stream"),
+        media_type=match.get("mime", "application/octet-stream"),
     )
 
 
@@ -358,19 +407,15 @@ async def delete_contact_file(
     row = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     if row is None or row.entity_type != "contact":
         raise HTTPException(status_code=404, detail="Not found")
-
-    files = row.state.get("files", [])
-    match = next((f for f in files if f.get("file_id") == file_id), None)
-    if match is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    _get_contact_file(row.state.get("files", []), file_id)
 
     entry = await emit_event(
         session,
         company_id=company_id,
         entity_id=contact_id,
         entity_type="contact",
-        event_type="crm.contact.file_removed",
-        data={"file_id": file_id},
+        event_type="crm.contact.file_deleted",
+        data={"entity_id": contact_id, "entity_type": "contact", "file_id": file_id},
         actor_id=user.id,
         location_id=None,
         source="api",
@@ -378,11 +423,6 @@ async def delete_contact_file(
         metadata_={},
     )
     await session.commit()
-
-    # Remove file from disk (best-effort)
-    dest = _uploads_dir(contact_id) / f"{file_id}_{match['filename']}"
-    dest.unlink(missing_ok=True)
-
     updated = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
     return (updated.state if updated else {}) | {"id": contact_id}
 

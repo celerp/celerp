@@ -91,9 +91,11 @@ async def test_ai_query_requires_auth(auth_client):
 @pytest.mark.asyncio
 async def test_ai_query_requires_session_token(session):
     """Valid JWT but no session token → 401."""
+    from celerp.services.session_tracker import clear as _clear_tracker
     app.dependency_overrides[get_session] = lambda: session
     saved = gw_state.get_session_token()
     gw_state.set_session_token("")
+    _clear_tracker()
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             await c.post("/auth/register", json={

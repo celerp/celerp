@@ -101,22 +101,21 @@ async def _inventory_content(
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
 
     category_counts = valuation.get("category_counts", {})
+    total_scoped = valuation.get("total_scoped_count", sum(category_counts.values()))
     count_by_status = valuation.get("count_by_status", {})
     active_cat = p.get("category", "")
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
     extra_params = urlencode(_base_state(p))
     total_items = valuation.get("item_count", 0)
-    print_all_link = _print_all_labels_link(p, total_items)
 
     return Div(
-        _category_tabs(category_counts, p),
-        _valuation_bar(valuation, currency, lang),
-        _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p),
-        _bulk_toolbar(locations),
+        _category_tabs(category_counts, p, total_scoped=total_scoped),
+        _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
+        _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
+        _bulk_toolbar(locations, p, total_items),
         Div(
             _column_manager(eff_schema, p, active_cat, visible_cols, keep_open=col_manager_open),
-            print_all_link if print_all_link else "",
             cls="column-manager-row",
         ),
         data_table(
@@ -1688,7 +1687,7 @@ function celerpPrintLabel(entityId, templateId) {
         return Response("", status_code=204, headers={"HX-Refresh": "true"})
 
 
-def _bulk_toolbar(locations: list[dict]) -> FT:
+def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int = 0) -> FT:
     """Sticky toolbar: [N selected] [Clear] [Action ▾] [context-area].
 
     Single action dropdown drives everything. Context area swaps based on selection.
@@ -1751,7 +1750,7 @@ def _bulk_toolbar(locations: list[dict]) -> FT:
         Div(id="bulk-context", cls="bulk-context"),
         Div(id="bulk-action-result"),
         # Hidden templates for context area content
-        _bulk_context_templates(loc_opts, _loc_opt, _loc_js, send_to_opts, get_slot("bulk_action")),
+        _bulk_context_templates(loc_opts, _loc_opt, _loc_js, send_to_opts, get_slot("bulk_action"), p or {}, total_items),
         id="bulk-toolbar",
         cls="bulk-toolbar",
         **{"data-hidden": "true"},
@@ -1764,6 +1763,8 @@ def _bulk_context_templates(
     loc_new_js: str,
     send_to_opts: list,
     module_actions: list,
+    p: dict | None = None,
+    total_items: int = 0,
 ) -> FT:
     """Hidden <template> elements for each action's context area. JS clones them into #bulk-context."""
     from fasthtml.common import Template
@@ -1845,11 +1846,35 @@ def _bulk_context_templates(
     # Module action templates.
     # navigate type: native form submit opening a new tab (for full-page responses).
     # htmx type (default): HTMX POST into #bulk-action-result.
+    # celerp-labels gets a special inline template selector to skip the intermediate page.
     module_tpls = []
     for action in module_actions:
         action_id = action["form_action"].replace("/", "_").strip("_")
+        is_labels = action.get("_module") == "celerp-labels"
         is_navigate = action.get("action_type") == "navigate"
-        if is_navigate:
+
+        if is_labels:
+            form = Form(
+                # Template selector loaded via HTMX on first use
+                Select(
+                    Option(t("label.loading_templates"), value="", disabled=True, selected=True),
+                    name="template_id",
+                    id="bulk-labels-template-select",
+                    cls="form-input form-input--sm",
+                    hx_get="/labels/template-options",
+                    hx_trigger="load",
+                    hx_swap="innerHTML",
+                    hx_target="#bulk-labels-template-select",
+                ),
+                Button(action.get("label", t("btn._print_labels")), type="submit", cls="btn btn--primary btn--sm"),
+                action="/labels/print-bulk/generate",
+                method="post",
+                target="_blank",
+                onsubmit="submitBulkAction(this)",
+                cls="display-contents",
+            )
+            module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
+        elif is_navigate:
             form = Form(
                 Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
                 action=action["form_action"],
@@ -1858,6 +1883,7 @@ def _bulk_context_templates(
                 onsubmit="submitBulkAction(this)",
                 cls="display-contents",
             )
+            module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
         else:
             form = Form(
                 Button(action.get("label", "Go"), type="submit", cls="btn btn--primary btn--sm"),
@@ -1867,7 +1893,7 @@ def _bulk_context_templates(
                 onsubmit="submitBulkAction(this)",
                 cls="display-contents",
             )
-        module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
+            module_tpls.append(Template(form, id=f"tpl-mod-{action_id}"))
 
     return Div(
         transfer_tpl,
@@ -1970,19 +1996,29 @@ def _vertical_status_card_defs(vertical: str) -> list[tuple[str, str, str]]:
     return _VERTICAL_STATUS_CARDS.get(vertical, _DEFAULT_STATUS_CARDS)
 
 
-def _inventory_status_cards(count_by_status: dict, active_status: str, vertical: str = "", p: dict | None = None) -> FT:
+def _inventory_status_cards(count_by_status: dict, active_status: str, vertical: str = "", p: dict | None = None, lang: str = "en") -> FT:
     """Status cards driven by backend count_by_status dict (scoped to active category/status filter).
 
-    Passes current non-status params (e.g. category, q) as base_url so clicking a card
-    preserves the active category filter instead of resetting to All.
+    When a specific status filter is active (sold/archived/etc.), shows a single
+    'All' card with the total count for that filtered view instead of the
+    available/reserved breakdown (which would all be 0 and is meaningless).
     """
+    base_state = {k: v for k, v in _base_state(p or {}).items() if k != "status"}
+    base_url = "/inventory" + (f"?{urlencode(base_state)}" if base_state else "")
+
+    # When viewing a specific hidden/archived status, the available/reserved card
+    # defs are irrelevant. Show a single total card instead.
+    _HIDDEN = {"sold", "archived", "merged", "expired", "disposed"}
+    if active_status and active_status not in ("", "all"):
+        total = sum(count_by_status.values())
+        cards = [{"label": t("chip.total", lang), "count": total, "status": active_status, "color": "gray"}]
+        return status_cards(cards, base_url, active_status)
+
     _CARD_DEFS = _vertical_status_card_defs(vertical)
     cards = [
         {"label": label, "count": count_by_status.get(key, 0), "status": key, "color": color}
         for key, label, color in _CARD_DEFS
     ]
-    base_state = {k: v for k, v in _base_state(p or {}).items() if k != "status"}
-    base_url = "/inventory" + (f"?{urlencode(base_state)}" if base_state else "")
     return status_cards(cards, base_url, active_status or None)
 
 
@@ -1998,8 +2034,8 @@ def _inventory_empty_state(p: dict) -> FT:
     return empty_state_cta("No items in inventory.", "Import from CSV", "/inventory/import")
 
 
-def _category_tabs(category_counts: dict, p: dict) -> FT:
-    if not category_counts:
+def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = None) -> FT:
+    if not category_counts and not total_scoped:
         return ""
 
     def _url(category: str = "") -> str:
@@ -2010,7 +2046,8 @@ def _category_tabs(category_counts: dict, p: dict) -> FT:
             state.pop("category", None)
         return "/inventory" + (f"?{urlencode(state)}" if state else "")
 
-    total = sum(category_counts.values())
+    # Use total_scoped_count so items without a category still count in "All"
+    total = total_scoped if total_scoped is not None else sum(category_counts.values())
     tabs = [
         A(
             f"All ({total})",
@@ -2037,10 +2074,19 @@ def _category_tabs(category_counts: dict, p: dict) -> FT:
     return Div(*tabs, cls="category-tabs", id="category-tabs")
 
 
-def _valuation_bar(valuation: dict, currency: str | None = None, lang: str = "en") -> FT:
+def _valuation_bar(valuation: dict, currency: str | None = None, lang: str = "en", status: str = "") -> FT:
     from ui.components.table import fmt_money
     active_count = valuation.get('active_item_count', valuation.get('item_count', 0))
-    chips = [Span(f"{t('chip.available', lang)}: {active_count:,}", cls="val-chip")]
+    # Label reflects the active status filter
+    if status == "sold":
+        count_label = t("chip.sold", lang)
+    elif status == "archived":
+        count_label = t("chip.archived", lang)
+    elif status and status != "all":
+        count_label = status.replace("_", " ").title()
+    else:
+        count_label = t("chip.available", lang)
+    chips = [Span(f"{count_label}: {active_count:,}", cls="val-chip")]
     # Dynamic price totals from API
     price_totals = valuation.get("price_totals", {})
     if price_totals:
@@ -2506,31 +2552,6 @@ def _resolve_field_def(
     return f_def, f_def.get("type", "text"), f_def.get("options") or None, allow_custom
 
 
-def _print_all_labels_link(p: dict, total: int) -> FT | None:
-    """Return a 'Print all labels (N)' link for the column-manager-row when labels module is loaded.
-
-    Only rendered when the celerp-labels bulk_action slot is registered.
-    Passes exact current filter state (q, status, category, sort, dir) as GET params.
-    Capped at 100 items; shows warning count when total exceeds cap.
-    Returns None when labels module is not loaded.
-    """
-    from celerp.modules.slots import get as get_slot
-    bulk_actions = get_slot("bulk_action")
-    labels_action = next((a for a in bulk_actions if a.get("_module") == "celerp-labels"), None)
-    if not labels_action:
-        return None
-
-    _LABEL_CAP = 100
-    count = min(total, _LABEL_CAP)
-    if total > _LABEL_CAP:
-        label = f"{t('btn._print_labels')} (first {_LABEL_CAP})"
-    else:
-        label = f"{t('btn._print_labels')} ({count})"
-
-    qs_params = {k: v for k, v in _base_state(p, include_page=False).items()
-                 if k in ("q", "status", "category", "sort", "dir") and v}
-    href = "/labels/print-list" + (f"?{urlencode(qs_params)}" if qs_params else "")
-    return A(label, href=href, target="_blank", cls="btn btn--ghost btn--sm print-all-labels-btn")
 
 
 def _print_label_dropdown(entity_id: str) -> FT:

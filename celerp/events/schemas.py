@@ -744,6 +744,40 @@ class ListConverted(BaseModel):
     target_doc_type: str
 
 
+# ── Entity File schemas (shared by contacts, docs) ───────────────────────────
+
+
+class EntityFileAttached(BaseModel):
+    entity_id: str
+    entity_type: str  # "contact", "doc", "item"
+    file_id: str
+    filename: str
+    mime: str
+    size: int
+    document_tag: str | None = None
+    description: str | None = None
+
+
+class EntityFileTagged(BaseModel):
+    entity_id: str
+    entity_type: str
+    file_id: str
+    document_tag: str
+
+
+class EntityFileDescriptionUpdated(BaseModel):
+    entity_id: str
+    entity_type: str
+    file_id: str
+    description: str
+
+
+class EntityFileDeleted(BaseModel):
+    entity_id: str
+    entity_type: str
+    file_id: str
+
+
 EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     # Items
     "item.created": ItemCreated,
@@ -780,6 +814,10 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "crm.contact.address_added": CrmContactAddressAdded,
     "crm.contact.address_updated": CrmContactAddressUpdated,
     "crm.contact.address_removed": CrmContactAddressRemoved,
+    "crm.contact.file_attached": EntityFileAttached,
+    "crm.contact.file_tagged": EntityFileTagged,
+    "crm.contact.file_deleted": EntityFileDeleted,
+    "crm.contact.file_description_updated": EntityFileDescriptionUpdated,
     "crm.deal.created": CrmDealCreated,
     "crm.deal.stage_changed": CrmDealStageChanged,
     "crm.deal.won": CrmDealWon,
@@ -817,6 +855,10 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "doc.note_added": DocNoteAdded,
     "doc.note_updated": DocNoteUpdated,
     "doc.note_removed": DocNoteRemoved,
+    "doc.file_attached": EntityFileAttached,
+    "doc.file_tagged": EntityFileTagged,
+    "doc.file_deleted": EntityFileDeleted,
+    "doc.file_description_updated": EntityFileDescriptionUpdated,
     "list.note_added": ListNoteAdded,
     "list.note_updated": ListNoteUpdated,
     "list.note_removed": ListNoteRemoved,

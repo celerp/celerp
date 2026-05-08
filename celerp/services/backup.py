@@ -182,6 +182,10 @@ async def run_backup(label: str | None = None) -> BackupResult:
     if not settings.backup_encryption_key:
         return BackupResult(ok=False, size_bytes=0, error="BACKUP_ENCRYPTION_KEY is not configured")
 
+    from celerp.gateway.state import get_session_token
+    if not get_session_token():
+        return BackupResult(ok=False, size_bytes=0, error="Relay not connected - skipping backup")
+
     try:
         key = _parse_key(settings.backup_encryption_key)
         dump = dump_database(settings.database_url)

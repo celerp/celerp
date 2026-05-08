@@ -264,6 +264,7 @@ async def test_run_backup_dump_failure(monkeypatch):
         "celerp.services.backup.dump_database",
         lambda url: (_ for _ in ()).throw(RuntimeError("pg_dump not found in PATH")),
     )
+    monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "test-token")
 
     result = await run_backup()
     assert not result.ok

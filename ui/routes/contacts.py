@@ -16,6 +16,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, add_new_option, data_table, column_manager
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
+from ui.components.files import _files_section as _shared_files_section, _DOCUMENT_TAGS
 from ui.components.currency import currency_combobox_td, CURRENCY_CODES as _CURRENCY_CODES
 from ui.components.phone import phone_input_td, phone_head_items as _phone_head_items
 from ui.config import get_token as _token
@@ -141,79 +142,40 @@ def _contact_tags_section(contact: dict, vocabulary: list[dict] | None = None) -
     )
 
 
-def _files_section(contact: dict, contact_id: str) -> FT:
-    """Files list with drag-and-drop upload, rendered inside the Documents tab."""
-    files = contact.get("files", [])
-    file_items = []
-    for f in files:
-        fid = f.get("file_id", "")
-        fname = f.get("filename", "file")
-        size = f.get("size", 0)
-        size_str = f"{size / 1024:.0f}KB" if size < 1048576 else f"{size / 1048576:.1f}MB"
-        file_items.append(Div(
-            A(fname, href=f"/contacts/{contact_id}/files/{fid}/download", cls="file-link"),
-            Span(size_str, cls="file-size"),
-            Button("×", hx_delete=f"/contacts/{contact_id}/files/{fid}",
-                   hx_target="#files-section", hx_swap="outerHTML",
-                   hx_confirm=f"Delete {fname}?",
-                   cls="btn btn--ghost btn--xs"),
-            cls="file-item",
-        ))
 
-    # Drag-and-drop upload zone with click-to-browse fallback
-    drop_js = f"""
-(function(){{
-  var zone = document.getElementById('file-drop-zone');
-  var input = document.getElementById('file-drop-input');
-  if (!zone || !input) return;
-  function uploadFile(file) {{
-    var fd = new FormData();
-    fd.append('file', file);
-    var statusEl = document.querySelector('.file-drop-text');
-    if (statusEl) statusEl.textContent = 'Uploading...';
-    fetch('/contacts/{contact_id}/files', {{
-      method: 'POST',
-      body: fd,
-    }}).then(function(resp) {{
-      if (!resp.ok) throw new Error('Upload failed');
-      // Reload documents tab to refresh files section with proper htmx init
-      htmx.ajax('GET', '/contacts/{contact_id}/tab/documents', {{target: '#tab-content', swap: 'innerHTML'}});
-    }}).catch(function(err) {{
-      alert('Upload failed: ' + err.message);
-      if (statusEl) statusEl.textContent = 'Drop files here or click to browse';
-    }});
-  }}
-  zone.addEventListener('click', function() {{ input.click(); }});
-  input.addEventListener('change', function() {{
-    if (input.files.length) uploadFile(input.files[0]);
-  }});
-  zone.addEventListener('dragover', function(e) {{ e.preventDefault(); zone.classList.add('file-drop-zone--active'); }});
-  zone.addEventListener('dragleave', function() {{ zone.classList.remove('file-drop-zone--active'); }});
-  zone.addEventListener('drop', function(e) {{
-    e.preventDefault();
-    zone.classList.remove('file-drop-zone--active');
-    if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
-  }});
-}})();
-"""
+def _collect_contact_files(contact: dict, docs: list[dict]) -> list[dict]:
+    """Merge contact-own files with files from related docs.
 
-    upload_form = Div(
-        Div(
-            Div("📁", cls="file-drop-icon"),
-            Div(t("label.drop_files_here_or_click_to_browse"), cls="file-drop-text"),
-            Div(t("label.max_file_size_10mb"), cls="file-drop-hint"),
-            Input(type="file", name="file", id="file-drop-input", style="display:none"),
-            cls="file-drop-zone", id="file-drop-zone",
-        ),
-    )
+    Contact files have no linked_ref (shown as '--').
+    Doc files are tagged with linked_ref=doc_number and linked_url=/docs/{id}.
+    File ids are unique across the merged list (dedup by id).
+    """
+    seen: set[str] = set()
+    result: list[dict] = []
 
-    return Div(
-        H3(t("page.documents"), cls="section-title"),
-        *file_items if file_items else [P(t("label.no_files_yet"), cls="text--muted")],
-        upload_form,
-        Script(drop_js),
-        cls="card", id="files-section",
-    )
+    for f in contact.get("files", []):
+        fid = f.get("id", "")
+        if fid not in seen:
+            seen.add(fid)
+            result.append({**f, "linked_ref": "", "linked_url": ""})
+
+    for doc in docs:
+        doc_id = doc.get("entity_id") or doc.get("id") or ""
+        ref = doc.get("ref_id") or doc.get("doc_number") or ""
+        url = f"/docs/{doc_id}" if doc_id else ""
+        for f in doc.get("files", []):
+            fid = f.get("id", "")
+            if fid not in seen:
+                seen.add(fid)
+                result.append({**f, "linked_ref": ref, "linked_url": url})
+
+    return result
+
+
+def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = None, **kwargs) -> FT:
+    """Wrapper - merges contact-own files with related doc files, then delegates to shared component."""
+    merged = _collect_contact_files(contact, docs or [])
+    return _shared_files_section("contact", contact_id, merged, **kwargs)
 
 
 def _contact_info_card(c: dict, *, oob: bool = False) -> FT:
@@ -475,7 +437,7 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
 
     # Files / upload section
     if contact is not None and contact_id:
-        files_content = _files_section(contact, contact_id)
+        files_content = _files_section(contact, contact_id, docs)
     else:
         files_content = ""
 
@@ -1835,19 +1797,23 @@ def setup_routes(app):
         if not file or not hasattr(file, "read"):
             try:
                 contact = await api.get_contact(token, contact_id)
+                docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
             except APIError:
                 contact = {"entity_id": contact_id}
-            return _files_section(contact, contact_id)
+                docs_resp = {"items": []}
+            return _files_section(contact, contact_id, docs_resp.get("items", []))
         description = str(form.get("description", "")).strip()
+        document_tag = str(form.get("document_tag", "")).strip()
         content = await file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
         try:
-            await api.upload_contact_file(token, contact_id, content, filename, content_type, description)
+            await api.upload_contact_file(token, contact_id, content, filename, content_type, description, document_tag)
             contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _files_section(contact, contact_id)
+        return _files_section(contact, contact_id, docs_resp.get("items", []))
 
     @app.delete("/contacts/{contact_id}/files/{file_id}")
     async def contact_delete_file(request: Request, contact_id: str, file_id: str):
@@ -1857,9 +1823,60 @@ def setup_routes(app):
         try:
             await api.delete_contact_file(token, contact_id, file_id)
             contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _files_section(contact, contact_id)
+        return _files_section(contact, contact_id, docs_resp.get("items", []))
+
+    @app.post("/contacts/{contact_id}/files/{file_id}/tag")
+    async def contact_tag_file(request: Request, contact_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        document_tag = str(form.get("document_tag", "")).strip()
+        try:
+            await api.tag_contact_file(token, contact_id, file_id, document_tag)
+            contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _files_section(contact, contact_id, docs_resp.get("items", []))
+
+    @app.post("/contacts/{contact_id}/files/{file_id}/description")
+    async def contact_patch_file_description(request: Request, contact_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        description = str(form.get("description", "")).strip()
+        try:
+            await api.patch_contact_file_description(token, contact_id, file_id, description)
+            contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _files_section(contact, contact_id, docs_resp.get("items", []))
+
+    @app.get("/contacts/{contact_id}/files/_section")
+    async def contact_files_section(request: Request, contact_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        qp = request.query_params
+        try:
+            contact = await api.get_contact(token, contact_id)
+            docs_resp = await api.list_contact_docs(token, contact_id, {"limit": 999})
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _files_section(contact, contact_id, docs_resp.get("items", []),
+            page=int(qp.get("page", "1") or "1"),
+            sort_dir=qp.get("sort_dir", "desc"),
+            tag_filter=qp.get("tag_filter", ""),
+            date_from=qp.get("date_from", ""),
+            date_to=qp.get("date_to", ""),
+            search=qp.get("search", ""),
+        )
 
     @app.get("/contacts/{contact_id}/files/{file_id}/download")
     async def contact_download_file(request: Request, contact_id: str, file_id: str):

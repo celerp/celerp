@@ -49,11 +49,20 @@ class GatewayClient:
         self._stop_event = asyncio.Event()
         self._relay_status: str = "inactive"  # inactive | connecting | active | tos_required | error
         self._required_tos_version: str = ""
-        # Cache local server ports for proxy routing
-        from celerp.config import read_config
-        cfg = read_config() or {}
-        self._ui_port: int = cfg.get("server", {}).get("ui_port", 8080)
-        self._api_port: int = cfg.get("server", {}).get("api_port", 8000)
+        # Resolve local server ports for proxy routing.
+        # In Electron builds the ports are dynamic; Electron passes them via
+        # CELERP_API_PORT / CELERP_UI_PORT env vars so we don't rely on the
+        # config file (which still holds the stale defaults 8000/8080).
+        env_api = os.environ.get("CELERP_API_PORT", "")
+        env_ui = os.environ.get("CELERP_UI_PORT", "")
+        if env_api and env_ui:
+            self._api_port: int = int(env_api)
+            self._ui_port: int = int(env_ui)
+        else:
+            from celerp.config import read_config
+            cfg = read_config() or {}
+            self._ui_port = cfg.get("server", {}).get("ui_port", 8080)
+            self._api_port = cfg.get("server", {}).get("api_port", 8000)
 
     # ── Public API ─────────────────────────────────────────────────────
 
@@ -115,7 +124,7 @@ class GatewayClient:
     # ── Internal ───────────────────────────────────────────────────────
 
     async def _connect_and_serve(self) -> None:
-        log.info("Connecting to gateway at %s", self._url)
+        log.debug("Connecting to gateway at %s", self._url)
         self._relay_status = "connecting"
         async with websockets.connect(self._url, ping_interval=_PING_INTERVAL) as ws:
             self._ws = ws

@@ -192,24 +192,39 @@ def _trial_balance_summary(tb: dict, currency: str | None = None) -> FT:
 def _pnl_view(data: dict, currency: str | None = None) -> FT:
     from ui.components.table import fmt_money
 
-    def _section(title, section_data, cls=""):
+    rev_total = float(data.get("revenue", {}).get("total", 0) or 0)
+
+    def _pct_of_rev(amount: float) -> str:
+        if not rev_total:
+            return "--"
+        return f"{abs(amount) / rev_total * 100:.1f}%"
+
+    def _section(title, section_data, show_pct: bool = False, cls=""):
         lines = section_data.get("lines", [])
-        rows = [Tr(Td(f"{l.get('code', '')} {l.get('name', '')}".strip()),
-                   Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"))
-                for l in lines]
+        rows = []
+        for l in lines:
+            amt = float(l.get("amount", 0) or 0)
+            cells = [
+                Td(f"{l.get('code', '')} {l.get('name', '')}".strip()),
+                Td(fmt_money(amt, currency), cls="cell--number"),
+            ]
+            if show_pct:
+                cells.append(Td(_pct_of_rev(amt), cls="cell--right cell--muted"))
+            rows.append(Tr(*cells))
+        header_row = Tr(Th(t("th.account")), Th(t("label.amount"), cls="cell--number"), *([] if not show_pct else [Th(t("th._of_revenue"), cls="cell--right")]))
         return Div(
             H3(title, cls="report-section-title"),
-            Table(Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),
+            Table(Thead(header_row), Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),
             P(Strong(fmt_money(section_data.get('total', 0), currency)), cls="section-total"),
             cls=f"report-section {cls}",
         )
 
     net = float(data.get("net_profit", 0))
     return Div(
-        _section("Revenue", data.get("revenue", {})),
-        _section("Cost of Goods Sold", data.get("cogs", {})),
+        _section("Revenue", data.get("revenue", {}), show_pct=True),
+        _section("Cost of Goods Sold", data.get("cogs", {}), show_pct=True),
         Div(P(Strong(f"Gross Profit: {fmt_money(data.get('gross_profit', 0), currency)}")), cls="report-subtotal"),
-        _section("Operating Expenses", data.get("expenses", {})),
+        _section("Operating Expenses", data.get("expenses", {}), show_pct=True),
         Div(
             P(Strong(f"Net Profit: {fmt_money(net, currency)}"),
               cls=f"net-profit {'net-profit--positive' if net >= 0 else 'net-profit--negative'}"),

@@ -21,6 +21,7 @@ from celerp.services.auth import (
     create_access_token,
     create_refresh_token,
     decode_refresh_token,
+    get_current_company_id,
     get_current_user,
     hash_password,
     verify_password,
@@ -147,8 +148,8 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
 
     return {
-        "access_token": create_access_token(str(user.id), str(company.id), user.role),
-        "refresh_token": create_refresh_token(str(user.id), str(company.id), user.role),
+        "access_token": create_access_token(str(user.id), str(company.id), user.role, user.email),
+        "refresh_token": create_refresh_token(str(user.id), str(company.id), user.role, user.email),
     }
 
 
@@ -167,14 +168,15 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
     if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    from celerp.gateway.client import get_client as _get_client
-    from celerp.services.session_tracker import active_user_ids as _active_ids
-    if _get_client() is None and _active_ids(exclude=str(user.id)):
+    from celerp.gateway.state import get_session_token as _get_session_token
+    from celerp.services.session_tracker import active_user_ids as _active_ids, record as _record
+    if not _get_session_token() and _active_ids():
         raise HTTPException(status_code=409, detail="direct_connection_limit")
 
+    _record(str(user.id), str(user.company_id))
     return {
-        "access_token": create_access_token(str(user.id), str(user.company_id), user.role),
-        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role),
+        "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
+        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
     }
 
 
@@ -190,8 +192,8 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     _clear_tracker()
 
     return {
-        "access_token": create_access_token(str(user.id), str(user.company_id), user.role),
-        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role),
+        "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
+        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
     }
 
 
@@ -222,8 +224,8 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
     return {
-        "access_token": create_access_token(user_id, company_id, role),
-        "refresh_token": create_refresh_token(user_id, company_id, role),
+        "access_token": create_access_token(user_id, company_id, role, user.email),
+        "refresh_token": create_refresh_token(user_id, company_id, role, user.email),
     }
 
 
@@ -238,6 +240,7 @@ async def create_api_key(user: User = Depends(get_current_user), session: AsyncS
 async def my_companies(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    current_company_id: uuid.UUID = Depends(get_current_company_id),
 ) -> dict:
     """List all companies the current user has access to."""
     links = (
@@ -245,16 +248,27 @@ async def my_companies(
             select(UserCompany).where(UserCompany.user_id == user.id, UserCompany.is_active == True)  # noqa: E712
         )
     ).scalars().all()
-    result = []
-    for link in links:
-        company = await session.get(Company, link.company_id)
-        if company and company.is_active:
-            result.append({
-                "company_id": str(company.id),
-                "company_name": company.name,
-                "slug": company.slug,
-                "role": link.role,
-            })
+    company_ids = [link.company_id for link in links]
+    if not company_ids:
+        return {"items": [], "total": 0}
+    companies_rows = (
+        await session.execute(
+            select(Company).where(Company.id.in_(company_ids), Company.is_active == True)  # noqa: E712
+        )
+    ).scalars().all()
+    companies_by_id = {c.id: c for c in companies_rows}
+    role_by_id = {link.company_id: link.role for link in links}
+    result = [
+        {
+            "company_id": str(c.id),
+            "company_name": c.name,
+            "slug": c.slug,
+            "role": role_by_id[c.id],
+            "is_current": c.id == current_company_id,
+        }
+        for c in companies_rows
+        if c.id in role_by_id
+    ]
     return {"items": result, "total": len(result)}
 
 

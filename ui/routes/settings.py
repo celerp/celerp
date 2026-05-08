@@ -507,6 +507,41 @@ def setup_routes(app):
             return _password_form(error=e.detail, lang=lang)
         return _password_form(success=t("settings.password_changed", lang), lang=lang)
 
+    @app.get("/settings/company/companies-list")
+    async def company_settings_companies_list(request: Request):
+        """HTMX fragment: list of all user's companies with switch links."""
+        from fasthtml.common import to_xml
+        token = _token(request)
+        if not token:
+            return Response(content="", media_type="text/html")
+        lang = get_lang(request)
+        try:
+            resp = await api.my_companies(token)
+            companies = resp.get("items", []) if isinstance(resp, dict) else resp
+        except Exception:
+            return Response(content="", media_type="text/html")
+        if not companies:
+            return Response(to_xml(P(t("msg.no_results", lang), cls="settings-hint")), media_type="text/html")
+        if len(companies) == 1:
+            name = companies[0].get("company_name", "")
+            content = Span(name, cls="settings-hint")
+        else:
+            options = [
+                Option(
+                    c.get("company_name", ""),
+                    value=c.get("company_id", ""),
+                    selected=c.get("is_current", False),
+                )
+                for c in companies
+            ]
+            content = Select(
+                *options,
+                onchange="location='/switch-company/'+this.value",
+                cls="cell-input cell-input--select",
+                style="max-width:320px;",
+            )
+        return Response(to_xml(content), media_type="text/html")
+
     # ── Company PATCH endpoints ──────────────────────────────────────
     @app.get("/settings/company/{field}/edit")
     async def company_field_edit(request: Request, field: str):
@@ -1431,113 +1466,101 @@ def setup_routes(app):
 
     _RELAY_BASE = _relay_base()
 
-    async def _apply_gateway_token(
-        token: str, iid: str, public_url: str | None = None, tos_version: str | None = None,
-    ) -> None:
-        """Apply a gateway token in-process, start WS client, persist to config.toml.
-
-        Waits up to 3 s for the WS handshake to complete so the UI can render
-        the correct relay_status on the first response.
-        """
-        import asyncio
-        from celerp.config import settings as _s, read_config, write_config
-        from celerp.gateway import client as _gw
-        _s.gateway_token = token
-        _s.gateway_instance_id = iid
-        if public_url:
-            _s.celerp_public_url = public_url
-
-        # Auto-generate backup encryption key if not already set
-        if not _s.backup_encryption_key:
-            import base64, secrets as _secrets
-            key = base64.b64encode(_secrets.token_bytes(32)).decode()
-            _s.backup_encryption_key = key
-
-        # Persist config BEFORE starting WS client (client reads tos_version from config)
-        try:
-            cfg = read_config()
-            if cfg:
-                cloud = cfg.setdefault("cloud", {})
-                cloud["token"] = token
-                cloud["instance_id"] = iid
-                if public_url:
-                    cloud["public_url"] = public_url
-                if tos_version:
-                    cloud["tos_version"] = tos_version
-                if _s.backup_encryption_key:
-                    cloud["backup_encryption_key"] = _s.backup_encryption_key
-                write_config(cfg)
-        except Exception:
-            pass
-
-        if _gw.get_client() is None:
-            gw = _gw.GatewayClient(
-                gateway_token=token,
-                instance_id=iid,
-                gateway_url=_s.gateway_url,
-            )
-            _gw.set_client(gw)
-            asyncio.create_task(gw.run())
-            # Wait briefly for WS handshake so UI shows correct status
-            for _ in range(15):
-                if gw.relay_status == "active":
-                    break
-                await asyncio.sleep(0.2)
-
-        # Start backup scheduler if not running
-        if _s.backup_enabled and _s.backup_encryption_key:
-            from celerp.services import backup_scheduler
-            backup_scheduler.start()
-
     @app.post("/settings/cloud-activate")
     async def cloud_activate(request: Request):
-        """HTMX: call relay /auth/activate, apply token in-process, reload tab."""
-        import httpx
+        """HTMX: proxy to API process to call relay /auth/activate + start gateway."""
+        import ui.api_client as _api
         from celerp.config import ensure_instance_id
 
+        ui_token = _token(request)
+        # iid from UI process as fallback for error rendering only
         iid = ensure_instance_id()
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(f"{_RELAY_BASE}/auth/activate", json={"instance_id": iid})
-        except httpx.ConnectError:
-            return _cloud_relay_unconnected(
-                iid,
-                error=f"Cannot reach {_RELAY_BASE} - check your internet connection or firewall.",
-            )
-        except httpx.TimeoutException:
-            return _cloud_relay_unconnected(
-                iid,
-                error=f"Connection to {_RELAY_BASE} timed out. The relay may be temporarily unavailable.",
-            )
+            data = await _api.activate_relay(ui_token)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Could not reach relay: {type(exc).__name__}: {exc}")
+            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
 
-        if r.status_code == 404:
-            return _cloud_relay_unconnected(
+        # Use instance_id from API response if present (canonical process)
+        iid = data.get("instance_id") or iid
+
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
+
+        if data.get("reconnect"):
+            return _cloud_reconnect_confirm(
                 iid,
-                error="No active subscription found for this instance. Subscribe first, or link by email below.",
+                data["gateway_token"],
+                data.get("public_url"),
+                data.get("tos_version"),
             )
-        if r.status_code == 402:
-            return _cloud_relay_unconnected(
-                iid,
-                error=r.json().get("detail", "Subscription not active."),
-            )
-        if r.status_code != 200:
-            return _cloud_relay_unconnected(iid, error=f"Relay returned {r.status_code}: {r.text[:120]}")
 
-        data = r.json()
-        token = data["gateway_token"]
-        public_url = data.get("public_url")
-        tos_version = data.get("tos_version")
-        is_reconnect = data.get("reconnect", False)
+        return _cloud_relay_tab(
+            relay_status=data.get("relay_status", "connecting"),
+            public_url=data.get("public_url", ""),
+        )
 
-        if is_reconnect:
-            # Previously connected instance — confirm before applying, offer to switch
-            return _cloud_reconnect_confirm(iid, token, public_url, tos_version)
+    @app.get("/topbar-company-switcher")
+    async def topbar_company_switcher(request: Request):
+        """HTMX fragment: company switcher pill for the topbar. Renders empty when only 1 company."""
+        from fasthtml.common import to_xml
+        token = _token(request)
+        if not token:
+            return Response(content="", media_type="text/html")
+        try:
+            resp = await api.my_companies(token)
+            companies = resp.get("items", []) if isinstance(resp, dict) else resp
+        except Exception:
+            return Response(content="", media_type="text/html")
+        if len(companies) <= 1:
+            return Response(content="", media_type="text/html")
+        current = next((c.get("company_name", "") for c in companies if c.get("is_current")), companies[0].get("company_name", ""))
+        options = [
+            Option(c.get("company_name", ""), value=c.get("company_id", ""), selected=c.get("is_current", False))
+            for c in companies
+        ]
+        widget = Select(
+            *options,
+            onchange="location='/switch-company/'+this.value",
+            cls="company-switcher-select",
+        )
+        return Response(to_xml(widget), media_type="text/html")
 
-        await _apply_gateway_token(token, iid, public_url=public_url, tos_version=tos_version)
-        return _cloud_relay_tab()
+    @app.get("/topbar-relay-status")
+    async def topbar_relay_status(request: Request):
+        """HTMX fragment: return the relay dot span for the topbar user menu."""
+        import httpx
+        from fasthtml.common import to_xml
+        from ui.config import API_BASE
+        from ui.i18n import get_lang
+        token = _token(request)
+        lang = get_lang(request)
+        data: dict = {}
+        try:
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+            async with httpx.AsyncClient(base_url=API_BASE, timeout=2.0) as c:
+                r = await c.get("/settings/cloud-status", headers=headers)
+                if r.status_code == 200:
+                    data = r.json()
+        except Exception:
+            pass
+        connected = bool(data.get("connected"))
+        public_url = data.get("public_url") or ""
+        dot_cls = "relay-dot relay-dot--on" if connected else "relay-dot relay-dot--off"
+        if connected and public_url:
+            dot_title = f"{t('msg.relay_connected', lang)}: {public_url}"
+            dot_href = public_url
+            dot_target = "_blank"
+        else:
+            dot_title = t("msg.relay_not_connected", lang)
+            dot_href = "/settings/cloud"
+            dot_target = "_self"
+        dot = Span(
+            A(Span(cls=dot_cls, title=dot_title), href=dot_href, target=dot_target,
+              cls="relay-dot-link", onclick="event.stopPropagation()"),
+            id="relay-dot-wrap",
+        )
+        return Response(to_xml(dot), media_type="text/html")
 
     def _cloud_reconnect_confirm(
         iid: str, token: str, public_url: str | None, tos_version: str | None
@@ -1581,17 +1604,27 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-reconnect-confirm")
     async def cloud_reconnect_confirm(request: Request):
-        """HTMX: apply a previously-retrieved gateway token (reconnect confirmation)."""
+        """HTMX: apply a previously-retrieved gateway token via API (reconnect confirmation)."""
+        import ui.api_client as _api
         from celerp.config import ensure_instance_id
         form = await request.form()
-        token = str(form.get("_reconnect_token", "")).strip()
+        gw_token = str(form.get("_reconnect_token", "")).strip()
         public_url = str(form.get("_reconnect_public_url", "")).strip() or None
         tos_version = str(form.get("_reconnect_tos_version", "")).strip() or None
         iid = ensure_instance_id()
-        if not token:
+        if not gw_token:
             return _cloud_relay_unconnected(iid, error="Reconnect token missing. Please try again.")
-        await _apply_gateway_token(token, iid, public_url=public_url, tos_version=tos_version)
-        return _cloud_relay_tab()
+        ui_token = _token(request)
+        try:
+            data = await _api.apply_relay_token(ui_token, {"gateway_token": gw_token, "public_url": public_url, "tos_version": tos_version})
+        except Exception as exc:
+            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
+        return _cloud_relay_tab(
+            relay_status=data.get("relay_status", "connecting"),
+            public_url=data.get("public_url", ""),
+        )
 
     def _cloud_claim_selection(matches: list[dict], email: str, iid: str, otp_code: str | None = None) -> FT:
         """Render the subscription selection UI when multiple subs match an email.
@@ -1734,134 +1767,86 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-send-otp")
     async def cloud_send_otp(request: Request):
-        """HTMX: send OTP code to email, then swap in OTP entry form."""
-        import httpx
-        from celerp.config import ensure_instance_id
+        """HTMX: send OTP via API process (uses canonical instance_id)."""
+        import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
-        iid = ensure_instance_id()
+        ui_token = _token(request)
 
         if not email:
-            return _cloud_relay_unconnected(iid, error="Please enter an email address.")
+            from celerp.config import ensure_instance_id
+            return _cloud_relay_unconnected(ensure_instance_id(), error="Please enter an email address.")
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(
-                    f"{_RELAY_BASE}/billing/claim/send-otp",
-                    json={"email": email, "instance_id": iid},
-                )
-        except httpx.ConnectError:
-            return _cloud_relay_unconnected(iid, error=f"Cannot reach {_RELAY_BASE} - check your internet connection.")
-        except httpx.TimeoutException:
-            return _cloud_relay_unconnected(iid, error=f"Connection to {_RELAY_BASE} timed out.")
+            data = await _api.send_otp(ui_token, email)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Connection error: {type(exc).__name__}: {exc}")
+            from celerp.config import ensure_instance_id
+            return _cloud_relay_unconnected(ensure_instance_id(), error=f"Could not reach API: {exc}")
 
-        if r.status_code == 429:
-            return _cloud_relay_unconnected(iid, error="Too many code requests. Try again later.")
-        if r.status_code != 200:
-            return _cloud_relay_unconnected(iid, error=f"Error sending code: {r.text[:80]}")
+        iid = data.get("instance_id", "")
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
 
         return _cloud_claim_otp_form(email, iid)
 
     @app.post("/settings/cloud-claim")
     async def cloud_claim(request: Request):
-        """HTMX: verify OTP + link subscription by email then immediately activate.
+        """HTMX: verify OTP + link subscription + activate - all via API process.
 
-        Handles three cases:
-        1. OTP submit (claim_email + otp_code) — verify OTP then claim by email.
-           - 1 match  → claim + activate immediately
-           - 0 matches → error
-           - N matches → render selection UI (no DB write yet)
-        2. Confirm submit (claim_email + subscription_id + otp_code) — claims by ID.
-        3. otp_required (400) → shouldn't happen in normal flow; show OTP form.
+        Using the API process ensures the same instance_id is used for both
+        the /billing/claim relay call and the subsequent /auth/activate call.
         """
-        import httpx
-        from celerp.config import ensure_instance_id
+        import ui.api_client as _api
         form = await request.form()
         email = str(form.get("claim_email", "")).strip()
         subscription_id = str(form.get("subscription_id", "")).strip() or None
         otp_code = str(form.get("otp_code", "")).strip() or None
-        iid = ensure_instance_id()
+        ui_token = _token(request)
 
         if not email:
-            return _cloud_relay_unconnected(iid, error="Please enter an email address.")
+            from celerp.config import ensure_instance_id
+            return _cloud_relay_unconnected(ensure_instance_id(), error="Please enter an email address.")
 
-        payload: dict = {"email": email}
+        claim_payload: dict = {"email": email}
         if subscription_id:
-            payload["subscription_id"] = subscription_id
+            claim_payload["subscription_id"] = subscription_id
         if otp_code:
-            payload["otp_code"] = otp_code
+            claim_payload["otp_code"] = otp_code
 
         try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r = await c.post(
-                    f"{_RELAY_BASE}/billing/claim",
-                    json=payload,
-                    headers={"X-Instance-ID": iid},
-                )
-        except httpx.ConnectError:
-            return _cloud_relay_unconnected(iid, error=f"Cannot reach {_RELAY_BASE} - check your internet connection or firewall.")
-        except httpx.TimeoutException:
-            return _cloud_relay_unconnected(iid, error=f"Connection to {_RELAY_BASE} timed out.")
+            data = await _api.cloud_claim(ui_token, claim_payload)
         except Exception as exc:
-            return _cloud_relay_unconnected(iid, error=f"Connection error: {type(exc).__name__}: {exc}")
+            from celerp.config import ensure_instance_id
+            return _cloud_relay_unconnected(ensure_instance_id(), error=f"Could not reach API: {exc}")
 
-        # OTP error handling
-        if r.status_code == 401:
-            detail = r.json().get("detail", "")
-            if isinstance(detail, dict):
-                code = detail.get("code", "")
-                attempts_left = detail.get("attempts_left", 0)
-            else:
-                code = detail
-                attempts_left = 0
+        iid = data.get("instance_id", "")
+
+        if data.get("otp_error"):
+            code = data.get("code", "otp_invalid")
+            attempts_left = data.get("attempts_left", 0)
             if code == "otp_invalid":
                 return _cloud_claim_otp_form(
                     email, iid,
                     error=f"Incorrect code. {attempts_left} attempt{'s' if attempts_left != 1 else ''} left.",
                 )
-            # otp_expired or otp_invalid_max_attempts
-            return _cloud_relay_unconnected(
-                iid, error="Code expired or too many wrong attempts. Request a new code."
-            )
+            return _cloud_relay_unconnected(iid, error="Code expired or too many wrong attempts. Request a new code.")
 
-        if r.status_code == 400:
-            detail = r.json().get("detail", "")
-            if detail == "otp_required":
-                return _cloud_claim_otp_form(email, iid)
-            return _cloud_relay_unconnected(iid, error=f"Error: {r.text[:80]}")
+        if data.get("otp_required"):
+            return _cloud_claim_otp_form(email, iid)
 
-        if r.status_code == 404:
-            return _cloud_relay_unconnected(iid, error="No subscription found for that email. Check the address and try again.")
-        if r.status_code == 429:
-            return _cloud_relay_unconnected(iid, error="Too many attempts. Try again in an hour.")
-        if r.status_code == 403:
-            return _cloud_relay_unconnected(iid, error="Email does not match the selected subscription.")
-        if r.status_code != 200:
-            return _cloud_relay_unconnected(iid, error=f"Error: {r.text[:80]}")
-
-        data = r.json()
-
-        # Multiple matches — show selection UI
         if data.get("requires_selection"):
             return _cloud_claim_selection(data["matches"], email, iid, otp_code=otp_code)
 
-        # Claim succeeded — activate immediately
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as c:
-                r2 = await c.post(f"{_RELAY_BASE}/auth/activate", json={"instance_id": iid})
-            if r2.status_code == 200:
-                data2 = r2.json()
-                token = data2["gateway_token"]
-                await _apply_gateway_token(
-                    token, iid, public_url=data2.get("public_url"), tos_version=data2.get("tos_version"),
-                )
-                return _cloud_relay_tab()
-        except Exception:
-            pass
+        if err := data.get("error"):
+            return _cloud_relay_unconnected(iid, error=err)
 
-        # Claim succeeded but activate failed — surface hint
+        if data.get("connected"):
+            return _cloud_relay_tab(
+                relay_status=data.get("relay_status", "connecting"),
+                public_url=data.get("public_url", ""),
+            )
+
+        # Claim succeeded but activate pending (rare: relay linkage happened but WS not up yet)
         return _cloud_relay_unconnected(
             iid,
             error=None,
@@ -1871,72 +1856,32 @@ def setup_routes(app):
 
     @app.post("/settings/cloud-disconnect")
     async def cloud_disconnect(request: Request):
-        """HTMX: disconnect from Cloud Relay, clear config, re-render tab."""
-        from celerp.config import settings as _s, read_config, write_config, ensure_instance_id
-        from celerp.gateway import client as _gw
-
-        # Stop the gateway client
-        gw = _gw.get_client()
-        if gw is not None:
-            gw.stop()
-            _gw.set_client(None)
-
-        # Clear settings in memory
-        _s.gateway_token = ""
-        _s.celerp_public_url = ""
-
-        # Clear config.toml
+        """HTMX: stop gateway WS and clear credentials. Shows subscribe/claim UI."""
+        import ui.api_client as _api
+        from celerp.config import ensure_instance_id
+        token = _token(request)
         try:
-            cfg = read_config()
-            if cfg and "cloud" in cfg:
-                cfg["cloud"]["token"] = ""
-                cfg["cloud"].pop("public_url", None)
-                write_config(cfg)
+            await _api.disconnect_relay(token)
         except Exception:
             pass
-
         iid = ensure_instance_id()
         return _cloud_relay_unconnected(iid)
 
     @app.post("/settings/cloud-accept-tos")
     async def cloud_accept_tos(request: Request):
-        """HTMX: record TOS acceptance, reconnect gateway, re-render tab."""
-        import asyncio
-        from celerp.config import settings as _s, read_config, write_config
-        from celerp.gateway import client as _gw
-
-        gw = _gw.get_client()
-        tos_version = gw.required_tos_version if gw is not None else ""
-
-        # Persist accepted TOS version to config.toml
+        """HTMX: record TOS acceptance via API, reconnect gateway, re-render tab."""
+        import ui.api_client as _api
+        from celerp.config import ensure_instance_id
+        ui_token = _token(request)
+        iid = ensure_instance_id()
         try:
-            cfg = read_config() or {}
-            cloud = cfg.setdefault("cloud", {})
-            cloud["tos_version"] = tos_version
-            write_config(cfg)
-        except Exception:
-            pass
-
-        # Stop existing client and start fresh (will now send accepted tos_version)
-        if gw is not None:
-            gw.stop()
-            _gw.set_client(None)
-
-        new_gw = _gw.GatewayClient(
-            gateway_token=_s.gateway_token,
-            instance_id=_s.gateway_instance_id,
-            gateway_url=_s.gateway_url,
+            data = await _api.accept_relay_tos(ui_token)
+        except Exception as exc:
+            return _cloud_relay_unconnected(iid, error=f"Could not reach API: {exc}")
+        return _cloud_relay_tab(
+            relay_status=data.get("relay_status", "connecting"),
+            public_url=data.get("public_url", ""),
         )
-        _gw.set_client(new_gw)
-        asyncio.create_task(new_gw.run())
-
-        # Wait briefly for WS handshake
-        for _ in range(15):
-            if new_gw.relay_status == "active":
-                break
-            await asyncio.sleep(0.2)
-
-        return _cloud_relay_tab()
 
     @app.get("/settings/email-status")
     async def email_status_fragment(request: Request):
@@ -2375,7 +2320,7 @@ def _settings_content(
     if tab == "import-history":
         return _import_history_tab(import_batches or [])
     if tab == "backup":
-        return _backup_tab(lang=lang)
+        return _backup_tab(lang=lang, backup_data=None)
     if tab == "ai":
         return _ai_tab()
     if tab == "connectors":
@@ -2537,7 +2482,24 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en")
     # Merge top-level company keys with settings dict; settings keys take precedence
     flat = {**company, **(company.get("settings") or {})}
     return Div(
-        H3(t("settings.company_details", lang), cls="settings-section-title"),
+        H3(t("settings.your_companies", lang), cls="settings-section-title"),
+        Div(
+            id="settings-companies-list",
+            hx_get="/settings/company/companies-list",
+            hx_trigger="load",
+            hx_swap="innerHTML",
+        ),
+        A(
+            "+ " + t("btn.new_company", lang),
+            href="/setup/new-company",
+            cls="btn btn--xs btn--secondary",
+            style="margin-top:8px;display:inline-block;",
+        ),
+        Div(
+            H3(t("settings.company_details", lang), cls="settings-section-title", style="margin:0;"),
+            cls="addr-col-header",
+            style="margin-top:24px;",
+        ),
         Table(
             *[Tr(
                 Td(label, cls="detail-label"),
@@ -3317,17 +3279,28 @@ def _tos_acceptance_card(required_version: str) -> FT:
     )
 
 
-def _cloud_relay_tab() -> FT:
-    """Cloud Relay settings tab. Auto-attempts activation; falls back to subscribe/claim UI."""
+def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = None) -> FT:
+    """Cloud Relay settings tab.
+
+    relay_status: caller-supplied (cross-process split); falls back to local get_client().
+    public_url: caller-supplied; falls back to local config.
+    """
     from celerp.config import settings as _cfg, ensure_instance_id
     from celerp.gateway.client import get_client
     gw = get_client()
 
-    if gw is not None and gw.relay_status == "tos_required":
-        return _tos_acceptance_card(gw.required_tos_version)
+    if relay_status is None:
+        relay_status = gw.relay_status if gw else "inactive"
 
-    if gw is not None:
-        relay_status = gw.relay_status
+    if public_url is None:
+        public_url = getattr(_cfg, "celerp_public_url", "")
+
+    required_tos = getattr(gw, "required_tos_version", "") if gw else ""
+    if relay_status == "tos_required":
+        return _tos_acceptance_card(required_tos)
+
+    is_connected = relay_status not in ("inactive",) or gw is not None
+    if is_connected:
         badge_cls = {
             "active": "badge--active",
             "connecting": "badge--warning",
@@ -3349,10 +3322,9 @@ def _cloud_relay_tab() -> FT:
             )),
         ]
         # Show team URL (subdomain) if configured
-        pub_url = getattr(_cfg, "celerp_public_url", "")
-        if pub_url:
+        if public_url:
             rows.append(Tr(Td(t("settings.team_url"), cls="detail-label"), Td(
-                A(pub_url, href=pub_url, target="_blank", cls="cell--mono"),
+                A(public_url, href=public_url, target="_blank", cls="cell--mono"),
                 P(t("settings.share_this_url_with_your_team_members_to_access_ce"), cls="settings-hint",
                   style="margin:4px 0 0;"),
             )))
@@ -3374,20 +3346,21 @@ def _cloud_relay_tab() -> FT:
             cls="settings-card",
         )
 
-    # Not connected — render subscribe/claim UI
+    # No token — render subscribe/claim UI
     iid = ensure_instance_id()
     return _cloud_relay_unconnected(iid)
 
 
-def _backup_tab(lang: str = "en") -> FT:
+def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     """Cloud Backup settings tab - full history UI with export/import."""
     from celerp.config import settings as _cfg
-    from celerp.gateway.client import get_client
     from ui.components.backup import local_backup_buttons
     from ui.components.cloud_gate import upgrade_banner
 
     enc_ok = bool(_cfg.backup_encryption_key)
-    gw_ok = get_client() is not None
+    # gw_ok is derived from the API response - reading get_client() here would
+    # always return None because the gateway client lives in the API process.
+    gw_ok = bool(backup_data and backup_data.get("gateway_token_set"))
 
     if not gw_ok:
         return Div(
@@ -3410,16 +3383,20 @@ def _backup_tab(lang: str = "en") -> FT:
         )
 
     # ── Status summary ────────────────────────────────────────────────
-    from celerp.services import backup_scheduler
-    db_status = backup_scheduler.last_db_result()
-    fl_status = backup_scheduler.last_file_result()
-    next_db = backup_scheduler.next_db_run_utc()
-    next_fl = backup_scheduler.next_file_run_utc()
+    # backup_data is fetched from the API process by the caller to avoid
+    # reading stale module-level state in the UI process.
+    _bd = backup_data or {}
+    _db = _bd.get("db") or {}
+    _fl = _bd.get("file") or {}
+    scheduler_running = _bd.get("running", False)
+    next_db_iso: str | None = _bd.get("next_db_utc")
+    next_fl_iso: str | None = _bd.get("next_file_utc")
 
-    def _time_until(dt) -> str:
-        if dt is None:
+    def _time_until(iso: str | None) -> str:
+        if iso is None:
             return "not scheduled"
         from datetime import datetime, timezone
+        dt = datetime.fromisoformat(iso)
         delta = dt - datetime.now(timezone.utc)
         hours = int(delta.total_seconds() // 3600)
         mins = int((delta.total_seconds() % 3600) // 60)
@@ -3429,30 +3406,33 @@ def _backup_tab(lang: str = "en") -> FT:
 
     status_rows = [
         Tr(Td(t("settings.scheduler"), cls="detail-label"), Td(
-            Span(t("settings.running"), cls="badge badge--active") if backup_scheduler._db_task and not backup_scheduler._db_task.done()
+            Span(t("settings.running"), cls="badge badge--active") if scheduler_running
             else Span(t("settings.stopped"), cls="badge badge--inactive"),
         )),
-        Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(next_db))),
-        Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(next_fl))),
+        Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(next_db_iso))),
+        Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(next_fl_iso))),
     ]
 
     # Last DB result
-    if db_status.ok is not None:
-        if db_status.ok:
+    db_ok = _db.get("ok")
+    if db_ok is not None:
+        if db_ok:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(
                 Span("OK", cls="badge badge--active"),
-                Span(f" - {db_status.size_bytes / 1024**2:.1f} MB", cls="settings-hint"),
+                Span(f" - {(_db.get('size_bytes') or 0) / 1024**2:.1f} MB", cls="settings-hint"),
             )))
         else:
             status_rows.append(Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(
                 Span(t("settings.failed"), cls="badge badge--error"),
-                Span(f" - {db_status.error}", cls="settings-hint"),
+                Span(f" - {_db.get('error', '')}", cls="settings-hint"),
             )))
 
     # Last file result
-    if fl_status.ok is not None:
-        if fl_status.ok:
-            if fl_status.size_bytes == 0:
+    fl_ok = _fl.get("ok")
+    if fl_ok is not None:
+        if fl_ok:
+            fl_bytes = _fl.get("size_bytes") or 0
+            if fl_bytes == 0:
                 status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
                     Span("OK", cls="badge badge--active"),
                     Span(" - no changes", cls="settings-hint"),
@@ -3460,12 +3440,12 @@ def _backup_tab(lang: str = "en") -> FT:
             else:
                 status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
                     Span("OK", cls="badge badge--active"),
-                    Span(f" - {fl_status.size_bytes / 1024**2:.1f} MB", cls="settings-hint"),
+                    Span(f" - {fl_bytes / 1024**2:.1f} MB", cls="settings-hint"),
                 )))
         else:
             status_rows.append(Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(
                 Span(t("settings.failed"), cls="badge badge--error"),
-                Span(f" - {fl_status.error}", cls="settings-hint"),
+                Span(f" - {_fl.get('error', '')}", cls="settings-hint"),
             )))
 
     status_section = Div(

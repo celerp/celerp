@@ -322,20 +322,25 @@ async def get_valuation(
         if row.consignment_flag == "in" or state.get("consignment_flag") == "in":
             continue
 
-        # category_counts: always global over non-hidden items
-        if row_status not in _HIDDEN_STATUSES:
+        # category_counts: scoped to the active status filter (or global non-hidden when no filter)
+        if status == "all":
             if row_cat:
+                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
+        elif status == "archived":
+            if row_status in _ARCHIVED_GROUP and row_cat:
+                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
+        elif status:
+            if row_status == status.lower() and row_cat:
+                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
+        else:
+            if row_status not in _HIDDEN_STATUSES and row_cat:
                 category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
 
         # Apply category filter for scoped metrics
         if category and row_cat != category:
             continue
 
-        # count_by_status: scoped to category filter, counts all non-hidden statuses
-        if row_status not in _HIDDEN_STATUSES:
-            count_by_status[row_status] = count_by_status.get(row_status, 0) + 1
-
-        # Totals: scoped to category + status filters (mirrors list_items logic)
+        # Totals and count_by_status: scoped to category + status filters (mirrors list_items logic)
         if status == "all":
             pass
         elif status == "archived":
@@ -347,6 +352,9 @@ async def get_valuation(
         else:
             if row_status in _HIDDEN_STATUSES:
                 continue
+
+        # count_by_status: scoped to the same category+status slice as active_item_count
+        count_by_status[row_status] = count_by_status.get(row_status, 0) + 1
 
         active_item_count += 1
         qty = float(state.get("quantity") or 0)
@@ -377,6 +385,9 @@ async def get_valuation(
         "wholesale_total": float(price_totals.get("Wholesale", 0)),
         "retail_total": float(price_totals.get("Retail", 0)),
         "category_counts": dict(sorted(category_counts.items(), key=lambda x: -x[1])),
+        # total_scoped_count is always active_item_count - used for the "All" tab
+        # (some items may have no category and won't appear in category_counts)
+        "total_scoped_count": active_item_count,
         "count_by_status": count_by_status,
     }
 

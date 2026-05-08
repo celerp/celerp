@@ -8,29 +8,50 @@ import logging
 import time
 from typing import Callable
 
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault(
-            "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'",
-        )
-        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-        response.headers.setdefault("Permissions-Policy", "geolocation=(), camera=(), microphone=()")
-        return response
+class SecurityHeadersMiddleware:
+    """Pure ASGI middleware - avoids BaseHTTPMiddleware body_stream CancelledError on shutdown."""
+
+    _HEADERS = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (
+            b"content-security-policy",
+            b"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'",
+        ),
+        (b"referrer-policy", b"strict-origin-when-cross-origin"),
+        (b"permissions-policy", b"geolocation=(), camera=(), microphone=()"),
+    ]
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        existing_keys: set[bytes] = set()
+
+        async def send_with_headers(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                existing_keys.update(k.lower() for k, _ in message.get("headers", []))
+                extra = [(k, v) for k, v in self._HEADERS if k not in existing_keys]
+                message = dict(message)
+                message["headers"] = list(message.get("headers", [])) + extra
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
 
 
-class MaxBodySizeMiddleware(BaseHTTPMiddleware):
-    """Reject requests whose Content-Length exceeds the limit.
+class MaxBodySizeMiddleware:
+    """Pure ASGI middleware - rejects requests whose Content-Length exceeds the limit.
 
     Only checks the Content-Length header - does not buffer the body, which
     avoids conflicts with streaming responses (CSV exports, SSE, etc.).
@@ -38,23 +59,33 @@ class MaxBodySizeMiddleware(BaseHTTPMiddleware):
     that is acceptable for the current use case (JSON API).
     """
 
-    def __init__(self, app, max_body_size_bytes: int):
-        super().__init__(app)
+    def __init__(self, app: ASGIApp, max_body_size_bytes: int) -> None:
+        self.app = app
         self.max_body_size_bytes = int(max_body_size_bytes)
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", []))
+        cl = headers.get(b"content-length")
+        if cl is not None:
             try:
-                if int(content_length) > self.max_body_size_bytes:
-                    return JSONResponse(status_code=413, content={"detail": "Request too large"})
+                if int(cl) > self.max_body_size_bytes:
+                    response = JSONResponse(status_code=413, content={"detail": "Request too large"})
+                    await response(scope, receive, send)
+                    return
             except ValueError:
-                return JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
-        return await call_next(request)
+                response = JSONResponse(status_code=400, content={"detail": "Invalid Content-Length"})
+                await response(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
 
 
-class SlidingTokenRefreshMiddleware(BaseHTTPMiddleware):
-    """Sliding-window JWT refresh for Bearer token (API) clients.
+class SlidingTokenRefreshMiddleware:
+    """Pure ASGI sliding-window JWT refresh for Bearer token (API) clients.
 
     On every successful (2xx) authenticated response, if the Bearer token is
     past half its lifetime, issue a fresh access token and include it in the
@@ -63,28 +94,38 @@ class SlidingTokenRefreshMiddleware(BaseHTTPMiddleware):
 
     No-op when:
     - No Authorization: Bearer header is present
-    - Token decode fails (invalid/expired — the route handler already rejected it)
+    - Token decode fails (invalid/expired - the route handler already rejected it)
     - Response status >= 300 (redirects, errors)
     - Token has not yet consumed half its TTL
     """
 
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        response = await call_next(request)
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
 
-        # Only inject on successful responses
-        if response.status_code >= 300:
-            return response
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
 
-        auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer "):
-            return response
+        headers = dict(scope.get("headers", []))
+        auth = headers.get(b"authorization", b"").decode("latin-1")
+        token = auth[len("Bearer "):] if auth.startswith("Bearer ") else None
 
-        token = auth[len("Bearer "):]
-        refreshed = _maybe_refresh_bearer(token)
-        if refreshed:
-            response.headers["X-Refreshed-Token"] = refreshed
+        status_holder: list[int] = []
 
-        return response
+        async def send_with_refresh(message: dict) -> None:
+            if message["type"] == "http.response.start":
+                status_holder.append(message["status"])
+                if message["status"] < 300 and token:
+                    refreshed = _maybe_refresh_bearer(token)
+                    if refreshed:
+                        message = dict(message)
+                        message["headers"] = list(message.get("headers", [])) + [
+                            (b"x-refreshed-token", refreshed.encode("latin-1"))
+                        ]
+            await send(message)
+
+        await self.app(scope, receive, send_with_refresh)
 
 
 def _maybe_refresh_bearer(token: str) -> str | None:

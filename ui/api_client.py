@@ -1443,11 +1443,21 @@ async def patch_contact_defaults(token: str, defaults: dict) -> dict:
         return _raise(await c.patch("/companies/me/contact-defaults", json={"defaults": defaults})).json()
 
 
-async def upload_contact_file(token: str, contact_id: str, file_data: bytes, filename: str, content_type: str, description: str = "") -> dict:
+async def upload_contact_file(token: str, contact_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
     async with _client(token) as c:
         files = {"file": (filename, file_data, content_type)}
-        data = {"description": description}
+        data = {"description": description, "document_tag": document_tag}
         return _raise(await c.post(f"/crm/contacts/{contact_id}/files", files=files, data=data)).json()
+
+
+async def tag_contact_file(token: str, contact_id: str, file_id: str, document_tag: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/crm/contacts/{contact_id}/files/{file_id}/tag", data={"document_tag": document_tag})).json()
+
+
+async def patch_contact_file_description(token: str, contact_id: str, file_id: str, description: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/crm/contacts/{contact_id}/files/{file_id}/description", data={"description": description})).json()
 
 
 async def delete_contact_file(token: str, contact_id: str, file_id: str) -> dict:
@@ -1459,6 +1469,33 @@ async def download_contact_file(token: str, contact_id: str, file_id: str) -> ht
     async with _client(token) as c:
         r = _raise(await c.get(f"/crm/contacts/{contact_id}/files/{file_id}"))
         return r
+
+
+async def upload_doc_file(token: str, entity_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
+    async with _client(token) as c:
+        files = {"file": (filename, file_data, content_type)}
+        data = {"description": description, "document_tag": document_tag}
+        return _raise(await c.post(f"/docs/{entity_id}/files", files=files, data=data)).json()
+
+
+async def tag_doc_file(token: str, entity_id: str, file_id: str, document_tag: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/docs/{entity_id}/files/{file_id}/tag", data={"document_tag": document_tag})).json()
+
+
+async def patch_doc_file_description(token: str, entity_id: str, file_id: str, description: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/docs/{entity_id}/files/{file_id}/description", data={"description": description})).json()
+
+
+async def delete_doc_file(token: str, entity_id: str, file_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/docs/{entity_id}/files/{file_id}")).json()
+
+
+async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
+    async with _client(token) as c:
+        return _raise(await c.get(f"/docs/{entity_id}/files/{file_id}"))
 
 
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
@@ -1752,3 +1789,74 @@ async def merge_contacts(token: str, target_contact_id: str, source_contact_ids:
             "target_contact_id": target_contact_id,
             "source_contact_ids": source_contact_ids,
         })).json()
+
+
+async def get_relay_status(token: str) -> dict:
+    """GET /settings/cloud-status — returns {connected, relay_status, ...}."""
+    async with _client(token) as c:
+        return _raise(await c.get("/settings/cloud-status")).json()
+
+
+async def get_backup_status(token: str) -> dict:
+    """GET /settings/backup-status — returns scheduler state from API process."""
+    async with _client(token) as c:
+        return _raise(await c.get("/settings/backup-status")).json()
+
+
+async def disconnect_relay(token: str) -> dict:
+    """POST /settings/cloud-disconnect — stop gateway client, clear config."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-disconnect")).json()
+
+
+async def activate_relay(token: str) -> dict:
+    """POST /settings/cloud-activate — call relay /auth/activate, start gateway."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-activate")).json()
+
+
+async def apply_relay_token(token: str, payload: dict) -> dict:
+    """POST /settings/cloud-apply-token — apply pre-fetched gateway token."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-apply-token", json=payload)).json()
+
+
+async def accept_relay_tos(token: str) -> dict:
+    """POST /settings/cloud-accept-tos — persist TOS, restart gateway client."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-accept-tos")).json()
+
+
+async def get_instance_id(token: str) -> str:
+    """GET /settings/cloud-instance-id — return canonical instance_id from API process."""
+    async with _client(token) as c:
+        return _raise(await c.get("/settings/cloud-instance-id")).json()["instance_id"]
+
+
+async def send_otp(token: str, email: str) -> dict:
+    """POST /settings/cloud-send-otp — send OTP via API process (correct instance_id)."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-send-otp", json={"email": email})).json()
+
+
+async def cloud_claim(token: str, payload: dict) -> dict:
+    """POST /settings/cloud-claim — claim + activate via API process (correct instance_id)."""
+    async with _client(token) as c:
+        return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
+
+
+async def get_connectors_catalog(token: str) -> tuple[list[dict], str]:
+    """GET /settings/connectors-catalog — proxy relay /api/connectors via API process (has gateway token).
+    Returns (connectors, error_detail). error_detail is "" on success."""
+    async with _client(token) as c:
+        data = _raise(await c.get("/settings/connectors-catalog")).json()
+    return data.get("connectors", []), data.get("error", "")
+
+
+async def get_connector_authorize_url(token: str, platform: str, shop: str = "") -> dict:
+    """GET /settings/connectors/{platform}/authorize-url — returns {authorize_url} or {error}."""
+    params = {}
+    if shop:
+        params["shop"] = shop
+    async with _client(token) as c:
+        return _raise(await c.get(f"/settings/connectors/{platform}/authorize-url", params=params)).json()

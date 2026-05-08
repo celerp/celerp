@@ -395,15 +395,14 @@ def _infrastructure_tab() -> FT:
     )
 
 
-def _backup_summary_card() -> FT:
+def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -> FT:
     """Compact backup status card for the cloud settings page.
 
-    Always shows local export/import. When cloud-connected and backup module
-    loaded, also shows last backup results and a link to the full backup tab.
+    Always shows local export/import. When cloud-connected, also shows last
+    backup results and next run times sourced from the API process via
+    ``backup_data`` (the response of GET /settings/backup-status).
     """
-    from celerp.gateway.client import get_client
     from ui.components.backup import local_backup_buttons
-    gw_ok = get_client() is not None
 
     # Local backup section (always visible)
     local_section = Div(
@@ -417,28 +416,19 @@ def _backup_summary_card() -> FT:
         Div(id="cloud-page-backup-flash", cls="mt-sm"),
     )
 
-    if not gw_ok:
+    if not gw_ok or backup_data is None:
         return Div(local_section, cls="settings-card")
 
-    # Cloud backup status (only when connected and backup module available)
-    try:
-        from celerp.services import backup_scheduler
-        db_status = backup_scheduler.last_db_result()
-        fl_status = backup_scheduler.last_file_result()
-        next_db = backup_scheduler.next_db_run_utc()
-        next_fl = backup_scheduler.next_file_run_utc()
-    except Exception:
-        return Div(local_section, cls="settings-card")
-
-    def _status_badge(result) -> FT:
-        if result.ok is None:
+    def _status_badge(ok: bool | None) -> FT:
+        if ok is None:
             return Span(t("settings.pending"), cls="badge badge--inactive")
-        return Span("OK", cls="badge badge--active") if result.ok else Span(t("settings.failed"), cls="badge badge--error")
+        return Span("OK", cls="badge badge--active") if ok else Span(t("settings.failed"), cls="badge badge--error")
 
-    def _time_until(dt) -> str:
-        if dt is None:
+    def _time_until(iso: str | None) -> str:
+        if iso is None:
             return "not scheduled"
         from datetime import datetime, timezone
+        dt = datetime.fromisoformat(iso)
         delta = dt - datetime.now(timezone.utc)
         hours = int(delta.total_seconds() // 3600)
         mins = int((delta.total_seconds() % 3600) // 60)
@@ -452,10 +442,10 @@ def _backup_summary_card() -> FT:
             style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;",
         ),
         Table(
-            Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(_status_badge(db_status))),
-            Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(_status_badge(fl_status))),
-            Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(next_db))),
-            Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(next_fl))),
+            Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(_status_badge(backup_data["db"]["ok"]))),
+            Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(_status_badge(backup_data["file"]["ok"]))),
+            Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(backup_data["next_db_utc"]))),
+            Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(backup_data["next_file_utc"]))),
             cls="detail-table",
         ),
         style="margin-bottom:1rem;",
@@ -480,12 +470,25 @@ def setup_routes(app):
         if (r := _check_role(request, "admin")):
             return r
 
-        from celerp.gateway.client import get_client
-        gw = get_client()
+        from celerp.gateway.client import get_client as _local_get_client
+        import ui.api_client as _api
+        from ui.api_client import APIError as _APIError
         lang = get_lang(request)
 
-        # If not connected, show the full value-prop landing
-        if gw is None or gw.relay_status not in ("active", "tos_required", "connecting", "error"):
+        # Fetch relay status from the API process (the gateway client lives there)
+        relay_status = "inactive"
+        public_url = ""
+        try:
+            rs = await _api.get_relay_status(token)
+            relay_status = rs.get("relay_status", "inactive")
+            public_url = rs.get("public_url", "")
+        except (_APIError, Exception):
+            lc = _local_get_client()
+            relay_status = lc.relay_status if lc else "inactive"
+        gw_ok = relay_status in ("active", "tos_required", "connecting", "error")
+
+        # If not connected, show value-prop landing
+        if not gw_ok:
             from celerp.config import ensure_instance_id
             iid = ensure_instance_id()
             return base_shell(
@@ -506,9 +509,14 @@ def setup_routes(app):
             content = _infrastructure_tab()
         elif tab == "connectors":
             from ui.routes.settings_connectors import connectors_tab_content
-            content = await connectors_tab_content(lang)
+            content = await connectors_tab_content(lang, token=token)
         else:
-            content = Div(_cloud_relay_tab(), _backup_summary_card())
+            backup_data: dict | None = None
+            try:
+                backup_data = await _api.get_backup_status(token)
+            except Exception:
+                pass
+            content = Div(_cloud_relay_tab(relay_status=relay_status, public_url=public_url), _backup_summary_card(gw_ok=gw_ok, backup_data=backup_data))
             tab = "status"
 
         return base_shell(

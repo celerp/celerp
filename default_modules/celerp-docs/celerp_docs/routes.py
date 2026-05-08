@@ -9,7 +9,7 @@ import io
 import uuid
 from datetime import UTC, datetime, date as _date
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -23,6 +23,8 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.attachments import store_upload
+from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
@@ -503,6 +505,9 @@ async def create_doc(
         if contact_row is not None and contact_row.state.get("deleted"):
             raise HTTPException(status_code=422, detail="This contact has been deleted and cannot be used on new documents.")
 
+    if payload.currency and payload.currency not in CURRENCY_CODES:
+        raise HTTPException(status_code=422, detail=f"Invalid currency code: {payload.currency}")
+
     _assert_date_order(payload.model_dump(exclude_none=True))
 
     # Validate line item quantities against sell_by unit precision
@@ -719,6 +724,20 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     finalize_data: dict = {}
     event_type = "doc.finalized"
 
+    # Load company once for base currency (used for validation and JE conversion).
+    _company = await session.get(Company, company_id)
+    _base_currency = (_company.settings.get("currency", "USD") if _company else "USD")
+
+    # Validate: foreign-currency docs require a conversion rate before finalization.
+    _doc_currency = _initial_doc_state.get("currency", _base_currency)
+    if _doc_currency != _base_currency:
+        _rate = _initial_doc_state.get("conversion_rate")
+        if not _rate or float(_rate) <= 0:
+            raise HTTPException(
+                status_code=422,
+                detail="A conversion rate is required for foreign-currency documents. Set the exchange rate before finalizing.",
+            )
+
     # Invoices: assign real INV number on finalize, preserving PF ref.
     # On re-finalize (after revert-to-draft) the doc already holds the INV ref
     # and the original source_proforma_ref — reuse both so no counter slot is wasted
@@ -730,16 +749,14 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
             # Reuse existing INV ref; keep existing source_proforma_ref untouched.
             finalize_data["ref_id"] = existing_inv_ref
         else:
-            company = await session.get(Company, company_id)
-            inv_ref = next_doc_ref(company, "invoice")
+            inv_ref = next_doc_ref(_company, "invoice")
             finalize_data["ref_id"] = inv_ref
             finalize_data["source_proforma_ref"] = existing_inv_ref
             await session.flush()
 
     # Purchase Orders: "Convert to Bill" - assign BILL number, change doc_type
     elif doc_type == "purchase_order":
-        company = await session.get(Company, company_id)
-        bill_ref = next_doc_ref(company, "bill")
+        bill_ref = next_doc_ref(_company, "bill")
         finalize_data["ref_id"] = bill_ref
         finalize_data["source_po_ref"] = _initial_doc_state.get("ref_id", "")
         finalize_data["doc_type"] = "bill"
@@ -753,11 +770,11 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     )
     # Auto-JE on finalize (invoices, direct bills, or convert to bill (POs))
     if doc_type == "invoice":
-        await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state)
+        await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
     elif doc_type in ("purchase_order", "bill"):
         # Bill conversion JE: debit expense/inventory accounts, credit AP (2110)
         # Covers both PO->bill conversion and directly-created bills finalized directly.
-        await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state)
+        await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
     # Fire doc_finalize_hook for modules (e.g. warehousing) to react — before commit.
     await fire_lifecycle(
         "doc_finalize_hook",
@@ -904,7 +921,9 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     # Re-apply JEs for the restored status (idempotent - uses doc-scoped keys)
-    await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id, doc=state)
+    _unvoid_company = await session.get(Company, company_id)
+    _unvoid_base_currency = (_unvoid_company.settings.get("currency", "USD") if _unvoid_company else "USD")
+    await auto_je.create_for_doc_unvoided(session, company_id=company_id, user_id=user.id, doc_id=entity_id, doc=state, base_currency=_unvoid_base_currency)
 
     # TODO: actual re-fulfillment after unvoid would need inventory availability check.
     # For now, restore the fulfillment_status field so the UI reflects prior state.
@@ -973,11 +992,15 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     doc_type = _doc_state.get("doc_type", "invoice")
+    _pay_company = await session.get(Company, company_id)
+    _pay_base_currency = (_pay_company.settings.get("currency", "USD") if _pay_company else "USD")
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=_user_id, doc_id=entity_id,
         amount=payload.amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type=doc_type,
         payment_date=payload.payment_date,
+        base_currency=_pay_base_currency,
+        conversion_rate=float(_doc_state.get("conversion_rate") or 1),
     )
     # Lifecycle hook for modules (e.g. multicurrency FX gain/loss)
     from celerp.modules.slots import fire_lifecycle
@@ -1045,11 +1068,15 @@ async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str
     # for historical payments recorded before bank_account was required.
     doc_type = row.state.get("doc_type", "invoice")
     bank_code = payment.get("bank_account") or "1111"
+    _void_company = await session.get(Company, company_id)
+    _void_base_currency = (_void_company.settings.get("currency", "USD") if _void_company else "USD")
     await auto_je.void_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         payment_index=payload.payment_index, amount=payment["amount"],
         bank_account_code=bank_code, doc_type=doc_type,
         refund_date=payload.refund_date,
+        base_currency=_void_base_currency,
+        conversion_rate=float(row.state.get("conversion_rate") or 1),
     )
 
     # If this was a credit_note application (paired payment), void the other side too
@@ -1244,10 +1271,14 @@ async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, compa
     )
     # JE: AR-to-AR transfer. Index by current payment count to get a unique key per application.
     payment_idx = len(cn_row.state.get("payments", []))
+    _cn_company = await session.get(Company, company_id)
+    _cn_base_currency = (_cn_company.settings.get("currency", "USD") if _cn_company else "USD")
     await auto_je.create_for_cn_application(
         session, company_id=company_id, user_id=user.id,
         doc_id=payload.target_doc_id, cn_id=entity_id, amount=payload.amount,
         payment_index=payment_idx,
+        base_currency=_cn_base_currency,
+        conversion_rate=float(cn_row.state.get("conversion_rate") or 1),
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -1297,11 +1328,15 @@ async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Dep
     )
     # JE: debit AR, credit bank
     payment_index = len(cn.get("payments", []))
+    _refund_company = await session.get(Company, company_id)
+    _refund_base_currency = (_refund_company.settings.get("currency", "USD") if _refund_company else "USD")
     await auto_je.create_for_doc_payment(
         session, company_id=company_id, user_id=user.id, doc_id=entity_id,
         amount=payload.amount, payment_index=payment_index,
         bank_account_code=bank_code, doc_type="invoice",
         payment_date=payment_date,
+        base_currency=_refund_base_currency,
+        conversion_rate=float(cn.get("conversion_rate") or 1),
     )
     await session.commit()
     return {"event_id": entry.id}
@@ -1358,6 +1393,8 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
     if not payload.bank_account:
         raise HTTPException(status_code=422, detail="bank_account is required")
     bank_code = payload.bank_account
+    _bulk_company = await session.get(Company, company_id)
+    _bulk_base_currency = (_bulk_company.settings.get("currency", "USD") if _bulk_company else "USD")
 
     for doc_id, state in payable:
         if remaining <= 0.005:
@@ -1389,6 +1426,8 @@ async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_c
             amount=alloc, payment_index=payment_index,
             bank_account_code=bank_code, doc_type=doc_type,
             payment_date=payment_date,
+            base_currency=_bulk_base_currency,
+            conversion_rate=float(state.get("conversion_rate") or 1),
         )
         allocations.append({"doc_id": doc_id, "amount": alloc})
         remaining -= alloc
@@ -1529,6 +1568,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
                 for li in row.state.get("line_items", [])
             )
+        _rcv_company = await session.get(Company, company_id)
+        _rcv_base_currency = (_rcv_company.settings.get("currency", "USD") if _rcv_company else "USD")
         await auto_je.create_for_po_received(
             session,
             company_id=company_id,
@@ -1537,6 +1578,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             doc=row.state,
             total=po_total,
             unique_suffix=str(uuid.uuid4()),
+            base_currency=_rcv_base_currency,
         )
     await session.commit()
     return {"event_id": entry.id}
@@ -1659,8 +1701,10 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
                 float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)
                 for li in state.get("line_items", [])
             )
+        _consign_company = await session.get(Company, company_id)
+        _consign_base_currency = (_consign_company.settings.get("currency", "USD") if _consign_company else "USD")
         await auto_je.create_for_bill_conversion(
-            session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc=state,
+            session, company_id=company_id, user_id=user.id, doc_id=new_doc_id, doc=state, base_currency=_consign_base_currency,
         )
         entry = await emit_event(
             session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.converted",
@@ -1838,13 +1882,15 @@ async def import_doc(
 
     # Post-import auto-JE hook: if the imported doc is already in a final state, create JEs
     if body.event_type == "doc.created":
-        await _import_auto_je(session, company_id, user.id, body.entity_id, body.data)
+        _imp_company = await session.get(Company, company_id)
+        _imp_base_currency = (_imp_company.settings.get("currency", "USD") if _imp_company else "USD")
+        await _import_auto_je(session, company_id, user.id, body.entity_id, body.data, base_currency=_imp_base_currency)
 
     await session.commit()
     return {"event_id": entry.id, "id": body.entity_id, "idempotency_hit": False}
 
 
-async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict) -> None:
+async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id: str, data: dict, base_currency: str = "USD") -> None:
     """Create finalization JEs for imported docs that arrive in a non-draft state.
 
     IMPORTANT: We never synthesize payment JEs from snapshot imports.
@@ -1867,17 +1913,17 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
 
     if doc_type == "invoice" and status in ("sent", "final", "partial", "paid", "awaiting_payment"):
         await auto_je.create_for_doc_finalized(
-            session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data,
+            session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data, base_currency=base_currency,
         )
 
     elif doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
         await auto_je.create_for_po_received(
-            session, company_id=company_id, user_id=user_id, po_id=entity_id, doc=data, total=total,
+            session, company_id=company_id, user_id=user_id, po_id=entity_id, doc=data, total=total, base_currency=base_currency,
         )
 
     elif doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):
         await auto_je.create_for_bill_conversion(
-            session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data,
+            session, company_id=company_id, user_id=user_id, doc_id=entity_id, doc=data, base_currency=base_currency,
         )
 
 
@@ -1911,6 +1957,8 @@ async def batch_import_docs(
     created = skipped = updated = 0
     skipped_existing = 0
     errors: list[str] = []
+    _batch_company = await session.get(Company, company_id)
+    _batch_base_currency = (_batch_company.settings.get("currency", "USD") if _batch_company else "USD")
     for rec in body.records:
         if rec.idempotency_key in existing_keys:
             if body.upsert:
@@ -1966,7 +2014,7 @@ async def batch_import_docs(
             existing_keys.add(rec.idempotency_key)
             if rec.event_type == "doc.created":
                 existing_entities.add(rec.entity_id)
-                await _import_auto_je(session, company_id, user.id, rec.entity_id, rec.data)
+                await _import_auto_je(session, company_id, user.id, rec.entity_id, rec.data, base_currency=_batch_base_currency)
             created += 1
         except Exception as exc:
             if len(errors) < 10:
@@ -3171,3 +3219,140 @@ async def undo_receive(
 
     await session.commit()
     return {"undone": True, "item_ids": received_item_ids}
+
+
+# ── Doc File Attachments ───────────────────────────────────────────────────────
+
+
+def _get_doc_file(files: list[dict], file_id: str) -> dict:
+    match = next((f for f in files if f.get("id") == file_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return match
+
+
+@router.post("/{entity_id}/files")
+async def upload_doc_file(
+    entity_id: str,
+    file: UploadFile,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_doc(session, company_id, entity_id)
+    try:
+        meta = await store_upload(company_id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc))
+
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.file_attached",
+        data={
+            "entity_id": entity_id,
+            "entity_type": "doc",
+            "file_id": meta["id"],
+            "filename": meta["filename"],
+            "mime": meta["mime"],
+            "size": meta["size"],
+            "document_tag": None,
+            "description": None,
+            "uploaded_at": datetime.now(UTC).isoformat(),
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, **meta}
+
+
+@router.patch("/{entity_id}/files/{file_id}/tag")
+async def tag_doc_file(
+    entity_id: str,
+    file_id: str,
+    document_tag: str = Form(""),
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_doc(session, company_id, entity_id)
+    _get_doc_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.file_tagged",
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "document_tag": document_tag},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    return (updated.state if updated else {}) | {"id": entity_id}
+
+
+@router.patch("/{entity_id}/files/{file_id}/description")
+async def update_doc_file_description(
+    entity_id: str,
+    file_id: str,
+    description: str = Form(""),
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_doc(session, company_id, entity_id)
+    _get_doc_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.file_description_updated",
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id, "description": description},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    return (updated.state if updated else {}) | {"id": entity_id}
+
+
+@router.delete("/{entity_id}/files/{file_id}")
+async def delete_doc_file(
+    entity_id: str,
+    file_id: str,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_doc(session, company_id, entity_id)
+    _get_doc_file(row.state.get("files", []), file_id)
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type="doc.file_deleted",
+        data={"entity_id": entity_id, "entity_type": "doc", "file_id": file_id},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    return (updated.state if updated else {}) | {"id": entity_id}

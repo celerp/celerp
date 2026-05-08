@@ -75,7 +75,11 @@ def notes_tab(
             ),
             cls="form-group",
         ),
-        Button(t("btn.add_note"), type="submit", cls="btn btn--primary btn--sm"),
+        Div(
+            Button(t("btn.add_note"), type="submit", cls="btn btn--primary btn--sm"),
+            cls="form-actions",
+            style="margin-top:0.5rem",
+        ),
         hx_post=add_url,
         hx_target=refresh_target,
         hx_swap="innerHTML",

@@ -17,6 +17,19 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
+from ui.components.files import _files_section as _shared_doc_files_section
+
+
+def _enrich_doc_files(doc: dict) -> list[dict]:
+    """Tag each file in a doc with its linked_ref and linked_url."""
+    doc_id = doc.get("entity_id") or doc.get("id") or ""
+    ref = doc.get("ref_id") or doc.get("doc_number") or ""
+    url = f"/docs/{doc_id}" if doc_id else ""
+    return [{**f, "linked_ref": ref, "linked_url": url} for f in doc.get("files", [])]
+
+
+def _doc_files_section(entity_type: str, entity_id: str, files: list[dict], **kwargs):
+    return _shared_doc_files_section(entity_type, entity_id, files, **kwargs)
 from ui.components.notes import _safe_id
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
@@ -1290,9 +1303,11 @@ def setup_routes(app):
             pass
         # Fetch company timezone for notes display
         tz: str = "UTC"
+        company_currency: str = "USD"
         try:
             _co = await api.get_company(token)
             tz = _co.get("timezone") or "UTC"
+            company_currency = _co.get("currency") or "USD"
         except Exception:
             pass
         company_taxes: list[dict] = []
@@ -1324,7 +1339,7 @@ def setup_routes(app):
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
             request=request,
@@ -1376,6 +1391,25 @@ def setup_routes(app):
             # Status is a state-machine field; transitions happen via lifecycle buttons only.
             # Return a non-editable display to block direct manipulation via URL.
             return _doc_display_cell(entity_id, "status", value)
+        elif field == "currency":
+            # Currency is immutable after creation - show read-only display
+            return _doc_display_cell(entity_id, "currency", value)
+        elif field == "conversion_rate":
+            # Editable on draft only; locked after finalization
+            doc_status = doc.get("status", "draft")
+            if doc_status != "draft":
+                return _doc_display_cell(entity_id, "conversion_rate", value)
+            input_el = Input(
+                type="number", name="value", value=value, step="any", min="0",
+                hx_patch=f"/docs/{entity_id}/field/{field}",
+                hx_target="closest .editable-cell", hx_swap="outerHTML",
+                hx_trigger="blur delay:200ms", cls="cell-input", autofocus=True,
+                onkeydown=esc_js + enter_js,
+                onblur=f"if(!this.value.trim() && !this.dataset.dirty){{{blur_restore}}}",
+                oninput="this.dataset.dirty='1'",
+                data_orig=value,
+                placeholder="e.g. 35.00",
+            )
         elif field == "purchase_kind":
             opts = ["inventory", "expense", "asset"]
             input_el = Select(
@@ -1600,6 +1634,10 @@ def setup_routes(app):
                             patch["price_list"] = default_pl
                         except Exception:
                             pass
+                    # Propagate contact currency to draft doc (enables foreign-currency workflow)
+                    contact_currency = contact.get("currency")
+                    if contact_currency and doc.get("status", "draft") == "draft":
+                        patch["currency"] = contact_currency
                 except APIError:
                     pass  # contact fetch failure → skip auto-populate
             # Auto-calculate due_date when payment_terms changes
@@ -2661,6 +2699,104 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
         return _render_receive_goods_section(doc)
 
+    # ── Doc file management (upload / delete / tag / description / download) ──
+
+    @app.post("/docs/{entity_id}/files")
+    async def doc_upload_file(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        file = form.get("file")
+        if not file or not hasattr(file, "read"):
+            try:
+                doc = await api.get_doc(token, entity_id)
+            except APIError:
+                doc = {"entity_id": entity_id}
+            return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+        description = str(form.get("description", "")).strip()
+        document_tag = str(form.get("document_tag", "")).strip()
+        content = await file.read()
+        filename = getattr(file, "filename", "upload")
+        content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
+        try:
+            await api.upload_doc_file(token, entity_id, content, filename, content_type, description, document_tag)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+
+    @app.delete("/docs/{entity_id}/files/{file_id}")
+    async def doc_delete_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            await api.delete_doc_file(token, entity_id, file_id)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+
+    @app.post("/docs/{entity_id}/files/{file_id}/tag")
+    async def doc_tag_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        document_tag = str(form.get("document_tag", "")).strip()
+        try:
+            await api.tag_doc_file(token, entity_id, file_id, document_tag)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+
+    @app.post("/docs/{entity_id}/files/{file_id}/description")
+    async def doc_patch_file_description(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        description = str(form.get("description", "")).strip()
+        try:
+            await api.patch_doc_file_description(token, entity_id, file_id, description)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+
+    @app.get("/docs/{entity_id}/files/_section")
+    async def doc_files_section(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        qp = request.query_params
+        try:
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _doc_files_section("doc", entity_id, _enrich_doc_files(doc),
+            page=int(qp.get("page", "1") or "1"),
+            sort_dir=qp.get("sort_dir", "desc"),
+            tag_filter=qp.get("tag_filter", ""),
+            date_from=qp.get("date_from", ""),
+            date_to=qp.get("date_to", ""),
+            search=qp.get("search", ""),
+        )
+
+    @app.get("/docs/{entity_id}/files/{file_id}/download")
+    async def doc_download_file(request: Request, entity_id: str, file_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            r = await api.download_doc_file(token, entity_id, file_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _R(content=r.content, status_code=r.status_code, headers=dict(r.headers))
+
     @app.get("/lists")
     async def lists_page(request: Request):
         token = _token(request)
@@ -3630,7 +3766,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD") -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -4248,25 +4384,29 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Div("Drop PDF or receipt image here to auto-fill this bill", cls="ai-dropzone__text"),
                     Div(t("doc.powered_by_celerp_ai_operator"), cls="ai-dropzone__sub"),
                     cls="ai-dropzone",
-                    data_ai_dropzone="1",
-                    onclick="celerpAiDropzoneClick()",
+                    id=f"ai-dropzone-{entity_id}",
                     title="Auto-fill line items from receipts or invoices",
                 ),
-                Script("""
-(function() {
-  window.celerpAiDropzoneClick = function() {
-    var el = document.querySelector('[data-ai-dropzone]');
-    if (el) {
-      el.innerHTML = '✨ <a href="/ai" style="color:inherit;font-weight:600;">Unlock AI auto-fill</a> — Requires Celerp Cloud ($29/mo)';
-      el.style.cursor = 'default'; el.onclick = null;
-    }
-  };
-  var dz = document.querySelector('[data-ai-dropzone]');
+                Script(f"""
+(function() {{
+  var dz = document.getElementById('ai-dropzone-{entity_id}');
   if (!dz) return;
-  dz.addEventListener('dragover', function(e) { e.preventDefault(); dz.classList.add('ai-dropzone--over'); });
-  dz.addEventListener('dragleave', function() { dz.classList.remove('ai-dropzone--over'); });
-  dz.addEventListener('drop', function(e) { e.preventDefault(); dz.classList.remove('ai-dropzone--over'); celerpAiDropzoneClick(); });
-})();
+  function handleFile(file) {{
+    var fd = new FormData(); fd.append('file', file);
+    dz.classList.add('ai-dropzone--over');
+    fetch('/docs/{entity_id}/files', {{method:'POST',body:fd}})
+      .then(function(r) {{ dz.classList.remove('ai-dropzone--over'); }})
+      .catch(function() {{ dz.classList.remove('ai-dropzone--over'); }});
+  }}
+  dz.addEventListener('click', function() {{
+    var inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.pdf,image/*';
+    inp.onchange = function() {{ if (inp.files.length) handleFile(inp.files[0]); }};
+    inp.click();
+  }});
+  dz.addEventListener('dragover', function(e) {{ e.preventDefault(); dz.classList.add('ai-dropzone--over'); }});
+  dz.addEventListener('dragleave', function() {{ dz.classList.remove('ai-dropzone--over'); }});
+  dz.addEventListener('drop', function(e) {{ e.preventDefault(); if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]); }});
+}})();
 """),
             ]
 
@@ -4977,6 +5117,11 @@ async function celerpCsvImport(input, entityId) {{
         Div(Span(t("doc.total"), cls="total-label total-label--final"),
             Span(fmt_money(total_amount, currency), id="doc-total", cls="total-value total-value--final"),
             cls="total-row total-row--final"),
+        # Conversion note: shown only when doc currency differs from company base currency
+        *([Div(
+            Span(f"≈ {fmt_money(total_amount * float(doc.get('conversion_rate') or 1), company_currency)} at {doc.get('conversion_rate')} {company_currency}/{currency}", cls="total-label total-label--conversion"),
+            cls="total-row total-row--conversion",
+        )] if currency != company_currency and doc.get("conversion_rate") else []),
         cls="total-panel",
     )
 
@@ -5000,6 +5145,12 @@ async function celerpCsvImport(input, entityId) {{
     if not is_list:
         _contact_rows.append(Div(Div(t("doc.payment_terms"), cls="form-label"), _cell("payment_terms", doc.get("payment_terms")), cls="form-group"))
     _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _cell("status", status), *_slot_badges, cls="form-group"))
+    # Currency row: always show; rate row shown only when doc currency differs from base
+    _contact_rows.append(Div(Div(t("doc.currency"), cls="form-label"), _cell("currency", currency), cls="form-group"))
+    if currency != company_currency:
+        _rate_val = doc.get("conversion_rate")
+        _rate_display = str(_rate_val) if _rate_val else "--"
+        _contact_rows.append(Div(Div(t("doc.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
     if not is_list and outstanding_value is not None:
         _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
 
@@ -5133,6 +5284,14 @@ async function celerpCsvImport(input, entityId) {{
                 ),
                 cls="doc-row",
             ),
+            cls="doc-internal",
+        ),
+        # --- Attachments section ---
+        Details(
+            Summary(
+                H2(t("label.files"), cls="internal-section-title"),
+            ),
+            _doc_files_section("doc", entity_id, _enrich_doc_files(doc)),
             cls="doc-internal",
         ),
         # --- History / Activity section ---

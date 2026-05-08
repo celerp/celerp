@@ -50,6 +50,7 @@ ALL_CHECKS = [
     "legacy_item_prices",
     "inverted_doc_dates",
     "fractional_piece_quantities",
+    "contact_file_schema",
 ]
 
 
@@ -640,6 +641,78 @@ async def _check_fractional_piece_quantities(
     }
 
 
+async def _check_contact_file_schema(
+    session: AsyncSession, company_id, user_id, *, fix: bool,
+) -> dict:
+    """Find contact file records using the old schema (file_id instead of id,
+    content_type instead of mime, or uppercase document_tag values).
+
+    These arise from contact file records created before the schema was
+    normalized in the file-management consolidation (2026-05). Fix: rewrite
+    the files list on each affected contact via a crm.contact.updated event.
+    """
+    contacts = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "contact",
+        )
+    )).scalars().all()
+
+    affected = []
+    fixed = 0
+    for row in contacts:
+        state = row.state
+        files = state.get("files") or []
+        needs_fix = any(
+            "file_id" in f or "content_type" in f or
+            (f.get("document_tag", "") != f.get("document_tag", "").lower())
+            for f in files
+        )
+        if not needs_fix:
+            continue
+        normalized = []
+        for f in files:
+            nf = dict(f)
+            if "file_id" in nf and "id" not in nf:
+                nf["id"] = nf.pop("file_id")
+            elif "file_id" in nf:
+                nf.pop("file_id")
+            if "content_type" in nf and "mime" not in nf:
+                nf["mime"] = nf.pop("content_type")
+            elif "content_type" in nf:
+                nf.pop("content_type")
+            if nf.get("document_tag"):
+                nf["document_tag"] = nf["document_tag"].lower()
+            normalized.append(nf)
+        affected.append({
+            "entity_id": row.entity_id,
+            "name": state.get("name") or row.entity_id,
+            "file_count": len(files),
+        })
+        if fix:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=row.entity_id,
+                entity_type="contact",
+                event_type="crm.contact.updated",
+                data={"fields_changed": {"files": {"old": files, "new": normalized}}},
+                actor_id=user_id,
+                location_id=None,
+                source="doctor",
+                idempotency_key=f"doctor:contact-file-schema:{row.entity_id}",
+            )
+            fixed += 1
+
+    return {
+        "check": "contact_file_schema",
+        "found": len(affected),
+        "fixed": fixed,
+        "auto_fixable": True,
+        "details": affected[:100],
+    }
+
+
 # --- Check dispatcher ---
 
 _CHECK_FNS = {
@@ -653,6 +726,7 @@ _CHECK_FNS = {
     "legacy_item_prices": _check_legacy_item_prices,
     "inverted_doc_dates": _check_inverted_doc_dates,
     "fractional_piece_quantities": _check_fractional_piece_quantities,
+    "contact_file_schema": _check_contact_file_schema,
 }
 
 
