@@ -676,7 +676,7 @@ def _new_company_form(error: str = "", lang: str = "en") -> FT:
             ),
             Button(t("btn.continue", lang), type="submit", cls="btn btn--primary btn--full mt-sm"),
             P(
-                A(t("auth.back_to_settings", lang), href="/settings/general?tab=company", cls="auth-link"),
+                A(t("btn.back_to_settings", lang), href="/settings/general?tab=company", cls="auth-link"),
                 cls="auth-footer-text",
             ),
             method="post", action="/setup/new-company", cls="auth-form",

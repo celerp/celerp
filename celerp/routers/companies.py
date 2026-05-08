@@ -220,6 +220,7 @@ async def create_company(
     company = Company(id=uuid.uuid4(), name=payload.name, slug=slug, settings={})
     link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
     session.add(company)
+    await session.flush()  # persist company row before FK reference in user_companies
     session.add(link)
     await session.flush()
     # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
