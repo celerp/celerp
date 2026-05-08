@@ -15,15 +15,23 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Suppress noisy per-request access log lines for long-polling/SSE endpoints.
-class _SuppressSSEAccess(logging.Filter):
-    _SUPPRESSED = frozenset(["/notifications/stream"])
+# Suppress noisy SSE access log lines by patching the uvicorn.access logger's
+# callHandlers path. We override Logger.callHandlers so the patch is in place
+# before uvicorn adds its handlers - meaning new handlers are also covered.
+_SSE_SUPPRESSED = frozenset(["/notifications/stream"])
 
-    def filter(self, record: logging.LogRecord) -> bool:
-        msg = record.getMessage()
-        return not any(path in msg for path in self._SUPPRESSED)
+class _FilteringLogger(logging.Logger):
+    def callHandlers(self, record):
+        if record.name == "uvicorn.access":
+            msg = record.getMessage()
+            if any(path in msg for path in _SSE_SUPPRESSED):
+                return
+        super().callHandlers(record)
 
-logging.getLogger("uvicorn.access").addFilter(_SuppressSSEAccess())
+logging.setLoggerClass(_FilteringLogger)
+# Also patch the already-created uvicorn.access logger instance
+_access_logger = logging.getLogger("uvicorn.access")
+_access_logger.__class__ = _FilteringLogger
 
 from fasthtml.common import FastHTML, Beforeware, RedirectResponse
 from starlette.staticfiles import StaticFiles
@@ -182,18 +190,6 @@ app = FastHTML(
 )
 
 app.add_middleware(TokenRefreshMiddleware)
-
-# Suppress noisy SSE access log lines after uvicorn has configured its handlers.
-@app.on_event("startup")
-async def _suppress_sse_access_log():
-    _uvicorn_access = logging.getLogger("uvicorn.access")
-    _f = _SuppressSSEAccess()
-    # Apply to both the logger and all its handlers (uvicorn uses handler-level logging)
-    _uvicorn_access.filters = [f for f in _uvicorn_access.filters if not isinstance(f, _SuppressSSEAccess)]
-    _uvicorn_access.addFilter(_f)
-    for handler in _uvicorn_access.handlers:
-        handler.filters = [f for f in handler.filters if not isinstance(f, _SuppressSSEAccess)]
-        handler.addFilter(_f)
 
 
 # ── i18n middleware: set context language per request ───────────────────────────
