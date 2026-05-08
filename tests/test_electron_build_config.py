@@ -16,12 +16,10 @@ def _artifact_names() -> dict[str, str]:
     pkg = json.loads(_PKG.read_text())
     result: dict[str, str] = {}
     for platform in ("mac", "win", "linux"):
-        targets = pkg["build"][platform]["target"]
-        # targets is a list of {target, arch, artifactName} objects
-        for t in targets:
-            if isinstance(t, dict) and "artifactName" in t:
-                result[platform] = t["artifactName"]
-                break
+        section = pkg["build"][platform]
+        # artifactName lives at the platform level (not inside target[])
+        if "artifactName" in section:
+            result[platform] = section["artifactName"]
     return result
 
 
@@ -41,13 +39,11 @@ def test_stable_artifact_names():
 
 
 def test_all_platforms_have_artifact_name():
-    """Every platform target must declare an explicit artifactName (no implicit versioned names)."""
+    """Every platform must declare an explicit artifactName at the platform level."""
     pkg = json.loads(_PKG.read_text())
     for platform in ("mac", "win", "linux"):
-        targets = pkg["build"][platform]["target"]
-        for t in targets:
-            if isinstance(t, dict):
-                assert "artifactName" in t, (
-                    f"Platform '{platform}' target {t!r} is missing artifactName. "
-                    "electron-builder will fall back to a versioned name, breaking stable links."
-                )
+        section = pkg["build"][platform]
+        assert "artifactName" in section, (
+            f"Platform '{platform}' is missing artifactName at the platform level. "
+            "electron-builder will fall back to a versioned name, breaking stable links."
+        )
