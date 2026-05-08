@@ -304,6 +304,41 @@ def setup_routes(app):
     # Step 3: cloud upsell (optional)
     # ------------------------------------------------------------------
 
+    @app.get("/setup/new-company")
+    async def new_company_page(request: Request):
+        """Entry point for adding a second (or nth) company workspace."""
+        token = request.cookies.get(COOKIE_NAME)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        error = request.query_params.get("error", "")
+        return auth_shell(
+            _new_company_form(error=error, lang=lang),
+            title="New company - Celerp",
+        )
+
+    @app.post("/setup/new-company")
+    async def new_company_submit(request: Request):
+        """Create company, switch token, drop into the setup wizard."""
+        token = request.cookies.get(COOKIE_NAME)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        company_name = str(form.get("company_name", "")).strip()
+        if not company_name:
+            return RedirectResponse("/setup/new-company?error=Company+name+required", status_code=302)
+        from ui.api_client import create_company as api_create
+        try:
+            new_token = await api_create(token, company_name)
+        except APIError as e:
+            import urllib.parse
+            return RedirectResponse(f"/setup/new-company?error={urllib.parse.quote(e.detail)}", status_code=302)
+        from celerp.config import settings as _s
+        from ui.routes.auth import cookie_domain
+        resp = RedirectResponse("/setup/company", status_code=302)
+        resp.set_cookie(COOKIE_NAME, new_token, httponly=True, samesite="lax", max_age=900, secure=_s.cookie_secure, domain=cookie_domain(request))
+        return resp
+
     @app.get("/setup/cloud")
     async def cloud_page(request: Request):
         token = request.cookies.get(COOKIE_NAME)
@@ -614,6 +649,37 @@ def _cloud_form() -> FT:
                 cls="cloud-upsell-compare-wrap",
             ),
             cls="cloud-upsell-actions",
+        ),
+        cls="auth-card",
+    )
+
+
+def _new_company_form(error: str = "", lang: str = "en") -> FT:
+    """Simple name-entry form for creating a new company workspace."""
+    return Div(
+        Div(
+            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            H1(t("setup.new_company_title", lang), cls="auth-title"),
+            P(t("setup.new_company_subtitle", lang), cls="auth-subtitle"),
+            cls="auth-header",
+        ),
+        flash(error) if error else "",
+        Form(
+            Div(
+                Label(t("label.company_name", lang), fr="company_name", cls="form-label"),
+                Input(
+                    type="text", id="company_name", name="company_name",
+                    placeholder=t("settings.new_company_name_placeholder", lang),
+                    required=True, autofocus=True, cls="form-input",
+                ),
+                cls="form-group",
+            ),
+            Button(t("btn.continue", lang), type="submit", cls="btn btn--primary btn--full mt-sm"),
+            P(
+                A(t("auth.back_to_settings", lang), href="/settings/general?tab=company", cls="auth-link"),
+                cls="auth-footer-text",
+            ),
+            method="post", action="/setup/new-company", cls="auth-form",
         ),
         cls="auth-card",
     )

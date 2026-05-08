@@ -244,24 +244,6 @@ def setup_routes(app):
         resp.set_cookie(COOKIE_NAME, new_token, httponly=True, samesite="lax", max_age=900, secure=_settings.cookie_secure, domain=cookie_domain(request))
         return resp
 
-    @app.post("/create-company")
-    async def create_company_ui(request: Request):
-        token = request.cookies.get(COOKIE_NAME)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        company_name = str(form.get("company_name", "")).strip()
-        if not company_name:
-            return RedirectResponse("/?error=Company+name+required", status_code=302)
-        from ui.api_client import create_company as api_create
-        try:
-            new_token = await api_create(token, company_name)
-        except APIError as e:
-            return RedirectResponse(f"/?error={e.detail}", status_code=302)
-        resp = RedirectResponse("/setup/company", status_code=302)
-        resp.set_cookie(COOKIE_NAME, new_token, httponly=True, samesite="lax", max_age=900, secure=_settings.cookie_secure, domain=cookie_domain(request))
-        return resp
-
     # ── Logout ───────────────────────────────────────────────────────────────
 
     @app.post("/logout")
@@ -549,15 +531,11 @@ def _company_picker_panel(companies: list[dict]) -> FT:
         )
         for c in companies
     ]
-    new_company_form = Form(
-        Input(
-            type="text", name="company_name", placeholder="Company name",
-            required=True, cls="form-input picker-new-input",
-        ),
-        Button(t("btn._create"), type="submit", cls="btn btn--primary btn--sm"),
-        method="post", action="/create-company", cls="company-picker-new",
+    new_company_link = Div(
+        A(t("btn.new_company"), href="/setup/new-company", cls="btn btn--sm btn--secondary btn--full"),
+        cls="company-picker-new",
     )
-    return Div(*company_items, Hr(cls="picker-divider"), new_company_form, cls="company-picker")
+    return Div(*company_items, Hr(cls="picker-divider"), new_company_link, cls="company-picker")
 
 
 def _forgot_password_form(error: str | None = None) -> FT:

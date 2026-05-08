@@ -615,19 +615,18 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_company_picker_has_create_form(self, ui_client):
-        """GET /switch-company → picker includes 'Create new company' form."""
+        """GET /switch-company → picker includes 'New company' link to setup wizard."""
         with patch("ui.routes.auth.api_my_companies", new=AsyncMock(return_value=self._COMPANIES)):
             r = await ui_client.get("/switch-company", cookies=_authed())
         assert r.status_code == 200
-        assert b"create-company" in r.content
-        assert b"company_name" in r.content
+        assert b"setup/new-company" in r.content
 
     @pytest.mark.asyncio
     async def test_create_company_post_redirects_to_setup(self, ui_client):
-        """POST /create-company → creates company, redirects to /setup/company."""
+        """POST /setup/new-company → creates company, redirects to /setup/company."""
         with patch("ui.api_client.create_company", new=AsyncMock(return_value="new-co-token")):
             r = await ui_client.post(
-                "/create-company",
+                "/setup/new-company",
                 data={"company_name": "New Venture Ltd"},
                 cookies=_authed(),
             )
@@ -637,9 +636,9 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_create_company_empty_name_rejected(self, ui_client):
-        """POST /create-company with blank name → redirect with error."""
+        """POST /setup/new-company with blank name → redirect with error."""
         r = await ui_client.post(
-            "/create-company",
+            "/setup/new-company",
             data={"company_name": "  "},
             cookies=_authed(),
         )
@@ -648,8 +647,8 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_create_company_without_auth_redirects(self, ui_client):
-        """POST /create-company without cookie → redirect to /login."""
-        r = await ui_client.post("/create-company", data={"company_name": "Test"})
+        """POST /setup/new-company without cookie → redirect to /login."""
+        r = await ui_client.post("/setup/new-company", data={"company_name": "Test"})
         assert r.status_code in (302, 303)
         assert "login" in r.headers.get("location", "")
 

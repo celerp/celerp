@@ -1203,5 +1203,7 @@
   "chip.total": "合計",
   "btn.new_company": "New company",
   "btn.create_company": "Create company",
-  "settings.new_company_name_placeholder": "Company name"
+  "settings.new_company_name_placeholder": "Company name",
+  "setup.new_company_title": "New company",
+  "setup.new_company_subtitle": "Enter a name for your new company workspace."
 }
