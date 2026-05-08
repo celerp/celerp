@@ -97,7 +97,7 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm run build:mac -- --publish onTagOrDraft
+        run: pnpm run build:mac -- --publish always
 
       - name: Build macOS (dev - signed only, no notarization)
         if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
@@ -114,7 +114,7 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ${{ matrix.build_cmd }} -- --publish onTagOrDraft
+        run: ${{ matrix.build_cmd }} -- --publish always
 
       - name: Build (Windows / Linux - dev build)
         if: matrix.os != 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
@@ -124,17 +124,35 @@ jobs:
         run: ${{ matrix.build_cmd }}
 
 
-      - name: Normalize artifact names
+      - name: Verify YML artifact names
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         shell: bash
         run: |
-          cd electron/dist
-          # Static names so website download links never need updating.
-          for f in *.exe; do [ -f "$f" ] && mv "$f" Celerp-Setup.exe; done
-          for f in *.dmg; do [ -f "$f" ] && mv "$f" Celerp-mac.dmg; done
-          for f in *.AppImage; do [ -f "$f" ] && mv "$f" Celerp.AppImage; done
-          ls -la Celerp-* 2>/dev/null || echo "No matching artifacts"
+          # Confirm electron-builder's generated YML files reference the stable filenames.
+          # This catches any regression where artifactName reverts to a versioned name.
+          FAIL=0
+          check_yml() {
+            local yml="$1" expected="$2"
+            if [ ! -f "$yml" ]; then
+              echo "SKIP: $yml not produced on this platform (expected)"
+              return
+            fi
+            if grep -q "url: $expected" "$yml"; then
+              echo "OK: $yml -> $expected"
+            else
+              echo "FAIL: $yml does not reference '$expected'"
+              echo "  Contents:"
+              cat "$yml"
+              FAIL=1
+            fi
+          }
+          check_yml electron/dist/latest-mac.yml   "Celerp-mac.dmg"
+          check_yml electron/dist/latest.yml        "Celerp-Setup.exe"
+          check_yml electron/dist/latest-linux.yml  "Celerp.AppImage"
+          exit $FAIL
 
-      - name: Upload artifacts
+      - name: Upload artifacts (dev builds only)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.os }}
@@ -143,17 +161,6 @@ jobs:
             electron/dist/Celerp-mac.dmg
             electron/dist/Celerp.AppImage
           if-no-files-found: warn
-
-      - name: Release (version tag)
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac.dmg
-            electron/dist/Celerp.AppImage
-          draft: false
-          prerelease: false
 
       - name: Release (dev build)
         if: "!startsWith(github.ref, 'refs/tags/v')"
