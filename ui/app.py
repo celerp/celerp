@@ -15,23 +15,22 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Suppress noisy SSE access log lines by patching the uvicorn.access logger's
-# callHandlers path. We override Logger.callHandlers so the patch is in place
-# before uvicorn adds its handlers - meaning new handlers are also covered.
+# Suppress noisy SSE access log lines.
+# Patch logging.Logger.handle directly on the base class - survives any
+# logger reconfiguration uvicorn does after app import.
 _SSE_SUPPRESSED = frozenset(["/notifications/stream"])
+_orig_logger_handle = logging.Logger.handle
 
-class _FilteringLogger(logging.Logger):
-    def callHandlers(self, record):
-        if record.name == "uvicorn.access":
-            msg = record.getMessage()
-            if any(path in msg for path in _SSE_SUPPRESSED):
+def _filtered_logger_handle(self, record):
+    if self.name == "uvicorn.access":
+        try:
+            if any(p in record.getMessage() for p in _SSE_SUPPRESSED):
                 return
-        super().callHandlers(record)
+        except Exception:
+            pass
+    _orig_logger_handle(self, record)
 
-logging.setLoggerClass(_FilteringLogger)
-# Also patch the already-created uvicorn.access logger instance
-_access_logger = logging.getLogger("uvicorn.access")
-_access_logger.__class__ = _FilteringLogger
+logging.Logger.handle = _filtered_logger_handle
 
 from fasthtml.common import FastHTML, Beforeware, RedirectResponse
 from starlette.staticfiles import StaticFiles
