@@ -1393,6 +1393,7 @@ async def list_modules(
     each is currently enabled in company settings. Loaded (runtime) modules are
     also flagged as running=True.
     """
+    import asyncio
     import os
     from pathlib import Path
     from celerp.modules.loader import loaded_modules
@@ -1401,42 +1402,41 @@ async def list_modules(
     company = await session.get(Company, company_id)
     settings_dict: dict = company.settings or {} if company else {}
     enabled_names = get_enabled(settings_dict)
-
-    # Build a map of loaded manifests by name for O(1) lookup
     loaded_by_name: dict[str, dict] = {m["name"]: m for m in loaded_modules()}
-
-    # Scan installed module directories (comma-separated)
     module_dir_raw = os.environ.get("MODULE_DIR", "")
-    results: list[dict] = []
-    seen: set[str] = set()
-    for d_str in module_dir_raw.split(","):
-        d_str = d_str.strip()
-        if not d_str:
-            continue
-        d = Path(d_str)
-        if not d.exists():
-            continue
-        for pkg_path in sorted(d.iterdir()):
-            if not pkg_path.is_dir() or not (pkg_path / "__init__.py").exists():
-                continue
-            pkg_name = pkg_path.name
-            if pkg_name in seen:
-                continue
-            seen.add(pkg_name)
-            loaded = loaded_by_name.get(pkg_name)
-            manifest_source = loaded or {}
-            results.append({
-                "name": pkg_name,
-                "label": manifest_source.get("display_name") or manifest_source.get("label") or pkg_name,
-                "version": manifest_source.get("version", "unknown"),
-                "description": manifest_source.get("description", ""),
-                "author": manifest_source.get("author", ""),
-                "depends_on": list(manifest_source.get("depends_on") or []),
-                "enabled": pkg_name in enabled_names,
-                "running": pkg_name in loaded_by_name,
-            })
 
-    return results
+    def _scan_modules() -> list[dict]:
+        results: list[dict] = []
+        seen: set[str] = set()
+        for d_str in module_dir_raw.split(","):
+            d_str = d_str.strip()
+            if not d_str:
+                continue
+            d = Path(d_str)
+            if not d.exists():
+                continue
+            for pkg_path in sorted(d.iterdir()):
+                if not pkg_path.is_dir() or not (pkg_path / "__init__.py").exists():
+                    continue
+                pkg_name = pkg_path.name
+                if pkg_name in seen:
+                    continue
+                seen.add(pkg_name)
+                loaded = loaded_by_name.get(pkg_name)
+                manifest_source = loaded or {}
+                results.append({
+                    "name": pkg_name,
+                    "label": manifest_source.get("display_name") or manifest_source.get("label") or pkg_name,
+                    "version": manifest_source.get("version", "unknown"),
+                    "description": manifest_source.get("description", ""),
+                    "author": manifest_source.get("author", ""),
+                    "depends_on": list(manifest_source.get("depends_on") or []),
+                    "enabled": pkg_name in enabled_names,
+                    "running": pkg_name in loaded_by_name,
+                })
+        return results
+
+    return await asyncio.to_thread(_scan_modules)
 
 
 @router.post("/me/modules/{module_name}/enable", dependencies=[Depends(require_admin)])
