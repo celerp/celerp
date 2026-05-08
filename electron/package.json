@@ -74,13 +74,13 @@
     ],
     "win": {
       "icon": "assets/icon.ico",
+      "artifactName": "Celerp-Setup.exe",
       "target": [
         {
           "target": "nsis",
           "arch": [
             "x64"
-          ],
-          "artifactName": "Celerp-Setup.exe"
+          ]
         }
       ]
     },
@@ -91,26 +91,26 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
+      "artifactName": "Celerp-mac.dmg",
       "target": [
         {
           "target": "dmg",
           "arch": [
             "arm64"
-          ],
-          "artifactName": "Celerp-mac.dmg"
+          ]
         }
       ]
     },
     "linux": {
       "icon": "assets/icon.png",
       "category": "Office",
+      "artifactName": "Celerp.AppImage",
       "target": [
         {
           "target": "AppImage",
           "arch": [
             "x64"
-          ],
-          "artifactName": "Celerp.AppImage"
+          ]
         }
       ]
     },
