@@ -216,6 +216,11 @@ def setup_routes(app):
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
 
+    @app.get("/switch-company/{company_id}")
+    async def do_switch_company_get(request: Request, company_id: str):
+        """GET handler so the topbar <select> onchange can use location= directly."""
+        return await do_switch_company(request, company_id)
+
     @app.post("/switch-company/{company_id}")
     async def do_switch_company(request: Request, company_id: str):
         token = request.cookies.get(COOKIE_NAME)
