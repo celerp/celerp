@@ -3276,12 +3276,13 @@ def _cloud_relay_tab(relay_status: str | None = None, public_url: str | None = N
 def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     """Cloud Backup settings tab - full history UI with export/import."""
     from celerp.config import settings as _cfg
-    from celerp.gateway.client import get_client
     from ui.components.backup import local_backup_buttons
     from ui.components.cloud_gate import upgrade_banner
 
     enc_ok = bool(_cfg.backup_encryption_key)
-    gw_ok = get_client() is not None
+    # gw_ok is derived from the API response - reading get_client() here would
+    # always return None because the gateway client lives in the API process.
+    gw_ok = bool(backup_data and backup_data.get("gateway_token_set"))
 
     if not gw_ok:
         return Div(

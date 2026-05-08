@@ -92,6 +92,7 @@ async def cloud_status() -> dict:
 @router.get("/settings/backup-status")
 async def backup_status() -> dict:
     """Return backup scheduler state: last results and next scheduled run times."""
+    from celerp.config import settings
     from celerp.services import backup_scheduler
     db = backup_scheduler.last_db_result()
     fl = backup_scheduler.last_file_result()
@@ -100,6 +101,7 @@ async def backup_status() -> dict:
     running = bool(backup_scheduler._db_task and not backup_scheduler._db_task.done())
     return {
         "running": running,
+        "gateway_token_set": bool(settings.gateway_token),
         "db": {"ok": db.ok, "error": db.error, "size_bytes": db.size_bytes,
                "last_run": db.last_run.isoformat() if db.last_run else None},
         "file": {"ok": fl.ok, "error": fl.error, "size_bytes": fl.size_bytes,
