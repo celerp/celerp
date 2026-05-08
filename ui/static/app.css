@@ -515,10 +515,10 @@ a:hover { text-decoration: underline; }
 
 /* ─── Row action menu ─────────────────────────────────────────────────── */
 .col-actions { width: 32px; text-align: center; }
-.row-menu { position: relative; }
+.row-menu { position: static; }
 .row-menu-btn { background: none; border: none; color: var(--c-text2); cursor: pointer; font-size: 16px; padding: 2px 6px; border-radius: var(--radius); }
 .row-menu-btn:hover { background: var(--c-bg3); color: var(--c-text); }
-.row-menu-dropdown { display: none; position: absolute; right: 0; top: 100%; z-index: 50; min-width: 120px; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); box-shadow: 0 4px 12px rgba(26,29,46,0.08); padding: 4px 0; }
+.row-menu-dropdown { display: none; position: fixed; z-index: 9999; min-width: 120px; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); box-shadow: 0 4px 12px rgba(26,29,46,0.08); padding: 4px 0; }
 .row-menu-dropdown.open { display: block; }
 .row-menu-item { display: block; width: 100%; text-align: left; background: none; border: none; color: var(--c-text); padding: 6px 12px; font-size: 12px; cursor: pointer; text-decoration: none; }
 .row-menu-item:hover { background: var(--c-bg3); text-decoration: none; }

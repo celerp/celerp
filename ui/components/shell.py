@@ -82,12 +82,39 @@ function toggleRowMenu(id) {
   var menu = document.getElementById('menu-' + id);
   if (!menu) return;
   var wasOpen = menu.classList.contains('open');
-  document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
-  if (!wasOpen) menu.classList.add('open');
+  document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) {
+    m.classList.remove('open');
+    m.style.cssText = '';
+  });
+  if (!wasOpen) {
+    // Position fixed relative to button so table overflow: hidden can't clip it
+    var btn = menu.previousElementSibling;
+    if (btn) {
+      var r = btn.getBoundingClientRect();
+      // Anchor to right edge of button; flip upward if too close to bottom
+      var menuH = 200; // estimated max height
+      var spaceBelow = window.innerHeight - r.bottom;
+      menu.style.position = 'fixed';
+      menu.style.right = (window.innerWidth - r.right) + 'px';
+      menu.style.left = 'auto';
+      if (spaceBelow < menuH) {
+        menu.style.bottom = (window.innerHeight - r.top) + 'px';
+        menu.style.top = 'auto';
+      } else {
+        menu.style.top = r.bottom + 'px';
+        menu.style.bottom = 'auto';
+      }
+      menu.style.zIndex = '9999';
+    }
+    menu.classList.add('open');
+  }
 }
 document.addEventListener('click', function(e) {
   if (!e.target.closest('.row-menu')) {
-    document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });
+    document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) {
+      m.classList.remove('open');
+      m.style.cssText = '';
+    });
   }
   if (!e.target.closest('.combobox-wrap')) {
     document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
