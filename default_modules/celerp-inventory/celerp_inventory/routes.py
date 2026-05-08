@@ -331,11 +331,7 @@ async def get_valuation(
         if category and row_cat != category:
             continue
 
-        # count_by_status: scoped to category filter, counts all non-hidden statuses
-        if row_status not in _HIDDEN_STATUSES:
-            count_by_status[row_status] = count_by_status.get(row_status, 0) + 1
-
-        # Totals: scoped to category + status filters (mirrors list_items logic)
+        # Totals and count_by_status: scoped to category + status filters (mirrors list_items logic)
         if status == "all":
             pass
         elif status == "archived":
@@ -347,6 +343,9 @@ async def get_valuation(
         else:
             if row_status in _HIDDEN_STATUSES:
                 continue
+
+        # count_by_status: scoped to the same category+status slice as active_item_count
+        count_by_status[row_status] = count_by_status.get(row_status, 0) + 1
 
         active_item_count += 1
         qty = float(state.get("quantity") or 0)

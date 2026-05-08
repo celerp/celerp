@@ -1197,5 +1197,7 @@
   "connectors.shop_url_placeholder": "https://mystore.myshopify.com",
   "connectors.authorize_error": "Could not get authorization URL. Please try again.",
   "msg.relay_connected": "リレーに接続済み",
-  "msg.relay_not_connected": "Webアクセスなし"
+  "msg.relay_not_connected": "Webアクセスなし",
+  "chip.sold": "売却済み",
+  "chip.archived": "アーカイブ"
 }

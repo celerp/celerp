@@ -110,7 +110,7 @@ async def _inventory_content(
 
     return Div(
         _category_tabs(category_counts, p),
-        _valuation_bar(valuation, currency, lang),
+        _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p),
         _bulk_toolbar(locations, p, total_items),
         Div(
@@ -2062,10 +2062,19 @@ def _category_tabs(category_counts: dict, p: dict) -> FT:
     return Div(*tabs, cls="category-tabs", id="category-tabs")
 
 
-def _valuation_bar(valuation: dict, currency: str | None = None, lang: str = "en") -> FT:
+def _valuation_bar(valuation: dict, currency: str | None = None, lang: str = "en", status: str = "") -> FT:
     from ui.components.table import fmt_money
     active_count = valuation.get('active_item_count', valuation.get('item_count', 0))
-    chips = [Span(f"{t('chip.available', lang)}: {active_count:,}", cls="val-chip")]
+    # Label reflects the active status filter
+    if status == "sold":
+        count_label = t("chip.sold", lang)
+    elif status == "archived":
+        count_label = t("chip.archived", lang)
+    elif status and status != "all":
+        count_label = status.replace("_", " ").title()
+    else:
+        count_label = t("chip.available", lang)
+    chips = [Span(f"{count_label}: {active_count:,}", cls="val-chip")]
     # Dynamic price totals from API
     price_totals = valuation.get("price_totals", {})
     if price_totals:

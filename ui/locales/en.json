@@ -1240,5 +1240,7 @@
   "th.when": "When",
   "th.wholesale": "Wholesale",
   "msg.relay_connected": "Connected to relay",
-  "msg.relay_not_connected": "Not connected to web access"
+  "msg.relay_not_connected": "Not connected to web access",
+  "chip.sold": "Sold",
+  "chip.archived": "Archived"
 }

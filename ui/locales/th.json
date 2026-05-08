@@ -1197,5 +1197,7 @@
   "connectors.shop_url_placeholder": "https://mystore.myshopify.com",
   "connectors.authorize_error": "Could not get authorization URL. Please try again.",
   "msg.relay_connected": "เชื่อมต่อกับรีเลย์แล้ว",
-  "msg.relay_not_connected": "ไม่ได้เชื่อมต่อการเข้าถึงเว็บ"
+  "msg.relay_not_connected": "ไม่ได้เชื่อมต่อการเข้าถึงเว็บ",
+  "chip.sold": "ขายแล้ว",
+  "chip.archived": "เก็บถาวร"
 }

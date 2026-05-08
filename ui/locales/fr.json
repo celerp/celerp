@@ -1197,5 +1197,7 @@
   "connectors.shop_url_placeholder": "https://mystore.myshopify.com",
   "connectors.authorize_error": "Could not get authorization URL. Please try again.",
   "msg.relay_connected": "Connecté au relais",
-  "msg.relay_not_connected": "Non connecté à l'accès web"
+  "msg.relay_not_connected": "Non connecté à l'accès web",
+  "chip.sold": "Vendu",
+  "chip.archived": "Archivé"
 }
