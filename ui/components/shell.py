@@ -634,16 +634,8 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
             dot_target = "_self"
         parts.append(
             Div(
-                # Trigger: relay dot + email text (whole pill is the toggle)
+                # Email pill = dropdown trigger
                 Div(
-                    # Relay dot loaded async via HTMX so it doesn't block page render
-                    Span(
-                        Span(cls="relay-dot relay-dot--off", title=""),
-                        id="relay-dot-wrap",
-                        hx_get="/topbar-relay-status",
-                        hx_trigger="load",
-                        hx_swap="outerHTML",
-                    ),
                     Span(user_email, cls="user-menu__email-text"),
                     cls="user-menu__trigger",
                     onclick="toggleUserMenu()",
@@ -659,6 +651,14 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                     id="user-menu-panel",
                     cls="user-menu__panel",
                     style="display:none;",
+                ),
+                # Relay dot — separate element to the right of the email pill
+                Span(
+                    Span(cls="relay-dot relay-dot--off", title=""),
+                    id="relay-dot-wrap",
+                    hx_get="/topbar-relay-status",
+                    hx_trigger="load",
+                    hx_swap="outerHTML",
                 ),
                 cls="user-menu",
             )
