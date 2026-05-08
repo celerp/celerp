@@ -42,6 +42,22 @@ class _SuppressShutdownCancelledError(logging.Filter):
 
 logging.getLogger("uvicorn.error").addFilter(_SuppressShutdownCancelledError())
 
+# Suppress noisy SSE access log lines - patch Logger.handle on the base class
+# so it survives any uvicorn logger reconfiguration.
+_SSE_SUPPRESSED = frozenset(["/notifications/stream"])
+_orig_logger_handle = logging.Logger.handle
+
+def _filtered_logger_handle(self, record):
+    if self.name == "uvicorn.access":
+        try:
+            if any(p in record.getMessage() for p in _SSE_SUPPRESSED):
+                return
+        except Exception:
+            pass
+    _orig_logger_handle(self, record)
+
+logging.Logger.handle = _filtered_logger_handle
+
 # Module system (opt-in: no-op if MODULE_DIR not set)
 import os as _os
 _MODULE_DIR = _os.environ.get("MODULE_DIR", "")
