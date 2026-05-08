@@ -1200,5 +1200,8 @@
   "msg.relay_not_connected": "ไม่ได้เชื่อมต่อการเข้าถึงเว็บ",
   "chip.sold": "ขายแล้ว",
   "chip.archived": "เก็บถาวร",
-  "chip.total": "ทั้งหมด"
+  "chip.total": "ทั้งหมด",
+  "btn.new_company": "New company",
+  "btn.create_company": "Create company",
+  "settings.new_company_name_placeholder": "Company name"
 }

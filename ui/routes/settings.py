@@ -507,6 +507,49 @@ def setup_routes(app):
             return _password_form(error=e.detail, lang=lang)
         return _password_form(success=t("settings.password_changed", lang), lang=lang)
 
+    # ── New company inline form ──────────────────────────────────────
+    @app.get("/settings/company/new-form")
+    async def new_company_form(request: Request):
+        """HTMX: return inline 'create new company' form fragment."""
+        token = _token(request)
+        if not token:
+            return Response(status_code=401)
+        lang = get_lang(request)
+        return Div(
+            Form(
+                Div(
+                    Input(
+                        type="text",
+                        name="company_name",
+                        placeholder=t("settings.new_company_name_placeholder", lang),
+                        required=True,
+                        autofocus=True,
+                        cls="form-input",
+                        style="max-width:320px;",
+                    ),
+                    Button(t("btn.create_company", lang), type="submit", cls="btn btn--primary btn--sm"),
+                    Button(
+                        t("btn.cancel", lang),
+                        type="button",
+                        hx_get="/settings/company/new-form-cancel",
+                        hx_target="#new-company-form-area",
+                        hx_swap="innerHTML",
+                        cls="btn btn--secondary btn--sm",
+                    ),
+                    cls="flex-row gap-sm align-center",
+                ),
+                Div(id="new-company-flash"),
+                method="post",
+                action="/create-company",
+                style="margin:0.75rem 0 0.25rem;",
+            ),
+        )
+
+    @app.get("/settings/company/new-form-cancel")
+    async def new_company_form_cancel(request: Request):
+        """HTMX: clear the new company form area."""
+        return Response(content="", media_type="text/html")
+
     # ── Company PATCH endpoints ──────────────────────────────────────
     @app.get("/settings/company/{field}/edit")
     async def company_field_edit(request: Request, field: str):
@@ -2421,7 +2464,18 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en")
     # Merge top-level company keys with settings dict; settings keys take precedence
     flat = {**company, **(company.get("settings") or {})}
     return Div(
-        H3(t("settings.company_details", lang), cls="settings-section-title"),
+        Div(
+            H3(t("settings.company_details", lang), cls="settings-section-title", style="margin:0;"),
+            Button(
+                "+ " + t("btn.new_company", lang),
+                hx_get="/settings/company/new-form",
+                hx_target="#new-company-form-area",
+                hx_swap="innerHTML",
+                cls="btn btn--xs btn--secondary",
+            ),
+            cls="addr-col-header",
+        ),
+        Div(id="new-company-form-area"),
         Table(
             *[Tr(
                 Td(label, cls="detail-label"),

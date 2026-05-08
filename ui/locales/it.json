@@ -1200,5 +1200,8 @@
   "msg.relay_not_connected": "Nessun accesso web",
   "chip.sold": "Venduto",
   "chip.archived": "Archiviato",
-  "chip.total": "Totale"
+  "chip.total": "Totale",
+  "btn.new_company": "New company",
+  "btn.create_company": "Create company",
+  "settings.new_company_name_placeholder": "Company name"
 }

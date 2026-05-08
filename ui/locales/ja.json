@@ -1200,5 +1200,8 @@
   "msg.relay_not_connected": "Webアクセスなし",
   "chip.sold": "売却済み",
   "chip.archived": "アーカイブ",
-  "chip.total": "合計"
+  "chip.total": "合計",
+  "btn.new_company": "New company",
+  "btn.create_company": "Create company",
+  "settings.new_company_name_placeholder": "Company name"
 }
