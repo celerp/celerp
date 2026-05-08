@@ -322,9 +322,18 @@ async def get_valuation(
         if row.consignment_flag == "in" or state.get("consignment_flag") == "in":
             continue
 
-        # category_counts: always global over non-hidden items
-        if row_status not in _HIDDEN_STATUSES:
+        # category_counts: scoped to the active status filter (or global non-hidden when no filter)
+        if status == "all":
             if row_cat:
+                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
+        elif status == "archived":
+            if row_status in _ARCHIVED_GROUP and row_cat:
+                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
+        elif status:
+            if row_status == status.lower() and row_cat:
+                category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
+        else:
+            if row_status not in _HIDDEN_STATUSES and row_cat:
                 category_counts[row_cat] = category_counts.get(row_cat, 0) + 1
 
         # Apply category filter for scoped metrics
