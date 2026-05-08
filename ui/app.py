@@ -15,16 +15,17 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-# Suppress noisy SSE access log lines.
-# Patch logging.Logger.handle directly on the base class - survives any
-# logger reconfiguration uvicorn does after app import.
-_SSE_SUPPRESSED = frozenset(["/notifications/stream"])
+# Suppress noisy access log lines.
+# All GET 2xx/3xx lines are suppressed in the UI process - errors still show.
+# Patch logging.Logger.handle on the base class: survives uvicorn logger reconfiguration.
 _orig_logger_handle = logging.Logger.handle
 
 def _filtered_logger_handle(self, record):
     if self.name == "uvicorn.access":
         try:
-            if any(p in record.getMessage() for p in _SSE_SUPPRESSED):
+            msg = record.getMessage()
+            # Keep 4xx/5xx so errors are visible; suppress everything else
+            if '" 4' not in msg and '" 5' not in msg:
                 return
         except Exception:
             pass

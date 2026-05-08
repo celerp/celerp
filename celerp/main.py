@@ -42,18 +42,25 @@ class _SuppressShutdownCancelledError(logging.Filter):
 
 logging.getLogger("uvicorn.error").addFilter(_SuppressShutdownCancelledError())
 
-# Suppress noisy SSE access log lines - patch Logger.handle on the base class
-# so it survives any uvicorn logger reconfiguration.
-_SSE_SUPPRESSED = frozenset(["/notifications/stream"])
+# Suppress all API-process access logs (this port is internal; UI process is
+# what users connect to). Also suppress httpx relay noise and port 8000 startup
+# line so the visible startup message is only the UI's port 8080.
 _orig_logger_handle = logging.Logger.handle
 
 def _filtered_logger_handle(self, record):
-    if self.name == "uvicorn.access":
-        try:
-            if any(p in record.getMessage() for p in _SSE_SUPPRESSED):
-                return
-        except Exception:
-            pass
+    try:
+        msg = record.getMessage()
+        # Drop all uvicorn.access lines (internal API, not user-facing)
+        if self.name == "uvicorn.access":
+            return
+        # Drop httpx logs for relay/billing calls (chatty 401s etc.)
+        if self.name in ("httpx", "httpcore") or self.name.startswith("httpx.") or self.name.startswith("httpcore."):
+            return
+        # Drop "Uvicorn running on http://0.0.0.0:8000" startup line
+        if self.name == "uvicorn.error" and "0.0.0.0:8000" in msg:
+            return
+    except Exception:
+        pass
     _orig_logger_handle(self, record)
 
 logging.Logger.handle = _filtered_logger_handle
