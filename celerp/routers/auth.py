@@ -21,6 +21,7 @@ from celerp.services.auth import (
     create_access_token,
     create_refresh_token,
     decode_refresh_token,
+    get_current_company_id,
     get_current_user,
     hash_password,
     verify_password,
@@ -239,6 +240,7 @@ async def create_api_key(user: User = Depends(get_current_user), session: AsyncS
 async def my_companies(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
+    current_company_id: uuid.UUID = Depends(get_current_company_id),
 ) -> dict:
     """List all companies the current user has access to."""
     links = (
@@ -246,16 +248,27 @@ async def my_companies(
             select(UserCompany).where(UserCompany.user_id == user.id, UserCompany.is_active == True)  # noqa: E712
         )
     ).scalars().all()
-    result = []
-    for link in links:
-        company = await session.get(Company, link.company_id)
-        if company and company.is_active:
-            result.append({
-                "company_id": str(company.id),
-                "company_name": company.name,
-                "slug": company.slug,
-                "role": link.role,
-            })
+    company_ids = [link.company_id for link in links]
+    if not company_ids:
+        return {"items": [], "total": 0}
+    companies_rows = (
+        await session.execute(
+            select(Company).where(Company.id.in_(company_ids), Company.is_active == True)  # noqa: E712
+        )
+    ).scalars().all()
+    companies_by_id = {c.id: c for c in companies_rows}
+    role_by_id = {link.company_id: link.role for link in links}
+    result = [
+        {
+            "company_id": str(c.id),
+            "company_name": c.name,
+            "slug": c.slug,
+            "role": role_by_id[c.id],
+            "is_current": c.id == current_company_id,
+        }
+        for c in companies_rows
+        if c.id in role_by_id
+    ]
     return {"items": result, "total": len(result)}
 
 

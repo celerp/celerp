@@ -88,9 +88,21 @@ def setup_routes(app):
             content = _password_form(lang=lang)
         else:
             try:
-                company = await api.get_company(token)
-                users = (await api.get_users(token)).get("items", [])
-                modules = await api.get_modules(token)
+                import asyncio as _asyncio
+                results = await _asyncio.gather(
+                    api.get_company(token),
+                    api.get_users(token),
+                    api.get_modules(token),
+                    return_exceptions=True,
+                )
+                # Re-raise 401 so the auth guard below can redirect properly
+                for r in results:
+                    if isinstance(r, APIError) and r.status == 401:
+                        return RedirectResponse("/login", status_code=302)
+                company   = results[0] if not isinstance(results[0], Exception) else {}
+                users_resp = results[1] if not isinstance(results[1], Exception) else {}
+                modules   = results[2] if not isinstance(results[2], Exception) else []
+                users = users_resp.get("items", []) if isinstance(users_resp, dict) else []
             except APIError as e:
                 if e.status == 401:
                     return RedirectResponse("/login", status_code=302)
