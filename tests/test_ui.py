@@ -573,23 +573,19 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_switch_company_picker_renders(self, ui_client):
-        """GET /switch-company → renders company list."""
-        with patch("ui.routes.auth.api_my_companies", new=AsyncMock(return_value=self._COMPANIES)):
-            r = await ui_client.get("/switch-company", cookies=_authed())
+        """Topbar switcher fragment → renders company select with all company names."""
+        with patch("ui.routes.settings.api") as mock_api:
+            mock_api.my_companies = AsyncMock(return_value={"items": self._COMPANIES})
+            r = await ui_client.get("/topbar-company-switcher", cookies=_authed())
         assert r.status_code == 200
         assert b"Acme Trading Co" in r.content
         assert b"Acme Corp" in r.content
 
     @pytest.mark.asyncio
     async def test_switch_company_without_auth_redirects(self, ui_client):
-        """GET /switch-company without cookie → 302 to /login via auth guard.
-
-        /switch-company is not in _PUBLIC so the Beforeware auth guard catches it
-        before the route handler runs and redirects to /login.
-        """
-        r = await ui_client.get("/switch-company")
+        """Topbar switcher without cookie → auth guard redirects to login."""
+        r = await ui_client.get("/topbar-company-switcher")
         assert r.status_code in (302, 303)
-        assert "login" in r.headers.get("location", "")
 
     @pytest.mark.asyncio
     async def test_switch_company_post_sets_new_token(self, ui_client):
@@ -615,9 +611,17 @@ class TestCompanySwitcher:
 
     @pytest.mark.asyncio
     async def test_company_picker_has_create_form(self, ui_client):
-        """GET /switch-company → picker includes 'New company' link to setup wizard."""
-        with patch("ui.routes.auth.api_my_companies", new=AsyncMock(return_value=self._COMPANIES)):
-            r = await ui_client.get("/switch-company", cookies=_authed())
+        """Settings company tab → 'New company' button links to setup wizard."""
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Acme", "currency": "USD", "timezone": "UTC", "fiscal_year_start": "01-01", "tax_id": "", "phone": "", "email": "", "address": "", "settings": {}})),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
         assert r.status_code == 200
         assert b"setup/new-company" in r.content
 

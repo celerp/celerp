@@ -216,19 +216,6 @@ def setup_routes(app):
 
     # ── Company switcher (HTMX partial) ─────────────────────────────────────
 
-    @app.get("/switch-company")
-    async def switch_company_picker(request: Request):
-        """HTMX: render company picker dropdown panel."""
-        token = request.cookies.get(COOKIE_NAME)
-        if not token:
-            return P(t("auth.not_authenticated"), cls="cell-error")
-        try:
-            companies_resp = await api_my_companies(token)
-            companies = companies_resp.get("items", []) if isinstance(companies_resp, dict) else companies_resp
-        except APIError as e:
-            return Div(P(f"Error: {e.detail}", cls="cell-error"), cls="company-picker")
-        return _company_picker_panel(companies)
-
     @app.post("/switch-company/{company_id}")
     async def do_switch_company(request: Request, company_id: str):
         token = request.cookies.get(COOKIE_NAME)
@@ -531,11 +518,7 @@ def _company_picker_panel(companies: list[dict]) -> FT:
         )
         for c in companies
     ]
-    new_company_link = Div(
-        A(t("btn.new_company"), href="/setup/new-company", cls="btn btn--sm btn--secondary btn--full"),
-        cls="company-picker-new",
-    )
-    return Div(*company_items, Hr(cls="picker-divider"), new_company_link, cls="company-picker")
+    return Div(*company_items, cls="company-picker")
 
 
 def _forgot_password_form(error: str | None = None) -> FT:

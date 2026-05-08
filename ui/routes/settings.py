@@ -1514,20 +1514,15 @@ def setup_routes(app):
             return Response(content="", media_type="text/html")
         if len(companies) <= 1:
             return Response(content="", media_type="text/html")
-        current = companies[0].get("company_name", "")
-        widget = Div(
-            Button(
-                current,
-                " ▾",
-                hx_get="/switch-company",
-                hx_target="#company-picker-panel",
-                hx_swap="innerHTML",
-                hx_trigger="click",
-                cls="company-switcher-btn",
-            ),
-            Div(id="company-picker-panel", cls="company-picker-panel"),
-            id="topbar-company-switcher",
-            cls="company-switcher",
+        current = next((c.get("company_name", "") for c in companies if c.get("is_current")), companies[0].get("company_name", ""))
+        options = [
+            Option(c.get("company_name", ""), value=c.get("company_id", ""), selected=c.get("is_current", False))
+            for c in companies
+        ]
+        widget = Select(
+            *options,
+            onchange="location='/switch-company/'+this.value",
+            cls="company-switcher-select",
         )
         return Response(to_xml(widget), media_type="text/html")
 

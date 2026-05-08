@@ -111,6 +111,7 @@ a:hover { text-decoration: underline; }
 .company-switcher { position: relative; }
 .company-switcher-btn { background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text); padding: 5px 12px; border-radius: var(--radius); font-size: 12px; cursor: pointer; }
 .company-switcher-btn:hover { border-color: var(--c-accent); }
+.company-switcher-select { background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text); padding: 4px 8px; border-radius: var(--radius); font-size: 12px; cursor: pointer; max-width: 200px; }
 .company-picker-panel { position: absolute; right: 0; top: 100%; z-index: 100; min-width: 200px; }
 .company-picker { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 4px 0; box-shadow: 0 8px 24px rgba(26,29,46,0.1); margin-top: 4px; }
 .company-picker-item { display: block; }
