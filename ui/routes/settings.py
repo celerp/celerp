@@ -520,24 +520,26 @@ def setup_routes(app):
             companies = resp.get("items", []) if isinstance(resp, dict) else resp
         except Exception:
             return Response(content="", media_type="text/html")
-        rows = []
-        for c in companies:
-            name = c.get("company_name", "")
-            role = c.get("role", "")
-            cid = c.get("company_id", "")
-            is_current = c.get("is_current", False)
-            rows.append(Tr(
-                Td(name + (" ✓" if is_current else ""), cls="detail-label"),
-                Td(role, cls="settings-hint"),
-                Td(
-                    Span(t("settings.current_company", lang), cls="badge badge--active") if is_current
-                    else Form(
-                        Button(t("btn.switch", lang), type="submit", cls="btn btn--xs btn--secondary"),
-                        method="post", action=f"/switch-company/{cid}",
-                    )
-                ),
-            ))
-        content = Table(*rows, cls="detail-table") if rows else P(t("msg.no_results", lang), cls="settings-hint")
+        if not companies:
+            return Response(to_xml(P(t("msg.no_results", lang), cls="settings-hint")), media_type="text/html")
+        if len(companies) == 1:
+            name = companies[0].get("company_name", "")
+            content = Span(name, cls="settings-hint")
+        else:
+            options = [
+                Option(
+                    c.get("company_name", ""),
+                    value=c.get("company_id", ""),
+                    selected=c.get("is_current", False),
+                )
+                for c in companies
+            ]
+            content = Select(
+                *options,
+                onchange="location='/switch-company/'+this.value",
+                cls="cell-input cell-input--select",
+                style="max-width:320px;",
+            )
         return Response(to_xml(content), media_type="text/html")
 
     # ── Company PATCH endpoints ──────────────────────────────────────
@@ -2485,14 +2487,23 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en")
     # Merge top-level company keys with settings dict; settings keys take precedence
     flat = {**company, **(company.get("settings") or {})}
     return Div(
+        H3(t("settings.your_companies", lang), cls="settings-section-title"),
+        Div(
+            id="settings-companies-list",
+            hx_get="/settings/company/companies-list",
+            hx_trigger="load",
+            hx_swap="innerHTML",
+        ),
+        A(
+            "+ " + t("btn.new_company", lang),
+            href="/setup/new-company",
+            cls="btn btn--xs btn--secondary",
+            style="margin-top:8px;display:inline-block;",
+        ),
         Div(
             H3(t("settings.company_details", lang), cls="settings-section-title", style="margin:0;"),
-            A(
-                "+ " + t("btn.new_company", lang),
-                href="/setup/new-company",
-                cls="btn btn--xs btn--secondary",
-            ),
             cls="addr-col-header",
+            style="margin-top:24px;",
         ),
         Table(
             *[Tr(
@@ -2511,13 +2522,6 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en")
                 _preference_display_cell(key, flat.get(key)),
             ) for key, label in prefs],
             cls="detail-table",
-        ),
-        H3(t("settings.your_companies", lang), cls="settings-section-title"),
-        Div(
-            id="settings-companies-list",
-            hx_get="/settings/company/companies-list",
-            hx_trigger="load",
-            hx_swap="innerHTML",
         ),
         H3(t("page.danger_zone"), cls="settings-section-title settings-section-title--danger"),
         Div(

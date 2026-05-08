@@ -211,7 +211,7 @@ def _pnl_view(data: dict, currency: str | None = None) -> FT:
             if show_pct:
                 cells.append(Td(_pct_of_rev(amt), cls="cell--right cell--muted"))
             rows.append(Tr(*cells))
-        header_row = Tr(Th("Account"), Th("Amount", cls="cell--number"), *([] if not show_pct else [Th("% of Revenue", cls="cell--right")]))
+        header_row = Tr(Th(t("th.account")), Th(t("label.amount"), cls="cell--number"), *([] if not show_pct else [Th(t("th._of_revenue"), cls="cell--right")]))
         return Div(
             H3(title, cls="report-section-title"),
             Table(Thead(header_row), Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),

@@ -675,7 +675,7 @@ def _expiring_view(data: dict, days: int = 30) -> FT:
             style="gap:12px",
         ),
         Table(
-            Thead(Tr(Th("SKU"), Th(t("th.name")), Th("Category"), Th(t("th.expiry")), Th(t("th.days_left")), Th(t("th.status")))),
+            Thead(Tr(Th("SKU"), Th(t("th.name")), Th(t("th.category")), Th(t("th.expiry")), Th(t("th.days_left")), Th(t("th.status")))),
             Tbody(*[_row(i) for i in items]),
             cls="data-table",
         ),
