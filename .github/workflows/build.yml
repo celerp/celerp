@@ -124,6 +124,33 @@ jobs:
         run: ${{ matrix.build_cmd }}
 
 
+      - name: Verify YML artifact names
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        shell: bash
+        run: |
+          # Confirm electron-builder's generated YML files reference the stable filenames.
+          # This catches any regression where artifactName reverts to a versioned name.
+          FAIL=0
+          check_yml() {
+            local yml="$1" expected="$2"
+            if [ ! -f "$yml" ]; then
+              echo "SKIP: $yml not produced on this platform (expected)"
+              return
+            fi
+            if grep -q "url: $expected" "$yml"; then
+              echo "OK: $yml -> $expected"
+            else
+              echo "FAIL: $yml does not reference '$expected'"
+              echo "  Contents:"
+              cat "$yml"
+              FAIL=1
+            fi
+          }
+          check_yml electron/dist/latest-mac.yml   "Celerp-mac.dmg"
+          check_yml electron/dist/latest.yml        "Celerp-Setup.exe"
+          check_yml electron/dist/latest-linux.yml  "Celerp.AppImage"
+          exit $FAIL
+
       - name: Upload artifacts (dev builds only)
         if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
