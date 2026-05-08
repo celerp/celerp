@@ -183,14 +183,17 @@ app = FastHTML(
 
 app.add_middleware(TokenRefreshMiddleware)
 
-# Re-apply the SSE access-log filter on startup, after uvicorn has configured its loggers.
+# Suppress noisy SSE access log lines after uvicorn has configured its handlers.
 @app.on_event("startup")
 async def _suppress_sse_access_log():
-    _f = _SuppressSSEAccess()
     _uvicorn_access = logging.getLogger("uvicorn.access")
-    # Remove any duplicate instances first (reload-safe)
+    _f = _SuppressSSEAccess()
+    # Apply to both the logger and all its handlers (uvicorn uses handler-level logging)
     _uvicorn_access.filters = [f for f in _uvicorn_access.filters if not isinstance(f, _SuppressSSEAccess)]
     _uvicorn_access.addFilter(_f)
+    for handler in _uvicorn_access.handlers:
+        handler.filters = [f for f in handler.filters if not isinstance(f, _SuppressSSEAccess)]
+        handler.addFilter(_f)
 
 
 # ── i18n middleware: set context language per request ───────────────────────────
