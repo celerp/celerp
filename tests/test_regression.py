@@ -213,7 +213,7 @@ class TestDashboard404Redirect:
             yield c
 
     def _authed(self) -> dict:
-        from tests.conftest import make_test_token
+        from tests.helpers import make_test_token
         return {"celerp_token": make_test_token()}
 
     @pytest.mark.asyncio

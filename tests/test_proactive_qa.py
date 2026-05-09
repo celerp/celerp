@@ -37,7 +37,7 @@ _USERS = [{"id": "u1", "email": "admin@test.com", "role": "admin", "is_active": 
 _SCHEMA = [{"key": "sku", "label": "SKU", "type": "text", "required": True, "editable": True, "position": 0, "options": []}]
 
 
-from tests.conftest import make_test_token, authed_cookies
+from tests.helpers import make_test_token, authed_cookies
 
 
 def _authed(token: str | None = None, role: str = "owner") -> dict:
