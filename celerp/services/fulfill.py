@@ -160,10 +160,18 @@ async def execute_fulfill(
 
             total_cogs += pick.pick_qty * pick.cost_price
 
-        # Service items: auto-mark fulfilled (no physical pick)
+        # Service items: auto-mark fulfilled (no physical pick).
+        # A line item is a service if its sell_by is a service unit OR the referenced item
+        # has inventory_type == "service".
         for line in doc_state.get("line_items", []):
             sell_by = line.get("sell_by") or ""
-            if sell_by in _SERVICE_SELL_BY:
+            item_id = line.get("item_id")
+            is_service_type = False
+            if item_id:
+                item_proj = await session.get(Projection, {"company_id": cid, "entity_id": item_id})
+                if item_proj and (item_proj.state.get("inventory_type") or "stocked") == "service":
+                    is_service_type = True
+            if sell_by in _SERVICE_SELL_BY or is_service_type:
                 fulfilled_items.append({
                     "item_id": None,
                     "sku": line.get("sku", ""),

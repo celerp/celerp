@@ -481,12 +481,8 @@ def _sub_form(defaults: dict | None = None, contacts: list[dict] | None = None, 
             cls="form-group",
         ),
         Div(
-            Label(t("label.document_type"), For="doc_type", cls="form-label"),
-            Select(
-                Option(t("label.invoice"), value="invoice", selected=d.get("doc_type") == "invoice"),
-                Option(t("label.purchase_order"), value="purchase_order", selected=d.get("doc_type") == "purchase_order"),
-                id="doc_type", name="doc_type", cls="form-input",
-            ),
+            # doc_type is determined by navigation direction (Sales/Purchasing); hidden from form
+            Input(type="hidden", name="doc_type", value=d.get("doc_type", "invoice")),
             cls="form-group",
         ),
         Div(
