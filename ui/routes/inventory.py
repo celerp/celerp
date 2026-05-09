@@ -2514,6 +2514,7 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
 
 _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
     "weight_unit": ["ct", "g", "kg", "oz", "lb", "t"],
+    "inventory_type": ["stocked", "non_stocked", "service"],
 }
 
 

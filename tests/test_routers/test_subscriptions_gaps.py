@@ -42,6 +42,7 @@ async def _sub(client, tok, frequency="monthly", **kwargs) -> str:
         "doc_type": "invoice",
         "frequency": frequency,
         "start_date": "2026-01-15",
+        "contact_id": "contact:test",
         "line_items": [{"name": "Item", "quantity": 1, "unit_price": 100}],
         **kwargs,
     }

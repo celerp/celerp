@@ -1337,6 +1337,7 @@ async def test_wf_subscription_create_and_list(client):
             "doc_type": "invoice",
             "frequency": "monthly",
             "start_date": start,
+            "contact_id": "contact:test",
             "line_items": [{"description": "SaaS fee", "quantity": 1, "unit_price": 999}],
         },
     )
@@ -1354,7 +1355,7 @@ async def test_wf_subscription_pause_and_resume(client):
     r = await client.post(
         "/subscriptions",
         headers=h,
-        json={"name": "Pause Test", "doc_type": "invoice", "frequency": "weekly", "start_date": start, "line_items": []},
+        json={"name": "Pause Test", "doc_type": "invoice", "frequency": "weekly", "start_date": start, "contact_id": "contact:test", "line_items": []},
     )
     sid = r.json()["id"]
     assert (await client.post(f"/subscriptions/{sid}/pause", headers=h)).status_code == 200
@@ -1369,7 +1370,7 @@ async def test_wf_subscription_generate_doc(client):
     r = await client.post(
         "/subscriptions",
         headers=h,
-        json={"name": "Gen Test", "doc_type": "invoice", "frequency": "monthly", "start_date": start, "line_items": [{"description": "Fee", "quantity": 1, "unit_price": 100}]},
+        json={"name": "Gen Test", "doc_type": "invoice", "frequency": "monthly", "start_date": start, "contact_id": "contact:test", "line_items": [{"description": "Fee", "quantity": 1, "unit_price": 100}]},
     )
     sid = r.json()["id"]
     r2 = await client.post(f"/subscriptions/{sid}/generate", headers=h)
@@ -1524,7 +1525,7 @@ async def test_wf_subscription_patch(client):
     r = await client.post(
         "/subscriptions",
         headers=h,
-        json={"name": "Patch Sub", "doc_type": "invoice", "frequency": "monthly", "start_date": date.today().isoformat(), "line_items": []},
+        json={"name": "Patch Sub", "doc_type": "invoice", "frequency": "monthly", "start_date": date.today().isoformat(), "contact_id": "contact:test", "line_items": []},
     )
     sid = r.json()["id"]
     r2 = await client.patch(f"/subscriptions/{sid}", headers=h, json={"fields_changed": {"name": {"old": "Patch Sub", "new": "Patched Sub"}}})
@@ -1538,7 +1539,7 @@ async def test_wf_subscription_get(client):
     r = await client.post(
         "/subscriptions",
         headers=h,
-        json={"name": "Get Sub", "doc_type": "invoice", "frequency": "monthly", "start_date": date.today().isoformat(), "line_items": []},
+        json={"name": "Get Sub", "doc_type": "invoice", "frequency": "monthly", "start_date": date.today().isoformat(), "contact_id": "contact:test", "line_items": []},
     )
     sid = r.json()["id"]
     r2 = await client.get(f"/subscriptions/{sid}", headers=h)

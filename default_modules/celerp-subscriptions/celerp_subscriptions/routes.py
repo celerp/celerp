@@ -30,7 +30,7 @@ class LineItem(BaseModel):
 
 class SubscriptionCreate(BaseModel):
     name: str
-    contact_id: str | None = None
+    contact_id: str
     doc_type: str  # invoice | purchase_order
     frequency: str  # weekly | biweekly | monthly | quarterly | annually | custom
     custom_interval_days: int | None = None  # required when frequency == "custom"
@@ -132,6 +132,8 @@ def _build_router() -> APIRouter:
     ) -> dict:
         if payload.doc_type not in VALID_DOC_TYPES:
             raise HTTPException(status_code=422, detail=f"doc_type must be one of {VALID_DOC_TYPES}")
+        if not payload.contact_id.strip():
+            raise HTTPException(status_code=422, detail="contact_id is required and cannot be empty")
         if payload.frequency not in VALID_FREQUENCIES:
             raise HTTPException(status_code=422, detail=f"frequency must be one of {VALID_FREQUENCIES}")
         if payload.frequency == "custom" and not payload.custom_interval_days:
@@ -269,6 +271,34 @@ def _build_router() -> APIRouter:
         await session.commit()
         return {"event_id": entry.id, "next_run": next_run}
 
+    @router.post("/{entity_id:path}/cancel")
+    async def cancel_subscription(
+        entity_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        if not proj or proj.entity_type != "subscription":
+            raise HTTPException(status_code=404, detail="Subscription not found")
+        if proj.state.get("status") == "cancelled":
+            raise HTTPException(status_code=409, detail="Subscription is already cancelled")
+
+        entry = await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="subscription",
+            event_type="sub.cancelled",
+            data={},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+        )
+        await session.commit()
+        return {"event_id": entry.id}
+
     @router.post("/import/batch", response_model=BatchImportResult)
     async def batch_import_subscriptions(
         body: SubBatchImportRequest,
@@ -361,21 +391,18 @@ def _build_router() -> APIRouter:
             "status": "draft",
             "source_subscription_id": entity_id,
         }
+        # Ensure each line item has line_total so the doc projection can sum correctly.
+        for li in doc_data["line_items"]:
+            li["line_total"] = float(li.get("quantity", 1)) * float(li.get("unit_price", 0))
 
-        total = float(state.get("total", 0) or 0)
-        subtotal = float(state.get("subtotal", 0) or 0)
-
-        if total > 0:
-            doc_data["total"] = total
-            doc_data["subtotal"] = subtotal if subtotal > 0 else total - doc_data["tax"] - doc_data["shipping"]
-        elif line_items:
-            computed = sum((float(li.get("quantity", 0) or 0) * float(li.get("unit_price", 0) or 0)) for li in line_items)
-            computed = computed - doc_data["discount"]
-            computed = computed + doc_data["tax"] + doc_data["shipping"]
-            doc_data["total"] = computed
-            doc_data["subtotal"] = computed - doc_data["tax"] - doc_data["shipping"]
-
-        doc_data["amount_outstanding"] = float(doc_data.get("total", 0) or 0)
+        subtotal = sum(li["line_total"] for li in doc_data["line_items"])
+        discount = float(state.get("discount", 0) or 0)
+        shipping = float(state.get("shipping", 0) or 0)
+        # tax stored as a flat amount on subscriptions (not a rate)
+        tax = float(state.get("tax", 0) or 0)
+        doc_data["subtotal"] = subtotal
+        doc_data["total"] = subtotal - discount + tax + shipping
+        doc_data["amount_outstanding"] = doc_data["total"]
 
         await emit_event(
             session,

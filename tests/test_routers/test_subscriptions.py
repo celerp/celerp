@@ -25,7 +25,7 @@ async def test_subscription_generate_creates_invoice_with_lines_and_total(client
         headers=headers,
         json={
             "name": "Monthly retainer",
-            "contact_id": None,
+            "contact_id": "contact:test",
             "doc_type": "invoice",
             "frequency": "monthly",
             "start_date": "2026-01-01",

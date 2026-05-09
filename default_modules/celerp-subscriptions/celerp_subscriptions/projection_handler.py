@@ -23,11 +23,18 @@ def apply_subscription_event(state: dict, event_type: str, data: dict) -> dict:
             current["next_run"] = data["next_run"]
     elif event_type == "sub.generated":
         current["last_run"] = data.get("generated_at")
-        current["last_generated_doc_id"] = data.get("doc_id")
+        existing = current.get("generated_doc_ids") or []
+        doc_id = data.get("doc_id")
+        if doc_id and doc_id not in existing:
+            existing = existing + [doc_id]
+        current["generated_doc_ids"] = existing
+        current.pop("last_generated_doc_id", None)
         if data.get("next_run"):
             current["next_run"] = data["next_run"]
     elif event_type == "sub.expired":
         current["status"] = "expired"
+    elif event_type == "sub.cancelled":
+        current["status"] = "cancelled"
     else:
         raise ValueError(f"Unsupported subscription event: {event_type}")
 

@@ -886,6 +886,11 @@ async def generate_subscription(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/subscriptions/{entity_id}/generate")).json()
 
 
+async def cancel_subscription(token: str, entity_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/cancel")).json()
+
+
 # ---------------------------------------------------------------------------
 # Manufacturing
 # ---------------------------------------------------------------------------

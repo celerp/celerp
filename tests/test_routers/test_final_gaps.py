@@ -299,17 +299,17 @@ async def test_subscription_invalid_doc_type_and_frequency(client):
     tok = await _reg(client, "SubValCo")
 
     r1 = await client.post("/subscriptions", headers=_h(tok), json={
-        "name": "Sub1", "doc_type": "memo", "frequency": "monthly", "start_date": "2026-06-01",
+        "name": "Sub1", "doc_type": "memo", "frequency": "monthly", "start_date": "2026-06-01", "contact_id": "contact:test",
     })
     assert r1.status_code == 422
 
     r2 = await client.post("/subscriptions", headers=_h(tok), json={
-        "name": "Sub2", "doc_type": "invoice", "frequency": "fortnightly", "start_date": "2026-06-01",
+        "name": "Sub2", "doc_type": "invoice", "frequency": "fortnightly", "start_date": "2026-06-01", "contact_id": "contact:test",
     })
     assert r2.status_code == 422
 
     r3 = await client.post("/subscriptions", headers=_h(tok), json={
-        "name": "Sub3", "doc_type": "invoice", "frequency": "custom", "start_date": "2026-06-01",
+        "name": "Sub3", "doc_type": "invoice", "frequency": "custom", "start_date": "2026-06-01", "contact_id": "contact:test",
         # missing custom_interval_days
     })
     assert r3.status_code == 422
@@ -350,6 +350,7 @@ async def test_subscription_generate_line_items_computed_total(client):
         "doc_type": "invoice",
         "frequency": "monthly",
         "start_date": "2026-06-01",
+        "contact_id": "contact:test",
         "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 15}],
         "tax": 0,
         "shipping": 0,

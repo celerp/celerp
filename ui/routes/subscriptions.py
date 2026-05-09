@@ -37,6 +37,7 @@ def setup_routes(app):
         except (ValueError, TypeError):
             per_page = _PER_PAGE
         status_filter = request.query_params.get("status", "")
+        direction = request.query_params.get("direction", "")  # "sales" or "purchasing"
         params = {"limit": per_page, "offset": (page - 1) * per_page}
         if status_filter:
             params["status"] = status_filter
@@ -49,18 +50,28 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             subs, total = [], 0
 
+        # Filter by direction: sales=invoice, purchasing=purchase_order
+        if direction == "sales":
+            subs = [s for s in subs if s.get("doc_type") == "invoice"]
+        elif direction == "purchasing":
+            subs = [s for s in subs if s.get("doc_type") == "purchase_order"]
+
+        nav_active = f"subscriptions_{direction}" if direction in ("sales", "purchasing") else "subscriptions_sales"
+        new_href = f"/subscriptions/new?direction={direction}" if direction else "/subscriptions/new"
+
         lang = get_lang(request)
+        extra_qs = "&".join(p for p in [f"status={status_filter}" if status_filter else "", f"direction={direction}" if direction else ""] if p)
         return base_shell(
             page_header(
                 t("page.subscriptions", lang),
-                A(t("btn.new_subscription", lang), href="/subscriptions/new", cls="btn btn--primary"),
+                A(t("btn.new_subscription", lang), href=new_href, cls="btn btn--primary"),
                 A(t("doc.import_csv"), href="/subscriptions/import", cls="btn btn--secondary"),
             ),
             _sub_status_cards(subs, status_filter),
             _sub_table(subs),
-            pagination(page, total, per_page, "/subscriptions", f"status={status_filter}".strip("&=")),
+            pagination(page, total, per_page, "/subscriptions", extra_qs),
             title="Subscriptions - Celerp",
-            nav_active="subscriptions",
+            nav_active=nav_active,
             request=request,
         )
 
@@ -69,6 +80,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        direction = request.query_params.get("direction", "")
+        doc_type_default = "purchase_order" if direction == "purchasing" else "invoice"
         try:
             contact_resp = await api.list_contacts(token, {"limit": 500})
             contacts = contact_resp.get("items", [])
@@ -76,11 +89,13 @@ def setup_routes(app):
         except APIError as e:
             logger.warning("API error loading new subscription form: %s", e.detail)
             contacts, terms = [], []
+        back_href = f"/subscriptions?direction={direction}" if direction else "/subscriptions"
+        nav_active = f"subscriptions_{direction}" if direction in ("sales", "purchasing") else "subscriptions_sales"
         return base_shell(
-            page_header("New Subscription", A(t("btn.cancel"), href="/subscriptions", cls="btn btn--secondary")),
-            _sub_form(contacts=contacts, terms=terms),
+            page_header("New Subscription", A(t("btn.cancel"), href=back_href, cls="btn btn--secondary")),
+            _sub_form({"doc_type": doc_type_default}, contacts=contacts, terms=terms),
             title="New Subscription - Celerp",
-            nav_active="subscriptions",
+            nav_active=nav_active,
             request=request,
         )
 
@@ -95,7 +110,7 @@ def setup_routes(app):
             "doc_type": str(form.get("doc_type", "invoice")),
             "frequency": str(form.get("frequency", "monthly")),
             "start_date": str(form.get("start_date", "")),
-            "contact_id": str(form.get("contact_id", "")).strip() or None,
+            "contact_id": str(form.get("contact_id", "")).strip(),
             "payment_terms": str(form.get("payment_terms", "")).strip() or None,
         }
         interval_days = str(form.get("interval_days", "")).strip()
@@ -145,6 +160,19 @@ def setup_routes(app):
             return _sub_row(sub)
         except APIError as e:
             logger.warning("API error on resume subscription %s: %s", entity_id, e.detail)
+            return RedirectResponse("/subscriptions", status_code=302)
+
+    @app.post("/subscriptions/{entity_id}/cancel")
+    async def cancel_sub(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await api.cancel_subscription(token, entity_id)
+            sub = await api.get_subscription(token, entity_id)
+            return _sub_row(sub)
+        except APIError as e:
+            logger.warning("API error on cancel subscription %s: %s", entity_id, e.detail)
             return RedirectResponse("/subscriptions", status_code=302)
 
     @app.post("/subscriptions/{entity_id}/generate")
@@ -334,6 +362,17 @@ def _sub_detail_card(sub: dict, currency: str | None = None) -> FT:
             ),
             cls="section",
         ) if line_items else "",
+        Div(
+            H3(t("th.generated_documents"), cls="section-title"),
+            *(
+                [Table(
+                    Thead(Tr(Th("Document ID"), Th("Link"))),
+                    Tbody(*[Tr(Td(doc_id), Td(A(t("btn.view"), href=f"/documents/{doc_id}"))) for doc_id in (sub.get("generated_doc_ids") or [])]),
+                    cls="data-table data-table--compact",
+                )] if sub.get("generated_doc_ids") else [P(EMPTY, cls="empty-state-msg")]
+            ),
+            cls="section mt-md",
+        ),
     )
 
 
@@ -342,6 +381,28 @@ def _sub_row(s: dict) -> FT:
     eid = s.get("entity_id", "")
     status = s.get("status", "active")
     is_paused = status == "paused"
+    is_cancelled = status == "cancelled"
+    actions = [
+        Button(
+            "Resume" if is_paused else "Pause",
+            hx_post=f"/subscriptions/{eid}/{'resume' if is_paused else 'pause'}",
+            hx_target=f"#sub-{eid}",
+            hx_swap="outerHTML",
+            cls="btn btn--xs btn--secondary",
+        ) if not is_cancelled else None,
+        Button(t("btn.generate_now"),
+            hx_post=f"/subscriptions/{eid}/generate",
+            hx_target=f"#sub-{eid}",
+            hx_swap="outerHTML",
+            cls="btn btn--xs btn--primary ml-xs",
+        ),
+        Button(t("btn.cancel"),
+            hx_post=f"/subscriptions/{eid}/cancel",
+            hx_target=f"#sub-{eid}",
+            hx_swap="outerHTML",
+            cls="btn btn--xs btn--danger ml-xs",
+        ) if not is_cancelled else None,
+    ]
     return Tr(
         Td(s.get("name", "") or EMPTY),
         Td(Span(s.get("doc_type", "").replace("_", " ").title(),
@@ -349,22 +410,7 @@ def _sub_row(s: dict) -> FT:
         Td(s.get("frequency", "") or EMPTY),
         Td((s.get("next_run") or "")[:10] or EMPTY),
         Td(Span(status, cls=f"badge badge--{status}")),
-        Td(
-            Button(
-                "Resume" if is_paused else "Pause",
-                hx_post=f"/subscriptions/{eid}/{'resume' if is_paused else 'pause'}",
-                hx_target=f"#sub-{eid}",
-                hx_swap="outerHTML",
-                cls="btn btn--xs btn--secondary",
-            ),
-            Button(t("btn.generate_now"),
-                hx_post=f"/subscriptions/{eid}/generate",
-                hx_target=f"#sub-{eid}",
-                hx_swap="outerHTML",
-                cls="btn btn--xs btn--primary ml-xs",
-            ),
-            cls="cell-actions",
-        ),
+        Td(*[a for a in actions if a is not None], cls="cell-actions"),
         id=f"sub-{eid}",
         cls="data-row",
     )
@@ -389,28 +435,21 @@ def _sub_form(defaults: dict | None = None, contacts: list[dict] | None = None, 
     contacts = contacts or []
     terms = terms or []
 
-    # Contact picker: searchable if >10 contacts, plain input if fewer
+    # Contact picker: always use searchable_select (required)
     contact_opts = [(c.get("entity_id", ""), c.get("name", c.get("entity_id", ""))) for c in contacts]
     contact_opts.append(("__new__", "+ Add new contact"))
-    if len(contact_opts) > 10:
-        contact_field = Div(
-            Label(t("label.contact_optional"), For="contact_id", cls="form-label"),
-            searchable_select(
-                name="contact_id",
-                options=contact_opts,
-                value=d.get("contact_id", ""),
-                placeholder="Search contacts...",
-                cls_extra="form-input",
-            ),
-            cls="form-group",
-        )
-    else:
-        contact_field = Div(
-            Label(t("label.contact_id_optional"), For="contact_id", cls="form-label"),
-            Input(type="text", id="contact_id", name="contact_id",
-                  value=d.get("contact_id", ""), placeholder="contact:...", cls="form-input"),
-            cls="form-group",
-        )
+    contact_field = Div(
+        Label(t("label.contact"), For="contact_id", cls="form-label"),
+        searchable_select(
+            name="contact_id",
+            options=contact_opts,
+            value=d.get("contact_id", ""),
+            placeholder="Search contacts...",
+            cls_extra="form-input",
+            required=True,
+        ),
+        cls="form-group",
+    )
 
     # Payment terms: searchable if >10 terms
     terms_opts = [term.get("name", "") for term in terms if term.get("name")]
@@ -454,6 +493,7 @@ def _sub_form(defaults: dict | None = None, contacts: list[dict] | None = None, 
             Label(t("th.frequency"), For="frequency", cls="form-label"),
             Select(
                 Option(t("label.weekly"), value="weekly"),
+                Option(t("label.biweekly"), value="biweekly"),
                 Option(t("label.monthly"), value="monthly", selected=True),
                 Option(t("label.quarterly"), value="quarterly"),
                 Option(t("label.annually"), value="annually"),

@@ -369,12 +369,12 @@ async def test_list_subscriptions(client):
     await client.post(
         "/subscriptions",
         headers=_auth(token),
-        json={"name": "Sub A", "doc_type": "invoice", "frequency": "weekly", "start_date": "2026-02-01"},
+        json={"name": "Sub A", "doc_type": "invoice", "frequency": "weekly", "start_date": "2026-02-01", "contact_id": "contact:test"},
     )
     await client.post(
         "/subscriptions",
         headers=_auth(token),
-        json={"name": "Sub B", "doc_type": "purchase_order", "frequency": "monthly", "start_date": "2026-02-01"},
+        json={"name": "Sub B", "doc_type": "purchase_order", "frequency": "monthly", "start_date": "2026-02-01", "contact_id": "contact:test"},
     )
     r = await client.get("/subscriptions", headers=_auth(token))
     assert r.status_code == 200
@@ -390,7 +390,7 @@ async def test_get_subscription(client):
     created = (await client.post(
         "/subscriptions",
         headers=_auth(token),
-        json={"name": "Weekly PO", "doc_type": "purchase_order", "frequency": "weekly", "start_date": "2026-02-01"},
+        json={"name": "Weekly PO", "doc_type": "purchase_order", "frequency": "weekly", "start_date": "2026-02-01", "contact_id": "contact:test"},
     )).json()
     entity_id = created["id"]
 
@@ -406,7 +406,7 @@ async def test_pause_and_resume_subscription(client):
     entity_id = (await client.post(
         "/subscriptions",
         headers=_auth(token),
-        json={"name": "To Pause", "doc_type": "invoice", "frequency": "monthly", "start_date": "2026-02-01"},
+        json={"name": "To Pause", "doc_type": "invoice", "frequency": "monthly", "start_date": "2026-02-01", "contact_id": "contact:test"},
     )).json()["id"]
 
     # Pause
@@ -428,7 +428,7 @@ async def test_pause_already_paused_is_conflict(client):
     entity_id = (await client.post(
         "/subscriptions",
         headers=_auth(token),
-        json={"name": "Double Pause", "doc_type": "invoice", "frequency": "monthly", "start_date": "2026-02-01"},
+        json={"name": "Double Pause", "doc_type": "invoice", "frequency": "monthly", "start_date": "2026-02-01", "contact_id": "contact:test"},
     )).json()["id"]
     await client.post(f"/subscriptions/{entity_id}/pause", headers=_auth(token))
     r = await client.post(f"/subscriptions/{entity_id}/pause", headers=_auth(token))
@@ -457,9 +457,9 @@ async def test_generate_now_creates_document(client):
     assert result["doc_id"].startswith("doc:")
     assert result["next_run"]
 
-    # The subscription should now reflect last_run and last_generated_doc_id
+    # The subscription should now reflect last_run and generated_doc_ids list
     sub = (await client.get(f"/subscriptions/{entity_id}", headers=_auth(token))).json()
-    assert sub["last_generated_doc_id"] == result["doc_id"]
+    assert result["doc_id"] in sub["generated_doc_ids"]
 
 
 @pytest.mark.asyncio
