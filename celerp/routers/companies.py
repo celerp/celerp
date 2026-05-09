@@ -226,6 +226,26 @@ async def create_company(
     # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle("on_company_created", session=session, company_id=company.id)
+    # Seed owner as customer + vendor contact (mirrors registration flow)
+    from celerp.services.demo import seed_self_contacts
+    await seed_self_contacts(
+        session,
+        company_id=company.id,
+        actor_id=user.id,
+        person_name=user.name,
+        company_name=payload.name,
+        email=user.email,
+    )
+    # Seed a default "Head Office" location (mirrors registration flow)
+    head_office = Location(
+        id=uuid.uuid4(),
+        company_id=company.id,
+        name="Head Office",
+        type="office",
+        address=None,
+        is_default=True,
+    )
+    session.add(head_office)
     try:
         await session.commit()
     except Exception as e:

@@ -1277,3 +1277,43 @@ async def seed_demo_items(
             source="demo",
             idempotency_key=f"demo:item:{company_id}:{sku}",
         )
+
+
+async def seed_self_contacts(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    person_name: str,
+    company_name: str,
+    email: str,
+) -> None:
+    """Seed the owner as both a customer and vendor contact for the new company.
+
+    Called from both the initial registration flow and the create-additional-company flow
+    so every company always starts with one self-referential contact.
+    """
+    _seed_data = {
+        "name": person_name,
+        "company_name": company_name,
+        "email": email,
+    }
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    for contact_type, role in (("customer", "customer"), ("vendor", "vendor")):
+        entity_id = f"contact:{uuid.uuid4()}"
+        try:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=entity_id,
+                entity_type="contact",
+                event_type="crm.contact.created",
+                data={**_seed_data, "contact_type": contact_type},
+                actor_id=actor_id,
+                location_id=None,
+                source="registration",
+                idempotency_key=f"reg:contact:{contact_type}:{company_id}",
+                metadata_={},
+            )
+        except Exception as exc:
+            _log.warning("seed_self_contacts %s failed (non-fatal): %s", contact_type, exc)

@@ -93,43 +93,15 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     from celerp.services.demo import seed_demo_items
     await seed_demo_items(session, company.id, user.id)
     # Seed company self-contacts (customer + vendor) with company name, owner name + admin email
-    try:
-        from celerp.events.engine import emit_event as _emit
-        _seed_data = {
-            "name": payload.name,
-            "company_name": payload.company_name,
-            "email": payload.email,
-        }
-        _customer_id = f"contact:{uuid.uuid4()}"
-        await _emit(
-            session,
-            company_id=company.id,
-            entity_id=_customer_id,
-            entity_type="contact",
-            event_type="crm.contact.created",
-            data={**_seed_data, "contact_type": "customer"},
-            actor_id=user.id,
-            location_id=None,
-            source="registration",
-            idempotency_key=f"reg:contact:customer:{company.id}",
-            metadata_={},
-        )
-        _vendor_id = f"contact:{uuid.uuid4()}"
-        await _emit(
-            session,
-            company_id=company.id,
-            entity_id=_vendor_id,
-            entity_type="contact",
-            event_type="crm.contact.created",
-            data={**_seed_data, "contact_type": "vendor"},
-            actor_id=user.id,
-            location_id=None,
-            source="registration",
-            idempotency_key=f"reg:contact:vendor:{company.id}",
-            metadata_={},
-        )
-    except Exception as _exc:
-        logger.warning("contact seeding failed (non-fatal): %s", _exc)
+    from celerp.services.demo import seed_self_contacts
+    await seed_self_contacts(
+        session,
+        company_id=company.id,
+        actor_id=user.id,
+        person_name=payload.name,
+        company_name=payload.company_name,
+        email=payload.email,
+    )
     # Seed a default "Head Office" location
     head_office = Location(
         id=uuid.uuid4(),
