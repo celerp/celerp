@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 
 # Repo root: one level above this file (tests/helpers.py → repo root)
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parent
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
