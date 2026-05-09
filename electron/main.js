@@ -474,22 +474,46 @@ function setupAutoUpdater() {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
 
+  function sendLog(msg) {
+    if (mainWindow) mainWindow.webContents.send("update-log", String(msg));
+  }
+
+  autoUpdater.on("checking-for-update", () => {
+    sendLog("Checking for update...");
+  });
+
   autoUpdater.on("update-available", (info) => {
+    sendLog("Found version " + info.version + " — downloading...");
     if (mainWindow) mainWindow.webContents.send("update-available", info);
   });
 
   autoUpdater.on("update-not-available", () => {
+    sendLog("Already up to date.");
     if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 
+  autoUpdater.on("download-progress", (progress) => {
+    sendLog(
+      "Downloading: " +
+        Math.round(progress.percent) +
+        "% (" +
+        Math.round(progress.bytesPerSecond / 1024) +
+        " KB/s)"
+    );
+    if (mainWindow) mainWindow.webContents.send("download-progress", progress);
+  });
+
   autoUpdater.on("update-downloaded", (info) => {
+    sendLog("Download complete — ready to install v" + info.version);
     if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
   });
 
   autoUpdater.on("error", (err) => {
     // Log only — update failures must never interrupt the user's work.
     // Also notify renderer so the UI can reset from "Checking..." state.
-    console.error("[updater] error:", err?.message ?? String(err));
+    const msg = err?.message ?? String(err);
+    console.error("[updater] error:", msg);
+    sendLog("Error: " + msg);
     if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 

@@ -29,6 +29,12 @@ contextBridge.exposeInMainWorld("celerp", {
   // Register a callback for when no update is available (or an error occurred).
   onUpdateNotAvailable: (cb) => ipcRenderer.on("update-not-available", () => cb()),
 
+  // Register a callback for download progress events ({ percent, bytesPerSecond, transferred, total }).
+  onDownloadProgress: (cb) => ipcRenderer.on("download-progress", (_event, progress) => cb(progress)),
+
+  // Register a callback for updater log lines (string).
+  onUpdateLog: (cb) => ipcRenderer.on("update-log", (_event, msg) => cb(msg)),
+
   // Trigger a manual update check.
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
 

@@ -411,10 +411,35 @@ document.addEventListener('DOMContentLoaded', function() {
     var stateEl = card.querySelector('.update-card__state');
     var checkBtn = card.querySelector('.update-card__check-btn');
     var restartBtn = card.querySelector('.update-card__restart-btn');
+    var progressBar = card.querySelector('.update-card__progress-bar');
+    var progressFill = card.querySelector('.update-card__progress-fill');
+    var logEl = card.querySelector('.update-card__log');
 
     function setState(text, showRestart) {
       if (stateEl) stateEl.textContent = text;
       if (restartBtn) restartBtn.style.display = showRestart ? '' : 'none';
+    }
+
+    function setCheckBtn(visible) {
+      if (checkBtn) checkBtn.style.display = visible ? '' : 'none';
+    }
+
+    function appendLog(msg) {
+      if (!logEl) return;
+      logEl.style.display = '';
+      logEl.textContent += (logEl.textContent ? '\n' : '') + msg;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setProgress(pct) {
+      if (!progressBar || !progressFill) return;
+      progressBar.style.display = pct >= 0 ? '' : 'none';
+      progressFill.style.width = Math.min(100, Math.max(0, pct)) + '%';
+    }
+
+    function resetToIdle() {
+      setCheckBtn(true);
+      setProgress(-1);
     }
 
     if (window.celerp) {
@@ -425,43 +450,47 @@ document.addEventListener('DOMContentLoaded', function() {
 
       setState('Up to date', false);
 
-      function resetCheckBtn() {
-        if (checkBtn) {
-          checkBtn.disabled = false;
-          checkBtn.textContent = 'Check for updates';
-        }
-      }
+      window.celerp.onUpdateLog(function(msg) {
+        appendLog(msg);
+      });
 
-      window.celerp.onUpdateAvailable(function() {
-        setState('Update available - downloading...', false);
-        resetCheckBtn();
+      window.celerp.onUpdateAvailable(function(info) {
+        setState('Downloading v' + (info && info.version ? info.version : 'update') + '...', false);
+        setCheckBtn(false);
+        setProgress(0);
+      });
+
+      window.celerp.onDownloadProgress(function(progress) {
+        setProgress(progress.percent || 0);
       });
 
       window.celerp.onUpdateNotAvailable(function() {
         setState('Up to date', false);
-        resetCheckBtn();
+        resetToIdle();
       });
 
       window.celerp.onUpdateDownloaded(function(info) {
-        setState('Restart to install v' + info.version, true);
-        resetCheckBtn();
+        setState('Ready to install v' + info.version, true);
+        setProgress(100);
+        setCheckBtn(false);
       });
 
       if (checkBtn) {
         checkBtn.addEventListener('click', function() {
-          checkBtn.disabled = true;
-          checkBtn.textContent = '...';
+          setCheckBtn(false);
           setState('Checking...', false);
-          // Button re-enabled by onUpdateAvailable / onUpdateNotAvailable / error path
+          if (logEl) { logEl.textContent = ''; logEl.style.display = 'none'; }
           window.celerp.checkForUpdates().catch(function() {
             setState('Up to date', false);
-            resetCheckBtn();
+            resetToIdle();
           });
         });
       }
 
       if (restartBtn) {
         restartBtn.addEventListener('click', function() {
+          restartBtn.disabled = true;
+          restartBtn.textContent = 'Restarting...';
           window.celerp.installUpdate();
         });
       }
@@ -615,6 +644,14 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                         cls="update-card__info",
                     ),
                     Div(
+                        # Progress bar (hidden until download starts)
+                        Div(
+                            Div(cls="update-card__progress-fill"),
+                            cls="update-card__progress-bar",
+                            style="display:none;",
+                        ),
+                        # Scrolling log (hidden until first log line)
+                        Pre(cls="update-card__log", style="display:none;"),
                         Button(t("btn.check_for_updates"), cls="update-card__check-btn", type="button"),
                         Button(t("btn.restart_to_install"), cls="update-card__restart-btn", type="button",
                                style="display:none;"),
