@@ -22,7 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 import pytest
 import pytest_asyncio
 
-from tests.helpers import make_test_token, authed_cookies
+from test_helpers import make_test_token, authed_cookies
 
 # ---------------------------------------------------------------------------
 # Helpers shared with test_ui.py (duplicated so this file is self-contained)

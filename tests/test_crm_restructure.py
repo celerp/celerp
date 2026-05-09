@@ -12,7 +12,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch
 
-from tests.helpers import make_test_token, authed_cookies
+from test_helpers import make_test_token, authed_cookies
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────

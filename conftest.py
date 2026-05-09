@@ -21,7 +21,7 @@ from ui.app import app as _ui_app
 import sys as _sys, os as _os
 from pathlib import Path
 
-from tests.helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available  # noqa: F401
+from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available  # noqa: F401
 
 # Register inventory module routes onto the test app.
 _inv_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-inventory")
