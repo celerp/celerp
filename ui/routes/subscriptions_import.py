@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import csv
 import io
-import uuid
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -49,7 +48,7 @@ _SUB_IMPORT_SPEC = CsvImportSpec(
         "discount",
         "tax",
     ],
-    required={"name", "doc_type", "frequency", "start_date"},
+    required={"name", "frequency", "start_date"},
     type_map={"shipping": float, "discount": float, "tax": float},
 )
 
@@ -88,7 +87,7 @@ def setup_routes(app):
         w.writeheader()
         w.writerow({
             "name": "Monthly Retainer",
-            "doc_type": "invoice",
+            "doc_type": "subscription_invoice",
             "frequency": "monthly",
             "start_date": "2026-01-01",
             "end_date": "",
@@ -268,7 +267,15 @@ def setup_routes(app):
 
         for r in rows:
             name = str(r.get("name", "")).strip()
-            doc_type = str(r.get("doc_type", "")).strip() or "invoice"
+            # Map user-facing direction to internal subscription doc_type
+            _DOC_TYPE_MAP = {
+                "sales": "subscription_invoice",
+                "purchasing": "subscription_po",
+                "subscription_invoice": "subscription_invoice",
+                "subscription_po": "subscription_po",
+            }
+            raw_doc_type = str(r.get("doc_type", "")).strip().lower()
+            doc_type = _DOC_TYPE_MAP.get(raw_doc_type, "subscription_invoice")
             frequency = str(r.get("frequency", "")).strip() or "monthly"
             start_date = str(r.get("start_date", "")).strip()
             if not name or not start_date:

@@ -24,6 +24,18 @@ SUBSCRIPTION_DOC_TYPES = frozenset({"subscription_invoice", "subscription_po"})
 VALID_FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
 
 
+def _days_in_month(year: int, month: int) -> int:
+    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    return [31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1]
+
+
+def _add_months(d: date, months: int) -> date:
+    month = d.month + months
+    year = d.year + (month - 1) // 12
+    month = ((month - 1) % 12) + 1
+    return date(year, month, min(d.day, _days_in_month(year, month)))
+
+
 def _next_run_date(frequency: str, custom_interval_days: int | None, from_date: str) -> str:
     d = date.fromisoformat(from_date)
     if frequency == "weekly":
@@ -31,19 +43,9 @@ def _next_run_date(frequency: str, custom_interval_days: int | None, from_date: 
     elif frequency == "biweekly":
         d += timedelta(weeks=2)
     elif frequency == "monthly":
-        month = d.month + 1
-        year = d.year + (month - 1) // 12
-        month = ((month - 1) % 12) + 1
-        days_in_month = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
-                         31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        d = date(year, month, min(d.day, days_in_month[month - 1]))
+        d = _add_months(d, 1)
     elif frequency == "quarterly":
-        month = d.month + 3
-        year = d.year + (month - 1) // 12
-        month = ((month - 1) % 12) + 1
-        days_in_month = [31, 29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
-                         31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-        d = date(year, month, min(d.day, days_in_month[month - 1]))
+        d = _add_months(d, 3)
     elif frequency == "annually":
         try:
             d = date(d.year + 1, d.month, d.day)

@@ -872,40 +872,24 @@ async def create_subscription(token: str, data: dict) -> dict:
         return _raise(await c.post("/docs", json=data)).json()
 
 
-async def pause_subscription_template(token: str, entity_id: str) -> dict:
+async def pause_subscription(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/pause")).json()
 
 
-async def pause_subscription(token: str, entity_id: str) -> dict:
-    return await pause_subscription_template(token, entity_id)
-
-
-async def resume_subscription_template(token: str, entity_id: str) -> dict:
+async def resume_subscription(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/resume")).json()
 
 
-async def resume_subscription(token: str, entity_id: str) -> dict:
-    return await resume_subscription_template(token, entity_id)
-
-
-async def cancel_subscription_template(token: str, entity_id: str) -> dict:
+async def cancel_subscription(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/cancel")).json()
 
 
-async def cancel_subscription(token: str, entity_id: str) -> dict:
-    return await cancel_subscription_template(token, entity_id)
-
-
-async def generate_subscription_now(token: str, entity_id: str) -> dict:
+async def generate_subscription(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/generate")).json()
-
-
-async def generate_subscription(token: str, entity_id: str) -> dict:
-    return await generate_subscription_now(token, entity_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1523,12 +1507,6 @@ async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.R
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
     async with _client(token) as c:
         return _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
-
-
-async def patch_subscription(token: str, entity_id: str, data: dict) -> dict:
-    fields_changed = {k: {"old": None, "new": v} for k, v in data.items()}
-    async with _client(token) as c:
-        return _raise(await c.patch(f"/subscriptions/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
 async def convert_memo_to_invoice(token: str, memo_id: str) -> dict:

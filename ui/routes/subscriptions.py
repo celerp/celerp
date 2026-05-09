@@ -352,17 +352,24 @@ def setup_routes(app) -> None:
         direction = "sales" if sub.get("doc_type") == "subscription_invoice" else "purchasing"
         title = sub.get("name") or entity_id
 
-        # Resolve contact name
+        # Resolve contact name - look it up if not embedded in doc
         contact_id = sub.get("contact_id") or ""
-        contact_name = sub.get("contact_name") or sub.get("contact_company_name") or contact_id
+        contact_name = sub.get("contact_name") or sub.get("contact_company_name") or ""
+        if contact_id and not contact_name:
+            try:
+                contact = await api.get_contact(token, contact_id)
+                contact_name = contact.get("name") or contact.get("company_name") or contact_id
+            except APIError:
+                contact_name = contact_id
         currency = sub.get("currency") or "-"
 
         actions = []
-        if status == "active":
+        if status != "cancelled":
             actions.append(
                 Form(Button("Generate Now", type="submit", cls="btn btn--primary btn--sm"),
                      method="post", action=f"/subscriptions/{entity_id}/generate")
             )
+        if status == "active":
             actions.append(
                 Form(Button("Pause", type="submit", cls="btn btn--warning btn--sm"),
                      method="post", action=f"/subscriptions/{entity_id}/pause")
@@ -372,7 +379,7 @@ def setup_routes(app) -> None:
                 Form(Button("Resume", type="submit", cls="btn btn--success btn--sm"),
                      method="post", action=f"/subscriptions/{entity_id}/resume")
             )
-        if status != "cancelled":
+        if status not in ("cancelled",):
             actions.append(
                 Form(Button("Cancel", type="submit", cls="btn btn--danger btn--sm"),
                      method="post", action=f"/subscriptions/{entity_id}/cancel")
@@ -455,3 +462,5 @@ def setup_routes(app) -> None:
         except APIError:
             pass
         return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
+
+    # No activate endpoint: draft templates can be used directly via Generate Now.
