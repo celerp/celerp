@@ -91,7 +91,6 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "artifactName": "Celerp-mac.dmg",
       "target": [
         {
           "target": "dmg",
@@ -106,6 +105,9 @@
           ]
         }
       ]
+    },
+    "dmg": {
+      "artifactName": "Celerp-mac.dmg"
     },
     "linux": {
       "icon": "assets/icon.png",
@@ -130,7 +132,8 @@
       "provider": "github",
       "owner": "celerp",
       "repo": "celerp",
-      "releaseType": "release"
+      "releaseType": "release",
+      "allowOverwrite": true
     }
   },
   "jest": {
