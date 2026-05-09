@@ -55,6 +55,8 @@ _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "memo": "Consignment Out",
     "consignment_in": "Consignment In",
     "list": "Lists",
+    "subscription_invoice": "Subscription Templates",
+    "subscription_po": "Subscription PO Templates",
 }
 _DOC_TYPE_NEW_LABEL_KEYS: dict[str, str] = {
     "invoice": "btn.new_invoice",
@@ -86,6 +88,8 @@ _DOC_TYPE_SINGULAR: dict[str, str] = {
     "memo": "Consignment Out",
     "consignment_in": "Consignment In",
     "list": "List",
+    "subscription_invoice": "Subscription Template",
+    "subscription_po": "Subscription PO Template",
 }
 
 
@@ -106,9 +110,11 @@ def _render_fulfill_section(doc: dict):
     Requires celerp-inventory to be installed.
     """
     from celerp.modules.loader import loaded_modules
-    from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES
+    from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES, TEMPLATE_DOC_TYPES
     if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
         return ""
+    if doc.get("doc_type") in TEMPLATE_DOC_TYPES:
+        return ""  # Subscription templates are never fulfilled
     if doc.get("doc_type") in ("credit_note", "bill"):
         return ""  # CNs use Receive Returns; bills receive INTO stock, never deduct
     entity_id = doc.get("entity_id") or doc.get("id") or ""

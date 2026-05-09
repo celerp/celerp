@@ -711,8 +711,6 @@ _PNL = {"revenue": {"total": 500, "lines": [{"account_name": "Sales", "amount": 
         "expenses": {"total": 100, "lines": []}, "net_profit": 200}
 _BS = {"assets": {"total": 1000, "lines": [{"account_name": "Cash", "amount": 1000}]},
        "liabilities": {"total": 300, "lines": []}, "equity": {"total": 700, "lines": []}, "balanced": True}
-_SUBS = [{"entity_id": "s:1", "name": "Monthly Rent", "doc_type": "invoice", "frequency": "monthly",
-          "next_run": "2026-03-01", "last_generated_doc_id": "d:99", "status": "active"}]
 _AGING = {"lines": [{"contact_name": "Alice", "doc_number": "INV-001", "due_date": "2026-01-15",
           "outstanding": 100, "days_overdue": 40, "bucket": "31-60"}], "buckets": {"31-60": 100}}
 _SALES = {"lines": [{"label": "Alice", "count": 3, "total": 500}], "group_by": "customer", "total": 500}
@@ -1289,55 +1287,6 @@ class TestSettingsPage:
         assert r.status_code == 200
         assert b"Gems" in r.content or b"gems" in r.content.lower()
         assert b"Electronics" in r.content
-
-
-class TestSubscriptionsPage:
-    @pytest.mark.asyncio
-    async def test_subscriptions_renders(self, ui_client):
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value=_SUBS)):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Subscriptions" in r.content
-        assert b"Monthly Rent" in r.content
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_empty(self, ui_client):
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert r.status_code == 200
-        assert b"No subscriptions" in r.content
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_htmx_pause(self, ui_client):
-        paused = {**_SUBS[0], "status": "paused"}
-        with (
-            patch("ui.api_client.pause_subscription", new=AsyncMock(return_value=paused)),
-            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=paused)),
-        ):
-            r = await ui_client.post("/subscriptions/s:1/pause", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Resume" in r.content
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_htmx_resume(self, ui_client):
-        resumed = {**_SUBS[0], "status": "active"}
-        with (
-            patch("ui.api_client.resume_subscription", new=AsyncMock(return_value=resumed)),
-            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=resumed)),
-        ):
-            r = await ui_client.post("/subscriptions/s:1/resume", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Pause" in r.content
-
-    @pytest.mark.asyncio
-    async def test_new_subscription_form(self, ui_client):
-        with (
-            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/subscriptions/new", cookies=_authed())
-        assert r.status_code == 200
-        assert b"New Subscription" in r.content
 
 
 class TestTableComponent:
@@ -2024,59 +1973,7 @@ class TestSearchableSelect:
         assert "Label Two" in result
         assert 'value="v1"' in result
 
-    @pytest.mark.asyncio
-    async def test_combobox_js_initialized(self, ui_client):
-        """Pages with combobox must include initCombobox JS."""
-        with (
-            patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/subscriptions/new", cookies=_authed())
-        assert b"initCombobox" in r.content
-
-
-class TestSubscriptionsPolish:
-    """Tests for subscription page QA fixes."""
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_empty_no_duplicate_cta(self, ui_client):
-        """Empty state must NOT contain a second CTA button (dedup fix)."""
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert r.status_code == 200
-        # Header already has "New Subscription" button; empty state must not duplicate it
-        content = r.content.decode()
-        assert content.count("New Subscription") == 1, "Duplicate CTA found"
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_table_no_last_doc_column(self, ui_client):
-        """Subscriptions table must not show the 'Last Doc' raw entity_id column."""
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value=_SUBS)):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert b"Last Doc" not in r.content
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_row_has_badge_status(self, ui_client):
-        """Subscription status cell must be a badge pill."""
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value=_SUBS)):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert b"badge--active" in r.content
-
-    @pytest.mark.asyncio
-    async def test_new_sub_form_loads_contacts(self, ui_client):
-        """New subscription form must call list_contacts for the contact picker."""
-        contacts = [{"entity_id": f"ct:{i}", "name": f"Contact {i}"} for i in range(12)]
-        with (
-            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": len(contacts)})) as mock_contacts,
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/subscriptions/new", cookies=_authed())
-        assert r.status_code == 200
-        mock_contacts.assert_called_once()
-        # With >10 contacts, searchable combobox should appear
-        assert b"combobox-wrap" in r.content
-
+    
 
 class TestDocumentPolish:
     """Tests for documents page QA fixes."""

@@ -97,10 +97,8 @@ if _os.path.abspath(_subs_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_subs_src))
 from celerp_subscriptions.routes import setup_api_routes as _setup_subs
 from celerp_subscriptions.ui_routes import setup_ui_routes as _setup_subs_ui
-from celerp_subscriptions.ui_routes_import import setup_ui_routes as _setup_subs_import_ui
 _setup_subs(app)
 _setup_subs_ui(_ui_app)
-_setup_subs_import_ui(_ui_app)
 
 # Register reports module routes onto the test app.
 _rep_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-reports")
@@ -168,7 +166,8 @@ _SLOT_CONTRIBUTIONS = [
     {"slot": "nav", "contrib": {"group": None, "key": "dashboard", "href": "/dashboard", "label": "Dashboard", "order": 1, "_module": "celerp-dashboard"}},
     {"slot": "nav", "contrib": {"group": "Sales Documents", "key": "docs", "href": "/docs", "label": "Documents", "order": 20, "_module": "celerp-docs"}},
     {"slot": "nav", "contrib": {"group": "Sales Documents", "key": "lists", "href": "/lists", "label": "Lists", "order": 21, "_module": "celerp-docs"}},
-    {"slot": "nav", "contrib": {"group": "Sales", "key": "subscriptions", "href": "/subscriptions", "label": "Subscriptions", "order": 25, "_module": "celerp-subscriptions"}},
+    {"slot": "nav", "contrib": {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "min_role": "operator", "_module": "celerp-subscriptions"}},
+    {"slot": "nav", "contrib": {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "min_role": "operator", "_module": "celerp-subscriptions"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory", "href": "/inventory", "label": "Inventory", "order": 30, "settings_href": "/settings/inventory", "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_sold", "href": "/inventory?status=sold", "label": "Sold Inventory", "order": 31, "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_archived", "href": "/inventory?status=archived", "label": "Archived Inventory", "order": 32, "_module": "celerp-inventory"}},
@@ -231,14 +230,6 @@ _SLOT_CONTRIBUTIONS = [
         "contrib": {
             "handler": "celerp_accounting.routes:seed_chart_of_accounts_hook",
             "_module": "celerp-accounting",
-        },
-    },
-    {
-        "slot": "projection_handler",
-        "contrib": {
-            "prefix": "sub.",
-            "handler": "celerp_subscriptions.projection_handler:apply_subscription_event",
-            "_module": "celerp-subscriptions",
         },
     },
     {

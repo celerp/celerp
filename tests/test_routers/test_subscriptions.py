@@ -1,153 +1,350 @@
-# Copyright (c) 2026 Noah Severs. All rights reserved.
+# Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
+"""Tests for celerp-subscriptions module rebuild.
+
+Subscription templates are docs with doc_type "subscription_invoice" or "subscription_po".
+Lifecycle actions (pause/resume/cancel/generate) are at /subscriptions/<id>/<action>.
+"""
 from __future__ import annotations
+
+import uuid
 
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_subscription_generate_creates_invoice_with_lines_and_total(client):
-    reg = await client.post(
-        "/auth/register",
-        json={"company_name": "Acme Inc", "email": "a@b.com", "name": "Admin", "password": "pw"},
-    )
-    token = reg.json()["access_token"]
+async def _register(client, name: str | None = None) -> str:
+    addr = f"sub-{uuid.uuid4().hex[:8]}@test.test"
+    co = name or f"SubCo-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/auth/register", json={"company_name": co, "email": addr, "name": "Admin", "password": "pw"})
+    assert r.status_code == 200
+    return r.json()["access_token"]
 
-    # Token embeds company_id; fetch it by listing my-companies.
-    companies = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token}"})
-    assert companies.status_code == 200, companies.text
-    company_id = companies.json()["items"][0]["company_id"]
-    headers = {"Authorization": f"Bearer {token}", "X-Company-Id": company_id}
 
-    # Create subscription with a single line item.
-    sub = await client.post(
-        "/subscriptions",
-        headers=headers,
-        json={
-            "name": "Monthly retainer",
-            "contact_id": "contact:test",
-            "doc_type": "invoice",
-            "frequency": "monthly",
-            "start_date": "2026-01-01",
-            "line_items": [{"description": "Service", "quantity": 2, "unit_price": 1000}],
-            "shipping": 0,
-            "discount": 0,
-            "tax": 0,
-        },
-    )
-    assert sub.status_code == 200, sub.text
-    sub_id = sub.json()["id"]
+def _h(token: str) -> dict:
+    return {"Authorization": f"Bearer {token}"}
 
-    gen = await client.post(f"/subscriptions/{sub_id}/generate", headers=headers)
-    assert gen.status_code == 200, gen.text
-    doc_id = gen.json()["doc_id"]
 
-    doc = await client.get(f"/docs/{doc_id}", headers=headers)
-    assert doc.status_code == 200, doc.text
-    body = doc.json()
-
-    assert body.get("doc_type") == "invoice"
-    assert body.get("status") == "draft"
-
-    assert body.get("line_items")
-    assert body["line_items"][0]["description"] == "Service"
-    assert body["line_items"][0]["quantity"] == 2
-    assert body["line_items"][0]["unit_price"] == 1000
-
-    assert body.get("total") == 2000
-    assert body.get("amount_outstanding") == 2000
+async def _create_sub_template(client, headers, doc_type="subscription_invoice", **kwargs):
+    data = {
+        "doc_type": doc_type,
+        "contact_id": "contact:test-001",
+        "frequency": "monthly",
+        "start_date": "2026-01-01",
+        "status": "active",
+        "next_run_date": "2026-02-01",
+        "line_items": [{"description": "Monthly Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+        **kwargs,
+    }
+    r = await client.post("/docs", json=data, headers=headers)
+    assert r.status_code in {200, 201}, f"Failed to create template: {r.text}"
+    return r.json()
 
 
 # ---------------------------------------------------------------------------
-# Additional Phase 1 tests
+# 1. Create subscription template
 # ---------------------------------------------------------------------------
 
-async def _reg_sub(client, company="SubTestCo"):
-    r = await client.post("/auth/register", json={"company_name": company, "email": f"{company.lower()}@test.com", "name": "Admin", "password": "pw"})
-    tok = r.json()["access_token"]
-    cid = (await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {tok}"})).json()["items"][0]["company_id"]
-    return tok, {"Authorization": f"Bearer {tok}", "X-Company-Id": cid}
+@pytest.mark.asyncio
+async def test_create_subscription_template(client):
+    tok = await _register(client)
+    h = _h(tok)
+    data = {
+        "doc_type": "subscription_invoice",
+        "contact_id": "contact:test-001",
+        "frequency": "monthly",
+        "start_date": "2026-01-01",
+        "status": "active",
+        "next_run_date": "2026-02-01",
+        "line_items": [{"description": "Monthly Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
+    }
+    r = await client.post("/docs", json=data, headers=h)
+    assert r.status_code in {200, 201}, r.text
+    body = r.json()
+    eid = body.get("entity_id") or body.get("id") or ""
+    assert eid
 
+
+# ---------------------------------------------------------------------------
+# 2. Subscription template stored as doc
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_contact_id_required(client):
-    """POST /subscriptions without contact_id must return 422."""
-    _, h = await _reg_sub(client, "ContactReqCo")
-    r = await client.post("/subscriptions", headers=h, json={
-        "name": "No Contact Sub", "doc_type": "invoice", "frequency": "monthly", "start_date": "2026-01-01",
-    })
-    assert r.status_code == 422
+async def test_subscription_template_stored_as_doc(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h)
+    eid = sub.get("entity_id") or sub.get("id") or ""
+    r = await client.get(f"/docs/{eid}", headers=h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("doc_type") == "subscription_invoice"
+    assert body.get("frequency") == "monthly"
+    assert body.get("status") == "active"
 
+
+# ---------------------------------------------------------------------------
+# 3. List subscription templates - sales direction
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_contact_id_empty_string_rejected(client):
-    """POST /subscriptions with contact_id='' must return 422."""
-    _, h = await _reg_sub(client, "EmptyContactCo")
-    r = await client.post("/subscriptions", headers=h, json={
-        "name": "Empty Contact Sub", "doc_type": "invoice", "frequency": "monthly",
-        "start_date": "2026-01-01", "contact_id": "",
-    })
-    assert r.status_code == 422
+async def test_list_subscription_templates(client):
+    tok = await _register(client)
+    h = _h(tok)
+    # Create one sales template
+    await _create_sub_template(client, h, doc_type="subscription_invoice")
+    # Create one purchasing template
+    await _create_sub_template(client, h, doc_type="subscription_po")
+    r = await client.get("/subscriptions?direction=sales", headers=h)
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert all(i.get("doc_type") == "subscription_invoice" for i in items)
 
+
+# ---------------------------------------------------------------------------
+# 4. List subscription templates - purchasing direction
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_list_subscription_templates_purchasing(client):
+    tok = await _register(client)
+    h = _h(tok)
+    await _create_sub_template(client, h, doc_type="subscription_invoice")
+    await _create_sub_template(client, h, doc_type="subscription_po")
+    r = await client.get("/subscriptions?direction=purchasing", headers=h)
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert all(i.get("doc_type") == "subscription_po" for i in items)
+
+
+# ---------------------------------------------------------------------------
+# 5. Status filter
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_subscription_status_filter(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h)
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    # Should appear in active filter
+    r_active = await client.get("/subscriptions?status=active", headers=h)
+    assert r_active.status_code == 200
+    ids_active = [i.get("id") for i in r_active.json()["items"]]
+    assert eid in ids_active
+
+    # Pause it
+    await client.post(f"/subscriptions/{eid}/pause", headers=h)
+
+    r_paused = await client.get("/subscriptions?status=paused", headers=h)
+    assert r_paused.status_code == 200
+    ids_paused = [i.get("id") for i in r_paused.json()["items"]]
+    assert eid in ids_paused
+
+
+# ---------------------------------------------------------------------------
+# 6. Generate now creates invoice
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_generate_now_creates_invoice(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h, name="My Sub Template")
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    doc_id = body.get("doc_id", "")
+    assert doc_id.startswith("doc:")
+
+    # Verify generated doc
+    dr = await client.get(f"/docs/{doc_id}", headers=h)
+    assert dr.status_code == 200
+    doc = dr.json()
+    assert doc.get("doc_type") == "invoice"
+    assert doc.get("subscription_id") == eid
+    assert "My Sub Template" in doc.get("notes", "")
+
+
+# ---------------------------------------------------------------------------
+# 7. Generate now computes totals
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_generate_now_computes_totals(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(
+        client, h,
+        line_items=[
+            {"description": "Item A", "quantity": 2, "unit_price": 50.0, "line_total": 100.0},
+            {"description": "Item B", "quantity": 1, "unit_price": 30.0, "line_total": 30.0},
+        ],
+        discount=10.0,
+        shipping=5.0,
+    )
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["doc_id"]
+
+    dr = await client.get(f"/docs/{doc_id}", headers=h)
+    assert dr.status_code == 200
+    doc = dr.json()
+    # subtotal = 130, discount = 10, shipping = 5, tax = 0 -> total = 125
+    assert float(doc.get("subtotal", 0)) == pytest.approx(130.0)
+    assert float(doc.get("total", 0)) == pytest.approx(125.0)
+
+
+# ---------------------------------------------------------------------------
+# 8. Pause subscription
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_pause_subscription(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h)
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    r = await client.post(f"/subscriptions/{eid}/pause", headers=h)
+    assert r.status_code == 200
+
+    dr = await client.get(f"/docs/{eid}", headers=h)
+    assert dr.json().get("status") == "paused"
+
+
+# ---------------------------------------------------------------------------
+# 9. Resume subscription
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_resume_subscription(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h)
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    await client.post(f"/subscriptions/{eid}/pause", headers=h)
+    r = await client.post(f"/subscriptions/{eid}/resume", headers=h)
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("ok") is True
+    assert body.get("next_run_date")
+
+    dr = await client.get(f"/docs/{eid}", headers=h)
+    assert dr.json().get("status") == "active"
+
+
+# ---------------------------------------------------------------------------
+# 10. Cancel subscription
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_cancel_subscription(client):
-    """POST /cancel sets status to cancelled."""
-    tok, h = await _reg_sub(client, "CancelCo")
-    sid = (await client.post("/subscriptions", headers=h, json={
-        "name": "To Cancel", "doc_type": "invoice", "frequency": "monthly",
-        "start_date": "2026-01-01", "contact_id": "contact:c1",
-    })).json()["id"]
-    r = await client.post(f"/subscriptions/{sid}/cancel", headers=h)
-    assert r.status_code == 200
-    sub = (await client.get(f"/subscriptions/{sid}", headers=h)).json()
-    assert sub["status"] == "cancelled"
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h)
+    eid = sub.get("entity_id") or sub.get("id") or ""
 
+    r = await client.post(f"/subscriptions/{eid}/cancel", headers=h)
+    assert r.status_code == 200
+
+    dr = await client.get(f"/docs/{eid}", headers=h)
+    assert dr.json().get("status") == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# 11. Cancel already-cancelled is 409
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_cancel_already_cancelled_is_409(client):
-    """POST /cancel on already-cancelled subscription must return 409."""
-    tok, h = await _reg_sub(client, "CancelTwiceCo")
-    sid = (await client.post("/subscriptions", headers=h, json={
-        "name": "Cancel Twice", "doc_type": "invoice", "frequency": "monthly",
-        "start_date": "2026-01-01", "contact_id": "contact:c1",
-    })).json()["id"]
-    await client.post(f"/subscriptions/{sid}/cancel", headers=h)
-    r = await client.post(f"/subscriptions/{sid}/cancel", headers=h)
-    assert r.status_code == 409
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h)
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    await client.post(f"/subscriptions/{eid}/cancel", headers=h)
+    r2 = await client.post(f"/subscriptions/{eid}/cancel", headers=h)
+    assert r2.status_code == 409
 
 
-@pytest.mark.asyncio
-async def test_generated_doc_ids_is_list(client):
-    """Generating twice accumulates doc IDs in generated_doc_ids list."""
-    tok, h = await _reg_sub(client, "GenListCo")
-    sid = (await client.post("/subscriptions", headers=h, json={
-        "name": "Multi Gen", "doc_type": "invoice", "frequency": "monthly",
-        "start_date": "2026-01-01", "contact_id": "contact:c1",
-        "line_items": [{"description": "Fee", "quantity": 1, "unit_price": 50}],
-    })).json()["id"]
-    doc1 = (await client.post(f"/subscriptions/{sid}/generate", headers=h)).json()["doc_id"]
-    doc2 = (await client.post(f"/subscriptions/{sid}/generate", headers=h)).json()["doc_id"]
-    sub = (await client.get(f"/subscriptions/{sid}", headers=h)).json()
-    doc_ids = sub.get("generated_doc_ids", [])
-    assert doc1 in doc_ids
-    assert doc2 in doc_ids
-    assert len(doc_ids) == 2
-    assert "last_generated_doc_id" not in sub
-
+# ---------------------------------------------------------------------------
+# 12. Pause already-paused or cancelled is 409
+# ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_generate_total_from_line_items(client):
-    """generate_now must compute total from line items, not stored flat floats."""
-    tok, h = await _reg_sub(client, "GenTotalCo")
-    sid = (await client.post("/subscriptions", headers=h, json={
-        "name": "Computed Total", "doc_type": "invoice", "frequency": "monthly",
-        "start_date": "2026-01-01", "contact_id": "contact:c1",
-        "line_items": [{"description": "Widget", "quantity": 3, "unit_price": 50}],
-        "shipping": 10, "discount": 5, "tax": 0,
-    })).json()["id"]
-    doc_id = (await client.post(f"/subscriptions/{sid}/generate", headers=h)).json()["doc_id"]
-    doc = (await client.get(f"/docs/{doc_id}", headers=h)).json()
-    # subtotal = 150, discount = 5, shipping = 10 => total = 155
-    assert doc["total"] == 155.0
-    assert doc["amount_outstanding"] == 155.0
+async def test_pause_already_paused_is_409(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h)
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    await client.post(f"/subscriptions/{eid}/pause", headers=h)
+    # Double-pause
+    r2 = await client.post(f"/subscriptions/{eid}/pause", headers=h)
+    assert r2.status_code == 409
+
+    # Cancel then pause
+    await client.post(f"/subscriptions/{eid}/cancel", headers=h)
+    r3 = await client.post(f"/subscriptions/{eid}/pause", headers=h)
+    assert r3.status_code == 409
+
+
+# ---------------------------------------------------------------------------
+# 13. Contact ID is preserved when set
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_subscription_contact_id_preserved(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h, contact_id="contact:my-specific-contact")
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    dr = await client.get(f"/docs/{eid}", headers=h)
+    assert dr.status_code == 200
+    assert dr.json().get("contact_id") == "contact:my-specific-contact"
+
+
+# ---------------------------------------------------------------------------
+# 14. Custom frequency uses 30-day default when no interval given
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_subscription_custom_frequency_default_interval(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h, frequency="custom")
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    assert r.status_code == 200
+    # 30-day default from today - just verify next_run_date is returned and not empty
+    assert r.json().get("next_run_date")
+
+
+# ---------------------------------------------------------------------------
+# 15. Generated invoice appears in normal invoice list
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_generated_invoice_appears_in_normal_invoice_list(client):
+    tok = await _register(client)
+    h = _h(tok)
+    sub = await _create_sub_template(client, h)
+    eid = sub.get("entity_id") or sub.get("id") or ""
+
+    r = await client.post(f"/subscriptions/{eid}/generate", headers=h)
+    assert r.status_code == 200
+    doc_id = r.json()["doc_id"]
+
+    # Check via GET /docs?doc_type=invoice
+    r2 = await client.get("/docs?doc_type=invoice", headers=h)
+    assert r2.status_code == 200
+    ids = [d.get("entity_id") or d.get("id") for d in r2.json().get("items", [])]
+    assert doc_id in ids

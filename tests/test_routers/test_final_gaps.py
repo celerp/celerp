@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """
 Coverage gap cleanup: docs summary, refund, receive-PO branches, import errors,
-events/engine apply_event, accounting batch error, subscriptions custom/generate,
+events/engine apply_event, accounting batch error,
 crm contact search, share multipart/json-error, and tax_regimes.
 """
 from __future__ import annotations
@@ -287,81 +287,6 @@ async def test_accounting_batch_import_error_capture(client):
     assert r.status_code == 200
     body = r.json()
     assert len(body["errors"]) >= 1
-
-
-# ---------------------------------------------------------------------------
-# subscriptions.py: custom frequency validation (lines 133, 135)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_subscription_invalid_doc_type_and_frequency(client):
-    """create_subscription 422 on bad doc_type and bad frequency (lines 133-137)."""
-    tok = await _reg(client, "SubValCo")
-
-    r1 = await client.post("/subscriptions", headers=_h(tok), json={
-        "name": "Sub1", "doc_type": "memo", "frequency": "monthly", "start_date": "2026-06-01", "contact_id": "contact:test",
-    })
-    assert r1.status_code == 422
-
-    r2 = await client.post("/subscriptions", headers=_h(tok), json={
-        "name": "Sub2", "doc_type": "invoice", "frequency": "fortnightly", "start_date": "2026-06-01", "contact_id": "contact:test",
-    })
-    assert r2.status_code == 422
-
-    r3 = await client.post("/subscriptions", headers=_h(tok), json={
-        "name": "Sub3", "doc_type": "invoice", "frequency": "custom", "start_date": "2026-06-01", "contact_id": "contact:test",
-        # missing custom_interval_days
-    })
-    assert r3.status_code == 422
-
-
-# ---------------------------------------------------------------------------
-# subscriptions.py: batch import error capture (lines 331-333)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_subscriptions_batch_import_error_capture(client):
-    """batch_import_subscriptions captures per-record errors (lines 331-333)."""
-    tok = await _reg(client, "SubBatchErrCo")
-    r = await client.post("/subscriptions/import/batch", headers=_h(tok), json={"records": [
-        {
-            "entity_id": f"sub:{uuid.uuid4()}",
-            "event_type": "sub.bad_event_type",  # unknown → ValueError
-            "data": {},
-            "source": "test",
-            "idempotency_key": f"sub-err-{uuid.uuid4().hex}",
-        },
-    ]})
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body["errors"]) >= 1
-
-
-# ---------------------------------------------------------------------------
-# subscriptions.py: generate with line_items computed total (lines 348, 379-380)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_subscription_generate_line_items_computed_total(client):
-    """generate_now with line_items and total=0 computes total from items (line 379-380)."""
-    tok = await _reg(client, "SubGenLiCo")
-    r = await client.post("/subscriptions", headers=_h(tok), json={
-        "name": "Monthly Widget Sub",
-        "doc_type": "invoice",
-        "frequency": "monthly",
-        "start_date": "2026-06-01",
-        "contact_id": "contact:test",
-        "line_items": [{"description": "Widget", "quantity": 2, "unit_price": 15}],
-        "tax": 0,
-        "shipping": 0,
-        "discount": 0,
-    })
-    assert r.status_code == 200
-    sub_id = r.json()["id"]
-
-    r2 = await client.post(f"/subscriptions/{sub_id}/generate", headers=_h(tok))
-    assert r2.status_code == 200
-    assert "doc_id" in r2.json()
 
 
 # ---------------------------------------------------------------------------

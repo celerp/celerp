@@ -47,7 +47,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("amount_outstanding", float(current.get("total", 0) or 0))
         current.setdefault("files", [])
     elif event_type == "doc.updated":
-        _PATCH_PROTECTED = {"status", "entity_type", "company_id"}
+        _is_template = current.get("doc_type") in {"subscription_invoice", "subscription_po"}
+        _PATCH_PROTECTED = {"entity_type", "company_id"} if _is_template else {"status", "entity_type", "company_id"}
         _is_finalized = current.get("status", "draft") != "draft"
         for field, change in data["fields_changed"].items():
             if field in _PATCH_PROTECTED:

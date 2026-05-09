@@ -844,6 +844,7 @@ async def get_expiring(token: str, days: int = 30) -> dict:
         return _raise(await c.get("/reports/expiring", params={"days": days})).json()
 
 
+
 # ---------------------------------------------------------------------------
 # Subscriptions
 # ---------------------------------------------------------------------------
@@ -871,24 +872,40 @@ async def create_subscription(token: str, data: dict) -> dict:
         return _raise(await c.post("/subscriptions", json=data)).json()
 
 
-async def pause_subscription(token: str, entity_id: str) -> dict:
+async def pause_subscription_template(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/pause")).json()
 
 
-async def resume_subscription(token: str, entity_id: str) -> dict:
+async def pause_subscription(token: str, entity_id: str) -> dict:
+    return await pause_subscription_template(token, entity_id)
+
+
+async def resume_subscription_template(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/resume")).json()
 
 
-async def generate_subscription(token: str, entity_id: str) -> dict:
+async def resume_subscription(token: str, entity_id: str) -> dict:
+    return await resume_subscription_template(token, entity_id)
+
+
+async def cancel_subscription_template(token: str, entity_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/cancel")).json()
+
+
+async def cancel_subscription(token: str, entity_id: str) -> dict:
+    return await cancel_subscription_template(token, entity_id)
+
+
+async def generate_subscription_now(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/generate")).json()
 
 
-async def cancel_subscription(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.post(f"/subscriptions/{entity_id}/cancel")).json()
+async def generate_subscription(token: str, entity_id: str) -> dict:
+    return await generate_subscription_now(token, entity_id)
 
 
 # ---------------------------------------------------------------------------

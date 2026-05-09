@@ -1,6 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
+"""Subscription template UI routes.
 
+Subscription templates are docs with doc_type "subscription_invoice" or "subscription_po".
+Creation uses POST /docs; lifecycle actions use the /subscriptions API.
+"""
 from __future__ import annotations
 
 import logging
@@ -11,93 +15,184 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, flash
-from ui.components.table import EMPTY, searchable_select, breadcrumbs, status_cards, empty_state_cta, pagination, fmt_money
-from ui.config import get_token as _token
+from ui.components.shell import base_shell, page_header
+from ui.components.table import searchable_select, empty_state_cta, fmt_money
+from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
 
 logger = logging.getLogger(__name__)
 
+_FREQUENCIES = ["weekly", "biweekly", "monthly", "quarterly", "annually", "custom"]
+
+_STATUS_COLORS = {
+    "active": "badge--active",
+    "paused": "badge--paused",
+    "cancelled": "badge--void",
+}
 
 
+def _sub_status_badge(status: str):
+    css = _STATUS_COLORS.get(status, "badge--draft")
+    return Span(status.capitalize(), cls=f"badge {css}")
 
-_PER_PAGE = 50
+
+def _schedule_section(sub: dict, lang: str):
+    freq = sub.get("frequency", "-")
+    start = sub.get("start_date", "-")
+    next_run = sub.get("next_run_date", "-")
+    status = sub.get("status", "active")
+    interval = sub.get("custom_interval_days")
+    return Section(
+        H3("Schedule", cls="section-title"),
+        Div(
+            Div(Label("Frequency"), P(freq.capitalize() + (f" ({interval} days)" if interval and freq == "custom" else ""))),
+            Div(Label("Start Date"), P(start)),
+            Div(Label("Next Run"), P(next_run)),
+            Div(Label("Status"), _sub_status_badge(status)),
+            cls="form-grid form-grid--2col",
+        ),
+        cls="section-card",
+    )
 
 
-def setup_routes(app):
+def _generated_docs_table(doc_ids: list, lang: str):
+    if not doc_ids:
+        return P("No documents generated yet.", cls="text-muted")
+    rows = [Tr(Td(A(did, href=f"/docs/{did}"))) for did in doc_ids]
+    return Table(Thead(Tr(Th("Generated Document"))), Tbody(*rows), cls="data-table")
+
+
+def _template_row(sub: dict, lang: str):
+    sid = sub.get("id") or sub.get("entity_id", "")
+    name = sub.get("name") or sid
+    freq = sub.get("frequency", "-")
+    next_run = sub.get("next_run_date", "-")
+    status = sub.get("status", "active")
+    return Tr(
+        Td(A(name, href=f"/subscriptions/{sid}")),
+        Td(freq.capitalize()),
+        Td(next_run),
+        Td(_sub_status_badge(status)),
+    )
+
+
+def _template_table(subs: list, lang: str):
+    if not subs:
+        return empty_state_cta("No subscription templates found.", "/subscriptions/new", "New Subscription")
+    rows = [_template_row(s, lang) for s in subs]
+    return Table(
+        Thead(Tr(Th("Name"), Th("Frequency"), Th("Next Run"), Th("Status"))),
+        Tbody(*rows),
+        cls="data-table",
+    )
+
+
+def _direction_tabs(direction: str):
+    return Nav(
+        A("Sales", href="/subscriptions?direction=sales",
+          cls=f"tab-link {'tab-link--active' if direction == 'sales' else ''}"),
+        A("Purchasing", href="/subscriptions?direction=purchasing",
+          cls=f"tab-link {'tab-link--active' if direction == 'purchasing' else ''}"),
+        cls="tab-nav",
+    )
+
+
+def setup_routes(app) -> None:
 
     @app.get("/subscriptions")
-    async def subscriptions_page(request: Request):
+    async def subscriptions_list(request: Request, direction: str = "sales", status: str | None = None):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        page = int(request.query_params.get("page", 1))
-        try:
-            per_page = max(1, int(request.query_params.get("per_page", _PER_PAGE)))
-        except (ValueError, TypeError):
-            per_page = _PER_PAGE
-        status_filter = request.query_params.get("status", "")
-        direction = request.query_params.get("direction", "")  # "sales" or "purchasing"
-        params = {"limit": per_page, "offset": (page - 1) * per_page}
-        if status_filter:
-            params["status"] = status_filter
-        try:
-            resp = await api.list_subscriptions(token, params)
-            subs = resp.get("items", []) if isinstance(resp, dict) else resp
-            total = resp.get("total", len(subs)) if isinstance(resp, dict) else len(subs)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            subs, total = [], 0
-
-        # Filter by direction: sales=invoice, purchasing=purchase_order
-        if direction == "sales":
-            subs = [s for s in subs if s.get("doc_type") == "invoice"]
-        elif direction == "purchasing":
-            subs = [s for s in subs if s.get("doc_type") == "purchase_order"]
-
-        nav_active = f"subscriptions_{direction}" if direction in ("sales", "purchasing") else "subscriptions_sales"
-        new_href = f"/subscriptions/new?direction={direction}" if direction else "/subscriptions/new"
-
         lang = get_lang(request)
-        extra_qs = "&".join(p for p in [f"status={status_filter}" if status_filter else "", f"direction={direction}" if direction else ""] if p)
-        return base_shell(
-            page_header(
-                t("page.subscriptions", lang),
-                A(t("btn.new_subscription", lang), href=new_href, cls="btn btn--primary"),
-                A(t("doc.import_csv"), href="/subscriptions/import", cls="btn btn--secondary"),
+        try:
+            params = {"direction": direction}
+            if status:
+                params["status"] = status
+            resp = await api.list_subscriptions(token, params)
+            subs = resp if isinstance(resp, list) else resp.get("items", [])
+        except APIError:
+            subs = []
+
+        title = "Sales Subscriptions" if direction == "sales" else "Purchasing Subscriptions"
+        content = Div(
+            page_header(title,
+                A("+ New Subscription", href=f"/subscriptions/new?direction={direction}", cls="btn btn--primary"),
             ),
-            _sub_status_cards(subs, status_filter),
-            _sub_table(subs),
-            pagination(page, total, per_page, "/subscriptions", extra_qs),
-            title="Subscriptions - Celerp",
-            nav_active=nav_active,
-            request=request,
+            _direction_tabs(direction),
+            _template_table(subs, lang),
+            cls="page-content",
         )
+        return base_shell(request, content, title=title)
 
     @app.get("/subscriptions/new")
-    async def new_subscription(request: Request):
+    async def new_subscription_form(request: Request, direction: str = "sales"):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        direction = request.query_params.get("direction", "")
-        doc_type_default = "purchase_order" if direction == "purchasing" else "invoice"
+        lang = get_lang(request)
+        doc_type = "subscription_invoice" if direction == "sales" else "subscription_po"
+        title = "New Subscription"
         try:
-            contact_resp = await api.list_contacts(token, {"limit": 500})
-            contacts = contact_resp.get("items", [])
-            terms = await api.get_payment_terms(token)
-        except APIError as e:
-            logger.warning("API error loading new subscription form: %s", e.detail)
-            contacts, terms = [], []
-        back_href = f"/subscriptions?direction={direction}" if direction else "/subscriptions"
-        nav_active = f"subscriptions_{direction}" if direction in ("sales", "purchasing") else "subscriptions_sales"
-        return base_shell(
-            page_header("New Subscription", A(t("btn.cancel"), href=back_href, cls="btn btn--secondary")),
-            _sub_form({"doc_type": doc_type_default}, contacts=contacts, terms=terms),
-            title="New Subscription - Celerp",
-            nav_active=nav_active,
-            request=request,
+            contacts_resp = await api.list_contacts(token, {"limit": 500})
+            contacts = contacts_resp.get("items", [])
+        except APIError:
+            contacts = []
+
+        contact_opts = [{"value": c.get("entity_id", ""), "label": c.get("name", c.get("entity_id", ""))} for c in contacts]
+
+        form = Form(
+            Input(type="hidden", name="doc_type", value=doc_type),
+            Div(
+                Label("Name *"),
+                Input(name="name", placeholder="e.g. Monthly Retainer", required=True),
+            ),
+            Div(
+                Label("Contact *"),
+                searchable_select("contact_id", contact_opts, placeholder="Select contact..."),
+            ),
+            Div(
+                Label("Frequency"),
+                Select(
+                    *[Option(f.capitalize(), value=f) for f in _FREQUENCIES],
+                    name="frequency",
+                    id="frequency-select",
+                    onchange="document.getElementById('custom-interval-row').style.display = this.value === 'custom' ? '' : 'none'",
+                ),
+            ),
+            Div(
+                Label("Custom Interval (days)"),
+                Input(name="custom_interval_days", type="number", min="1", placeholder="30"),
+                id="custom-interval-row",
+                style="display:none",
+            ),
+            Div(
+                Label("Start Date *"),
+                Input(name="start_date", type="date", required=True),
+            ),
+            Div(
+                Label("Payment Terms"),
+                Input(name="payment_terms", placeholder="e.g. Net 30"),
+            ),
+            Div(
+                Label("Notes"),
+                Textarea(name="notes", rows="3"),
+            ),
+            Div(
+                Input(type="hidden", name="status", value="active"),
+            ),
+            Div(
+                Button("Create Subscription", type="submit", cls="btn btn--primary"),
+                A("Cancel", href=f"/subscriptions?direction={direction}", cls="btn btn--ghost"),
+                cls="form-actions",
+            ),
+            method="post",
+            action="/subscriptions/new/create",
+            cls="form form--wide",
         )
+
+        content = Div(page_header(title), form, cls="page-content")
+        return base_shell(request, content, title=title)
 
     @app.post("/subscriptions/new")
     async def create_subscription(request: Request):
@@ -105,415 +200,109 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        data = {
-            "name": str(form.get("name", "")).strip(),
-            "doc_type": str(form.get("doc_type", "invoice")),
-            "frequency": str(form.get("frequency", "monthly")),
-            "start_date": str(form.get("start_date", "")),
-            "contact_id": str(form.get("contact_id", "")).strip(),
-            "payment_terms": str(form.get("payment_terms", "")).strip() or None,
-        }
-        interval_days = str(form.get("interval_days", "")).strip()
-        if interval_days.isdigit():
-            data["interval_days"] = int(interval_days)
+        data = dict(form)
+        direction = "sales" if data.get("doc_type") == "subscription_invoice" else "purchasing"
+        # Strip empty custom_interval_days
+        if not data.get("custom_interval_days"):
+            data.pop("custom_interval_days", None)
+        else:
+            data["custom_interval_days"] = int(data["custom_interval_days"])
         try:
             result = await api.create_subscription(token, data)
-            sub_id = result.get("id", "")
-            return RedirectResponse(f"/subscriptions/{sub_id}" if sub_id else "/subscriptions", status_code=302)
+            doc_id = result.get("entity_id") or result.get("id") or ""
+            return RedirectResponse(f"/subscriptions/{doc_id}", status_code=303)
         except APIError as e:
-            try:
-                contact_resp = await api.list_contacts(token, {"limit": 500})
-                contacts = contact_resp.get("items", [])
-                terms = await api.get_payment_terms(token)
-            except APIError:
-                contacts, terms = [], []
-            return base_shell(
-                page_header("New Subscription", A(t("btn.cancel"), href="/subscriptions", cls="btn btn--secondary")),
-                flash(e.detail),
-                _sub_form(data, contacts=contacts, terms=terms),
-                title="New Subscription - Celerp",
-                nav_active="subscriptions",
-                request=request,
+            return RedirectResponse(f"/subscriptions/new?direction={direction}&error={e}", status_code=303)
+
+    @app.get("/subscriptions/{entity_id}")
+    async def subscription_detail(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        try:
+            sub = await api.get_subscription(token, entity_id)
+        except APIError:
+            return RedirectResponse("/subscriptions", status_code=302)
+
+        status = sub.get("status", "active")
+        direction = "sales" if sub.get("doc_type") == "subscription_invoice" else "purchasing"
+        title = sub.get("name") or entity_id
+
+        actions = []
+        if status == "active":
+            actions.append(
+                Form(Button("Generate Now", type="submit", cls="btn btn--primary btn--sm"),
+                     method="post", action=f"/subscriptions/{entity_id}/generate")
+            )
+            actions.append(
+                Form(Button("Pause", type="submit", cls="btn btn--warning btn--sm"),
+                     method="post", action=f"/subscriptions/{entity_id}/pause")
+            )
+        elif status == "paused":
+            actions.append(
+                Form(Button("Resume", type="submit", cls="btn btn--success btn--sm"),
+                     method="post", action=f"/subscriptions/{entity_id}/resume")
+            )
+        if status != "cancelled":
+            actions.append(
+                Form(Button("Cancel", type="submit", cls="btn btn--danger btn--sm"),
+                     method="post", action=f"/subscriptions/{entity_id}/cancel",
+                     hx_confirm="Cancel this subscription? This cannot be undone.")
             )
 
+        content = Div(
+            page_header(title, *actions),
+            _schedule_section(sub, lang),
+            Section(
+                H3("Generated Documents", cls="section-title"),
+                _generated_docs_table(sub.get("generated_doc_ids") or [], lang),
+                cls="section-card",
+            ),
+            cls="page-content",
+        )
+        return base_shell(request, content, title=title)
+
+    @app.post("/subscriptions/{entity_id}/generate")
+    async def generate_ui(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await api.generate_subscription(token, entity_id)
+        except APIError:
+            pass
+        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
+
     @app.post("/subscriptions/{entity_id}/pause")
-    async def pause_sub(request: Request, entity_id: str):
+    async def pause_ui(request: Request, entity_id: str):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
             await api.pause_subscription(token, entity_id)
-            sub = await api.get_subscription(token, entity_id)
-            return _sub_row(sub)
-        except APIError as e:
-            logger.warning("API error on pause subscription %s: %s", entity_id, e.detail)
-            return RedirectResponse("/subscriptions", status_code=302)
+        except APIError:
+            pass
+        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
 
     @app.post("/subscriptions/{entity_id}/resume")
-    async def resume_sub(request: Request, entity_id: str):
+    async def resume_ui(request: Request, entity_id: str):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
             await api.resume_subscription(token, entity_id)
-            sub = await api.get_subscription(token, entity_id)
-            return _sub_row(sub)
-        except APIError as e:
-            logger.warning("API error on resume subscription %s: %s", entity_id, e.detail)
-            return RedirectResponse("/subscriptions", status_code=302)
+        except APIError:
+            pass
+        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
 
     @app.post("/subscriptions/{entity_id}/cancel")
-    async def cancel_sub(request: Request, entity_id: str):
+    async def cancel_ui(request: Request, entity_id: str):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
             await api.cancel_subscription(token, entity_id)
-            sub = await api.get_subscription(token, entity_id)
-            return _sub_row(sub)
-        except APIError as e:
-            logger.warning("API error on cancel subscription %s: %s", entity_id, e.detail)
-            return RedirectResponse("/subscriptions", status_code=302)
-
-    @app.post("/subscriptions/{entity_id}/generate")
-    async def generate_sub(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            result = await api.generate_subscription(token, entity_id)
-            sub = await api.get_subscription(token, entity_id)
-            return _sub_row(sub)
-        except APIError as e:
-            logger.warning("API error on generate subscription %s: %s", entity_id, e.detail)
-            return RedirectResponse("/subscriptions", status_code=302)
-
-    # ── T4: Subscription detail page ──────────────────────────────────────
-
-    @app.get("/subscriptions/{entity_id}")
-    async def sub_detail(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            sub = await api.get_subscription(token, entity_id)
-            try:
-                company = await api.get_company(token)
-                currency = company.get("currency") or None
-            except Exception:
-                currency = None
-        except (APIError, Exception) as e:
-            if isinstance(e, APIError) and e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return RedirectResponse("/subscriptions", status_code=302)
-        return base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), ("Subscriptions", "/subscriptions"), (sub.get("name", entity_id), None)]),
-            page_header(sub.get("name", "Subscription"), A(t("btn.back_to_settings"), href="/subscriptions", cls="btn btn--secondary")),
-            _sub_detail_card(sub, currency=currency),
-            title=f"{sub.get('name', 'Subscription')} - Celerp",
-            nav_active="subscriptions",
-            request=request,
-        )
-
-    @app.get("/subscriptions/{entity_id}/field/{field}/edit")
-    async def sub_field_edit(request: Request, entity_id: str, field: str):
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        try:
-            sub = await api.get_subscription(token, entity_id)
-        except APIError as e:
-            return P(f"Error: {e.detail}", cls="cell-error")
-        val = str(sub.get(field, "") or "")
-        _FREQ = ["weekly", "biweekly", "monthly", "quarterly", "annually", "custom"]
-        if field == "frequency":
-            input_el = Select(
-                *[Option(f, value=f, selected=(f == val)) for f in _FREQ],
-                name="value",
-                hx_patch=f"/subscriptions/{entity_id}/field/{field}",
-                hx_target="closest td", hx_swap="outerHTML", hx_trigger="change",
-                cls="cell-input cell-input--select", autofocus=True,
-            )
-        elif field in ("next_run", "end_date", "start_date"):
-            input_el = Input(
-                type="date", name="value", value=val[:10] if val else "",
-                hx_patch=f"/subscriptions/{entity_id}/field/{field}",
-                hx_target="closest td", hx_swap="outerHTML", hx_trigger="blur delay:200ms",
-                cls="cell-input", autofocus=True,
-            )
-        elif field == "unit_price":
-            input_el = Input(
-                type="number", name="value", value=val, step="0.01",
-                hx_patch=f"/subscriptions/{entity_id}/field/{field}",
-                hx_target="closest td", hx_swap="outerHTML", hx_trigger="blur delay:200ms",
-                cls="cell-input cell-input--number", autofocus=True,
-            )
-        else:
-            input_el = Input(
-                type="text", name="value", value=val,
-                hx_patch=f"/subscriptions/{entity_id}/field/{field}",
-                hx_target="closest td", hx_swap="outerHTML", hx_trigger="blur delay:200ms",
-                cls="cell-input", autofocus=True,
-            )
-        return Td(input_el, cls="cell cell--editing")
-
-    @app.patch("/subscriptions/{entity_id}/field/{field}")
-    async def sub_field_patch(request: Request, entity_id: str, field: str):
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        form = await request.form()
-        value = str(form.get("value", ""))
-        _EDITABLE_SUB = {"name", "frequency", "next_run", "end_date", "start_date", "payment_terms"}
-        if field not in _EDITABLE_SUB:
-            return P(t("label.not_editable"), cls="cell-error")
-        try:
-            await api.patch_subscription(token, entity_id, {field: value})
-            sub = await api.get_subscription(token, entity_id)
-        except APIError as e:
-            return P(str(e.detail), cls="cell-error")
-        return _sub_display_cell(entity_id, field, sub.get(field))
-
-
-def _sub_status_cards(subs: list[dict], active_status: str) -> FT:
-    counts = {"active": 0, "paused": 0, "cancelled": 0}
-    for s in subs:
-        st = str(s.get("status") or "").lower()
-        if st in counts:
-            counts[st] += 1
-    cards = [
-        {"label": "Active", "count": counts["active"], "status": "active", "color": "green"},
-        {"label": "Paused", "count": counts["paused"], "status": "paused", "color": "yellow"},
-        {"label": "Cancelled", "count": counts["cancelled"], "status": "cancelled", "color": "gray"},
-    ]
-    return status_cards(cards, "/subscriptions", active_status or None)
-
-
-def _sub_display_cell(entity_id: str, field: str, value) -> FT:
-    if field in ("next_run", "end_date", "start_date"):
-        display = str(value)[:10] if value else EMPTY
-    else:
-        display = str(value) if value and str(value).strip() else EMPTY
-    return Td(
-        Span(display, cls="cell-text"),
-        title="Click to edit",
-        hx_get=f"/subscriptions/{entity_id}/field/{field}/edit",
-        hx_target="this", hx_swap="outerHTML", hx_trigger="click",
-        cls="cell cell--clickable",
-    )
-
-
-def _sub_detail_card(sub: dict, currency: str | None = None) -> FT:
-    eid = sub.get("entity_id", "")
-    status = sub.get("status", "active")
-    fields = [
-        ("name", "Name"),
-        ("doc_type", "Document Type"),
-        ("frequency", "Frequency"),
-        ("start_date", "Start Date"),
-        ("next_run", "Next Generation Date"),
-        ("end_date", "End Date"),
-        ("payment_terms", "Payment Terms"),
-        ("contact_id", "Contact"),
-    ]
-    _editable = {"name", "frequency", "next_run", "end_date", "start_date", "payment_terms"}
-
-    def _cell(key: str, val) -> FT:
-        if key in _editable:
-            return _sub_display_cell(eid, key, val)
-        if key == "doc_type":
-            raw = str(val or "")
-            key2 = raw.lower().replace(" ", "-").replace("_", "-")
-            return Td(Span(raw.replace("_", " ").title() or EMPTY, cls=f"badge badge--{key2}"))
-        if key == "status":
-            raw = str(val or "")
-            return Td(Span(raw or EMPTY, cls=f"badge badge--{raw.lower()}"))
-        return Td(str(val) if val and str(val).strip() else EMPTY)
-
-    line_items = sub.get("line_items", [])
-    li_rows = []
-    for li in line_items:
-        li_rows.append(Tr(
-            Td(str(li.get("item_id") or li.get("description") or EMPTY)),
-            Td(str(li.get("quantity", 1))),
-            Td(fmt_money(float(li.get('unit_price', 0)), currency), cls="cell--number"),
-            cls="data-row",
-        ))
-
-    return Div(
-        Div(
-            Table(
-                *[Tr(Td(label, cls="detail-label"), _cell(key, sub.get(key))) for key, label in fields],
-                cls="detail-table",
-            ),
-            cls="detail-card",
-        ),
-        Div(
-            H3(t("th.status"), cls="section-title"),
-            Span(status, cls=f"badge badge--{status}"),
-            cls="section mt-md mb-md",
-        ),
-        Div(
-            H3(t("page.line_items"), cls="section-title"),
-            Table(
-                Thead(Tr(Th(t("th.itemdescription")), Th(t("th.qty")), Th(t("th.unit_price")))),
-                Tbody(*li_rows) if li_rows else Tbody(Tr(Td(t("doc.no_line_items"), colspan="3", cls="empty-state-msg"))),
-                cls="data-table data-table--compact",
-            ),
-            cls="section",
-        ) if line_items else "",
-        Div(
-            H3(t("th.generated_documents"), cls="section-title"),
-            *(
-                [Table(
-                    Thead(Tr(Th("Document ID"), Th("Link"))),
-                    Tbody(*[Tr(Td(doc_id), Td(A(t("btn.view"), href=f"/documents/{doc_id}"))) for doc_id in (sub.get("generated_doc_ids") or [])]),
-                    cls="data-table data-table--compact",
-                )] if sub.get("generated_doc_ids") else [P(EMPTY, cls="empty-state-msg")]
-            ),
-            cls="section mt-md",
-        ),
-    )
-
-
-def _sub_row(s: dict) -> FT:
-    """Render a single subscription table row (used for both full table and HTMX swaps)."""
-    eid = s.get("entity_id", "")
-    status = s.get("status", "active")
-    is_paused = status == "paused"
-    is_cancelled = status == "cancelled"
-    actions = [
-        Button(
-            "Resume" if is_paused else "Pause",
-            hx_post=f"/subscriptions/{eid}/{'resume' if is_paused else 'pause'}",
-            hx_target=f"#sub-{eid}",
-            hx_swap="outerHTML",
-            cls="btn btn--xs btn--secondary",
-        ) if not is_cancelled else None,
-        Button(t("btn.generate_now"),
-            hx_post=f"/subscriptions/{eid}/generate",
-            hx_target=f"#sub-{eid}",
-            hx_swap="outerHTML",
-            cls="btn btn--xs btn--primary ml-xs",
-        ),
-        Button(t("btn.cancel"),
-            hx_post=f"/subscriptions/{eid}/cancel",
-            hx_target=f"#sub-{eid}",
-            hx_swap="outerHTML",
-            cls="btn btn--xs btn--danger ml-xs",
-        ) if not is_cancelled else None,
-    ]
-    return Tr(
-        Td(s.get("name", "") or EMPTY),
-        Td(Span(s.get("doc_type", "").replace("_", " ").title(),
-                cls=f"badge badge--{s.get('doc_type', '')}")),
-        Td(s.get("frequency", "") or EMPTY),
-        Td((s.get("next_run") or "")[:10] or EMPTY),
-        Td(Span(status, cls=f"badge badge--{status}")),
-        Td(*[a for a in actions if a is not None], cls="cell-actions"),
-        id=f"sub-{eid}",
-        cls="data-row",
-    )
-
-
-def _sub_table(subs: list[dict]) -> FT:
-    if not subs:
-        return empty_state_cta("No subscriptions.", "Create Subscription", "/subscriptions/new")
-
-    return Table(
-        Thead(Tr(
-            Th(t("th.name")), Th(t("th.doc_type")), Th(t("th.frequency")), Th(t("th.next_run")),
-            Th(t("th.status")), Th(t("th.actions")),
-        )),
-        Tbody(*[_sub_row(s) for s in subs]),
-        cls="data-table",
-    )
-
-
-def _sub_form(defaults: dict | None = None, contacts: list[dict] | None = None, terms: list[dict] | None = None) -> FT:
-    d = defaults or {}
-    contacts = contacts or []
-    terms = terms or []
-
-    # Contact picker: always use searchable_select (required)
-    contact_opts = [(c.get("entity_id", ""), c.get("name", c.get("entity_id", ""))) for c in contacts]
-    contact_opts.append(("__new__", "+ Add new contact"))
-    contact_field = Div(
-        Label(t("label.contact"), For="contact_id", cls="form-label"),
-        searchable_select(
-            name="contact_id",
-            options=contact_opts,
-            value=d.get("contact_id", ""),
-            placeholder="Search contacts...",
-            cls_extra="form-input",
-            required=True,
-        ),
-        cls="form-group",
-    )
-
-    # Payment terms: searchable if >10 terms
-    terms_opts = [term.get("name", "") for term in terms if term.get("name")]
-    if len(terms_opts) > 10:
-        terms_field = Div(
-            Label(t("label.payment_terms_optional"), For="payment_terms", cls="form-label"),
-            searchable_select(
-                name="payment_terms",
-                options=terms_opts,
-                value=d.get("payment_terms", ""),
-                placeholder="Select payment terms...",
-                cls_extra="form-input",
-            ),
-            cls="form-group",
-        )
-    else:
-        terms_field = Div(
-            Label(t("label.payment_terms_optional"), For="payment_terms", cls="form-label"),
-            Input(type="text", id="payment_terms", name="payment_terms",
-                  value=d.get("payment_terms", ""), placeholder="Net 30", cls="form-input"),
-            cls="form-group",
-        )
-
-    return Form(
-        Div(
-            Label(t("th.name"), For="name", cls="form-label"),
-            Input(type="text", id="name", name="name", value=d.get("name", ""),
-                  placeholder="e.g. Monthly Rent Invoice", required=True, cls="form-input"),
-            cls="form-group",
-        ),
-        Div(
-            # doc_type is determined by navigation direction (Sales/Purchasing); hidden from form
-            Input(type="hidden", name="doc_type", value=d.get("doc_type", "invoice")),
-            cls="form-group",
-        ),
-        Div(
-            Label(t("th.frequency"), For="frequency", cls="form-label"),
-            Select(
-                Option(t("label.weekly"), value="weekly"),
-                Option(t("label.biweekly"), value="biweekly"),
-                Option(t("label.monthly"), value="monthly", selected=True),
-                Option(t("label.quarterly"), value="quarterly"),
-                Option(t("label.annually"), value="annually"),
-                Option(t("label.custom_days"), value="custom"),
-                id="frequency", name="frequency", cls="form-input",
-            ),
-            cls="form-group",
-        ),
-        Div(
-            Label(t("label.custom_interval_days"), For="interval_days", cls="form-label"),
-            Input(type="number", id="interval_days", name="interval_days",
-                  value=d.get("interval_days", ""), min="1", cls="form-input"),
-            cls="form-group",
-        ),
-        Div(
-            Label(t("label.start_date"), For="start_date", cls="form-label"),
-            Input(type="date", id="start_date", name="start_date",
-                  value=d.get("start_date", ""), required=True, cls="form-input"),
-            cls="form-group",
-        ),
-        contact_field,
-        terms_field,
-        Button(t("btn.create_subscription"), type="submit", cls="btn btn--primary"),
-        method="post",
-        action="/subscriptions/new",
-        cls="form-card",
-    )
+        except APIError:
+            pass
+        return RedirectResponse(f"/subscriptions/{entity_id}", status_code=303)
