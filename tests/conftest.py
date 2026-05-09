@@ -334,20 +334,30 @@ def authed_cookies(role: str = "owner") -> dict:
     return {"celerp_token": make_test_token(role=role)}
 
 
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
+# Session-scoped engine: created once, shared across all tests to avoid OOM from
+# 1000+ engine create/dispose cycles when test_ui.py + test_routers/ run together.
+@pytest_asyncio.fixture(scope="session")
+async def _db_engine():
     engine = create_async_engine(DATABASE_URL)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as sess:
-        yield sess
-
+    yield engine
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
-
     await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def session(_db_engine) -> AsyncSession:
+    """Per-test session. Schema is reset (drop_all/create_all) between tests to
+    ensure full isolation while reusing the same engine connection pool."""
+    async with _db_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+
+    factory = sessionmaker(_db_engine, class_=AsyncSession, expire_on_commit=False)
+    async with factory() as sess:
+        yield sess
 
 
 @pytest_asyncio.fixture
