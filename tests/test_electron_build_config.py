@@ -40,13 +40,3 @@ def test_mac_has_zip_target():
         "electron-updater on macOS requires a zip for the update payload (dmg is for fresh installs only)."
     )
     assert "dmg" in targets, "Mac build is missing the 'dmg' target for fresh installs."
-
-
-def test_publish_allow_overwrite():
-    """publish.allowOverwrite must be true so re-tagging overwrites existing release assets."""
-    pkg = json.loads(_PKG.read_text())
-    publish = pkg["build"].get("publish", {})
-    assert publish.get("allowOverwrite") is True, (
-        "publish.allowOverwrite must be true. Without it, re-tagging silently skips uploading "
-        "assets that already exist on the release."
-    )

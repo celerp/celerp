@@ -132,8 +132,7 @@
       "provider": "github",
       "owner": "celerp",
       "repo": "celerp",
-      "releaseType": "release",
-      "allowOverwrite": true
+      "releaseType": "release"
     }
   },
   "jest": {
