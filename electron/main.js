@@ -552,8 +552,20 @@ ipcMain.handle("check-for-updates", () => {
 });
 
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
-ipcMain.on("install-update", () => {
-  autoUpdater.quitAndInstall();
+// ShipIt (Squirrel.Mac) aborts if ANY instance of the app is running when it tries to
+// replace the bundle. autoUpdater.quitAndInstall() calls app.quit() internally, but
+// Electron's process lingers long enough for ShipIt to see it and cancel. We kill
+// subprocesses first, then give them 500ms to exit before handing off to ShipIt.
+ipcMain.on("install-update", async () => {
+  if (uiProcess) uiProcess.kill();
+  if (apiProcess) apiProcess.kill();
+  if (pgInstance) {
+    try { await pgInstance.stop(); } catch (_) {}
+  }
+  // Small delay so OS can reap child processes before ShipIt checks
+  setTimeout(() => {
+    autoUpdater.quitAndInstall(true, true);
+  }, 500);
 });
 
 // get-version: renderer fetches the current app version
