@@ -11,39 +11,32 @@ from pathlib import Path
 _PKG = Path(__file__).parent.parent / "electron" / "package.json"
 
 
-def _artifact_names() -> dict[str, str]:
-    """Return {platform: artifactName} from the build config."""
-    pkg = json.loads(_PKG.read_text())
-    result: dict[str, str] = {}
-    for platform in ("mac", "win", "linux"):
-        section = pkg["build"][platform]
-        # artifactName lives at the platform level (not inside target[])
-        if "artifactName" in section:
-            result[platform] = section["artifactName"]
-    return result
-
-
 def test_stable_artifact_names():
     """Each platform must use the stable filename that the website links to."""
-    names = _artifact_names()
-    assert names.get("mac") == "Celerp-mac.dmg", (
-        f"Mac artifactName must be 'Celerp-mac.dmg', got {names.get('mac')!r}. "
-        "Changing this breaks website download links and electron-updater YML references."
-    )
-    assert names.get("win") == "Celerp-Setup.exe", (
-        f"Win artifactName must be 'Celerp-Setup.exe', got {names.get('win')!r}."
-    )
-    assert names.get("linux") == "Celerp.AppImage", (
-        f"Linux artifactName must be 'Celerp.AppImage', got {names.get('linux')!r}."
-    )
-
-
-def test_all_platforms_have_artifact_name():
-    """Every platform must declare an explicit artifactName at the platform level."""
     pkg = json.loads(_PKG.read_text())
-    for platform in ("mac", "win", "linux"):
-        section = pkg["build"][platform]
-        assert "artifactName" in section, (
-            f"Platform '{platform}' is missing artifactName at the platform level. "
-            "electron-builder will fall back to a versioned name, breaking stable links."
-        )
+    build = pkg["build"]
+
+    # mac: artifactName lives in the dedicated "dmg" section (not "mac" level,
+    # because "mac" also builds a zip and a platform-level name would apply to both)
+    assert build.get("dmg", {}).get("artifactName") == "Celerp-mac.dmg", (
+        f"dmg.artifactName must be 'Celerp-mac.dmg', got {build.get('dmg', {}).get('artifactName')!r}. "
+        "Changing this breaks website download links."
+    )
+    # win and linux: artifactName at the platform level
+    assert build["win"].get("artifactName") == "Celerp-Setup.exe", (
+        f"win.artifactName must be 'Celerp-Setup.exe', got {build['win'].get('artifactName')!r}."
+    )
+    assert build["linux"].get("artifactName") == "Celerp.AppImage", (
+        f"linux.artifactName must be 'Celerp.AppImage', got {build['linux'].get('artifactName')!r}."
+    )
+
+
+def test_mac_has_zip_target():
+    """Mac build must include a zip target so electron-updater can deliver updates."""
+    pkg = json.loads(_PKG.read_text())
+    targets = [t["target"] for t in pkg["build"]["mac"]["target"] if isinstance(t, dict)]
+    assert "zip" in targets, (
+        "Mac build is missing a 'zip' target. "
+        "electron-updater on macOS requires a zip for the update payload (dmg is for fresh installs only)."
+    )
+    assert "dmg" in targets, "Mac build is missing the 'dmg' target for fresh installs."
