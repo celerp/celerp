@@ -89,6 +89,33 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
 
+      - name: Clear existing release assets (retag support)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/tags/$TAG" | jq -r '.id // empty')
+          if [ -z "$RELEASE_ID" ]; then
+            echo "No existing release for $TAG - nothing to clear"
+            exit 0
+          fi
+          echo "Release $RELEASE_ID found for $TAG - clearing assets"
+          ASSET_IDS=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets" | jq -r '.[].id')
+          if [ -z "$ASSET_IDS" ]; then
+            echo "No assets to delete"
+            exit 0
+          fi
+          for ASSET_ID in $ASSET_IDS; do
+            echo "Deleting asset $ASSET_ID"
+            curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/celerp/celerp/releases/assets/$ASSET_ID"
+          done
+          echo "Assets cleared"
+
       - name: Build macOS (production - signed + notarized)
         if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 130
