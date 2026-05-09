@@ -261,3 +261,112 @@ def test_css_has_progress_bar_styles():
         "The log panel will have no styling."
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Additional regression tests for Copilot review fixes
+# ---------------------------------------------------------------------------
+
+def test_main_initial_check_deferred_until_did_finish_load():
+    """The initial autoUpdater.checkForUpdates() must fire after did-finish-load.
+
+    Firing immediately at app-ready risks emitting IPC events before the renderer
+    has registered its ipcRenderer.on(...) handlers, silently dropping them.
+    """
+    src = _main_src()
+    assert "did-finish-load" in src, (
+        "main.js does not wait for 'did-finish-load' before calling the initial "
+        "checkForUpdates(). Events emitted before the renderer loads are silently dropped."
+    )
+    # The initial checkForUpdates call must be inside a did-finish-load callback
+    finish_load_idx = src.find("did-finish-load")
+    check_idx = src.find("checkForUpdates", finish_load_idx)
+    assert check_idx != -1, (
+        "checkForUpdates() is not called inside the did-finish-load handler. "
+        "Initial update checks may fire before the renderer is ready."
+    )
+
+
+def test_main_download_progress_log_throttled():
+    """download-progress handler must throttle sendLog calls (not log every tick).
+
+    download-progress fires many times per second. Logging every tick floods IPC
+    and causes excessive DOM work in the renderer.
+    """
+    src = _main_src()
+    # Find the download-progress handler
+    dp_idx = src.find('"download-progress"')
+    assert dp_idx != -1, "download-progress handler not found"
+    handler_block = src[dp_idx: dp_idx + 600]
+    # Must have some form of time-based throttle
+    assert "Date.now()" in handler_block or "throttle" in handler_block or "_lastProgressLog" in handler_block, (
+        "download-progress handler does not throttle sendLog calls. "
+        "Every progress tick will send an IPC message and trigger a DOM update."
+    )
+
+
+def test_main_download_progress_bar_unthrottled():
+    """Progress bar IPC must NOT be throttled - only the log sendLog call is throttled.
+
+    The bar update is a cheap CSS width change; throttling it would make it look laggy.
+    """
+    src = _main_src()
+    dp_idx = src.find('"download-progress"')
+    # Use a wider window - the handler can be longer than 600 chars
+    handler_block = src[dp_idx: dp_idx + 900]
+    assert 'send("download-progress"' in handler_block or "send('download-progress'" in handler_block, (
+        "download-progress IPC send to renderer not found in the handler block."
+    )
+
+
+def test_shell_append_log_uses_dom_append_not_text_content():
+    """appendLog must use DOM appendChild, not textContent +=.
+
+    textContent += re-reads and rewrites the entire string every call - O(n) per append.
+    With frequent progress events this causes jank.
+    """
+    src = _shell_src()
+    al_idx = src.find("function appendLog")
+    assert al_idx != -1, "appendLog function not found in shell.py"
+    func_block = src[al_idx: al_idx + 800]
+    assert "appendChild" in func_block, (
+        "appendLog uses textContent += instead of DOM appendChild. "
+        "This is O(n) per call and causes jank during frequent progress events."
+    )
+    # The O(n) pattern: logEl.textContent += should NOT appear inside appendLog
+    assert "logEl.textContent +=" not in func_block, (
+        "appendLog still uses textContent += concatenation. Replace with appendChild."
+    )
+
+
+def test_shell_append_log_caps_line_count():
+    """appendLog must cap the number of retained log lines to prevent DOM bloat."""
+    src = _shell_src()
+    al_idx = src.find("function appendLog")
+    func_block = src[al_idx: al_idx + 500]
+    assert "200" in func_block or "remove()" in func_block, (
+        "appendLog does not cap retained log lines. "
+        "Long downloads will accumulate hundreds of DOM nodes."
+    )
+
+
+def test_build_yml_delete_checks_http_status():
+    """build.yml asset deletion must check HTTP status and fail on 5xx errors.
+
+    Using curl -s without status checking means a failed delete (5xx) goes unnoticed,
+    and the subsequent publish step may fail with 'asset already exists'.
+    Using -f/-fsS would fail on 404 (asset not yet uploaded on first build), so we
+    check the status code explicitly and only fail on >= 500.
+    """
+    yml = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
+    clear_idx = yml.find("Clear existing release assets")
+    assert clear_idx != -1, "Asset-clearing step not found in build.yml"
+    step_block = yml[clear_idx: clear_idx + 1500]
+    assert "%{http_code}" in step_block, (
+        "build.yml DELETE step does not capture HTTP status code. "
+        "Use curl -w '%{http_code}' and fail on >= 500."
+    )
+    assert ">= 500" in step_block or "-ge 500" in step_block, (
+        "build.yml DELETE step does not fail on 5xx responses. "
+        "A server-side delete failure will silently allow a stale asset to remain."
+    )

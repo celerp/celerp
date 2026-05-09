@@ -427,7 +427,14 @@ document.addEventListener('DOMContentLoaded', function() {
     function appendLog(msg) {
       if (!logEl) return;
       logEl.style.display = '';
-      logEl.textContent += (logEl.textContent ? '\n' : '') + msg;
+      // Append via text node (avoids re-reading/rewriting the full textContent string).
+      // Cap at 200 lines to prevent unbounded DOM growth during long downloads.
+      var lines = logEl.querySelectorAll('.log-line');
+      if (lines.length >= 200) lines[0].remove();
+      var line = document.createElement('span');
+      line.className = 'log-line';
+      line.textContent = (logEl.childNodes.length ? '\n' : '') + msg;
+      logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight;
     }
 

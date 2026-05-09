@@ -493,13 +493,19 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("download-progress", (progress) => {
-    sendLog(
-      "Downloading: " +
-        Math.round(progress.percent) +
-        "% (" +
-        Math.round(progress.bytesPerSecond / 1024) +
-        " KB/s)"
-    );
+    // Throttle log output to at most once per second to avoid flooding IPC/DOM.
+    // Progress bar updates are sent every tick (just a width change, cheap).
+    const now = Date.now();
+    if (!autoUpdater._lastProgressLog || now - autoUpdater._lastProgressLog >= 1000) {
+      autoUpdater._lastProgressLog = now;
+      sendLog(
+        "Downloading: " +
+          Math.round(progress.percent) +
+          "% (" +
+          Math.round(progress.bytesPerSecond / 1024) +
+          " KB/s)"
+      );
+    }
     if (mainWindow) mainWindow.webContents.send("download-progress", progress);
   });
 
@@ -517,7 +523,17 @@ function setupAutoUpdater() {
     if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 
-  autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event above
+  // Delay initial check until the renderer has loaded and registered its IPC handlers.
+  // Firing immediately at app-ready risks emitting update-available/log events before
+  // the renderer's ipcRenderer.on(...) calls have run, silently dropping them.
+  if (mainWindow) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event above
+    });
+  } else {
+    // Fallback: mainWindow not yet created (shouldn't happen in normal flow)
+    autoUpdater.checkForUpdates().catch(() => {});
+  }
 }
 
 function createWindow() {
