@@ -19,8 +19,8 @@ PLUGIN_MANIFEST = {
     "depends_on": ["celerp-docs"],
     "slots": {
         "nav": [
-            {"group": "Sales", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "min_role": "operator"},
-            {"group": "Purchasing", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 25, "min_role": "operator"},
+            {"group": "Subscriptions", "key": "subscriptions_sales", "href": "/subscriptions?direction=sales", "label": "Sales Subscriptions", "label_key": "nav.subscriptions_sales", "order": 25, "min_role": "operator"},
+            {"group": "Subscriptions", "key": "subscriptions_purchasing", "href": "/subscriptions?direction=purchasing", "label": "Purchasing Subscriptions", "label_key": "nav.subscriptions_purchasing", "order": 26, "min_role": "operator"},
         ],
         "projection_handler": {"prefix": "sub.", "handler": "celerp_subscriptions.projection_handler:apply_subscription_event"},
     },
