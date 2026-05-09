@@ -857,7 +857,7 @@ async def list_subscriptions(token: str, params: dict | None = None) -> dict:
 
 async def get_subscription(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
-        return _raise(await c.get(f"/subscriptions/{entity_id}")).json()
+        return _raise(await c.get(f"/docs/{entity_id}")).json()
 
 
 async def list_ledger(token: str, params: dict | None = None) -> dict:
@@ -869,7 +869,7 @@ async def list_ledger(token: str, params: dict | None = None) -> dict:
 
 async def create_subscription(token: str, data: dict) -> dict:
     async with _client(token) as c:
-        return _raise(await c.post("/subscriptions", json=data)).json()
+        return _raise(await c.post("/docs", json=data)).json()
 
 
 async def pause_subscription_template(token: str, entity_id: str) -> dict:

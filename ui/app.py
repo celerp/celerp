@@ -303,6 +303,7 @@ _CONDITIONAL_UI: list[tuple[str, str]] = [
     ("celerp-docs",        "ui.routes.lists_import"),
     ("celerp-accounting",  "ui.routes.accounting_import"),
     ("celerp-docs",        "ui.routes.documents"),
+    ("celerp-docs",        "ui.routes.subscriptions"),
     # ui.routes.lists omitted: list routes are registered by ui.routes.documents
     ("celerp-labels",      "celerp_labels.ui_routes"),
     ("celerp-accounting",  "ui.routes.reconciliation"),
