@@ -474,26 +474,66 @@ function setupAutoUpdater() {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
 
+  function sendLog(msg) {
+    if (mainWindow) mainWindow.webContents.send("update-log", String(msg));
+  }
+
+  autoUpdater.on("checking-for-update", () => {
+    sendLog("Checking for update...");
+  });
+
   autoUpdater.on("update-available", (info) => {
+    sendLog("Found version " + info.version + " — downloading...");
     if (mainWindow) mainWindow.webContents.send("update-available", info);
   });
 
   autoUpdater.on("update-not-available", () => {
+    sendLog("Already up to date.");
     if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 
+  autoUpdater.on("download-progress", (progress) => {
+    // Throttle log output to at most once per second to avoid flooding IPC/DOM.
+    // Progress bar updates are sent every tick (just a width change, cheap).
+    const now = Date.now();
+    if (!autoUpdater._lastProgressLog || now - autoUpdater._lastProgressLog >= 1000) {
+      autoUpdater._lastProgressLog = now;
+      sendLog(
+        "Downloading: " +
+          Math.round(progress.percent) +
+          "% (" +
+          Math.round(progress.bytesPerSecond / 1024) +
+          " KB/s)"
+      );
+    }
+    if (mainWindow) mainWindow.webContents.send("download-progress", progress);
+  });
+
   autoUpdater.on("update-downloaded", (info) => {
+    sendLog("Download complete — ready to install v" + info.version);
     if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
   });
 
   autoUpdater.on("error", (err) => {
     // Log only — update failures must never interrupt the user's work.
     // Also notify renderer so the UI can reset from "Checking..." state.
-    console.error("[updater] error:", err?.message ?? String(err));
+    const msg = err?.message ?? String(err);
+    console.error("[updater] error:", msg);
+    sendLog("Error: " + msg);
     if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 
-  autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event above
+  // Delay initial check until the renderer has loaded and registered its IPC handlers.
+  // Firing immediately at app-ready risks emitting update-available/log events before
+  // the renderer's ipcRenderer.on(...) calls have run, silently dropping them.
+  if (mainWindow) {
+    mainWindow.webContents.once("did-finish-load", () => {
+      autoUpdater.checkForUpdates().catch(() => {}); // errors handled by the "error" event above
+    });
+  } else {
+    // Fallback: mainWindow not yet created (shouldn't happen in normal flow)
+    autoUpdater.checkForUpdates().catch(() => {});
+  }
 }
 
 function createWindow() {
@@ -552,8 +592,20 @@ ipcMain.handle("check-for-updates", () => {
 });
 
 // install-update: renderer triggers quit-and-install via window.celerp.installUpdate()
-ipcMain.on("install-update", () => {
-  autoUpdater.quitAndInstall();
+// ShipIt (Squirrel.Mac) aborts if ANY instance of the app is running when it tries to
+// replace the bundle. autoUpdater.quitAndInstall() calls app.quit() internally, but
+// Electron's process lingers long enough for ShipIt to see it and cancel. We kill
+// subprocesses first, then give them 500ms to exit before handing off to ShipIt.
+ipcMain.on("install-update", async () => {
+  if (uiProcess) uiProcess.kill();
+  if (apiProcess) apiProcess.kill();
+  if (pgInstance) {
+    try { await pgInstance.stop(); } catch (_) {}
+  }
+  // Small delay so OS can reap child processes before ShipIt checks
+  setTimeout(() => {
+    autoUpdater.quitAndInstall(true, true);
+  }, 500);
 });
 
 // get-version: renderer fetches the current app version

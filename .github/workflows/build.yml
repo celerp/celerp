@@ -111,8 +111,14 @@ jobs:
           fi
           for ASSET_ID in $ASSET_IDS; do
             echo "Deleting asset $ASSET_ID"
-            curl -s -X DELETE -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/celerp/celerp/releases/assets/$ASSET_ID"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/celerp/celerp/releases/assets/$ASSET_ID")
+            if [ "$STATUS" -ge 500 ]; then
+              echo "ERROR: DELETE asset $ASSET_ID returned HTTP $STATUS - aborting"
+              exit 1
+            fi
+            echo "Deleted asset $ASSET_ID (HTTP $STATUS)"
           done
           echo "Assets cleared"
 
