@@ -2001,6 +2001,10 @@ def setup_routes(app):
             elif action == "delete":
                 await api.delete_doc(token, entity_id)
                 doc_type = str(form.get("doc_type", "")).strip() or "invoice"
+                if doc_type == "subscription_invoice":
+                    return _R("", status_code=204, headers={"HX-Redirect": "/subscriptions?direction=sales"})
+                if doc_type == "subscription_po":
+                    return _R("", status_code=204, headers={"HX-Redirect": "/subscriptions?direction=purchasing"})
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})
             elif action == "create-credit-note":
                 # Fetch source invoice and pre-populate CN with its line items (negated quantities)

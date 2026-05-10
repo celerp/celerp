@@ -833,6 +833,7 @@ a:hover { text-decoration: underline; }
 .receive-section, .refund-section, .void-section { margin-top: 12px; }
 .receive-section > summary, .refund-section > summary, .void-section > summary { cursor: pointer; }
 .void-section--right { margin-left: auto; margin-top: 0; }
+.void-section[open] > summary, .receive-section[open] > summary, .refund-section[open] > summary { display: none; }
 
 /* ─── Memo detail ─────────────────────────────────────────────────────── */
 .memo-detail { padding: 0; }

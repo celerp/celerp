@@ -249,7 +249,6 @@ def setup_routes(app) -> None:
                 Button("+ New Subscription", hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
             ),
-            _direction_tabs(direction, status),
             _sub_status_cards(all_items, status, direction),
             _sub_table(page_items, direction),
             pagination(page, total, _PER_PAGE, "/subscriptions", extra),
