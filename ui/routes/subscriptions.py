@@ -112,61 +112,42 @@ def _sub_table(subs: list[dict], direction: str) -> FT:
 # Subscription action bar (replaces standard doc Finalize/Send/Mark-as-Sent)
 # ---------------------------------------------------------------------------
 
-def _sub_action_controls(entity_id: str, sub: dict) -> list:
-    """Return header controls for the subscription detail page.
-
-    Draft: [Frequency select] [Start Date input] [Custom days input, if custom] [Activate btn]
-    Active: [status badge] [Generate Now] [Pause] [Cancel]
-    Paused: [status badge] [Resume] [Cancel]
-    Cancelled: [status badge]
-    """
-    status = sub.get("status", "draft")
+def _schedule_inputs(entity_id: str, sub: dict):
+    """Frequency/start-date controls - shared between draft and paused states."""
     freq = sub.get("frequency") or "monthly"
     start = sub.get("start_date") or ""
     interval = sub.get("custom_interval_days") or ""
-
-    if status == "draft":
-        # Frequency select - submits instantly via PATCH to docs field endpoint
-        freq_select = Select(
-            *[Option(f.capitalize(), value=f, selected=(f == freq)) for f in _FREQUENCIES],
-            name="value",
-            hx_patch=f"/docs/{entity_id}/field/frequency",
-            hx_swap="none",
-            hx_trigger="change",
-            title="Frequency",
-            cls="form-input form-input--inline",
-            style="width:130px",
-        )
-        # Start date
-        start_input = Input(
-            type="date", name="value", value=start,
-            hx_patch=f"/docs/{entity_id}/field/start_date",
-            hx_swap="none",
-            hx_trigger="change",
-            title="Start date",
-            cls="form-input form-input--inline",
-            style="width:145px",
-        )
-        # Custom interval - shown/hidden by JS based on freq select
-        custom_input = Input(
-            type="number", name="value", value=str(interval) if interval else "",
-            placeholder="Days", min="1",
-            hx_patch=f"/docs/{entity_id}/field/custom_interval_days",
-            hx_swap="none",
-            hx_trigger="change",
-            title="Custom interval (days)",
-            cls="form-input form-input--inline",
-            style=f"width:80px;{'display:none' if freq != 'custom' else ''}",
-            id="sub-custom-days",
-        )
-        activate_btn = Form(
-            Button("Activate", type="submit", cls="btn btn--primary"),
-            method="post",
-            action=f"/subscriptions/{entity_id}/activate",
-            title="Set frequency and start date, then activate",
-        )
-        # JS: show/hide custom days field when frequency changes
-        toggle_js = Script("""
+    freq_select = Select(
+        *[Option(f.capitalize(), value=f, selected=(f == freq)) for f in _FREQUENCIES],
+        name="value",
+        hx_patch=f"/docs/{entity_id}/field/frequency",
+        hx_swap="none",
+        hx_trigger="change",
+        title="Frequency",
+        cls="form-input form-input--inline",
+        style="width:130px",
+    )
+    start_input = Input(
+        type="date", name="value", value=start,
+        hx_patch=f"/docs/{entity_id}/field/start_date",
+        hx_swap="none",
+        hx_trigger="change",
+        title="Start date",
+        cls="form-input form-input--inline",
+        style="width:145px",
+    )
+    custom_input = Input(
+        type="number", name="value", value=str(interval) if interval else "",
+        placeholder="Days", min="1",
+        hx_patch=f"/docs/{entity_id}/field/custom_interval_days",
+        hx_swap="none",
+        hx_trigger="change",
+        title="Custom interval (days)",
+        cls="form-input form-input--inline",
+        style=f"width:80px;{'display:none' if freq != 'custom' else ''}",
+        id="sub-custom-days",
+    )
+    toggle_js = Script("""
 (function(){
   var sel = document.querySelector('select[hx-patch$="/field/frequency"]');
   var inp = document.getElementById('sub-custom-days');
@@ -175,36 +156,59 @@ def _sub_action_controls(entity_id: str, sub: dict) -> list:
   }
 })();
 """)
-        return [freq_select, start_input, custom_input, activate_btn, toggle_js]
+    return [freq_select, start_input, custom_input, toggle_js]
 
-    # Non-draft: status badge + lifecycle buttons
-    controls = [_status_badge(status)]
+
+def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
+    """Return (left_actions, right_actions) for the subscription detail page.
+
+    Draft:   left=[Frequency, StartDate, CustomDays, Activate]   right=[]
+    Active:  left=[badge, GenerateNow]                           right=[Pause, Cancel]
+    Paused:  left=[badge, Frequency, StartDate, CustomDays]      right=[Resume, Cancel]
+    Cancelled: left=[badge]                                       right=[]
+    """
+    status = sub.get("status", "draft")
+
+    if status == "draft":
+        return _schedule_inputs(entity_id, sub) + [
+            Form(Button("Activate", type="submit", cls="btn btn--primary"),
+                 method="post", action=f"/subscriptions/{entity_id}/activate",
+                 title="Set frequency and start date, then activate"),
+        ], []
+
+    left: list = [_status_badge(status)]
+    right: list = []
+
     if status == "active":
-        controls.append(
+        left.append(
             Form(Button("Generate Now", type="submit", cls="btn btn--secondary btn--sm"),
                  method="post", action=f"/subscriptions/{entity_id}/generate")
         )
-        controls.append(
+        right.append(
             Form(Button("Pause", type="submit", cls="btn btn--warning btn--sm"),
                  method="post", action=f"/subscriptions/{entity_id}/pause")
         )
     elif status == "paused":
-        controls.append(
+        # Allow editing schedule while paused
+        left.extend(_schedule_inputs(entity_id, sub))
+        right.append(
             Form(Button("Resume", type="submit", cls="btn btn--success btn--sm"),
                  method="post", action=f"/subscriptions/{entity_id}/resume")
         )
+
     if status not in ("cancelled", "draft"):
-        controls.append(
+        right.append(
             Form(Button("Cancel", type="submit", cls="btn btn--danger btn--sm"),
                  method="post", action=f"/subscriptions/{entity_id}/cancel")
         )
-    # Generated docs count badge
+
     gen_count = len(sub.get("generated_doc_ids") or [])
     if gen_count:
-        controls.append(
+        left.append(
             Span(f"{gen_count} doc{'s' if gen_count != 1 else ''} generated", cls="text-muted", style="font-size:.85em")
         )
-    return controls
+
+    return left, right
 
 
 # ---------------------------------------------------------------------------
@@ -380,10 +384,12 @@ def setup_routes(app) -> None:
             pass
 
         status = doc.get("status", "draft")
-        ref = doc.get("name") or doc.get("ref_id") or doc.get("doc_number") or entity_id
+        ref = doc.get("ref_id") or doc.get("doc_number") or entity_id.split(":")[-1]
         type_label = "Sales Subscription" if direction == "sales" else "Purchasing Subscription"
         status_label = status.capitalize()
         list_url = f"/subscriptions?direction={direction}"
+
+        _sub_left_actions, _sub_right_actions = _sub_action_controls(entity_id, doc)
 
         return base_shell(
             breadcrumbs([
@@ -402,7 +408,8 @@ def setup_routes(app) -> None:
                 role=_get_role(request),
                 notes=doc_notes,
                 suppress_doc_actions=True,
-                extra_left_actions=_sub_action_controls(entity_id, doc),
+                extra_left_actions=_sub_left_actions,
+                extra_right_actions=_sub_right_actions,
                 suppress_pdf=True,
             ),
             title=f"{type_label} {ref} - Celerp",

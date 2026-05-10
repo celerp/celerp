@@ -3796,7 +3796,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, suppress_pdf: bool = False) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5195,8 +5195,8 @@ async function celerpCsvImport(input, entityId) {{
         Div(
             Div(*(extra_left_actions or []), *action_btns_left, cls="doc-actions-left"),
             Div(
-                Div(*action_btns_right, cls="doc-actions-right") if action_btns_right else "",
-                Span("|", cls="doc-actions-sep") if action_btns_right else "",
+                Div(*action_btns_right, *(extra_right_actions or []), cls="doc-actions-right") if (action_btns_right or extra_right_actions) else "",
+                Span("|", cls="doc-actions-sep") if (action_btns_right or extra_right_actions) else "",
                 Div(*action_btns_print, cls="doc-actions-print"),
                 cls="doc-actions-right-group",
             ),

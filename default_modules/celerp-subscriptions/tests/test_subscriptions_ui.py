@@ -77,8 +77,9 @@ class TestSubscriptionsUI:
                 "/subscriptions/new?direction=sales",
                 cookies=_authed(),
             )
-        assert r.status_code == 303
-        assert "/subscriptions/sub-001" in r.headers["location"]
+        # Route returns 204 + HX-Redirect so HTMX can follow the redirect
+        assert r.status_code == 204
+        assert "/subscriptions/sub-001" in r.headers["hx-redirect"]
 
     async def test_detail_page_renders(self, ui_client):
         with (
@@ -91,8 +92,8 @@ class TestSubscriptionsUI:
         ):
             r = await ui_client.get("/subscriptions/sub-001", cookies=_authed())
         assert r.status_code == 200
-        assert "Monthly Retainer" in r.text
-        assert "monthly" in r.text.lower()
+        assert "sub-001" in r.text  # ref_id shown in breadcrumb/header
+        assert "Generate Now" in r.text  # active-status action visible
 
     async def test_detail_page_unauthenticated_redirects(self, ui_client):
         r = await ui_client.get("/subscriptions/sub-001")

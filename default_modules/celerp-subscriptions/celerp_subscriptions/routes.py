@@ -17,8 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user
+from celerp_docs.sequences import next_doc_ref
 
 SUBSCRIPTION_DOC_TYPES = frozenset({"subscription_invoice", "subscription_po"})
 VALID_FREQUENCIES = frozenset({"weekly", "biweekly", "monthly", "quarterly", "annually", "custom"})
@@ -54,6 +56,18 @@ def _next_run_date(frequency: str, custom_interval_days: int | None, from_date: 
     else:  # custom
         d += timedelta(days=custom_interval_days or 30)
     return d.isoformat()
+
+
+def _compute_due_date(issue_date: date, payment_terms: str | None, company: Company) -> str | None:
+    """Return ISO due_date by looking up payment_terms days in company settings."""
+    if not payment_terms:
+        return None
+    terms_list: list[dict] = (company.settings or {}).get("payment_terms", [])
+    for t in terms_list:
+        if t.get("name") == payment_terms:
+            days = int(t.get("days") or 0)
+            return (issue_date + timedelta(days=days)).isoformat() if days else None
+    return None
 
 
 def _build_router() -> APIRouter:
@@ -93,7 +107,7 @@ def _build_router() -> APIRouter:
         user=Depends(get_current_user),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
-        """Generate a document from the subscription template immediately."""
+        """Generate a finalized document from the subscription template immediately."""
         proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
         if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
             raise HTTPException(status_code=404, detail="Subscription template not found")
@@ -101,9 +115,24 @@ def _build_router() -> APIRouter:
             raise HTTPException(status_code=409, detail="Cannot generate from a cancelled subscription")
 
         state = proj.state
+        company = await session.get(Company, company_id)
         target_doc_type = "invoice" if state.get("doc_type") == "subscription_invoice" else "purchase_order"
-        doc_id = f"doc:{uuid.uuid4()}"
-        today = date.today().isoformat()
+        today = date.today()
+
+        # Resolve contact name from projection
+        contact_id = state.get("contact_id")
+        contact_name = ""
+        contact_company_name = ""
+        if contact_id:
+            contact_proj = await session.get(Projection, {"company_id": company_id, "entity_id": contact_id})
+            if contact_proj:
+                contact_name = contact_proj.state.get("name") or ""
+                contact_company_name = contact_proj.state.get("company_name") or ""
+
+        # Assign proper proforma ref (invoices) or PO ref, build entity_id
+        seq_type = "proforma" if target_doc_type == "invoice" else "purchase_order"
+        pf_ref = next_doc_ref(company, seq_type)
+        doc_entity_id = f"doc:{pf_ref}"
 
         line_items = list(state.get("line_items") or [])
         for li in line_items:
@@ -114,32 +143,41 @@ def _build_router() -> APIRouter:
         tax = float(state.get("tax") or 0)
         total = subtotal - discount + tax + shipping
 
+        payment_terms = state.get("payment_terms")
+        due_date = _compute_due_date(today, payment_terms, company)
         template_name = state.get("name") or entity_id
-        auto_note = f"Auto-created from Subscription {template_name} (/subscriptions/{entity_id})"
+        auto_note = f"Auto-created from subscription template {template_name}"
         existing_notes = state.get("notes") or ""
         notes = f"{existing_notes}\n{auto_note}".strip() if existing_notes else auto_note
 
-        doc_data = {
+        currency = state.get("currency") or (company.settings or {}).get("currency", "USD")
+
+        doc_data: dict = {
             "doc_type": target_doc_type,
-            "contact_id": state.get("contact_id"),
+            "ref_id": pf_ref,
+            "contact_id": contact_id,
+            "contact_name": contact_name,
+            "contact_company_name": contact_company_name,
             "line_items": line_items,
-            "payment_terms": state.get("payment_terms"),
-            "currency": state.get("currency"),
+            "payment_terms": payment_terms,
+            "currency": currency,
             "discount": discount,
             "shipping": shipping,
             "tax": tax,
             "subtotal": subtotal,
             "total": total,
             "amount_outstanding": total,
-            "status": "draft",
+            "issue_date": today.isoformat(),
             "subscription_id": entity_id,
             "notes": notes,
         }
+        if due_date:
+            doc_data["due_date"] = due_date
 
         await emit_event(
             session,
             company_id=company_id,
-            entity_id=doc_id,
+            entity_id=doc_entity_id,
             entity_type="doc",
             event_type="doc.created",
             data=doc_data,
@@ -148,15 +186,34 @@ def _build_router() -> APIRouter:
             source="subscription",
             idempotency_key=str(uuid.uuid4()),
         )
+        await session.flush()
+
+        # Immediately finalize: assign real INV/BILL ref and set status=final
+        inv_ref = next_doc_ref(company, target_doc_type)
+        finalize_data: dict = {"ref_id": inv_ref, "source_proforma_ref": pf_ref}
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=doc_entity_id,
+            entity_type="doc",
+            event_type="doc.finalized",
+            data=finalize_data,
+            actor_id=user.id,
+            location_id=None,
+            source="subscription",
+            idempotency_key=str(uuid.uuid4()),
+        )
+        await session.flush()
 
         # Update template: next_run_date + append to generated_doc_ids
+        today_str = today.isoformat()
         next_run = _next_run_date(
             state.get("frequency", "monthly"),
             state.get("custom_interval_days"),
-            today,
+            today_str,
         )
         existing_ids = list(state.get("generated_doc_ids") or [])
-        existing_ids.append(doc_id)
+        existing_ids.append(doc_entity_id)
 
         await emit_event(
             session,
@@ -175,7 +232,7 @@ def _build_router() -> APIRouter:
         )
 
         await session.commit()
-        return {"doc_id": doc_id, "next_run_date": next_run}
+        return {"doc_id": doc_entity_id, "ref_id": inv_ref, "next_run_date": next_run}
 
     @router.post("/{entity_id}/pause")
     async def pause_subscription(
