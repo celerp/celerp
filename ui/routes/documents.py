@@ -5190,6 +5190,8 @@ async function celerpCsvImport(input, entityId) {{
     if not is_list and outstanding_value is not None:
         _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
 
+    _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
+
     return Div(
         list_type_selector,
         Div(
@@ -5204,11 +5206,17 @@ async function celerpCsvImport(input, entityId) {{
         ) if (action_btns_left or action_btns_right or action_btns_print) else "",
         po_receive_section,
         # Metadata bar: Doc ID | Reference | Issue date | Due date
+        # For subscription templates: show Frequency + Next Issue Date instead of Issue/Due date
         Div(
             Div(Div(t("doc.doc"), cls="meta-label"), _cell("ref_id", ref), cls="meta-cell"),
             Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
-            Div(Div(t("doc.issue_date"), cls="meta-label"), _cell("issue_date", issue_date_value), cls="meta-cell"),
-            Div(Div(t("doc.due_date"), cls="meta-label"), _cell("due_date", due_date_value), cls="meta-cell") if not is_list else "",
+            Div(Div("Frequency" if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
+                _cell("frequency", doc.get("frequency", "").capitalize()) if _is_sub_template else _cell("issue_date", issue_date_value),
+                cls="meta-cell"),
+            (Div(Div("Next Issue Date", cls="meta-label"),
+                 _cell("next_run_date", doc.get("next_run_date") or "--"),
+                 cls="meta-cell") if _is_sub_template else
+             (Div(Div(t("doc.due_date"), cls="meta-label"), _cell("due_date", due_date_value), cls="meta-cell") if not is_list else "")),
             cls="doc-meta-bar",
         ),
         # Company (left) + Contact/Ship To (right, stacked)

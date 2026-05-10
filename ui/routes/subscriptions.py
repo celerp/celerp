@@ -242,7 +242,8 @@ def setup_routes(app) -> None:
         if q:
             ql = q.lower()
             filtered = [i for i in filtered if
-                        ql in (i.get("name") or "").lower()
+                        ql in (i.get("ref_id") or i.get("doc_number") or "").lower()
+                        or ql in (i.get("name") or "").lower()
                         or ql in (i.get("contact_name") or "").lower()
                         or ql in (i.get("contact_company_name") or "").lower()]
 
@@ -256,7 +257,7 @@ def setup_routes(app) -> None:
                 title,
                 search_bar(placeholder="Search name, contact...", target="#sub-table",
                            url=f"/subscriptions/search?direction={direction}&status={status}"),
-                Button("+ New Subscription", hx_post=f"/subscriptions/new?direction={direction}",
+                Button("New Subscription", hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
             ),
             _sub_status_cards(all_items, status, direction),
@@ -287,7 +288,8 @@ def setup_routes(app) -> None:
         if q:
             ql = q.lower()
             items = [i for i in items if
-                     ql in (i.get("name") or "").lower()
+                     ql in (i.get("ref_id") or i.get("doc_number") or "").lower()
+                     or ql in (i.get("name") or "").lower()
                      or ql in (i.get("contact_name") or "").lower()
                      or ql in (i.get("contact_company_name") or "").lower()]
         return _sub_table(items, direction)
