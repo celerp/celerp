@@ -242,6 +242,35 @@ def _build_router() -> APIRouter:
         await session.commit()
         return {"ok": True}
 
+    @router.post("/{entity_id}/activate")
+    async def activate_subscription(
+        entity_id: str,
+        company_id: uuid.UUID = Depends(get_current_company_id),
+        user=Depends(get_current_user),
+        session: AsyncSession = Depends(get_session),
+    ) -> dict:
+        """Promote a draft subscription template to active, computing next_run_date."""
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+        if not proj or proj.state.get("doc_type") not in SUBSCRIPTION_DOC_TYPES:
+            raise HTTPException(status_code=404, detail="Subscription template not found")
+        if proj.state.get("status") != "draft":
+            raise HTTPException(status_code=409, detail="Only draft subscriptions can be activated")
+        frequency = proj.state.get("frequency", "monthly")
+        if frequency not in VALID_FREQUENCIES:
+            raise HTTPException(status_code=422, detail="Frequency must be set before activating")
+        start = proj.state.get("start_date") or date.today().isoformat()
+        next_run = _next_run_date(frequency, proj.state.get("custom_interval_days"), start)
+        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="doc",
+                         event_type="doc.updated", data={"fields_changed": {
+                             "status": {"new": "active"},
+                             "start_date": {"new": start},
+                             "next_run_date": {"new": next_run},
+                         }},
+                         actor_id=user.id, location_id=None, source="subscription",
+                         idempotency_key=str(uuid.uuid4()))
+        await session.commit()
+        return {"ok": True, "next_run_date": next_run}
+
     return router
 
 

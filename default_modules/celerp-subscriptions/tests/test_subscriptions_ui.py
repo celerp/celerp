@@ -81,7 +81,14 @@ class TestSubscriptionsUI:
         assert "/subscriptions/sub-001" in r.headers["location"]
 
     async def test_detail_page_renders(self, ui_client):
-        with patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)):
+        with (
+            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=_SUB_DOC)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "ACME", "currency": "USD", "timezone": "UTC"})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_doc_notes", new=AsyncMock(return_value=[])),
+        ):
             r = await ui_client.get("/subscriptions/sub-001", cookies=_authed())
         assert r.status_code == 200
         assert "Monthly Retainer" in r.text
