@@ -123,6 +123,8 @@ async def test_ai_query_success(auth_client):
     mock_result = AIResponse(answer="You have 3 items.", model_used="claude-haiku-4-5", tools_called=["dashboard_kpis"])
     with patch("celerp_ai.routes.run_query", AsyncMock(return_value=mock_result)):
         r = await c.post("/ai/query", json={"query": "how many items"}, headers=headers)
+    if r.status_code != 200:
+        print(f"\nFAIL detail: {r.status_code} {r.text[:300]}")
     assert r.status_code == 200
     data = r.json()
     assert data["answer"] == "You have 3 items."

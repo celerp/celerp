@@ -686,6 +686,17 @@ class TestElectronTrustedModuleDirs:
         import sys as _sys
         _loader._loaded.clear()
         _slots.clear()
+        # Save any already-imported module entries so we can restore them after
+        # the test (instead of evicting them, which breaks tests that run after
+        # this one and hold references to the original module objects).
+        _evict_prefixes = [
+            "celerp_ai", "celerp_connectors", "celerp_backup", "celerp_admin",
+            "celerp_inventory", "celerp_contacts", "celerp_docs",
+        ]
+        _saved_modules = {
+            k: v for k, v in _sys.modules.items()
+            if any(x in k for x in _evict_prefixes)
+        }
         try:
             # celerp-connectors depends on celerp-inventory + celerp-docs; include both
             result = _loader.load_all(
@@ -711,11 +722,8 @@ class TestElectronTrustedModuleDirs:
         finally:
             _loader._loaded.clear()
             _slots.clear()
+            # Remove modules added during this test, then restore originals.
             for k in list(_sys.modules.keys()):
-                if any(
-                    x in k for x in [
-                        "celerp_ai", "celerp_connectors", "celerp_backup", "celerp_admin",
-                        "celerp_inventory", "celerp_contacts", "celerp_docs",
-                    ]
-                ):
+                if any(x in k for x in _evict_prefixes):
                     _sys.modules.pop(k, None)
+            _sys.modules.update(_saved_modules)
