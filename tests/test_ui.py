@@ -9565,13 +9565,17 @@ class TestDocumentsOverhaul:
 
     @pytest.mark.asyncio
     async def test_send_form_shows_email_fields(self, ui_client):
-        """Draft doc shows inline Send form with To, Subject, Message fields."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+        """Draft doc shows Send modal with To, Subject, Message, CC, BCC fields when relay connected."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=AsyncMock(return_value={"connected": True})):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert 'name="sent_to"' in content
         assert 'name="subject"' in content
         assert 'name="message"' in content
+        assert 'name="cc"' in content
+        assert 'name="bcc"' in content
+        assert "modal-dialog" in content
 
     @pytest.mark.asyncio
     async def test_mark_as_sent_button_on_draft(self, ui_client):
