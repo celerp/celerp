@@ -85,7 +85,7 @@ def _sub_table(subs: list[dict], direction: str) -> FT:
 
     def _row(s: dict) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
-        name = s.get("name") or eid
+        name = s.get("ref_id") or s.get("doc_number") or s.get("name") or eid.split(":")[-1]
         contact = s.get("contact_name") or s.get("contact_company_name") or "-"
         freq = (s.get("frequency") or "-").capitalize()
         next_run = s.get("next_run_date") or "-"

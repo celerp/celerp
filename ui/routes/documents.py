@@ -4017,21 +4017,21 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Button(t("btn.unmark_sent"), hx_post=f"/docs/{entity_id}/action/unmark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
-    # PDF + CSV buttons → print group (always far-right)
-    if not is_list:
-        if not suppress_pdf:
+    # PDF + CSV buttons → print group (hidden entirely when suppress_pdf is set)
+    if not suppress_pdf:
+        if not is_list:
             action_btns_print.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
-    # CSV line items export/import icons
-    action_btns_print.append(
-        A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
-          cls="btn btn--ghost btn--icon", title=t("doc.export_line_items_csv")),
-    )
-    if is_draft:
+        # CSV line items export/import icons
         action_btns_print.append(
-            Button(NotStr(_ICON_CSV_IMPORT), type="button",
-                   cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
-                   onclick="document.getElementById('csv-import-input').click()"),
+            A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
+              cls="btn btn--ghost btn--icon", title=t("doc.export_line_items_csv")),
         )
+        if is_draft:
+            action_btns_print.append(
+                Button(NotStr(_ICON_CSV_IMPORT), type="button",
+                       cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
+                       onclick="document.getElementById('csv-import-input').click()"),
+            )
     # Print Labels button — non-draft docs only, when celerp-labels is installed, not for subscription templates
     if not is_draft and not suppress_doc_actions:
         from celerp.modules.slots import get as _get_slot_labels
