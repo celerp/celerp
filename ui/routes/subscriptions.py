@@ -232,6 +232,9 @@ def setup_routes(app) -> None:
         filtered = all_items
         if status:
             filtered = [i for i in filtered if i.get("status") == status]
+        else:
+            # "All Issued" default view excludes drafts
+            filtered = [i for i in filtered if i.get("status") != "draft"]
         if q:
             ql = q.lower()
             filtered = [i for i in filtered if
@@ -275,6 +278,8 @@ def setup_routes(app) -> None:
             items = []
         if status:
             items = [i for i in items if i.get("status") == status]
+        else:
+            items = [i for i in items if i.get("status") != "draft"]
         if q:
             ql = q.lower()
             items = [i for i in items if
