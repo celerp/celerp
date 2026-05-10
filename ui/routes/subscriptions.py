@@ -18,7 +18,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import searchable_select, empty_state_cta, fmt_money, format_value
+from ui.components.table import empty_state_cta, fmt_money, format_value
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
 
@@ -185,7 +185,7 @@ def _template_row(sub: dict) -> FT:
 
 def _template_table(subs: list) -> FT:
     if not subs:
-        return empty_state_cta("No subscription templates found.", "New Subscription", "/subscriptions/new")
+        return empty_state_cta("No subscription templates found.", "New Subscription", "/subscriptions/new", hx_post=True)
     rows = [_template_row(s) for s in subs]
     return Table(
         Thead(Tr(Th("Name"), Th("Frequency"), Th("Next Run"), Th("Status"))),
@@ -253,7 +253,11 @@ def setup_routes(app) -> None:
         title = "Sales Subscriptions" if direction == "sales" else "Purchasing Subscriptions"
         content = Div(
             page_header(title,
-                A("+ New Subscription", href=f"/subscriptions/new?direction={direction}", cls="btn btn--primary"),
+                Form(
+                    Button("+ New Subscription", type="submit", cls="btn btn--primary"),
+                    method="post",
+                    action=f"/subscriptions/new?direction={direction}",
+                ),
             ),
             _direction_tabs(direction),
             _template_table(subs),
@@ -261,158 +265,20 @@ def setup_routes(app) -> None:
         )
         return base_shell(request, content, title=title)
 
-    # --- New form ---
+    # --- New subscription: create blank draft, redirect to detail for inline editing ---
 
-    @app.get("/subscriptions/new")
-    async def new_subscription_form(request: Request, direction: str = "sales"):
+    @app.post("/subscriptions/new")
+    async def create_subscription_route(request: Request, direction: str = "sales"):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         doc_type = "subscription_invoice" if direction == "sales" else "subscription_po"
-        contact_filter = "customer" if direction == "sales" else "vendor"
-        title = "New Subscription"
-        error = request.query_params.get("error")
-
         try:
-            contacts_resp = await api.list_contacts(token, {"limit": 500, "contact_type": contact_filter})
-            contacts = contacts_resp.get("items", [])
-        except APIError:
-            contacts = []
-
-        contact_opts = [(c.get("entity_id", ""), c.get("name") or c.get("entity_id", "")) for c in contacts]
-        contact_opts.append(("__new__", "+ Add new contact"))
-
-        def _li_row(idx: int) -> FT:
-            return Tr(
-                Td(Input(type="text", name=f"li_desc_{idx}", placeholder="Description", cls="cell-input", style="width:100%")),
-                Td(Input(type="number", name=f"li_qty_{idx}", value="1", min="0", step="any", cls="cell-input", style="width:70px")),
-                Td(Input(type="number", name=f"li_price_{idx}", value="0", min="0", step="any", cls="cell-input", style="width:100px")),
-                Td(Button("\u2715", type="button", onclick="this.closest('tr').remove()", cls="btn btn--ghost btn--sm")),
-            )
-
-        form = Form(
-            Script(_LINE_ITEMS_JS),
-            Input(type="hidden", name="doc_type", value=doc_type),
-            error and Div(P(f"Error: {error}"), cls="flash flash--error"),
-            Section(
-                H3("Basic Info", cls="section-title"),
-                Div(
-                    Div(Label("Name *", cls="form-label"), Input(name="name", placeholder="e.g. Monthly Retainer", required=True, cls="form-input"), cls="form-group"),
-                    cls="form-row",
-                ),
-                Div(
-                    Div(Label("Contact *", cls="form-label"), searchable_select("contact_id", contact_opts, placeholder="Search contact..."), cls="form-group"),
-                    cls="form-row",
-                ),
-                Div(
-                    Div(
-                        Label("Frequency", cls="form-label"),
-                        Select(
-                            *[Option(f.capitalize(), value=f) for f in _FREQUENCIES],
-                            name="frequency",
-                            id="frequency-select",
-                            onchange="document.getElementById('custom-interval-row').style.display = this.value === 'custom' ? '' : 'none'",
-                            cls="form-input",
-                        ),
-                        cls="form-group",
-                    ),
-                    Div(Label("Start Date *", cls="form-label"), Input(name="start_date", type="date", required=True, cls="form-input"), cls="form-group"),
-                    cls="form-row",
-                ),
-                Div(
-                    Div(Label("Custom Interval (days)", cls="form-label"), Input(name="custom_interval_days", type="number", min="1", placeholder="30", cls="form-input"), cls="form-group"),
-                    id="custom-interval-row",
-                    style="display:none",
-                    cls="form-row",
-                ),
-                Div(
-                    Div(
-                        Label("Currency", cls="form-label"),
-                        Select(*[Option(c, value=c) for c in _CURRENCIES], name="currency", cls="form-input"),
-                        cls="form-group",
-                    ),
-                    Div(Label("Payment Terms", cls="form-label"), Input(name="payment_terms", placeholder="e.g. Net 30", cls="form-input"), cls="form-group"),
-                    cls="form-row",
-                ),
-                cls="section-card",
-            ),
-            Section(
-                H3("Line Items", cls="section-title"),
-                Table(
-                    Thead(Tr(Th("Description"), Th("Qty", style="text-align:right"), Th("Unit Price", style="text-align:right"), Th(""))),
-                    Tbody(_li_row(0), id="sub-line-items"),
-                    cls="data-table",
-                ),
-                Button("+ Add Row", type="button", onclick="subAddRow()", cls="btn btn--ghost btn--sm", style="margin-top:0.5rem"),
-                cls="section-card",
-            ),
-            Section(
-                H3("Additional", cls="section-title"),
-                Div(
-                    Div(Label("Discount %", cls="form-label"), Input(name="discount_pct", type="number", min="0", max="100", step="0.01", value="0", cls="form-input"), cls="form-group"),
-                    Div(Label("Notes", cls="form-label"), Textarea(name="notes", rows="3", cls="form-input"), cls="form-group"),
-                    cls="form-row",
-                ),
-                cls="section-card",
-            ),
-            Div(
-                Button("Create Subscription", type="submit", cls="btn btn--primary"),
-                A("Cancel", href=f"/subscriptions?direction={direction}", cls="btn btn--ghost"),
-                cls="form-actions",
-            ),
-            method="post",
-            action="/subscriptions/new",
-            cls="form form--wide",
-        )
-
-        content = Div(page_header(title), form, cls="page-content")
-        return base_shell(request, content, title=title)
-
-    @app.post("/subscriptions/new")
-    async def create_subscription_route(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        data = dict(form)
-        direction = "sales" if data.get("doc_type") == "subscription_invoice" else "purchasing"
-
-        if not data.get("custom_interval_days"):
-            data.pop("custom_interval_days", None)
-        else:
-            data["custom_interval_days"] = int(data["custom_interval_days"])
-
-        if data.get("discount_pct"):
-            try:
-                data["discount_pct"] = float(data["discount_pct"])
-            except ValueError:
-                data.pop("discount_pct", None)
-
-        line_items = []
-        idx = 0
-        while f"li_desc_{idx}" in data or f"li_qty_{idx}" in data:
-            desc = data.pop(f"li_desc_{idx}", "").strip()
-            qty_raw = data.pop(f"li_qty_{idx}", "1")
-            price_raw = data.pop(f"li_price_{idx}", "0")
-            if desc or qty_raw:
-                try:
-                    qty = float(qty_raw) if qty_raw else 1
-                    price = float(price_raw) if price_raw else 0
-                except ValueError:
-                    qty, price = 1, 0
-                line_items.append({"description": desc, "quantity": qty, "unit_price": price})
-            idx += 1
-        if line_items:
-            data["line_items"] = line_items
-
-        data.pop("status", None)
-
-        try:
-            result = await api.create_subscription(token, data)
+            result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly"})
             doc_id = result.get("entity_id") or result.get("id") or ""
             return RedirectResponse(f"/subscriptions/{doc_id}", status_code=303)
         except APIError as e:
-            return RedirectResponse(f"/subscriptions/new?direction={direction}&error={e}", status_code=303)
+            return RedirectResponse(f"/subscriptions?direction={direction}&error={e}", status_code=303)
 
     # --- Detail page ---
 

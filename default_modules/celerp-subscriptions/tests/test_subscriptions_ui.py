@@ -66,37 +66,16 @@ class TestSubscriptionsUI:
         assert r.status_code == 200
         assert "Purchasing Subscriptions" in r.text
 
-    async def test_new_form_sales(self, ui_client):
-        with patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS})):
-            r = await ui_client.get("/subscriptions/new?direction=sales", cookies=_authed())
-        assert r.status_code == 200
-        assert "New Subscription" in r.text
-        assert "subscription_invoice" in r.text
-
-    async def test_new_form_purchasing(self, ui_client):
-        with patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS})):
-            r = await ui_client.get("/subscriptions/new?direction=purchasing", cookies=_authed())
-        assert r.status_code == 200
-        assert "subscription_po" in r.text
-
-    async def test_new_form_unauthenticated_redirects(self, ui_client):
-        r = await ui_client.get("/subscriptions/new?direction=sales")
+    async def test_new_subscription_unauthenticated_redirects(self, ui_client):
+        r = await ui_client.post("/subscriptions/new?direction=sales")
         assert r.status_code == 302
         assert "/login" in r.headers["location"]
 
     async def test_create_subscription_redirects_to_detail(self, ui_client):
         with patch("ui.api_client.create_subscription", new=AsyncMock(return_value=_SUB_DOC)):
             r = await ui_client.post(
-                "/subscriptions/new",
+                "/subscriptions/new?direction=sales",
                 cookies=_authed(),
-                data={
-                    "doc_type": "subscription_invoice",
-                    "name": "Test Sub",
-                    "contact_id": "ct:1",
-                    "frequency": "monthly",
-                    "start_date": "2026-01-01",
-                    "currency": "USD",
-                },
             )
         assert r.status_code == 303
         assert "/subscriptions/sub-001" in r.headers["location"]
