@@ -93,6 +93,26 @@ _DOC_TYPE_SINGULAR: dict[str, str] = {
 }
 
 
+# Maps doc_type → sidebar nav key. Used by both list and detail pages so the
+# sidebar highlight is always correct regardless of URL structure.
+_DOC_TYPE_NAV_KEY: dict[str, str] = {
+    "invoice": "invoices",
+    "memo": "memos",
+    "purchase_order": "purchase-orders",
+    "bill": "vendor-bills",
+    "consignment_in": "consignment-in",
+    "credit_note": "credit-notes",
+    "receipt": "receipts",
+    "list": "lists",
+    "subscription_invoice": "subscriptions_sales",
+    "subscription_po": "subscriptions_purchasing",
+}
+
+
+def _doc_nav_key(doc_type: str) -> str:
+    return _DOC_TYPE_NAV_KEY.get(doc_type, "invoices")
+
+
 def _doc_section_label(doc_type: str) -> str:
     """Section label for breadcrumb (plural)."""
     return _DOC_TYPE_PAGE_LABELS.get(doc_type, "Documents")
@@ -680,7 +700,7 @@ def setup_routes(app):
             ),
             pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&sort={sort}&dir={sort_dir}".strip("&")),
             title=f"{page_title} - Celerp",
-            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
+            nav_active=_doc_nav_key(doc_type),
             lang=lang,
             request=request,
         )
@@ -1347,7 +1367,7 @@ def setup_routes(app):
             page_header(f"{type_label} - {status_label} {doc_ref}"),
             _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency),
             title=f"{type_label} {doc_ref} - Celerp",
-            nav_active={"invoice": "invoices", "memo": "memos", "purchase_order": "purchase-orders", "bill": "vendor-bills", "consignment_in": "consignment-in", "credit_note": "credit-notes", "receipt": "receipts"}.get(doc_type, "invoices"),
+            nav_active=_doc_nav_key(doc_type),
             request=request,
         )
 
