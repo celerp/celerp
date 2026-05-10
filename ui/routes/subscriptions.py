@@ -284,16 +284,17 @@ def setup_routes(app) -> None:
 
     @app.post("/subscriptions/new")
     async def create_subscription(request: Request, direction: str = "sales"):
+        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return RedirectResponse("/login", status_code=302)
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         doc_type = _DIRECTION_DOC_TYPE.get(direction, "subscription_invoice")
         try:
             result = await api.create_subscription(token, {"doc_type": doc_type, "frequency": "monthly"})
             doc_id = result.get("entity_id") or result.get("id") or ""
-            return RedirectResponse(f"/subscriptions/{doc_id}", status_code=303)
+            return _R("", status_code=204, headers={"HX-Redirect": f"/subscriptions/{doc_id}"})
         except APIError as e:
-            return RedirectResponse(f"/subscriptions?direction={direction}&error={e}", status_code=303)
+            return _R("", status_code=204, headers={"HX-Redirect": f"/subscriptions?direction={direction}&error={e}"})
 
     # --- Detail page ---
 
