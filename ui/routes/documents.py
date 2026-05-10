@@ -4616,16 +4616,20 @@ async function celerpAcSearch(input, field) {{
             }});
             list.appendChild(opt);
         }});
-        // Always append "Use as custom entry" at the bottom
+        // Always append a custom-entry option at the bottom
+        const _expenseTypes = ['bill', 'purchase_order', 'consignment_in'];
+        const _customLabel = _expenseTypes.includes(_CELERP_DOC_TYPE)
+            ? '✏ Use as expense: "' + q + '"'
+            : '✏ Use as custom entry: "' + q + '"';
         const custom = document.createElement('div');
         custom.className = 'catalog-ac-option catalog-ac-option--custom';
-        custom.textContent = '✏ Use as expense: "' + q + '"';
+        custom.textContent = _customLabel;
         custom.addEventListener('mousedown', e => {{
             e.preventDefault();
             list.style.display = 'none';
-            // Mark line as expense since no catalog item matched
+            // Auto-set receive_as=expense only for purchasing-side documents
             const row = input.closest('tr');
-            if (row) {{
+            if (row && _expenseTypes.includes(_CELERP_DOC_TYPE)) {{
                 const raEl = row.querySelector('[data-name="receive_as"]');
                 if (raEl) raEl.value = 'expense';
             }}
