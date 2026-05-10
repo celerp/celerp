@@ -67,16 +67,16 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
         s = it.get("status", "draft")
         counts[s] = counts.get(s, 0) + 1
     base = f"/subscriptions?direction={direction}"
-    # "All Issued" excludes drafts - matches the invoices list convention
     issued_total = sum(counts.get(s, 0) for s in ("active", "paused", "cancelled"))
+    # Draft first, then All Issued, then lifecycle statuses
     cards = [
-        {"label": "Draft",     "count": counts.get("draft", 0),     "total": None, "status": "draft",     "color": "gray",   "_url": f"{base}&status=draft"},
-        {"label": "Active",    "count": counts.get("active", 0),    "total": None, "status": "active",    "color": "green",  "_url": f"{base}&status=active"},
-        {"label": "Paused",    "count": counts.get("paused", 0),    "total": None, "status": "paused",    "color": "yellow", "_url": f"{base}&status=paused"},
-        {"label": "Cancelled", "count": counts.get("cancelled", 0), "total": None, "status": "cancelled", "color": "gray",   "_url": f"{base}&status=cancelled"},
+        {"label": "Draft",      "count": counts.get("draft", 0),     "total": None, "status": "draft",     "color": "gray",   "_url": f"{base}&status=draft"},
+        {"label": "All Issued", "count": issued_total,               "total": None, "status": "",          "color": "blue",   "_url": base, "_active_key": ""},
+        {"label": "Active",     "count": counts.get("active", 0),    "total": None, "status": "active",    "color": "green",  "_url": f"{base}&status=active"},
+        {"label": "Paused",     "count": counts.get("paused", 0),    "total": None, "status": "paused",    "color": "yellow", "_url": f"{base}&status=paused"},
+        {"label": "Cancelled",  "count": counts.get("cancelled", 0), "total": None, "status": "cancelled", "color": "gray",   "_url": f"{base}&status=cancelled"},
     ]
-    return status_cards(cards, base, active_status or None, currency=None,
-                        show_all_card=True, all_label="All Issued", total_override=issued_total)
+    return status_cards(cards, base, active_status or None, currency=None, show_all_card=False)
 
 
 def _sub_table(subs: list[dict], direction: str) -> FT:
