@@ -3950,7 +3950,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="send-section",
             )
         )
-    if status not in ("void", "draft") and _is_manager:
+    if status not in ("void", "draft") and _is_manager and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("btn.void"), cls="btn btn--danger"),
@@ -3965,7 +3965,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # "Revert to Draft" button - only from final/sent with no payments and no received items
     amount_paid_for_revert = float(doc.get("amount_paid") or 0)
     has_received_items = bool(doc.get("received_items"))
-    if status in ("final", "sent") and amount_paid_for_revert == 0 and not has_received_items and _is_manager:
+    if status in ("final", "sent") and amount_paid_for_revert == 0 and not has_received_items and _is_manager and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
@@ -3978,7 +3978,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
         )
     # "Unvoid" button - only from void with pre_void_status set
-    if status == "void" and doc.get("pre_void_status") and _is_manager:
+    if status == "void" and doc.get("pre_void_status") and _is_manager and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("doc.unvoid"), cls="btn btn--secondary"),
@@ -4032,8 +4032,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
                    onclick="document.getElementById('csv-import-input').click()"),
         )
-    # Print Labels button — non-draft docs only, when celerp-labels is installed
-    if not is_draft:
+    # Print Labels button — non-draft docs only, when celerp-labels is installed, not for subscription templates
+    if not is_draft and not suppress_doc_actions:
         from celerp.modules.slots import get as _get_slot_labels
         _labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels("bulk_action"))
         if _labels_active and line_items:
