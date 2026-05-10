@@ -13,16 +13,10 @@ Covers:
 from __future__ import annotations
 
 import uuid
-import sys
 import os
 import pytest
 
-# Ensure celerp_manufacturing is importable in this test context.
-_MFG_SRC = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "default_modules", "celerp-manufacturing")
-)
-if _MFG_SRC not in sys.path:
-    sys.path.insert(0, _MFG_SRC)
+_MFG_SRC = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
 # ---------------------------------------------------------------------------
@@ -624,7 +618,7 @@ class TestManufacturingCoreCleanup:
     def test_core_main_does_not_import_manufacturing_router(self):
         import ast
         main_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "celerp", "main.py"
+            os.path.dirname(__file__), "..", "..", "..", "celerp", "main.py"
         )
         with open(main_path) as f:
             tree = ast.parse(f.read())
@@ -644,7 +638,7 @@ class TestManufacturingCoreCleanup:
     def test_core_main_does_not_include_manufacturing_router(self):
         import ast
         main_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "celerp", "main.py"
+            os.path.dirname(__file__), "..", "..", "..", "celerp", "main.py"
         )
         with open(main_path) as f:
             source = f.read()
@@ -652,7 +646,7 @@ class TestManufacturingCoreCleanup:
 
     def test_shell_nav_no_hardcoded_manufacturing(self):
         shell_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "ui", "components", "shell.py"
+            os.path.dirname(__file__), "..", "..", "..", "ui", "components", "shell.py"
         )
         with open(shell_path) as f:
             source = f.read()
@@ -663,7 +657,7 @@ class TestManufacturingCoreCleanup:
     def test_ui_app_does_not_import_manufacturing_routes(self):
         import ast
         app_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "ui", "app.py"
+            os.path.dirname(__file__), "..", "..", "..", "ui", "app.py"
         )
         with open(app_path) as f:
             source = f.read()
@@ -673,7 +667,7 @@ class TestManufacturingCoreCleanup:
     def test_core_projection_engine_no_mfg_handler_import(self):
         import ast
         engine_path = os.path.join(
-            os.path.dirname(__file__), "..", "..", "celerp", "projections", "engine.py"
+            os.path.dirname(__file__), "..", "..", "..", "celerp", "projections", "engine.py"
         )
         with open(engine_path) as f:
             source = f.read()

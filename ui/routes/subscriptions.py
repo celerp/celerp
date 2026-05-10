@@ -23,6 +23,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import breadcrumbs, pagination, search_bar, status_cards
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import get_lang, t
+from ui.i18n import t, get_lang
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def _sub_status_cards(items: list[dict], active_status: str, direction: str) -> 
 
 def _sub_table(subs: list[dict], direction: str) -> FT:
     if not subs:
-        return Div(P("No subscription templates found.", cls="text-muted empty-state"), id="sub-table")
+        return Div(P(t("label.no_subscription_templates_found"), cls="text-muted empty-state"), id="sub-table")
 
     def _row(s: dict) -> FT:
         eid = s.get("id") or s.get("entity_id", "")
@@ -100,7 +101,7 @@ def _sub_table(subs: list[dict], direction: str) -> FT:
 
     return Div(
         Table(
-            Thead(Tr(Th("Name"), Th("Contact"), Th("Frequency"), Th("Next Run"), Th("Status", style="text-align:center"))),
+            Thead(Tr(Th(t("th.name")), Th(t("th.contact")), Th(t("th.frequency")), Th(t("th.next_run")), Th(t("th.status"), style="text-align:center"))),
             Tbody(*[_row(s) for s in subs]),
             cls="data-table",
         ),
@@ -171,7 +172,7 @@ def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
 
     if status == "draft":
         return _schedule_inputs(entity_id, sub) + [
-            Form(Button("Activate", type="submit", cls="btn btn--primary"),
+            Form(Button(t("btn.activate"), type="submit", cls="btn btn--primary"),
                  method="post", action=f"/subscriptions/{entity_id}/activate",
                  title="Set frequency and start date, then activate"),
         ], []
@@ -181,24 +182,24 @@ def _sub_action_controls(entity_id: str, sub: dict) -> tuple[list, list]:
 
     if status == "active":
         left.append(
-            Form(Button("Generate Now", type="submit", cls="btn btn--secondary btn--sm"),
+            Form(Button(t("btn.generate_now"), type="submit", cls="btn btn--secondary btn--sm"),
                  method="post", action=f"/subscriptions/{entity_id}/generate")
         )
         right.append(
-            Form(Button("Pause", type="submit", cls="btn btn--warning btn--sm"),
+            Form(Button(t("btn.pause"), type="submit", cls="btn btn--warning btn--sm"),
                  method="post", action=f"/subscriptions/{entity_id}/pause")
         )
     elif status == "paused":
         # Allow editing schedule while paused
         left.extend(_schedule_inputs(entity_id, sub))
         right.append(
-            Form(Button("Resume", type="submit", cls="btn btn--success btn--sm"),
+            Form(Button(t("btn.resume"), type="submit", cls="btn btn--success btn--sm"),
                  method="post", action=f"/subscriptions/{entity_id}/resume")
         )
 
     if status not in ("cancelled", "draft"):
         right.append(
-            Form(Button("Cancel", type="submit", cls="btn btn--danger btn--sm"),
+            Form(Button(t("btn.cancel"), type="submit", cls="btn btn--danger btn--sm"),
                  method="post", action=f"/subscriptions/{entity_id}/cancel")
         )
 
@@ -257,7 +258,7 @@ def setup_routes(app) -> None:
                 title,
                 search_bar(placeholder="Search name, contact...", target="#sub-table",
                            url=f"/subscriptions/search?direction={direction}&status={status}"),
-                Button("New Subscription", hx_post=f"/subscriptions/new?direction={direction}",
+                Button(t("page.new_subscription"), hx_post=f"/subscriptions/new?direction={direction}",
                        hx_swap="none", cls="btn btn--primary"),
             ),
             _sub_status_cards(all_items, status, direction),
@@ -274,7 +275,7 @@ def setup_routes(app) -> None:
     async def subscriptions_search(request: Request, direction: str = "sales", status: str = ""):
         token = _token(request)
         if not token:
-            return Div("Unauthorized", id="sub-table")
+            return Div(t("error.unauthorized"), id="sub-table")
         q = request.query_params.get("q", "")
         try:
             resp = await api.list_subscriptions(token, {"direction": direction, "limit": 1000})

@@ -19,6 +19,8 @@ async def send_email(
     body_html: str,
     body_text: str = "",
     reply_to: str = "",
+    cc: str = "",
+    bcc: str = "",
 ) -> bool:
     """Send a transactional email via gateway relay or SMTP fallback.
 
@@ -41,6 +43,8 @@ async def send_email(
                         "body_html": body_html,
                         "body_text": body_text,
                         "reply_to": reply_to,
+                        "cc": cc,
+                        "bcc": bcc,
                     },
                 )
                 return True
@@ -61,6 +65,10 @@ async def send_email(
             msg["To"] = to
             if reply_to:
                 msg["Reply-To"] = reply_to
+            if cc:
+                msg["Cc"] = cc
+            if bcc:
+                msg["Bcc"] = bcc
             if body_text:
                 msg.attach(MIMEText(body_text, "plain"))
             msg.attach(MIMEText(body_html, "html"))

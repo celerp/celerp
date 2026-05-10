@@ -1357,6 +1357,13 @@ def setup_routes(app):
             doc_notes = await api.list_doc_notes(token, entity_id)
         except Exception:
             pass
+        # Check relay connection for Send button visibility
+        _relay_connected: bool = False
+        try:
+            _relay_status = await api.get_relay_status(token)
+            _relay_connected = bool(_relay_status.get("connected"))
+        except Exception:
+            pass
         status_label = "Pro Forma" if doc_type == "invoice" and status == "draft" else status.replace("_", " ").title()
         type_label = _doc_singular_label(doc_type)
         section_label = _doc_section_label(doc_type)
@@ -1365,7 +1372,7 @@ def setup_routes(app):
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -2001,15 +2008,18 @@ def setup_routes(app):
             elif action == "send":
                 sent_to = str(form.get("sent_to", "")).strip()
                 if not sent_to:
-                    # No recipient - redirect to cloud relay settings
                     return _R("", status_code=204, headers={"HX-Redirect": "/settings/general?tab=cloud-relay"})
-                data = {"sent_to": sent_to, "sent_via": "email"}
+                data: dict = {
+                    "sent_to": sent_to,
+                    "sent_via": "email",
+                    "cc": str(form.get("cc", "")).strip() or None,
+                    "bcc": str(form.get("bcc", "")).strip() or None,
+                }
                 await api.send_doc(token, entity_id, data=data)
             elif action == "mark_sent":
                 await api.send_doc(token, entity_id, data={"sent_via": "manual"})
             elif action == "unmark_sent":
-                # Revert to draft status
-                await api.patch_doc(token, entity_id, {"status": "draft"})
+                await api.revert_doc_to_draft(token, entity_id, reason=None)
             elif action == "void":
                 reason = str(form.get("reason", "")).strip() or None
                 await api.void_doc(token, entity_id, reason)
@@ -3796,7 +3806,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -3919,37 +3929,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                        onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
                        cls="btn btn--primary")
             )
-    if status == "draft" and not is_list and not suppress_doc_actions:
-        # --- Send form (inline email composition) ---
-        # --- Send form (inline email composition) ---
-        contact_email = doc.get("contact_email") or ""
-        doc_number = doc.get("ref_id") or doc.get("doc_number") or ""
-        company_name = doc.get("company_name") or "Your Company"
-        type_label = doc_type.replace("_", " ").title()
-        default_subject = f"{type_label} #{doc_number} from {company_name}" if doc_number else ""
-        default_body = f"Please find attached {type_label} #{doc_number}." if doc_number else ""
-        action_btns_left.append(
-            Details(
-                Summary(t("btn.send"), cls="btn btn--secondary"),
-                Form(
-                    Div(Label(t("label.to_email"), cls="form-label"),
-                        Input(type="email", name="sent_to", value=contact_email,
-                              placeholder="recipient@example.com", cls="form-input", required=True),
-                        cls="form-group"),
-                    Div(Label(t("label.subject"), cls="form-label"),
-                        Input(type="text", name="subject", value=default_subject,
-                              cls="form-input"),
-                        cls="form-group"),
-                    Div(Label(t("label.message"), cls="form-label"),
-                        Textarea(default_body, name="message", rows="3", cls="form-input"),
-                        cls="form-group"),
-                    Span("", id="send-error"),
-                    Button(t("btn.send_document"), type="submit", cls="btn btn--primary"),
-                    hx_post=f"/docs/{entity_id}/action/send", hx_swap="none", cls="form-card",
-                ),
-                cls="send-section",
-            )
-        )
     if status not in ("void", "draft") and _is_manager and not suppress_doc_actions:
         action_btns_right.append(
             Details(
@@ -4004,15 +3983,84 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
         )
     # Refund is now handled via credit notes + void in the payment section
-    # "Mark as Sent" button (instant, no confirmation; undo via "Unmark")
-    if status in ("draft", "sent") and not is_list and not suppress_doc_actions:
+    # Send (relay modal) + Mark as Sent - hidden for internal/purchasing doc types
+    from celerp_docs.doc_constants import NO_SEND_DOC_TYPES, NO_SEND_STATUSES
+    _can_send = (
+        not is_list
+        and not suppress_doc_actions
+        and doc_type not in NO_SEND_DOC_TYPES
+    )
+    if _can_send:
+        # Send via relay - modal popup, only when relay connected and status allows it
+        if relay_connected and status not in NO_SEND_STATUSES:
+            contact_email = doc.get("contact_email") or ""
+            doc_number = doc.get("ref_id") or doc.get("doc_number") or ""
+            company_name = doc.get("company_name") or "Your Company"
+            _type_label_send = doc_type.replace("_", " ").title()
+            default_subject = f"{_type_label_send} #{doc_number} from {company_name}" if doc_number else ""
+            default_body = f"Please find attached {_type_label_send} #{doc_number}." if doc_number else ""
+            modal_id = f"send-modal-{entity_id.replace(':', '-')}"
+            action_btns_left.append(
+                Button(t("btn.send"), type="button",
+                       onclick=f"document.getElementById('{modal_id}').showModal()",
+                       cls="btn btn--secondary"),
+            )
+            # Dialog rendered at the bottom of the page via extra content - inject as sibling
+            # We append it to the page by including it in the actions area; dialog CSS positions it correctly
+            action_btns_left.append(
+                Dialog(
+                    Form(
+                        H3(t("btn.send"), cls="modal-dialog__title"),
+                        Div(
+                            Label(t("label.to_email"), cls="form-label"),
+                            Input(type="text", name="sent_to", value=contact_email,
+                                  placeholder="recipient@example.com", cls="form-input"),
+                            P(t("doc.send_multiple_hint"), cls="form-hint"),
+                            cls="form-group",
+                        ),
+                        Div(
+                            Label("CC", cls="form-label"),
+                            Input(type="text", name="cc", placeholder="cc@example.com", cls="form-input"),
+                            cls="form-group",
+                        ),
+                        Div(
+                            Label("BCC", cls="form-label"),
+                            Input(type="text", name="bcc", placeholder="bcc@example.com", cls="form-input"),
+                            cls="form-group",
+                        ),
+                        Div(
+                            Label(t("label.subject"), cls="form-label"),
+                            Input(type="text", name="subject", value=default_subject, cls="form-input"),
+                            cls="form-group",
+                        ),
+                        Div(
+                            Label(t("label.message"), cls="form-label"),
+                            Textarea(default_body, name="message", rows="3", cls="form-input"),
+                            cls="form-group",
+                        ),
+                        Div(
+                            Button(t("btn.cancel"), type="button",
+                                   onclick=f"document.getElementById('{modal_id}').close()",
+                                   cls="btn btn--ghost"),
+                            Button(t("btn.send_document"), type="submit", cls="btn btn--primary"),
+                            cls="modal-dialog__actions",
+                        ),
+                        hx_post=f"/docs/{entity_id}/action/send",
+                        hx_swap="none",
+                        hx_on__htmx_after_request=f"if(event.detail.successful)document.getElementById('{modal_id}').close()",
+                    ),
+                    id=modal_id,
+                    cls="modal-dialog",
+                )
+            )
+        # Mark as Sent (manual, no relay needed) - only on draft
         if status == "draft":
             action_btns_left.append(
                 Button(t("btn.mark_as_sent"), hx_post=f"/docs/{entity_id}/action/mark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
-        else:
-            # Already sent - offer undo
+        # Unmark Sent - only when status == "sent"
+        if status == "sent":
             action_btns_left.append(
                 Button(t("btn.unmark_sent"), hx_post=f"/docs/{entity_id}/action/unmark_sent",
                        hx_swap="none", cls="btn btn--secondary")
@@ -5213,7 +5261,7 @@ async function celerpCsvImport(input, entityId) {{
             Div(Div("Frequency" if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
                 _cell("frequency", doc.get("frequency", "").capitalize()) if _is_sub_template else _cell("issue_date", issue_date_value),
                 cls="meta-cell"),
-            (Div(Div("Next Issue Date", cls="meta-label"),
+            (Div(Div(t("doc.next_issue_date"), cls="meta-label"),
                  _cell("next_run_date", doc.get("next_run_date") or "--"),
                  cls="meta-cell") if _is_sub_template else
              (Div(Div(t("doc.due_date"), cls="meta-label"), _cell("due_date", due_date_value), cls="meta-cell") if not is_list else "")),
