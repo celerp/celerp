@@ -4009,8 +4009,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             # We append it to the page by including it in the actions area; dialog CSS positions it correctly
             action_btns_left.append(
                 Dialog(
-                    Form(
+                    Div(
                         H3(t("btn.send"), cls="modal-dialog__title"),
+                        Button("✕", type="button",
+                               onclick=f"document.getElementById('{modal_id}').close()",
+                               cls="modal-dialog__close", aria_label="Close"),
+                        cls="modal-dialog__header",
+                    ),
+                    Form(
                         Div(
                             Label(t("label.to_email"), cls="form-label"),
                             Input(type="text", name="sent_to", value=contact_email,
@@ -4035,7 +4041,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         ),
                         Div(
                             Label(t("label.message"), cls="form-label"),
-                            Textarea(default_body, name="message", rows="3", cls="form-input"),
+                            Textarea(default_body, name="message", rows="4", cls="form-input"),
                             cls="form-group",
                         ),
                         Div(
