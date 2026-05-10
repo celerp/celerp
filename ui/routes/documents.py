@@ -3772,7 +3772,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD") -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -3889,13 +3889,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             "receipt": "Issue Receipt",
         }
         finalize_label = _finalize_labels.get(doc_type, "Finalize")
-        if _is_manager:
+        if _is_manager and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
                        onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
                        cls="btn btn--primary")
             )
-    if status == "draft" and not is_list:
+    if status == "draft" and not is_list and not suppress_doc_actions:
+        # --- Send form (inline email composition) ---
         # --- Send form (inline email composition) ---
         contact_email = doc.get("contact_email") or ""
         doc_number = doc.get("ref_id") or doc.get("doc_number") or ""
@@ -3980,7 +3981,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         )
     # Refund is now handled via credit notes + void in the payment section
     # "Mark as Sent" button (instant, no confirmation; undo via "Unmark")
-    if status in ("draft", "sent") and not is_list:
+    if status in ("draft", "sent") and not is_list and not suppress_doc_actions:
         if status == "draft":
             action_btns_left.append(
                 Button(t("btn.mark_as_sent"), hx_post=f"/docs/{entity_id}/action/mark_sent",
