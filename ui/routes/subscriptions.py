@@ -383,8 +383,7 @@ def setup_routes(app) -> None:
                 ("Sales Subscriptions" if direction == "sales" else "Purchasing Subscriptions", list_url),
                 (f"{status_label} {ref}", None),
             ]),
-            page_header(f"{type_label} - {status_label} {ref}",
-                        *_sub_action_controls(entity_id, doc)),
+            page_header(f"{type_label} - {status_label} {ref}"),
             _doc_detail(
                 doc,
                 ledger=ledger,
@@ -395,6 +394,8 @@ def setup_routes(app) -> None:
                 role=_get_role(request),
                 notes=doc_notes,
                 suppress_doc_actions=True,
+                extra_left_actions=_sub_action_controls(entity_id, doc),
+                suppress_pdf=True,
             ),
             title=f"{type_label} {ref} - Celerp",
             nav_active="subscriptions_sales" if direction == "sales" else "subscriptions_purchasing",

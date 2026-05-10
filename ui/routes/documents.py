@@ -3772,7 +3772,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, suppress_pdf: bool = False) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -3995,7 +3995,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
     # PDF + CSV buttons → print group (always far-right)
     if not is_list:
-        action_btns_print.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
+        if not suppress_pdf:
+            action_btns_print.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
     # CSV line items export/import icons
     action_btns_print.append(
         A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
@@ -5164,7 +5165,7 @@ async function celerpCsvImport(input, entityId) {{
     return Div(
         list_type_selector,
         Div(
-            Div(*action_btns_left, cls="doc-actions-left"),
+            Div(*(extra_left_actions or []), *action_btns_left, cls="doc-actions-left"),
             Div(
                 Div(*action_btns_right, cls="doc-actions-right") if action_btns_right else "",
                 Span("|", cls="doc-actions-sep") if action_btns_right else "",
