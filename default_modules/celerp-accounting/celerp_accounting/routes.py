@@ -114,7 +114,16 @@ class BatchImportResult(BaseModel):
 
 async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -> None:
     """Seed Thai default chart of accounts for a new company. Idempotent."""
+    from sqlalchemy import select as _select
+
+    existing_codes = set(
+        (await session.execute(
+            _select(Account.code).where(Account.company_id == company_id)
+        )).scalars().all()
+    )
     for entry in THAI_CHART_OF_ACCOUNTS:
+        if entry["code"] in existing_codes:
+            continue
         acc = Account(
             id=uuid.uuid4(),
             company_id=company_id,
@@ -127,13 +136,20 @@ async def seed_chart_of_accounts(session: AsyncSession, company_id: uuid.UUID) -
 
 
 async def _seed_default_bank_account(session: AsyncSession, company_id: uuid.UUID) -> None:
-    """Create a default bank account so reconciliation is never empty."""
+    """Create a default bank account so reconciliation is never empty. Idempotent."""
     from celerp.models.company import Company
+    from sqlalchemy import select as _select
 
     company = await session.get(Company, company_id)
     currency = (company.settings or {}).get("currency", "THB") if company else "THB"
 
     code = "1111"
+    existing = (await session.execute(
+        _select(Account.id).where(Account.company_id == company_id, Account.code == code)
+    )).scalar_one_or_none()
+    if existing:
+        return
+
     acc = Account(
         id=uuid.uuid4(),
         company_id=company_id,
