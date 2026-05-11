@@ -24,7 +24,7 @@ from pathlib import Path
 from test_helpers import REPO_ROOT, DATABASE_URL, make_test_token, authed_cookies, _crm_available  # noqa: F401
 
 # Register inventory module routes onto the test app.
-_inv_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-inventory")
+_inv_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-inventory")
 if _os.path.abspath(_inv_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_inv_src))
 from celerp_inventory.routes import setup_api_routes as _setup_inv
@@ -33,7 +33,7 @@ _setup_inv(app)
 _setup_inv_ui(_ui_app)
 
 # Register Contacts module routes onto the test app.
-_contacts_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-contacts")
+_contacts_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-contacts")
 if _os.path.abspath(_contacts_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_contacts_src))
 from celerp_contacts.routes import setup_api_routes as _setup_contacts
@@ -42,7 +42,7 @@ _setup_contacts(app)
 _setup_contacts_ui(_ui_app)
 
 # Register sales-funnel (deals) module routes onto the test app (if available).
-_crm_src = _os.path.join(_os.path.dirname(__file__), "..", "premium_modules", "celerp-sales-funnel")
+_crm_src = _os.path.join(_os.path.dirname(__file__), "premium_modules", "celerp-sales-funnel")
 _crm_available = _os.path.isfile(_os.path.join(_crm_src, "celerp_sales_funnel", "__init__.py"))
 if _crm_available:
     if _os.path.abspath(_crm_src) not in [_os.path.abspath(p) for p in _sys.path]:
@@ -53,7 +53,7 @@ if _crm_available:
     _setup_crm_ui(_ui_app)
 
 # Register manufacturing module routes + projection handler onto the test app.
-_mfg_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-manufacturing")
+_mfg_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-manufacturing")
 if _os.path.abspath(_mfg_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_mfg_src))
 from celerp_manufacturing.routes import setup_api_routes as _setup_mfg
@@ -62,14 +62,14 @@ _setup_mfg(app)
 _setup_mfg_ui(_ui_app)
 
 # Register connectors module routes onto the test app.
-_conn_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-connectors")
+_conn_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-connectors")
 if _os.path.abspath(_conn_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_conn_src))
 from celerp_connectors.routes import setup_api_routes as _setup_connectors
 _setup_connectors(app)
 
 # Register docs module routes onto the test app.
-_docs_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-docs")
+_docs_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-docs")
 if _os.path.abspath(_docs_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_docs_src))
 from celerp_docs.api_setup import setup_api_routes as _setup_docs
@@ -78,7 +78,7 @@ _setup_docs(app)
 _setup_docs_ui(_ui_app)
 
 # Register accounting module routes onto the test app.
-_acc_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-accounting")
+_acc_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-accounting")
 if _os.path.abspath(_acc_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_acc_src))
 from celerp_accounting.api_setup import setup_api_routes as _setup_accounting
@@ -91,7 +91,7 @@ from ui.routes.reconciliation import setup_routes as _setup_recon_ui
 _setup_recon_ui(_ui_app)
 
 # Register subscriptions module routes onto the test app.
-_subs_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-subscriptions")
+_subs_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-subscriptions")
 if _os.path.abspath(_subs_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_subs_src))
 from celerp_subscriptions.routes import setup_api_routes as _setup_subs
@@ -100,7 +100,7 @@ _setup_subs(app)
 _setup_subs_ui(_ui_app)
 
 # Register reports module routes onto the test app.
-_rep_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-reports")
+_rep_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-reports")
 if _os.path.abspath(_rep_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_rep_src))
 from celerp_reports.api_setup import setup_api_routes as _setup_reports
@@ -109,49 +109,49 @@ _setup_reports(app)
 _setup_reports_ui(_ui_app)
 
 # Register verticals module routes onto the test app.
-_vert_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-verticals")
+_vert_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-verticals")
 if _os.path.abspath(_vert_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_vert_src))
 from celerp_verticals.routes import setup_api_routes as _setup_verticals
 _setup_verticals(app)
 
 # Register dashboard module routes onto the test app.
-_dash_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-dashboard")
+_dash_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-dashboard")
 if _os.path.abspath(_dash_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_dash_src))
 from celerp_dashboard.setup import setup_api_routes as _setup_dashboard
 _setup_dashboard(app)
 
 # Register AI module routes onto the test app.
-_ai_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-ai")
+_ai_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-ai")
 if _os.path.abspath(_ai_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_ai_src))
 from celerp_ai.setup import setup_api_routes as _setup_ai
 _setup_ai(app)
 
 # Register backup module routes onto the test app.
-_backup_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-backup")
+_backup_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-backup")
 if _os.path.abspath(_backup_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_backup_src))
 from celerp_backup.setup import setup_api_routes as _setup_backup
 _setup_backup(app)
 
 # Register admin module routes onto the test app.
-_admin_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-admin")
+_admin_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-admin")
 if _os.path.abspath(_admin_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_admin_src))
 from celerp_admin.setup import setup_api_routes as _setup_admin
 _setup_admin(app)
 
 # Register labels module routes onto the test app.
-_labels_src = _os.path.join(_os.path.dirname(__file__), "..", "default_modules", "celerp-labels")
+_labels_src = _os.path.join(_os.path.dirname(__file__), "default_modules", "celerp-labels")
 if _os.path.abspath(_labels_src) not in [_os.path.abspath(p) for p in _sys.path]:
     _sys.path.insert(0, _os.path.abspath(_labels_src))
 from celerp_labels.routes import setup_api_routes as _setup_labels
 _setup_labels(app)
 
 # Register warehousing module path so its UI components can be imported in tests.
-_wh_src = _os.path.join(_os.path.dirname(__file__), "..", "premium_modules", "celerp-warehousing")
+_wh_src = _os.path.join(_os.path.dirname(__file__), "premium_modules", "celerp-warehousing")
 _wh_available = _os.path.isfile(_os.path.join(_wh_src, "celerp_warehousing", "__init__.py"))
 if _wh_available:
     if _os.path.abspath(_wh_src) not in [_os.path.abspath(p) for p in _sys.path]:
