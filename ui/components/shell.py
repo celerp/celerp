@@ -311,7 +311,6 @@ document.addEventListener('DOMContentLoaded', function() {
   var badge = document.getElementById('notif-badge');
   var panel = document.getElementById('notif-panel');
   var list = document.getElementById('notif-list');
-  if (!badge || !panel) return;
 
   function updateBadge(count) {
     if (count > 0) {
@@ -344,8 +343,10 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 
   window.toggleNotifPanel = function() {
-    var visible = panel.style.display !== 'none';
-    panel.style.display = visible ? 'none' : '';
+    var p = document.getElementById('notif-panel');
+    if (!p) return;
+    var visible = p.style.display !== 'none';
+    p.style.display = visible ? 'none' : '';
     if (!visible) loadNotifications();
   };
 
@@ -354,6 +355,8 @@ document.addEventListener('DOMContentLoaded', function() {
       .then(function() { loadNotifications(); })
       .catch(function() {});
   };
+
+  if (!badge || !panel) return;
 
   // Close panel on outside click
   document.addEventListener('click', function(e) {

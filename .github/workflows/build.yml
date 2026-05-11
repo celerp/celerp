@@ -97,14 +97,16 @@ jobs:
         run: |
           TAG="${GITHUB_REF_NAME}"
           RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/tags/$TAG" | jq -r '.id // empty')
+            "https://api.github.com/repos/celerp/celerp/releases/tags/$TAG" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || true)
           if [ -z "$RELEASE_ID" ]; then
             echo "No existing release for $TAG - nothing to clear"
             exit 0
           fi
           echo "Release $RELEASE_ID found for $TAG - clearing assets"
           ASSET_IDS=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets" | jq -r '.[].id')
+            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets" \
+            | python3 -c "import sys,json; [print(a['id']) for a in json.load(sys.stdin)]" 2>/dev/null || true)
           if [ -z "$ASSET_IDS" ]; then
             echo "No assets to delete"
             exit 0
