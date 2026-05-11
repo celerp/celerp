@@ -494,6 +494,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (window.celerp) {
       // Electron path
+      var isManualCheck = false;
+
       window.celerp.getVersion().then(function(v) {
         if (versionEl) versionEl.textContent = 'v' + v;
       }).catch(function() {});
@@ -501,7 +503,7 @@ document.addEventListener('DOMContentLoaded', function() {
       setState('Up to date', false);
 
       window.celerp.onUpdateLog(function(msg) {
-        appendLog(msg);
+        if (isManualCheck) appendLog(msg);
       });
 
       window.celerp.onUpdateAvailable(function(info) {
@@ -517,6 +519,7 @@ document.addEventListener('DOMContentLoaded', function() {
       window.celerp.onUpdateNotAvailable(function() {
         setState('Up to date', false);
         resetToIdle();
+        isManualCheck = false;
       });
 
       window.celerp.onUpdateDownloaded(function(info) {
@@ -547,12 +550,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
       if (checkBtn) {
         checkBtn.addEventListener('click', function() {
+          isManualCheck = true;
           setCheckBtn(false);
           setState('Checking...', false);
           if (logEl) { logEl.textContent = ''; logEl.style.display = 'none'; }
           window.celerp.checkForUpdates().catch(function() {
             setState('Up to date', false);
             resetToIdle();
+            isManualCheck = false;
           });
         });
       }
