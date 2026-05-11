@@ -467,12 +467,71 @@ function resolveStorageEnv(cfg) {
  *   - Forwards update events to the renderer via IPC
  *   - Errors are logged only — never surfaced as crashes
  */
+// ── Pending-update stamp ─────────────────────────────────────────────────────
+// On Mac, autoInstallOnAppQuit hands off to Squirrel which replaces the bundle
+// in the background AFTER the app exits. Relaunching before Squirrel finishes
+// (typically 1-3 min) runs the old binary, which sees no update applied and
+// starts downloading again — creating an infinite loop.
+//
+// We break the loop with a stamp file:
+//   - Written to userData when download completes, recording the pending version.
+//   - On next launch, if the stamp exists and app.getVersion() == stamp.from,
+//     Squirrel hasn't finished yet — skip checkForUpdates and show a waiting UI.
+//   - If the stamp exists and app.getVersion() == stamp.to, install succeeded —
+//     delete the stamp and show a "Updated to vX" toast.
+const PENDING_UPDATE_STAMP = path.join(app.getPath("userData"), "pending-update.json");
+
+function readPendingUpdateStamp() {
+  try {
+    return JSON.parse(fs.readFileSync(PENDING_UPDATE_STAMP, "utf8"));
+  } catch (_) {
+    return null;
+  }
+}
+
+function writePendingUpdateStamp(fromVersion, toVersion) {
+  try {
+    fs.writeFileSync(PENDING_UPDATE_STAMP, JSON.stringify({ from: fromVersion, to: toVersion, ts: Date.now() }));
+  } catch (_) {}
+}
+
+function clearPendingUpdateStamp() {
+  try { fs.unlinkSync(PENDING_UPDATE_STAMP); } catch (_) {}
+}
+
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
 
   autoUpdater.autoDownload = true;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowPrerelease = false;
+
+  const currentVersion = app.getVersion();
+  const stamp = readPendingUpdateStamp();
+
+  // Check if we just successfully updated
+  if (stamp && stamp.to === currentVersion) {
+    clearPendingUpdateStamp();
+    // Notify renderer of successful update once the window loads
+    if (mainWindow) {
+      mainWindow.webContents.once("did-finish-load", () => {
+        mainWindow.webContents.send("update-just-applied", { version: currentVersion });
+      });
+    }
+  }
+
+  // If stamp exists and version hasn't changed, Squirrel is still working —
+  // skip checkForUpdates entirely to avoid the download loop.
+  const installPending = stamp && stamp.from === currentVersion;
+  if (installPending) {
+    console.log("[updater] install pending for v" + stamp.to + " — skipping update check");
+    if (mainWindow) {
+      mainWindow.webContents.once("did-finish-load", () => {
+        mainWindow.webContents.send("update-install-pending", { version: stamp.to });
+      });
+    }
+    return;
+  }
 
   function sendLog(msg) {
     if (mainWindow) mainWindow.webContents.send("update-log", String(msg));
@@ -510,7 +569,8 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("update-downloaded", (info) => {
-    sendLog("Download complete — ready to install v" + info.version);
+    sendLog("Download complete — quit Celerp to install v" + info.version);
+    writePendingUpdateStamp(currentVersion, info.version);
     if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
   });
 

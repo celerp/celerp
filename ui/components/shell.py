@@ -476,7 +476,7 @@ document.addEventListener('DOMContentLoaded', function() {
       if (lines.length >= 200) lines[0].remove();
       var line = document.createElement('span');
       line.className = 'log-line';
-      line.textContent = (logEl.childNodes.length ? '\n' : '') + msg;
+      line.textContent = (logEl.childNodes.length ? '\\n' : '') + msg;
       logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight;
     }
@@ -520,9 +520,29 @@ document.addEventListener('DOMContentLoaded', function() {
       });
 
       window.celerp.onUpdateDownloaded(function(info) {
-        setState('Ready to install v' + info.version, true);
+        setState('Ready — quit Celerp to install v' + info.version, false);
         setProgress(100);
         setCheckBtn(false);
+        appendLog('Quit Celerp completely to finish installing v' + info.version + '. Reopen after ~1 minute.');
+      });
+
+      window.celerp.onUpdateInstallPending(function(info) {
+        var v = info && info.version ? info.version : 'update';
+        setState('Installing v' + v + ' in background...', false);
+        setCheckBtn(false);
+        appendLog('Update v' + v + ' is being installed by the system. Please wait 1-2 minutes, then reopen Celerp.');
+      });
+
+      window.celerp.onUpdateJustApplied(function(info) {
+        var v = info && info.version ? info.version : '';
+        setState('Updated to v' + v + ' \u2713', false);
+        resetToIdle();
+        // Open the notification panel briefly so the user sees the success
+        var panel = document.getElementById('notif-panel');
+        if (panel) panel.style.display = '';
+        setTimeout(function() {
+          setState('Up to date', false);
+        }, 8000);
       });
 
       if (checkBtn) {
