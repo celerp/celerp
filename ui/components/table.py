@@ -77,7 +77,7 @@ def fmt_money(value: str | float, currency: str | None = None) -> str:
         return EMPTY
 
 
-def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True) -> FT:
+def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True, all_label: str = "All") -> FT:
     """Clickable status filter cards at top of list pages.
 
     cards: [{"label": "Paid", "count": 489, "total": 2990000.0, "status": "paid", "color": "green"}, ...]
@@ -108,7 +108,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
 
     # Ensure "All" card is first (optional)
     all_total = total_override if total_override is not None else sum(c.get("count", 0) for c in cards)
-    els = [_card("All", all_total, None, None, "blue")] if show_all_card else []
+    els = [_card(all_label, all_total, None, None, "blue")] if show_all_card else []
     for c in cards:
         els.append(_card(
             c.get("label", ""),

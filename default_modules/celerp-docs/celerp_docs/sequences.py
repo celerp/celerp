@@ -19,6 +19,8 @@ _PREFIX_BY_DOC_TYPE = {
     "memo": "MEMO",
     "list": "LST",
     "consignment_in": "CI",
+    "subscription_invoice": "SUBI",
+    "subscription_po": "SUBP",
 }
 
 # Default pattern for all new companies

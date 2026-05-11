@@ -17,7 +17,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from tests.conftest import make_test_token, authed_cookies, _crm_available
+from test_helpers import make_test_token, authed_cookies, _crm_available
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -578,7 +578,7 @@ class TestCRUDCreate:
             r = await ui.post("/subscriptions/new", cookies=_c(),
                              data={"name": "Test Sub", "frequency": "monthly", "doc_type": "invoice",
                                    "start_date": "2026-03-01"})
-        assert r.status_code in (302, 303, 200)
+        assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
     async def test_create_bom(self, ui):

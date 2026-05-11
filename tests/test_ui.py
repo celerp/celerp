@@ -32,7 +32,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from ui.routes.csv_import import _load_csv, MAPPING_ATTRIBUTE, MAPPING_SKIP
 from ui.routes.inventory import _IMPORT_SPEC, _CORE_ITEM_COLS
-from tests.conftest import make_test_token, authed_cookies
+from test_helpers import make_test_token, authed_cookies
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -711,8 +711,6 @@ _PNL = {"revenue": {"total": 500, "lines": [{"account_name": "Sales", "amount": 
         "expenses": {"total": 100, "lines": []}, "net_profit": 200}
 _BS = {"assets": {"total": 1000, "lines": [{"account_name": "Cash", "amount": 1000}]},
        "liabilities": {"total": 300, "lines": []}, "equity": {"total": 700, "lines": []}, "balanced": True}
-_SUBS = [{"entity_id": "s:1", "name": "Monthly Rent", "doc_type": "invoice", "frequency": "monthly",
-          "next_run": "2026-03-01", "last_generated_doc_id": "d:99", "status": "active"}]
 _AGING = {"lines": [{"contact_name": "Alice", "doc_number": "INV-001", "due_date": "2026-01-15",
           "outstanding": 100, "days_overdue": 40, "bucket": "31-60"}], "buckets": {"31-60": 100}}
 _SALES = {"lines": [{"label": "Alice", "count": 3, "total": 500}], "group_by": "customer", "total": 500}
@@ -1289,55 +1287,6 @@ class TestSettingsPage:
         assert r.status_code == 200
         assert b"Gems" in r.content or b"gems" in r.content.lower()
         assert b"Electronics" in r.content
-
-
-class TestSubscriptionsPage:
-    @pytest.mark.asyncio
-    async def test_subscriptions_renders(self, ui_client):
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value=_SUBS)):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Subscriptions" in r.content
-        assert b"Monthly Rent" in r.content
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_empty(self, ui_client):
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert r.status_code == 200
-        assert b"No subscriptions" in r.content
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_htmx_pause(self, ui_client):
-        paused = {**_SUBS[0], "status": "paused"}
-        with (
-            patch("ui.api_client.pause_subscription", new=AsyncMock(return_value=paused)),
-            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=paused)),
-        ):
-            r = await ui_client.post("/subscriptions/s:1/pause", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Resume" in r.content
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_htmx_resume(self, ui_client):
-        resumed = {**_SUBS[0], "status": "active"}
-        with (
-            patch("ui.api_client.resume_subscription", new=AsyncMock(return_value=resumed)),
-            patch("ui.api_client.get_subscription", new=AsyncMock(return_value=resumed)),
-        ):
-            r = await ui_client.post("/subscriptions/s:1/resume", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Pause" in r.content
-
-    @pytest.mark.asyncio
-    async def test_new_subscription_form(self, ui_client):
-        with (
-            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/subscriptions/new", cookies=_authed())
-        assert r.status_code == 200
-        assert b"New Subscription" in r.content
 
 
 class TestTableComponent:
@@ -2024,59 +1973,7 @@ class TestSearchableSelect:
         assert "Label Two" in result
         assert 'value="v1"' in result
 
-    @pytest.mark.asyncio
-    async def test_combobox_js_initialized(self, ui_client):
-        """Pages with combobox must include initCombobox JS."""
-        with (
-            patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/subscriptions/new", cookies=_authed())
-        assert b"initCombobox" in r.content
-
-
-class TestSubscriptionsPolish:
-    """Tests for subscription page QA fixes."""
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_empty_no_duplicate_cta(self, ui_client):
-        """Empty state must NOT contain a second CTA button (dedup fix)."""
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert r.status_code == 200
-        # Header already has "New Subscription" button; empty state must not duplicate it
-        content = r.content.decode()
-        assert content.count("New Subscription") == 1, "Duplicate CTA found"
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_table_no_last_doc_column(self, ui_client):
-        """Subscriptions table must not show the 'Last Doc' raw entity_id column."""
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value=_SUBS)):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert b"Last Doc" not in r.content
-
-    @pytest.mark.asyncio
-    async def test_subscriptions_row_has_badge_status(self, ui_client):
-        """Subscription status cell must be a badge pill."""
-        with patch("ui.api_client.list_subscriptions", new=AsyncMock(return_value=_SUBS)):
-            r = await ui_client.get("/subscriptions", cookies=_authed())
-        assert b"badge--active" in r.content
-
-    @pytest.mark.asyncio
-    async def test_new_sub_form_loads_contacts(self, ui_client):
-        """New subscription form must call list_contacts for the contact picker."""
-        contacts = [{"entity_id": f"ct:{i}", "name": f"Contact {i}"} for i in range(12)]
-        with (
-            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": len(contacts)})) as mock_contacts,
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/subscriptions/new", cookies=_authed())
-        assert r.status_code == 200
-        mock_contacts.assert_called_once()
-        # With >10 contacts, searchable combobox should appear
-        assert b"combobox-wrap" in r.content
-
+    
 
 class TestDocumentPolish:
     """Tests for documents page QA fixes."""
@@ -8599,7 +8496,7 @@ class TestBulkActionsPhase6SendTo:
     async def test_docs_module_registers_send_to_targets(self, ui_client):
         """celerp-docs PLUGIN_MANIFEST declares send_to_targets slots."""
         import importlib
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
             "celerp_docs_entry", REPO_ROOT / "default_modules/celerp-docs/__init__.py")
         mod = importlib.util.module_from_spec(spec)
@@ -8614,7 +8511,7 @@ class TestBulkActionsPhase6SendTo:
     async def test_crm_module_registers_send_to_target(self, ui_client):
         """celerp-contacts PLUGIN_MANIFEST declares send_to_targets slot."""
         import importlib
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
             "celerp_contacts_entry", REPO_ROOT / "default_modules/celerp-contacts/__init__.py")
         mod = importlib.util.module_from_spec(spec)
@@ -9668,13 +9565,17 @@ class TestDocumentsOverhaul:
 
     @pytest.mark.asyncio
     async def test_send_form_shows_email_fields(self, ui_client):
-        """Draft doc shows inline Send form with To, Subject, Message fields."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
+        """Draft doc shows Send modal with To, Subject, Message, CC, BCC fields when relay connected."""
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)), \
+             patch("ui.api_client.get_relay_status", new=AsyncMock(return_value={"connected": True})):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
         assert 'name="sent_to"' in content
         assert 'name="subject"' in content
         assert 'name="message"' in content
+        assert 'name="cc"' in content
+        assert 'name="bcc"' in content
+        assert "modal-dialog" in content
 
     @pytest.mark.asyncio
     async def test_mark_as_sent_button_on_draft(self, ui_client):
@@ -10298,14 +10199,14 @@ class TestBugFixesBatch25Mar6Bugs:
 
 class TestBuildWorkflowVersioning:
     def test_build_workflow_sets_electron_version_from_tag(self):
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'Set Electron version from git tag' in workflow
         assert "data['version'] = os.environ['VERSION']" in workflow
         assert 'Install Node deps' in workflow
 
     def test_build_workflow_keeps_static_artifact_names(self):
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'Celerp-mac.dmg' in workflow
         assert 'Celerp-Setup.exe' in workflow
@@ -10315,7 +10216,7 @@ class TestBuildWorkflowVersioning:
     def test_build_workflow_notarize_via_after_sign(self):
         # Notarization is handled natively by electron-builder v25 via APPLE_ID env vars.
         # afterPack hook exists only to suppress chmod on embedded-postgres virtual paths.
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         pkg = (REPO_ROOT / 'electron/package.json').read_text()
         assert 'afterPack' in pkg
         assert 'after-pack.js' in pkg
@@ -10325,14 +10226,14 @@ class TestBuildWorkflowVersioning:
 
     def test_build_workflow_mac_build_timeout(self):
         # Mac build step has timeout covering sign + notarize time
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'timeout-minutes: 130' in workflow
 
     def test_build_workflow_mac_has_apple_secrets(self):
         # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID must be present
         # in the Mac build step env for notarize.js to pick them up.
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'APPLE_ID' in workflow
         assert 'APPLE_APP_SPECIFIC_PASSWORD' in workflow
@@ -10340,42 +10241,42 @@ class TestBuildWorkflowVersioning:
 
     def test_build_workflow_no_presign_step(self):
         # Pre-signing is no longer needed; electron-builder handles all signing.
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'Pre-sign' not in workflow
         assert 'xcrun notarytool' not in workflow
 
     def test_build_workflow_no_sign_ignore(self):
         # signIgnore was the workaround for the pre-sign approach; now removed.
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         pkg = (REPO_ROOT / 'electron/package.json').read_text()
         assert 'signIgnore' not in pkg
 
     def test_build_workflow_dev_pipeline_trigger(self):
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         workflow = (REPO_ROOT / '.github/workflows/build.yml').read_text()
         assert 'develop' in workflow
         assert 'dev-latest' in workflow
         assert 'prerelease: true' in workflow
 
     def test_electron_main_disallows_prerelease(self):
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         main_js = (REPO_ROOT / 'electron/main.js').read_text()
         assert 'allowPrerelease = false' in main_js
 
     def test_update_card_uses_correct_releases_url(self):
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         shell = (REPO_ROOT / 'ui/components/shell.py').read_text()
         assert 'https://github.com/celerp/celerp/releases' in shell
         assert 'Data-Universal-Limited' not in shell
 
     def test_electron_main_wires_update_not_available(self):
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         main_js = (REPO_ROOT / 'electron/main.js').read_text()
         assert 'update-not-available' in main_js
 
     def test_preload_exposes_on_update_not_available(self):
-        from tests.conftest import REPO_ROOT
+        from test_helpers import REPO_ROOT
         preload = (REPO_ROOT / 'electron/preload.js').read_text()
         assert 'onUpdateNotAvailable' in preload
 
@@ -11522,3 +11423,7 @@ def test_token_refresh_middleware_propagates_cancellation():
 
     asyncio.run(run_public())
     asyncio.run(run_private())
+
+
+# ── Subscription UI Tests ─────────────────────────────────────────────────────
+

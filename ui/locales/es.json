@@ -1208,5 +1208,9 @@
   "setup.new_company_subtitle": "Enter a name for your new company workspace.",
   "settings.your_companies": "Your companies",
   "settings.current_company": "Current",
-  "btn.switch": "Switch"
+  "btn.switch": "Switch",
+  "th.generated_documents": "Generated Documents",
+  "label.biweekly": "Biweekly",
+  "nav.subscriptions_sales": "Sales Subscriptions",
+  "nav.subscriptions_purchasing": "Purchasing Subscriptions"
 }

@@ -3,11 +3,15 @@
 """Tests for celerp-labels module: CRUD, custom dims, PDF generation, barcode/QR, positions."""
 from __future__ import annotations
 
+import os
 import uuid
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
 
+# Repo root: default_modules/celerp-labels/tests/ → up 4 levels (resolved path)
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent.parent)
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -376,7 +380,7 @@ class TestColumnManagerUi:
     def test_reset_button_rendered_in_column_manager(self):
         """_column_manager() must render a reset button inside the column menu."""
         import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        sys.path.insert(0, _REPO_ROOT)
         from fasthtml.common import to_xml
         from ui.routes.inventory import _column_manager
         schema = [
@@ -399,7 +403,7 @@ class TestColumnManagerUi:
     def test_css_table_layout_fixed(self):
         """app.css must set table-layout: auto on .data-table so resize expands table, not shrinks other columns."""
         import os
-        css_path = os.path.join(os.path.dirname(__file__), "../ui/static/app.css")
+        css_path = os.path.join(_REPO_ROOT, "ui/static/app.css")
         css = open(css_path).read()
         assert "table-layout: auto" in css, (
             "table-layout: auto missing from app.css; column resize must expand table width, not compress other columns"
@@ -408,7 +412,7 @@ class TestColumnManagerUi:
     def test_css_table_scroll_wrap(self):
         """app.css must define .table-scroll-wrap with overflow-x: auto."""
         import os
-        css_path = os.path.join(os.path.dirname(__file__), "../ui/static/app.css")
+        css_path = os.path.join(_REPO_ROOT, "ui/static/app.css")
         css = open(css_path).read()
         assert "table-scroll-wrap" in css
         assert "overflow-x: auto" in css
@@ -449,7 +453,7 @@ class TestLabelPrintJsFlow:
     def test_print_js_uses_window_open_not_fetch(self):
         """celerpPrintLabel must use window.open() pointing to /labels/print/."""
         import sys, os
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        sys.path.insert(0, _REPO_ROOT)
         from fasthtml.common import to_xml
         # Import the HTMX fragment builder by calling the relevant UI code.
         # We check the generated HTML/JS emitted into item label dropdown.
@@ -588,7 +592,7 @@ def test_barcode_img_tag_height_proportional():
 def test_css_table_uses_max_content_width():
     """app.css .data-table must use width: max-content so the table grows when columns are widened."""
     import os
-    css_path = os.path.join(os.path.dirname(__file__), "../ui/static/app.css")
+    css_path = os.path.join(_REPO_ROOT, "ui/static/app.css")
     css = open(css_path).read()
     assert "width: max-content" in css, (
         ".data-table must have width: max-content so column resize expands the table, "

@@ -844,6 +844,7 @@ async def get_expiring(token: str, days: int = 30) -> dict:
         return _raise(await c.get("/reports/expiring", params={"days": days})).json()
 
 
+
 # ---------------------------------------------------------------------------
 # Subscriptions
 # ---------------------------------------------------------------------------
@@ -856,7 +857,7 @@ async def list_subscriptions(token: str, params: dict | None = None) -> dict:
 
 async def get_subscription(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
-        return _raise(await c.get(f"/subscriptions/{entity_id}")).json()
+        return _raise(await c.get(f"/docs/{entity_id}")).json()
 
 
 async def list_ledger(token: str, params: dict | None = None) -> dict:
@@ -868,7 +869,7 @@ async def list_ledger(token: str, params: dict | None = None) -> dict:
 
 async def create_subscription(token: str, data: dict) -> dict:
     async with _client(token) as c:
-        return _raise(await c.post("/subscriptions", json=data)).json()
+        return _raise(await c.post("/docs", json=data)).json()
 
 
 async def pause_subscription(token: str, entity_id: str) -> dict:
@@ -881,9 +882,19 @@ async def resume_subscription(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/subscriptions/{entity_id}/resume")).json()
 
 
+async def cancel_subscription(token: str, entity_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/cancel")).json()
+
+
 async def generate_subscription(token: str, entity_id: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/generate")).json()
+
+
+async def activate_subscription(token: str, entity_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/subscriptions/{entity_id}/activate")).json()
 
 
 # ---------------------------------------------------------------------------
@@ -1501,12 +1512,6 @@ async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.R
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
     async with _client(token) as c:
         return _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
-
-
-async def patch_subscription(token: str, entity_id: str, data: dict) -> dict:
-    fields_changed = {k: {"old": None, "new": v} for k, v in data.items()}
-    async with _client(token) as c:
-        return _raise(await c.patch(f"/subscriptions/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
 async def convert_memo_to_invoice(token: str, memo_id: str) -> dict:

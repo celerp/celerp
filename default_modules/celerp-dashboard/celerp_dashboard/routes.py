@@ -25,7 +25,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
     mfg = [r for r in rows if r.entity_type == "mfg_order"]
     contacts = [r for r in rows if r.entity_type == "contact"]
     deals = [r for r in rows if r.entity_type == "deal"]
-    subscriptions = [r for r in rows if r.entity_type == "subscription"]
+    subscriptions = [r for r in rows if r.entity_type == "doc" and r.state.get("doc_type") in {"subscription_invoice", "subscription_po"}]
 
     now = datetime.now(UTC).date().isoformat()
     ar_outstanding = sum(float(d.state.get("amount_outstanding", 0) or 0) for d in docs if d.state.get("doc_type") == "invoice")

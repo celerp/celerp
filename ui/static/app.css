@@ -833,6 +833,7 @@ a:hover { text-decoration: underline; }
 .receive-section, .refund-section, .void-section { margin-top: 12px; }
 .receive-section > summary, .refund-section > summary, .void-section > summary { cursor: pointer; }
 .void-section--right { margin-left: auto; margin-top: 0; }
+.void-section[open] > summary, .receive-section[open] > summary, .refund-section[open] > summary { display: none; }
 
 /* ─── Memo detail ─────────────────────────────────────────────────────── */
 .memo-detail { padding: 0; }
@@ -2149,4 +2150,85 @@ a:hover { text-decoration: underline; }
   letter-spacing: 0.06em;
   color: var(--text-muted);
   margin: 24px 0 10px;
+}
+
+/* --- Form hints --- */
+.form-hint { font-size: 0.78rem; color: var(--text-muted); margin: 2px 0 0; }
+
+/* --- Modal dialog (send email, etc.) --- */
+.modal-dialog {
+  border: none;
+  border-radius: var(--radius);
+  padding: 0;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.28), 0 2px 8px rgba(0,0,0,0.12);
+  max-width: 520px;
+  min-width: min(480px, 90vw);
+  width: 90vw;
+  background: var(--c-bg);
+  /* Centering: native <dialog> centers itself in the viewport when opened with showModal() */
+  margin: auto;
+  /* Prevent dialog from touching top on small viewports */
+  top: 50%;
+  translate: 0 -50%;
+}
+.modal-dialog::backdrop {
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(2px);
+}
+.modal-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px 0;
+}
+.modal-dialog__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--c-text);
+}
+.modal-dialog__close {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--c-text2);
+  font-size: 1.1rem;
+  padding: 2px 6px;
+  border-radius: var(--radius);
+  line-height: 1;
+}
+.modal-dialog__close:hover { background: var(--c-bg3); color: var(--c-text); }
+.modal-dialog form {
+  padding: 16px 24px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.modal-dialog .form-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--c-text2);
+  letter-spacing: 0.02em;
+}
+.modal-dialog .form-input {
+  font-size: 14px;
+  padding: 9px 11px;
+  background: var(--c-bg2, var(--c-bg3));
+}
+.modal-dialog textarea.form-input {
+  resize: vertical;
+  min-height: 80px;
+}
+.modal-dialog .form-hint {
+  font-size: 0.75rem;
+  color: var(--c-text2);
+  margin-top: 3px;
+}
+.modal-dialog__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--c-border);
 }

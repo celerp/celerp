@@ -23,8 +23,8 @@ import pytest
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-LABELS_DIR = Path(__file__).parent.parent.parent / "default_modules" / "celerp-labels"
-INVENTORY_DIR = Path(__file__).parent.parent.parent / "default_modules" / "celerp-inventory"
+LABELS_DIR = Path(__file__).parent.parent  # default_modules/celerp-labels
+INVENTORY_DIR = Path(__file__).parent.parent.parent / "celerp-inventory"
 
 
 def _import_labels_pkg() -> ModuleType:

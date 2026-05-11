@@ -75,8 +75,8 @@ prod = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser' --timeout=30"
-norecursedirs = [".git", ".venv", "__pycache__", "build", "dist", "default_modules/*/tests", "premium_modules/*/tests"]
-pythonpath = ["."]
+norecursedirs = [".git", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
+pythonpath = [".", ".."]
 markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",
 ]

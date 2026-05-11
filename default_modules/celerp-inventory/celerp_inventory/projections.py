@@ -59,6 +59,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current.update(data)
         current.setdefault("is_available", True)
         current.setdefault("status", "available")
+        current.setdefault("inventory_type", "stocked")
         current = _migrate_sell_by(current)
         current = _sync_expiry_from_attributes(current)
     elif event_type == "item.updated":

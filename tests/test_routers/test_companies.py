@@ -144,3 +144,58 @@ async def test_demo_reseed_full_wizard_flow(client):
     assert "DEMO-001" not in skus, "DEMO-001 should be wiped after reseed"
     assert "DEMO-DIA-001" in skus, "Diamond demo item should appear after gemstones reseed"
     assert "DEMO-JWL-001" in skus, "Jewelry demo item should appear after gemstones reseed"
+
+
+@pytest.mark.asyncio
+async def test_create_company_seeds_self_contacts(client):
+    """POST /companies seeds customer + vendor self-contacts for the new company."""
+    # Register first (to get a user with name + email)
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "ContactSeedCo", "email": "owner@seedtest.com", "name": "Seed Owner", "password": "pw"},
+    )
+    assert r.status_code == 200
+    orig_token = r.json()["access_token"]
+    orig_headers = {"Authorization": f"Bearer {orig_token}"}
+
+    # Create a second company for the same user
+    r2 = await client.post("/companies", json={"name": "ContactSeedCo2"}, headers=orig_headers)
+    assert r2.status_code == 200, r2.text
+    new_token = r2.json()["access_token"]
+    new_headers = {"Authorization": f"Bearer {new_token}"}
+
+    # New company should have customer + vendor contacts seeded
+    contacts_r = await client.get("/crm/contacts", headers=new_headers)
+    assert contacts_r.status_code == 200
+    contacts = contacts_r.json()["items"]
+    types = {c["contact_type"] for c in contacts}
+    assert "customer" in types, f"Expected customer contact seeded, got types={types}"
+    assert "vendor" in types, f"Expected vendor contact seeded, got types={types}"
+
+    # Contacts should carry the owner's email and name
+    emails = {c.get("email") for c in contacts}
+    assert "owner@seedtest.com" in emails, f"Owner email missing from seeded contacts: {emails}"
+
+
+@pytest.mark.asyncio
+async def test_create_company_seeds_head_office_location(client):
+    """POST /companies seeds a default Head Office location for the new company."""
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "LocSeedCo", "email": "owner@locseed.com", "name": "Loc Owner", "password": "pw"},
+    )
+    orig_token = r.json()["access_token"]
+    orig_headers = {"Authorization": f"Bearer {orig_token}"}
+
+    r2 = await client.post("/companies", json={"name": "LocSeedCo2"}, headers=orig_headers)
+    assert r2.status_code == 200, r2.text
+    new_token = r2.json()["access_token"]
+    new_headers = {"Authorization": f"Bearer {new_token}"}
+
+    locs_r = await client.get("/companies/me/locations", headers=new_headers)
+    assert locs_r.status_code == 200
+    locs = locs_r.json()["items"]
+    names = [loc["name"] for loc in locs]
+    assert "Head Office" in names, f"Expected Head Office location seeded, got: {names}"
+    default_locs = [loc for loc in locs if loc.get("is_default")]
+    assert default_locs, "Expected a default location to exist"

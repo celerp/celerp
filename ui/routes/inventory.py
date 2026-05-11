@@ -43,6 +43,7 @@ def _parse_params(request: Request) -> dict:
         "page": max(1, page),
         "status": q.get("status", ""),
         "category": q.get("category", ""),
+        "inventory_type": q.get("inventory_type", ""),
         "sort": q.get("sort", ""),
         "dir": q.get("dir", "desc"),
         "per_page": max(1, per_page),
@@ -52,7 +53,7 @@ def _parse_params(request: Request) -> dict:
 
 def _base_state(p: dict, include_page: bool = False) -> dict:
     state = {}
-    for k in ("q", "status", "category", "sort", "dir"):
+    for k in ("q", "status", "category", "inventory_type", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
     if p.get("per_page") and p["per_page"] != _DEFAULT_PER_PAGE:
@@ -90,6 +91,8 @@ async def _inventory_content(
             params["status"] = p["status"]
         if p["category"]:
             params["category"] = p["category"]
+        if p.get("inventory_type"):
+            params["inventory_type"] = p["inventory_type"]
         if p["sort"]:
             params["sort"] = p["sort"]
             params["dir"] = p["dir"]
@@ -111,6 +114,7 @@ async def _inventory_content(
 
     return Div(
         _category_tabs(category_counts, p, total_scoped=total_scoped),
+        _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
         _bulk_toolbar(locations, p, total_items),
@@ -293,6 +297,8 @@ def setup_routes(app):
             params["status"] = p["status"]
         if p["category"]:
             params["category"] = p["category"]
+        if p.get("inventory_type"):
+            params["inventory_type"] = p["inventory_type"]
         try:
             data = await api.export_items_csv(token, params)
         except APIError as e:
@@ -2138,6 +2144,303 @@ def _status_tabs(p: dict, vertical: str = "") -> FT:
     return Div(*tabs, cls="category-tabs status-tabs", id="status-tabs")
 
 
+def _inventory_type_tabs(p: dict) -> FT:
+    """Filter tabs for inventory_type (all / stocked / service / non_stocked)."""
+    active = p.get("inventory_type", "")
+    _TABS = [
+        ("", "All Types"),
+        ("stocked", "Stocked"),
+        ("service", "Services"),
+        ("non_stocked", "Non-Stocked"),
+    ]
+
+    def _url(it: str) -> str:
+        state = _base_state(p)
+        if it:
+            state["inventory_type"] = it
+        else:
+            state.pop("inventory_type", None)
+        return "/inventory" + (f"?{urlencode(state)}" if state else "")
+
+    tabs = [
+        A(
+            label,
+            href=_url(it),
+            cls=f"category-tab {'category-tab--active' if active == it else ''}",
+            hx_get="/inventory/content" + (f"?{urlencode({**({k: v for k, v in _base_state(p).items() if k != 'inventory_type'}), **({'inventory_type': it} if it else {})})}"),
+            hx_target="#inventory-content",
+            hx_swap="outerHTML",
+            hx_push_url=_url(it),
+        )
+        for it, label in _TABS
+    ]
+    return Div(*tabs, cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
+    """Column manager dropdown with immediate JS toggle + localStorage + drag-and-drop reorder.
+
+    Server-side pref save is preserved for cross-device sync (background fetch).
+    Client-side: checkboxes immediately show/hide columns and persist to localStorage.
+    """
+    import json as _json
+    selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
+    cat_pref = active_cat or "__all__"
+    # JS data for all columns (key, label, visible)
+    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema]
+    col_data_js = _json.dumps(col_data)
+    selected_js = _json.dumps(sorted(selected))
+    # Hidden inputs for fallback server save (category, status, sort etc.)
+    hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
+    hidden_state["_cat_pref"] = cat_pref
+
+    # Build checkbox list for initial render
+    checkboxes = [
+        Label(
+            Input(
+                type="checkbox",
+                name="cols",
+                value=f.get("key"),
+                checked=f.get("key") in selected,
+                id=f"col-chk-{f.get('key', '')}",
+            ),
+            Span(f.get("label", f.get("key"))),
+            cls="column-option",
+            draggable="true",
+            data_col=f.get("key", ""),
+        )
+        for f in schema
+    ]
+
+    hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
+
+    # JS: localStorage key matches data_table's PAGE_KEY for inventory
+    col_mgr_js = f"""
+(function() {{
+  var LS_VIS_KEY = 'celerp_cols_inventory';
+  var LS_ORDER_KEY = 'celerp_col_order_inventory';
+  var CAT_PREF = '{cat_pref}';
+  var ALL_COLS = {col_data_js};
+  var btn = document.getElementById('col-mgr-btn');
+  var menu = document.getElementById('col-mgr-menu');
+  if (!btn || !menu) return;
+
+  // Load visibility from localStorage
+  function loadVis() {{
+    try {{ return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); }} catch(e) {{ return null; }}
+  }}
+  function saveVis(prefs) {{
+    localStorage.setItem(LS_VIS_KEY, JSON.stringify(prefs));
+  }}
+
+  // Load order from localStorage
+  function loadOrder() {{
+    try {{ return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); }} catch(e) {{ return null; }}
+  }}
+  function saveOrder(order) {{
+    localStorage.setItem(LS_ORDER_KEY, JSON.stringify(order));
+  }}
+
+  // Apply column visibility to the data table
+  function applyVisToTable(prefs) {{
+    var table = document.getElementById('data-table');
+    if (!table) return;
+    var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
+    var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
+    ths.forEach(function(th) {{
+      var key = th.dataset.key;
+      var colIdx = Array.from(th.parentNode.children).indexOf(th);
+      var show = prefs[key] !== false;
+      th.style.display = show ? '' : 'none';
+      rows.forEach(function(tr) {{
+        var td = tr.querySelector('[data-col="' + key + '"]');
+        if (td) td.style.display = show ? '' : 'none';
+      }});
+    }});
+  }}
+
+  // Sync checkboxes in menu to match localStorage
+  function syncCheckboxes() {{
+    var prefs = loadVis() || {{}};
+    menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {{
+      cb.checked = prefs[cb.value] !== false;
+    }});
+  }}
+
+  // Apply column order to table (move TH and TD columns)
+  function applyOrderToTable(order) {{
+    if (!order || !order.length) return;
+    var table = document.getElementById('data-table');
+    if (!table) return;
+    var thead_tr = table.querySelector('thead tr');
+    if (!thead_tr) return;
+    var actionsTh = thead_tr.querySelector('.col-actions');
+    // Move TH elements into order (before actions column)
+    order.forEach(function(key) {{
+      var th = thead_tr.querySelector('th[data-key="' + key + '"]');
+      if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
+    }});
+    // Re-order tbody cells to match header using data-col attribute
+    var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
+    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
+      var cells = Array.from(tr.children);
+      var checkboxTd = cells[0];
+      var actionsTd = cells[cells.length - 1];
+      var dataCells = allThs.map(function(th) {{
+        return cells.find(function(td) {{ return td.dataset.col === th.dataset.key; }});
+      }}).filter(Boolean);
+      [checkboxTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
+        if (td) tr.appendChild(td);
+      }});
+    }});
+  }}
+
+  // Mirror the picker label order to match a given key array (picker is source of truth)
+  function applyOrderToPicker(order) {{
+    if (!order || !order.length) return;
+    var labels = menu.querySelectorAll('label[data-col]');
+    if (!labels.length) return;
+    var parent = labels[0].parentNode;
+    // Move labels into the declared order; unmentioned keys stay at end
+    order.forEach(function(key) {{
+      var lbl = menu.querySelector('label[data-col="' + key + '"]');
+      if (lbl) parent.appendChild(lbl);
+    }});
+  }}
+
+  // Get current picker order (label DOM order = source of truth)
+  function pickerOrder() {{
+    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
+  }}
+
+  // Save cols to server (background, no page reload)
+  function saveToServer(visibleKeys) {{
+    var form = new FormData();
+    visibleKeys.forEach(function(k) {{ form.append('cols', k); }});
+    Object.entries({_json.dumps(hidden_state)}).forEach(function(kv) {{
+      form.append(kv[0], kv[1]);
+    }});
+    fetch('/inventory/columns', {{method:'POST', body:form}}).catch(function(){{}});
+  }}
+
+  // Toggle open/close
+  btn.addEventListener('click', function(e) {{
+    e.stopPropagation();
+    var isOpen = menu.style.display !== 'none';
+    menu.style.display = isOpen ? 'none' : '';
+    if (!isOpen) syncCheckboxes();
+  }});
+
+  // Close on outside click
+  document.addEventListener('click', function(e) {{
+    if (!btn.contains(e.target) && !menu.contains(e.target)) {{
+      menu.style.display = 'none';
+    }}
+  }});
+
+  // Checkbox change: immediate column toggle + re-apply order so new column
+  // appears at its picker position rather than at the DOM end of the table.
+  menu.addEventListener('change', function(e) {{
+    if (e.target.type !== 'checkbox') return;
+    var key = e.target.value;
+    var prefs = loadVis() || {{}};
+    // Init prefs from current state if empty
+    if (!Object.keys(prefs).length) {{
+      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {_json.dumps(sorted(selected))} .indexOf(c.key) !== -1; }});
+    }}
+    prefs[key] = e.target.checked;
+    saveVis(prefs);
+    applyVisToTable(prefs);
+    // Re-apply picker order so the newly-visible column lands in the right slot
+    applyOrderToTable(pickerOrder());
+    // Save visible keys to server
+    var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
+    saveToServer(visibleKeys);
+  }});
+
+  // Drag-and-drop reordering within column manager menu
+  var dragSrc = null;
+  menu.querySelectorAll('label[draggable]').forEach(function(lbl) {{
+    lbl.addEventListener('dragstart', function(e) {{
+      dragSrc = lbl;
+      e.dataTransfer.effectAllowed = 'move';
+      lbl.style.opacity = '0.5';
+    }});
+    lbl.addEventListener('dragend', function() {{
+      lbl.style.opacity = '';
+      dragSrc = null;
+    }});
+    lbl.addEventListener('dragover', function(e) {{
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+    }});
+    lbl.addEventListener('drop', function(e) {{
+      e.preventDefault();
+      if (!dragSrc || dragSrc === lbl) return;
+      // Swap in picker DOM
+      var parent = lbl.parentNode;
+      var srcNext = dragSrc.nextSibling;
+      parent.insertBefore(dragSrc, lbl);
+      if (srcNext) parent.insertBefore(lbl, srcNext); else parent.appendChild(lbl);
+      dragSrc.style.opacity = '';
+      // Persist new order and apply to table
+      var newOrder = pickerOrder();
+      saveOrder(newOrder);
+      applyOrderToTable(newOrder);
+    }});
+  }});
+
+  // Listen for table-header drag reorder (fired by data_table.py drag handler)
+  document.addEventListener('celerp:col-reorder', function(e) {{
+    if (!e.detail || !e.detail.order) return;
+    applyOrderToPicker(e.detail.order);
+  }});
+
+  // Init: apply localStorage state on page load
+  var storedVis = loadVis();
+  if (storedVis) applyVisToTable(storedVis);
+  var storedOrder = loadOrder();
+  if (storedOrder) {{
+    applyOrderToPicker(storedOrder);
+    applyOrderToTable(storedOrder);
+  }}
+
+  // Keep menu closed unless keep_open is set
+  {'menu.style.display = "";' if keep_open else 'menu.style.display = "none";'}
+}})();
+"""
+
+    return Div(
+        Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
+        Div(
+            *checkboxes,
+            Button(
+                t("btn.reset_columns"),
+                id="col-mgr-reset",
+                cls="btn btn--sm btn--ghost col-mgr-reset-btn",
+                type="button",
+                onclick=(
+                    f"localStorage.removeItem('celerp_cols_inventory');"
+                    f"localStorage.removeItem('celerp_col_order_inventory');"
+                    f"localStorage.removeItem('celerp_col_widths_inventory');"
+                    f"fetch('/inventory/columns',{{method:'POST',body:new FormData()}});"
+                    f"location.reload();"
+                ),
+                title=t("btn.reset_columns_title"),
+            ),
+            Form(
+                *hidden_inputs,
+                id="col-mgr-form",
+                style="display:none",
+            ),
+            cls="column-menu",
+            id="col-mgr-menu",
+            style="display:none" if not keep_open else "",
+        ),
+        Script(col_mgr_js),
+        cls="column-manager",
+        id="col-mgr-details",
+    )
+
+
+
 def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:
     """Column manager dropdown with immediate JS toggle + localStorage + drag-and-drop reorder.
 
@@ -2404,6 +2707,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     )
 
 
+
 def _attachments_panel(entity_id: str, item: dict) -> FT:
     """Attachments panel with unified drag-drop + click-to-browse upload zone."""
     attachments: list[dict] = item.get("attachments") or []
@@ -2514,6 +2818,7 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
 
 _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
     "weight_unit": ["ct", "g", "kg", "oz", "lb", "t"],
+    "inventory_type": ["stocked", "non_stocked", "service"],
 }
 
 

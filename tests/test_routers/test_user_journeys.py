@@ -232,12 +232,6 @@ async def test_nav_manufacturing_list(client):
     assert r.status_code == 200
 
 
-@pytest.mark.asyncio
-async def test_nav_subscriptions_list(client):
-    token = await _reg(client)
-    r = await client.get("/subscriptions", headers=_h(token))
-    assert r.status_code == 200
-
 
 @pytest.mark.skip(reason="Scanning module disabled until complete")
 @pytest.mark.asyncio
@@ -1324,56 +1318,7 @@ async def test_wf_manufacturing_full_cycle(client):
     assert any(i.get("sku") == "FG-WF" for i in items)
 
 
-@pytest.mark.asyncio
-async def test_wf_subscription_create_and_list(client):
-    token = await _reg(client)
-    h = _h(token)
-    start = date.today().isoformat()
-    r = await client.post(
-        "/subscriptions",
-        headers=h,
-        json={
-            "name": "Monthly SaaS",
-            "doc_type": "invoice",
-            "frequency": "monthly",
-            "start_date": start,
-            "line_items": [{"description": "SaaS fee", "quantity": 1, "unit_price": 999}],
-        },
-    )
-    assert r.status_code == 200
-    sid = r.json()["id"]
-    subs = (await client.get("/subscriptions", headers=h)).json()["items"]
-    assert any(s["id"] == sid for s in subs)
 
-
-@pytest.mark.asyncio
-async def test_wf_subscription_pause_and_resume(client):
-    token = await _reg(client)
-    h = _h(token)
-    start = date.today().isoformat()
-    r = await client.post(
-        "/subscriptions",
-        headers=h,
-        json={"name": "Pause Test", "doc_type": "invoice", "frequency": "weekly", "start_date": start, "line_items": []},
-    )
-    sid = r.json()["id"]
-    assert (await client.post(f"/subscriptions/{sid}/pause", headers=h)).status_code == 200
-    assert (await client.post(f"/subscriptions/{sid}/resume", headers=h)).status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_wf_subscription_generate_doc(client):
-    token = await _reg(client)
-    h = _h(token)
-    start = date.today().isoformat()
-    r = await client.post(
-        "/subscriptions",
-        headers=h,
-        json={"name": "Gen Test", "doc_type": "invoice", "frequency": "monthly", "start_date": start, "line_items": [{"description": "Fee", "quantity": 1, "unit_price": 100}]},
-    )
-    sid = r.json()["id"]
-    r2 = await client.post(f"/subscriptions/{sid}/generate", headers=h)
-    assert r2.status_code == 200
 
 
 @pytest.mark.skip(reason="Scanning module disabled until complete")
@@ -1517,33 +1462,6 @@ async def test_wf_crm_memo_list(client):
     assert any(m["id"] == mid for m in memos)
 
 
-@pytest.mark.asyncio
-async def test_wf_subscription_patch(client):
-    token = await _reg(client)
-    h = _h(token)
-    r = await client.post(
-        "/subscriptions",
-        headers=h,
-        json={"name": "Patch Sub", "doc_type": "invoice", "frequency": "monthly", "start_date": date.today().isoformat(), "line_items": []},
-    )
-    sid = r.json()["id"]
-    r2 = await client.patch(f"/subscriptions/{sid}", headers=h, json={"fields_changed": {"name": {"old": "Patch Sub", "new": "Patched Sub"}}})
-    assert r2.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_wf_subscription_get(client):
-    token = await _reg(client)
-    h = _h(token)
-    r = await client.post(
-        "/subscriptions",
-        headers=h,
-        json={"name": "Get Sub", "doc_type": "invoice", "frequency": "monthly", "start_date": date.today().isoformat(), "line_items": []},
-    )
-    sid = r.json()["id"]
-    r2 = await client.get(f"/subscriptions/{sid}", headers=h)
-    assert r2.status_code == 200
-    assert r2.json()["id"] == sid
 
 
 @pytest.mark.asyncio
@@ -1936,11 +1854,6 @@ async def test_edge_auth_required_manufacturing(client):
     assert r.status_code == 401
 
 
-@pytest.mark.asyncio
-async def test_edge_auth_required_subscriptions(client):
-    r = await client.get("/subscriptions")
-    assert r.status_code == 401
-
 
 @pytest.mark.asyncio
 async def test_edge_invalid_token_rejected(client):
@@ -2067,17 +1980,6 @@ async def test_edge_po_split_accepts_single_child(client):
     r = await client.post(f"/items/{eid}/split", headers=h, json={"children": [{"sku": "C1", "quantity": 1.0}]})
     assert r.status_code == 200
 
-
-@pytest.mark.asyncio
-async def test_edge_subscribe_invalid_frequency_rejected(client):
-    token = await _reg(client)
-    h = _h(token)
-    r = await client.post(
-        "/subscriptions",
-        headers=h,
-        json={"name": "Bad Freq", "doc_type": "invoice", "frequency": "daily", "start_date": date.today().isoformat(), "line_items": []},
-    )
-    assert r.status_code in {422, 400}
 
 
 # ===========================================================================

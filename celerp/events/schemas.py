@@ -23,7 +23,9 @@ class ItemCreated(BaseModel):
     allow_splitting: bool = True
     weight: float | None = None
     weight_unit: str | None = None
+    inventory_type: str = "stocked"
     attributes: dict[str, Any] = Field(default_factory=dict)
+    model_config = {"extra": "allow"}
 
 
 class ItemSnapshot(BaseModel):
@@ -684,6 +686,10 @@ class SubPaused(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class SubCancelled(BaseModel):
+    model_config = {"extra": "allow"}
+
+
 class SubResumed(BaseModel):
     model_config = {"extra": "allow"}
     next_run: str | None = None
@@ -926,6 +932,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "sub.created": SubCreated,
     "sub.updated": SubUpdated,
     "sub.paused": SubPaused,
+    "sub.cancelled": SubCancelled,
     "sub.resumed": SubResumed,
     "sub.generated": SubGenerated,
     "sub.expired": SubExpired,

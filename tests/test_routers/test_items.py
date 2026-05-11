@@ -818,3 +818,73 @@ async def test_list_items_sort_is_global_before_pagination(client):
             f"Sort is not global: page1 ends with {page1_names[-1]!r}, "
             f"page2 starts with {page2_names[0]!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# inventory_type tests
+# ---------------------------------------------------------------------------
+
+async def _reg_items(client, company="ItemTypeCo"):
+    r = await client.post("/auth/register", json={"company_name": company, "email": f"{company.lower()}@test.com", "name": "Admin", "password": "pw"})
+    tok = r.json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    return tok, h
+
+
+@pytest.mark.asyncio
+async def test_inventory_type_defaults_stocked(client):
+    """Item created without inventory_type must default to stocked."""
+    _, h = await _reg_items(client, "DefaultStockedCo2")
+    r = await client.post("/items", headers=h, json={"name": "Widget", "sku": "W-001", "sell_by": "piece", "quantity": 1})
+    assert r.status_code == 200
+    eid = r.json()["id"]
+    item = (await client.get(f"/items/{eid}", headers=h)).json()
+    assert item.get("inventory_type", "stocked") == "stocked"
+
+
+@pytest.mark.asyncio
+async def test_inventory_type_service_stored(client):
+    """Item created with inventory_type=service must store that value."""
+    _, h = await _reg_items(client, "ServiceItemCo2")
+    r = await client.post("/items", headers=h, json={"name": "Pro Plan", "sku": "SVC-001", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
+    assert r.status_code == 200
+    eid = r.json()["id"]
+    item = (await client.get(f"/items/{eid}", headers=h)).json()
+    assert item["inventory_type"] == "service"
+
+
+@pytest.mark.asyncio
+async def test_inventory_type_invalid_rejected(client):
+    """Item created with invalid inventory_type must return 422."""
+    _, h = await _reg_items(client, "InvalidTypeCo2")
+    r = await client.post("/items", headers=h, json={"name": "Bad Item", "sku": "BAD-001", "sell_by": "piece", "quantity": 1, "inventory_type": "warehouse"})
+    assert r.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_valuation_excludes_service_items(client):
+    """Valuation cost_total must only count stocked items, not service items."""
+    _, h = await _reg_items(client, "ValuationTypeCo2")
+    # Get baseline cost_total before adding our items
+    baseline = (await client.get("/items/valuation", headers=h)).json().get("cost_total", 0)
+    # Add a stocked item: qty=1, cost_price=100
+    await client.post("/items", headers=h, json={"name": "Stocked Widget", "sku": "ST-001", "sell_by": "piece", "quantity": 1, "inventory_type": "stocked", "cost_price": 100})
+    # Add a service item: cost_price=200 - should NOT add to valuation
+    await client.post("/items", headers=h, json={"name": "Pro Plan", "sku": "SVC-001", "sell_by": "piece", "quantity": 0, "inventory_type": "service", "cost_price": 200})
+    val = (await client.get("/items/valuation", headers=h)).json()
+    # cost_total must have increased by exactly 100 (the stocked item), not 300 (both)
+    assert abs(val.get("cost_total", 0) - (baseline + 100)) < 0.01, f"Expected {baseline + 100}, got {val.get('cost_total')}"
+
+
+@pytest.mark.asyncio
+async def test_inventory_list_filter_by_inventory_type(client):
+    """GET /items?inventory_type=service must return only service items."""
+    _, h = await _reg_items(client, "FilterTypeCo2")
+    await client.post("/items", headers=h, json={"name": "Physical", "sku": "PHY-001", "sell_by": "piece", "quantity": 1, "inventory_type": "stocked"})
+    await client.post("/items", headers=h, json={"name": "Plan A", "sku": "SVC-002", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
+    await client.post("/items", headers=h, json={"name": "Plan B", "sku": "SVC-003", "sell_by": "piece", "quantity": 0, "inventory_type": "service"})
+    r = await client.get("/items?inventory_type=service", headers=h)
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert len(items) == 2
+    assert all(i.get("inventory_type") == "service" for i in items)

@@ -1,8 +1,10 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: BSL-1.1
-"""celerp-subscriptions UI routes - delegates to ui.routes.subscriptions."""
+"""celerp-subscriptions UI routes."""
 from __future__ import annotations
+
 import logging
+
 log = logging.getLogger(__name__)
 
 

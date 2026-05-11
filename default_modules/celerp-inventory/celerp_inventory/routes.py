@@ -29,6 +29,8 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Validation helpers
 # ---------------------------------------------------------------------------
 
+VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "non_stocked", "service"})
+
 _DEFAULT_UNITS = DEFAULT_UNITS  # backwards-compat alias for any internal callers
 
 
@@ -102,6 +104,7 @@ class ItemCreate(BaseModel):
     allow_splitting: bool = True
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
+    inventory_type: str = "stocked"  # stocked | non_stocked | service
 
 
 class ItemPatch(BaseModel):
@@ -175,6 +178,7 @@ async def list_items(
     barcode: str | None = None,
     status: str | None = None,
     category: str | None = None,
+    inventory_type: str | None = None,
     sort: str | None = None,
     dir: str = "desc",
 ) -> dict:
@@ -213,6 +217,9 @@ async def list_items(
 
     if category:
         result = [r for r in result if str(r.get("category") or "") == category]
+
+    if inventory_type:
+        result = [r for r in result if (r.get("inventory_type") or "stocked") == inventory_type]
 
     if sku:
         result = [r for r in result if str(r.get("sku", "")) == sku]
@@ -318,8 +325,13 @@ async def get_valuation(
         row_status = str(state.get("status") or "").lower()
         row_cat = str(state.get("category") or state.get("item_type") or "").strip()
 
-        # Exclude consignment_in items: they are borrowed, not owned — exclude from all valuation
+        # Exclude consignment_in items: they are borrowed, not owned -- exclude from all valuation
         if row.consignment_flag == "in" or state.get("consignment_flag") == "in":
+            continue
+
+        # Exclude non-stocked and service items from valuation (only stocked items have physical value)
+        inv_type = state.get("inventory_type") or "stocked"
+        if inv_type != "stocked":
             continue
 
         # category_counts: scoped to the active status filter (or global non-hidden when no filter)
@@ -513,6 +525,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if payload.cost_price is not None and ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
         raise HTTPException(status_code=403, detail=f"Role '{role}' cannot set cost_price")
 
+    if payload.inventory_type not in VALID_INVENTORY_TYPES:
+        raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
+
     # Validate sell_by against company units
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -664,6 +679,12 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             )).scalars().first()
             if existing_barcode:
                 raise HTTPException(status_code=409, detail=f"Barcode '{new_barcode}' already exists")
+
+    # Validate inventory_type if changing
+    if "inventory_type" in changed_keys:
+        new_inv_type = (payload.fields_changed["inventory_type"] or {}).get("new")
+        if new_inv_type not in VALID_INVENTORY_TYPES:
+            raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
 
     entry = await emit_event(
         session,

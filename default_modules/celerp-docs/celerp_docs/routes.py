@@ -90,6 +90,8 @@ class DocPatch(BaseModel):
 class DocSendBody(BaseModel):
     sent_via: str | None = None
     sent_to: str | None = None
+    cc: str | None = None
+    bcc: str | None = None
     idempotency_key: str | None = None
 
 
@@ -706,7 +708,10 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
             f"Questions? Reply to this email."
         )
         from celerp.services.email import send_email
-        asyncio.create_task(send_email(sent_to, subject, body_html, body_text=body_text))
+        asyncio.create_task(send_email(
+            sent_to, subject, body_html, body_text=body_text,
+            cc=payload.cc or "", bcc=payload.bcc or "",
+        ))
 
     return {"event_id": entry.id}
 
