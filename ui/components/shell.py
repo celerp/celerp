@@ -307,10 +307,66 @@ _GLOBAL_UI_ERROR_HTML = Div(
 )
 
 _NOTIFICATION_JS = """
+window.toggleNotifPanel = function() {
+  var p = document.getElementById('notif-panel');
+  if (!p) return;
+  var visible = p.style.display !== 'none';
+  p.style.display = visible ? 'none' : '';
+  if (!visible) {
+    fetch('/notifications')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        var badge = document.getElementById('notif-badge');
+        var list = document.getElementById('notif-list');
+        if (badge) {
+          if (data.unread_count > 0) {
+            badge.textContent = data.unread_count > 99 ? '99+' : data.unread_count;
+            badge.style.display = '';
+          } else {
+            badge.style.display = 'none';
+          }
+        }
+        if (list) {
+          if (data.items.length === 0) {
+            list.innerHTML = '<div class="notif-panel__empty">No notifications</div>';
+          } else {
+            list.innerHTML = data.items.slice(0, 10).map(function(n) {
+              return '<div class="notif-item' + (n.read ? '' : ' notif-item--unread') + '">'
+                + '<div class="notif-item__title">' + n.title + '</div>'
+                + '<div class="notif-item__body">' + n.body + '</div>'
+                + '</div>';
+            }).join('');
+          }
+        }
+      })
+      .catch(function() {});
+  }
+};
+
+window.markAllNotifRead = function() {
+  fetch('/notifications/read-all', { method: 'POST' })
+    .then(function() {
+      var p = document.getElementById('notif-panel');
+      if (p && p.style.display !== 'none') {
+        fetch('/notifications')
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            var badge = document.getElementById('notif-badge');
+            var list = document.getElementById('notif-list');
+            if (badge) badge.style.display = 'none';
+            if (list) list.innerHTML = '<div class="notif-panel__empty">No notifications</div>';
+          })
+          .catch(function() {});
+      }
+    })
+    .catch(function() {});
+};
+
 document.addEventListener('DOMContentLoaded', function() {
   var badge = document.getElementById('notif-badge');
   var panel = document.getElementById('notif-panel');
   var list = document.getElementById('notif-list');
+  if (!badge || !panel) return;
 
   function updateBadge(count) {
     if (count > 0) {
@@ -341,22 +397,6 @@ document.addEventListener('DOMContentLoaded', function() {
       })
       .catch(function() {});
   }
-
-  window.toggleNotifPanel = function() {
-    var p = document.getElementById('notif-panel');
-    if (!p) return;
-    var visible = p.style.display !== 'none';
-    p.style.display = visible ? 'none' : '';
-    if (!visible) loadNotifications();
-  };
-
-  window.markAllNotifRead = function() {
-    fetch('/notifications/read-all', { method: 'POST' })
-      .then(function() { loadNotifications(); })
-      .catch(function() {});
-  };
-
-  if (!badge || !panel) return;
 
   // Close panel on outside click
   document.addEventListener('click', function(e) {
