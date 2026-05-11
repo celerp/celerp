@@ -278,27 +278,34 @@ async def test_single_user_gate_survives_tracker_reload(client, tmp_path):
     import celerp.services.session_tracker as _tracker
     from unittest.mock import patch
 
+    sessions_file = tmp_path / ".active_sessions.json"
+
     await client.post(
         "/auth/register",
         json={"company_name": "ReloadCo", "email": "reload@test.com", "name": "Admin", "password": "longpass123"},
     )
 
-    # First login - seeds the file-backed tracker
-    r1 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
-    assert r1.status_code == 200
+    # Point tracker at a known tmp file so saves/loads are deterministic in CI
+    with patch("celerp.services.session_tracker._sessions_path", return_value=sessions_file):
+        # First login - seeds the file-backed tracker
+        r1 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
+        assert r1.status_code == 200
 
-    # Simulate process reload: wipe in-memory state but keep the file
-    old_loaded = _tracker._loaded
-    old_activity = dict(_tracker._activity)
-    _tracker._activity.clear()
-    _tracker._loaded = False  # force re-load from file on next call
+        # Force a save so the file is populated
+        _tracker._save()
 
-    try:
-        # Gate must still fire after in-memory wipe (reads from file)
-        with patch("celerp.gateway.state.get_session_token", return_value=""):
-            r2 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
-        assert r2.status_code == 409, f"Gate should persist after tracker reload, got {r2.status_code}: {r2.text}"
-    finally:
-        # Restore so teardown clear() works correctly
-        _tracker._activity.update(old_activity)
-        _tracker._loaded = True
+        # Simulate process reload: wipe in-memory state but keep the file
+        old_loaded = _tracker._loaded
+        old_activity = dict(_tracker._activity)
+        _tracker._activity.clear()
+        _tracker._loaded = False  # force re-load from file on next call
+
+        try:
+            # Gate must still fire after in-memory wipe (reads from file)
+            with patch("celerp.gateway.state.get_session_token", return_value=""):
+                r2 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
+            assert r2.status_code == 409, f"Gate should persist after tracker reload, got {r2.status_code}: {r2.text}"
+        finally:
+            # Restore so teardown clear() works correctly
+            _tracker._activity.update(old_activity)
+            _tracker._loaded = True
