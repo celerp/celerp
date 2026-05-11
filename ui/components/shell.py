@@ -476,7 +476,7 @@ document.addEventListener('DOMContentLoaded', function() {
       if (lines.length >= 200) lines[0].remove();
       var line = document.createElement('span');
       line.className = 'log-line';
-      line.textContent = (logEl.childNodes.length ? '\n' : '') + msg;
+      line.textContent = (logEl.childNodes.length ? '\\n' : '') + msg;
       logEl.appendChild(line);
       logEl.scrollTop = logEl.scrollHeight;
     }
