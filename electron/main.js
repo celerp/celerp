@@ -596,6 +596,14 @@ function setupAutoUpdater() {
   }
 }
 
+function setLoadingStatus(msg) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.executeJavaScript(
+      `window.setLoadingStatus && window.setLoadingStatus(${JSON.stringify(msg)})`
+    ).catch(() => {});
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -612,8 +620,10 @@ function createWindow() {
     show: false,
   });
 
-  mainWindow.loadURL(`http://127.0.0.1:${uiPort}`);
-
+  // Show loading page immediately so there is never a white frame.
+  // Main process calls setLoadingStatus() to update the status line
+  // while services boot. Once ready, loadURL() switches to the real UI.
+  mainWindow.loadFile(path.join(__dirname, "assets", "loading.html"));
   mainWindow.once("ready-to-show", () => mainWindow.show());
 
   // In Electron (contextIsolation=true), window.confirm() is silently stubbed
@@ -702,6 +712,7 @@ app.whenReady().then(async () => {
         throw new Error(`DEV_MODE: UI not found on port ${uiPort}. Start it first with:\n  uvicorn ui.app:app --port ${uiPort}`);
       });
       createWindow();
+      mainWindow.loadURL(`http://127.0.0.1:${uiPort}`);
       return;
     }
 
@@ -709,30 +720,31 @@ app.whenReady().then(async () => {
     const cfg = readConfig();
     const dbConfig = resolveDatabaseConfig(dbPort, cfg);
 
-    // Show a loading state while services boot. A splash window can replace this later.
-    const loadingWin = new BrowserWindow({
-      width: 400, height: 200, frame: false, alwaysOnTop: true, resizable: false,
-      webPreferences: { nodeIntegration: false },
-    });
+    // Create the main window immediately so user sees the loading page (no white frame).
+    createWindow();
 
     // Show grace period warning if applicable
-    const graceBanner = dbConfig.gracePeriod
-      ? " Your Celerp Team subscription has lapsed. External database remains active for up to 15 days. Please renew at celerp.com/subscribe."
-      : "";
-    loadingWin.loadURL(`data:text/html,<body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#111827;color:#fff"><p>Starting Celerp…${graceBanner}</p></body>`);
+    if (dbConfig.gracePeriod) {
+      setLoadingStatus("Your Celerp Team subscription has lapsed. External database remains active for up to 15 days. Please renew at celerp.com/subscribe.");
+    }
 
     if (dbConfig.useBundledPg) {
+      setLoadingStatus("Starting database…");
       await startPostgres(dbPort);
     }
+    setLoadingStatus("Loading modules…");
     seedDefaultModules();
     runModuleSetup();
+    setLoadingStatus("Running migrations…");
     runMigrations(dbConfig.url);
     // Pre-allocate both ports so each process env carries both values.
     // GatewayClient runs inside the API process and needs to know the UI port
     // for its reverse-proxy routing; allocating upfront avoids a null race.
     apiPort = await getFreePort();
     uiPort = await getFreePort();
+    setLoadingStatus("Starting API server…");
     await startApi(dbConfig.url, cfg);
+    setLoadingStatus("Starting UI server…");
     await startUi(dbConfig.url, cfg);
 
     watchForRestart(dbConfig.url, {
@@ -757,8 +769,8 @@ app.whenReady().then(async () => {
       },
     });
 
-    loadingWin.close();
-    createWindow();
+    // Switch from loading page to the real UI
+    mainWindow.loadURL(`http://127.0.0.1:${uiPort}`);
 
     if (!IS_DEV) {
       setupAutoUpdater();
