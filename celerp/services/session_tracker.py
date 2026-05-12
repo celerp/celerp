@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from celerp.db import SessionLocal
 from celerp.models.auth import SessionRegistry, UserAuthState
 
 
@@ -131,7 +132,7 @@ async def run_jti_cleanup_loop() -> None:
     single-process only.
     """
     import asyncio
-    from celerp.db import SessionLocal
+    # SessionLocal imported at module level
 
     while True:
         try:

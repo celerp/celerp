@@ -12,6 +12,9 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+# Imported at module level so tests can patch celerp.middleware.is_draining
+from celerp.services.runtime_state import is_draining
+
 logger = logging.getLogger(__name__)
 
 
@@ -212,7 +215,6 @@ class DrainMiddleware:
 
         try:
             from celerp.db import get_session_ctx
-            from celerp.services.runtime_state import is_draining
             async with get_session_ctx() as s:
                 draining = await is_draining(s)
         except Exception:
