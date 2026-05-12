@@ -102,6 +102,7 @@ async def test_ai_query_requires_session_token(session):
                 "company_name": "Co2", "email": "t2@test.com",
                 "name": "U", "password": "pw",
             })
+            _clear_tracker()  # clear JTI registered by /register so /login can proceed
             r = await c.post("/auth/login", json={"email": "t2@test.com", "password": "pw"})
             jwt = r.json()["access_token"]
             resp = await c.post(

@@ -218,8 +218,12 @@ async def test_single_user_gate_empty_tracker_allows_login(client):
 
 
 @pytest.mark.asyncio
-async def test_single_user_gate_allows_same_user_relogin(client):
-    """Same user may log in again even while their own JTI is still registered (multi-tab)."""
+async def test_single_user_gate_blocks_same_user_relogin(client):
+    """Same user cannot log in again while their own JTI is still active.
+
+    One session per user - multi-tab is handled by sharing the same JTI chain,
+    not by re-logging in.  A second login from a new browser is blocked.
+    """
     from unittest.mock import patch
     import base64, json as _json
     from celerp.services.session_tracker import clear as _clear_tracker
@@ -235,13 +239,13 @@ async def test_single_user_gate_allows_same_user_relogin(client):
     payload_b64 = token.split(".")[1] + "=="
     user_id = _json.loads(base64.b64decode(payload_b64))["sub"]
 
-    # Seed tracker with THIS user (simulates their existing session - e.g. another tab)
+    # Seed tracker with THIS user (simulates their existing session in another browser)
     _seed_foreign_session(user_id)
 
-    # Same user re-login must be allowed (only OTHER user_ids block)
+    # Same user re-login must be blocked (any active JTI prevents new login)
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
-    assert r2.status_code == 200, f"Same-user re-login should be allowed, got {r2.status_code}: {r2.text}"
+    assert r2.status_code == 409, f"Same-user re-login should be blocked, got {r2.status_code}: {r2.text}"
 
 
 @pytest.mark.asyncio
@@ -415,3 +419,37 @@ async def test_login_possible_after_force_login_and_logout(client):
     token_a2 = r_a2.json()["access_token"]
     r_a2_check = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a2}"})
     assert r_a2_check.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_force_login_stores_evicting_ip(client):
+    """login-force stores the requesting IP so evicted user sees it on next 401."""
+    from unittest.mock import patch
+    from celerp.services.session_tracker import clear as _clear_tracker, pop_evicted_by_ip as _pop_ip
+
+    await client.post(
+        "/auth/register",
+        json={"company_name": "IpCo", "email": "iptest@test.com", "name": "Admin", "password": "pw123456"},
+    )
+    _clear_tracker()
+
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r1 = await client.post("/auth/login", json={"email": "iptest@test.com", "password": "pw123456"})
+    assert r1.status_code == 200
+    token_a = r1.json()["access_token"]
+
+    # force-login: evicting IP stored
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r2 = await client.post("/auth/login-force", json={"email": "iptest@test.com", "password": "pw123456"})
+    assert r2.status_code == 200
+
+    # The evicting IP should be stored (testclient uses 127.0.0.1 or "testclient")
+    ip = _pop_ip()
+    assert ip is not None, "Evicting IP should be stored after force-login"
+
+    # pop_evicted_by_ip is one-shot: second call returns None
+    assert _pop_ip() is None
+
+    # Old token returns 401 with IP in detail
+    r_dead = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a}"})
+    assert r_dead.status_code == 401

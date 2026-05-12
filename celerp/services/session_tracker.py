@@ -15,6 +15,12 @@ Session nonce
 A per-tracker nonce (UUID4) is rotated on every invalidate_sessions().  Access
 tokens embed it at issuance.  get_current_user() validates the claim so any
 token minted before the last logout/force-login is immediately rejected (401).
+
+Eviction IP
+-----------
+When force-login evicts active sessions the requesting IP is stored in
+_evicted_by_ip.  get_current_user() calls pop_evicted_by_ip() and includes the
+IP in the 401 detail so the login page can show a meaningful message.
 """
 from __future__ import annotations
 
@@ -27,6 +33,7 @@ from pathlib import Path
 _sessions: dict[str, dict] = {}
 _loaded: bool = False
 _nonce: str = str(_uuid_mod.uuid4())
+_evicted_by_ip: str | None = None
 
 _NONCE_KEY = "__nonce__"
 
@@ -88,12 +95,7 @@ def register_token(jti: str, user_id: str, expiry: float) -> None:
 
 
 def active_user_ids() -> set[str]:
-    """Return user_ids with at least one non-expired JTI registered.
-
-    Used by the login gate: block login if (active_user_ids - {current_user_id})
-    is non-empty.  Same user may have multiple JTIs (multiple tabs / incognito) -
-    all are allowed; only *different* users are blocked.
-    """
+    """Return user_ids with at least one non-expired JTI registered."""
     _load()
     now = time.time()
     return {entry["user_id"] for entry in _sessions.values() if entry["expiry"] > now}
@@ -105,18 +107,30 @@ def get_nonce() -> str:
     return _nonce
 
 
-def invalidate_sessions() -> None:
+def invalidate_sessions(evicting_ip: str | None = None) -> None:
     """Wipe all registered tokens AND rotate the nonce.
 
     Called by logout and force-login.  After this call every existing access
     token is immediately rejected (401) because the embedded snonce no longer
     matches, regardless of whether its expiry has elapsed.
+
+    evicting_ip: if provided (force-login), stored so the evicted user can see
+    who triggered their logout on the next 401 redirect.
     """
-    global _loaded, _nonce
+    global _loaded, _nonce, _evicted_by_ip
     _sessions.clear()
     _nonce = str(_uuid_mod.uuid4())
     _loaded = True
+    _evicted_by_ip = evicting_ip
     _save()
+
+
+def pop_evicted_by_ip() -> str | None:
+    """Return and clear the stored eviction IP (one-shot consumption)."""
+    global _evicted_by_ip
+    ip = _evicted_by_ip
+    _evicted_by_ip = None
+    return ip
 
 
 def clear() -> None:
@@ -125,7 +139,8 @@ def clear() -> None:
     Safe for test gate-bypass: existing tokens remain valid after this call.
     Do NOT use in production logout / force-login paths.
     """
-    global _loaded
+    global _loaded, _evicted_by_ip
     _sessions.clear()
+    _evicted_by_ip = None
     _loaded = True
     _save()

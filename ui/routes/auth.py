@@ -59,10 +59,16 @@ def setup_routes(app):
             return RedirectResponse("/setup", status_code=302)
         deactivated = request.query_params.get("deactivated")
         reason = request.query_params.get("reason")
+        by_ip = request.query_params.get("by", "").strip()
         if deactivated:
             notice = flash("This company has been deactivated. Contact your administrator to reactivate it.")
         elif reason == "evicted":
-            notice = flash("You were signed out because another user logged in. Upgrade to Celerp Cloud for simultaneous multi-user access.", kind="warning")
+            ip_note = f" The new session was started from IP {by_ip}." if by_ip else ""
+            notice = flash(
+                f"You were signed out because a new login session was started.{ip_note} "
+                "If this wasn't you, contact your administrator.",
+                kind="warning",
+            )
         elif reason == "expired":
             notice = flash("Your session expired. Please sign in again.", kind="warning")
         else:

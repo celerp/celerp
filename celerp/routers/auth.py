@@ -155,8 +155,7 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
     from celerp.gateway.state import get_session_token as _get_session_token
     from celerp.services.session_tracker import active_user_ids as _active_ids
     if not _get_session_token():
-        others = _active_ids() - {str(user.id)}
-        if others:
+        if _active_ids():
             raise HTTPException(status_code=409, detail="direct_connection_limit")
 
     return _issue_tokens(str(user.id), str(user.company_id), user.role, user.email)
@@ -171,7 +170,7 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     from celerp.services.session_tracker import invalidate_sessions as _invalidate
-    _invalidate()
+    _invalidate(evicting_ip=request.client.host if request.client else None)
     return _issue_tokens(str(user.id), str(user.company_id), user.role, user.email)
 
 

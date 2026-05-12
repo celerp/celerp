@@ -119,7 +119,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSe
     # Validate session nonce: rejects tokens minted before the last logout/force-login.
     # Tokens without the claim (minted before this deploy) are also rejected.
     if claims.get("snonce") != _get_nonce():
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
+        from celerp.services.session_tracker import pop_evicted_by_ip as _pop_ip
+        evicting_ip = _pop_ip()
+        detail = f"Session expired|{evicting_ip}" if evicting_ip else "Session expired"
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
     return user
 

@@ -255,8 +255,14 @@ from starlette.responses import RedirectResponse as _RR
 async def ui_401_handler(request: Request, exc) -> _RR:
     """Redirect 401s to /login with a reason param so the user knows why."""
     detail = getattr(exc, "detail", "") or ""
-    reason = "evicted" if detail == "Session expired" else "expired"
-    return _RR(f"/login?reason={reason}", status_code=302)
+    # detail may be "Session expired|<ip>" when a force-login evicted this user
+    if detail.startswith("Session expired"):
+        parts = detail.split("|", 1)
+        ip = parts[1] if len(parts) == 2 else ""
+        params = f"reason=evicted&by={ip}" if ip else "reason=evicted"
+    else:
+        params = "reason=expired"
+    return _RR(f"/login?{params}", status_code=302)
 
 app.exception_handlers[401] = ui_401_handler
 
