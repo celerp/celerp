@@ -8,11 +8,19 @@ State is written to a JSON file next to config.toml so it survives process reloa
 (e.g. uvicorn --reload in dev mode) and process restarts.
 
 File format: {"<company_id>|<user_id>": <unix_timestamp_float>, ...}
+
+Session nonce
+-------------
+A single per-tracker nonce (UUID4 string) is rotated on every clear().  Access
+tokens embed the nonce at issuance time.  get_current_user() validates the claim
+so that any token minted before the last clear() is immediately rejected (401),
+enforcing the single-active-session invariant without a DB migration.
 """
 from __future__ import annotations
 
 import json
 import time
+import uuid as _uuid_mod
 from pathlib import Path
 
 _WINDOW_SECONDS: int = 15 * 60  # match access token TTL
@@ -22,6 +30,8 @@ _SAVE_INTERVAL: float = 30.0    # max disk-write frequency during active session
 _activity: dict[tuple[str, str], float] = {}
 _loaded: bool = False
 _last_save: float = 0.0
+# Rotated on every clear(); embedded in JWTs so old tokens are immediately rejected.
+_nonce: str = str(_uuid_mod.uuid4())
 
 
 def _sessions_path() -> Path | None:
@@ -101,10 +111,34 @@ def evict(user_id: str) -> None:
     _save()
 
 
+def get_nonce() -> str:
+    """Return the current session nonce.  Embed in access tokens at issuance."""
+    _load()
+    return _nonce
+
+
 def clear() -> None:
-    """Wipe all activity (used by force-login to evict all sessions)."""
+    """Wipe all activity without rotating nonce.
+
+    Used in tests and gate-bypass setup where existing tokens must remain valid.
+    Does NOT invalidate existing JWTs — use invalidate_sessions() for that.
+    """
     global _loaded, _last_save
     _activity.clear()
     _loaded = True  # no need to re-load after explicit clear
     _last_save = 0.0  # force save on next record() so cleared state is persisted
+    _save()
+
+
+def invalidate_sessions() -> None:
+    """Wipe all activity AND rotate the nonce, immediately invalidating all existing tokens.
+
+    Called by the API's logout and force-login endpoints to enforce the
+    single-active-session invariant across all browsers/tabs.
+    """
+    global _loaded, _last_save, _nonce
+    _activity.clear()
+    _nonce = str(_uuid_mod.uuid4())  # rotate: all existing tokens become invalid
+    _loaded = True
+    _last_save = 0.0
     _save()

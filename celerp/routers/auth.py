@@ -24,6 +24,7 @@ from celerp.services.auth import (
     get_current_company_id,
     get_current_user,
     hash_password,
+    oauth2_scheme,
     verify_password,
 )
 
@@ -162,8 +163,8 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    from celerp.services.session_tracker import clear as _clear_tracker
-    _clear_tracker()
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    _invalidate()
 
     return {
         "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
@@ -381,3 +382,17 @@ async def change_password(
     user.auth_hash = hash_password(payload.new_password)
     await session.commit()
     return {"detail": "Password changed successfully."}
+
+
+@router.post("/logout")
+async def logout(token: str = Depends(oauth2_scheme)) -> dict:
+    """Invalidate all active sessions by clearing the tracker and rotating the nonce.
+
+    Called by the UI server on logout so the mutation runs inside the API process
+    (the session tracker is in-process state, not shared with the UI server).
+    After this call every existing access token is immediately rejected (401)
+    because the embedded snonce no longer matches.
+    """
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    _invalidate()
+    return {"detail": "Logged out."}

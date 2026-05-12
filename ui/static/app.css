@@ -2028,11 +2028,11 @@ a:hover { text-decoration: underline; }
 .update-card__check-btn:hover,
 .update-card__restart-btn:hover { background: var(--c-hover); }
 .update-card__restart-btn {
-  background: var(--c-primary);
+  background: var(--c-accent);
   color: #fff;
-  border-color: var(--c-primary);
+  border-color: var(--c-accent);
 }
-.update-card__restart-btn:hover { opacity: 0.9; }
+.update-card__restart-btn:hover { background: var(--c-accent2); border-color: var(--c-accent2); opacity: 1; }
 .update-card__progress-bar {
   width: 100%;
   height: 6px;

@@ -320,3 +320,68 @@ async def test_single_user_gate_survives_tracker_reload(client, tmp_path):
             # Restore so teardown clear() works correctly
             _tracker._activity.update(old_activity)
             _tracker._loaded = True
+
+
+@pytest.mark.asyncio
+async def test_logout_endpoint_invalidates_existing_tokens(client):
+    """POST /auth/logout must rotate the nonce so existing tokens return 401.
+
+    This is the cross-process enforcement: after logout, user A's token must stop
+    working immediately regardless of which process holds the tracker state.
+    """
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "LogoutCo", "email": "logout@test.com", "name": "Admin", "password": "longpass123"},
+    )
+    assert r.status_code == 200
+
+    r_login = await client.post("/auth/login", json={"email": "logout@test.com", "password": "longpass123"})
+    assert r_login.status_code == 200
+    token = r_login.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Token works before logout
+    r_pre = await client.get("/auth/my-companies", headers=headers)
+    assert r_pre.status_code == 200
+
+    # Logout rotates the nonce
+    r_logout = await client.post("/auth/logout", headers=headers)
+    assert r_logout.status_code == 200
+
+    # Same token is now rejected
+    r_post = await client.get("/auth/my-companies", headers=headers)
+    assert r_post.status_code == 401, (
+        f"Token should be rejected after logout (nonce rotated), got {r_post.status_code}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_force_login_invalidates_other_user_tokens(client):
+    """login-force must rotate the nonce so any previously-active user's token returns 401."""
+    from unittest.mock import patch
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    # Register two users
+    await client.post(
+        "/auth/register",
+        json={"company_name": "ForceCo", "email": "owner@force.com", "name": "Owner", "password": "longpass123"},
+    )
+    # Register user B via the same company isn't straightforward in tests; use owner token to
+    # validate that after force-login the owner token is invalidated.
+    _clear_tracker()
+    r_owner = await client.post("/auth/login", json={"email": "owner@force.com", "password": "longpass123"})
+    assert r_owner.status_code == 200
+    owner_token = r_owner.json()["access_token"]
+
+    # Force-login as same user (simulates another user doing force-login)
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r_force = await client.post(
+            "/auth/login-force", json={"email": "owner@force.com", "password": "longpass123"}
+        )
+    assert r_force.status_code == 200
+
+    # Old token is now rejected
+    r_old = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {owner_token}"})
+    assert r_old.status_code == 401, (
+        f"Old token should be rejected after force-login, got {r_old.status_code}"
+    )

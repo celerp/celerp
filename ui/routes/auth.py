@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 from ui.api_client import APIError, bootstrap_status
-from ui.api_client import login as api_login, login_force as api_login_force, register as api_register
+from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.components.shell import auth_shell, flash
@@ -242,15 +242,7 @@ def setup_routes(app):
     async def logout(request: Request):
         token = request.cookies.get(COOKIE_NAME)
         if token:
-            try:
-                from celerp.services.auth import _decode_token
-                claims = _decode_token(token)
-                user_id = claims.get("sub")
-                if user_id:
-                    from celerp.services.session_tracker import evict as _evict
-                    _evict(user_id)
-            except Exception:
-                pass
+            await api_logout(token)
         resp = RedirectResponse("/login", status_code=302)
         _clear_tokens(resp)
         return resp
@@ -260,15 +252,7 @@ def setup_routes(app):
         """GET fallback for no-JS clients. Clears tokens and redirects."""
         token = request.cookies.get(COOKIE_NAME)
         if token:
-            try:
-                from celerp.services.auth import _decode_token
-                claims = _decode_token(token)
-                user_id = claims.get("sub")
-                if user_id:
-                    from celerp.services.session_tracker import evict as _evict
-                    _evict(user_id)
-            except Exception:
-                pass
+            await api_logout(token)
         resp = RedirectResponse("/login", status_code=302)
         _clear_tokens(resp)
         return resp

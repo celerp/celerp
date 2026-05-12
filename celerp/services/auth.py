@@ -37,12 +37,14 @@ def hash_password(password: str) -> str:
 
 
 def create_access_token(subject: str, company_id: str, role: str, email: str = "") -> str:
+    from celerp.services.session_tracker import get_nonce as _get_nonce
     expire_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     payload = {
         "sub": subject,
         "email": email,
         "company_id": company_id,
         "role": role,
+        "snonce": _get_nonce(),
         "exp": datetime.now(timezone.utc) + timedelta(minutes=expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
@@ -105,7 +107,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSe
     if company is None or not company.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
-    from celerp.services.session_tracker import record as _record_activity
+    from celerp.services.session_tracker import record as _record_activity, get_nonce as _get_nonce
+    # Validate session nonce: rejects tokens minted before the last clear() (logout/force-login).
+    # Tokens without the claim (e.g. minted before this deploy) are also rejected, forcing re-login.
+    if claims.get("snonce") != _get_nonce():
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session expired")
     _record_activity(str(user.id), company_id=str(company_id))
 
     return user
