@@ -13,6 +13,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 # Imported at module level so tests can patch celerp.middleware.is_draining
+# and celerp.middleware.get_session_ctx
+from celerp.db import get_session_ctx
 from celerp.services.runtime_state import is_draining
 
 logger = logging.getLogger(__name__)
@@ -120,21 +122,33 @@ class SlidingTokenRefreshMiddleware:
             if message["type"] == "http.response.start":
                 status_holder.append(message["status"])
                 if message["status"] < 300 and token:
-                    refreshed = _maybe_refresh_bearer(token)
-                    if refreshed:
+                    result = _maybe_refresh_bearer(token)
+                    if result:
+                        refreshed, jti, new_expiry = result
                         message = dict(message)
                         message["headers"] = list(message.get("headers", [])) + [
                             (b"x-refreshed-token", refreshed.encode("latin-1"))
                         ]
+                        # Update JTI expiry in DB so active_user_ids() stays accurate
+                        try:
+                            from celerp.models.auth import SessionRegistry
+                            async with get_session_ctx() as s:
+                                row = await s.get(SessionRegistry, jti)
+                                if row is not None:
+                                    row.expiry = new_expiry
+                                    await s.commit()
+                        except Exception:
+                            pass  # fail open - expiry update is best-effort
             await send(message)
 
         await self.app(scope, receive, send_with_refresh)
 
 
-def _maybe_refresh_bearer(token: str) -> str | None:
-    """Return a fresh access token if the given token is past half-life, else None.
+def _maybe_refresh_bearer(token: str) -> tuple[str, str, datetime] | None:
+    """Return (new_token, jti, new_expiry) if past half-life, else None.
 
     Reuses the original JTI so the session slot is not duplicated in the registry.
+    The caller is responsible for updating the JTI row's expiry in the DB.
     """
     import base64 as _b64
     import json as _json
@@ -157,15 +171,15 @@ def _maybe_refresh_bearer(token: str) -> str | None:
         role = claims.get("role", "")
         jti = claims.get("jti")
         snonce = claims.get("snonce", "")
-        if not sub or not company_id:
+        if not sub or not company_id or not jti:
             return None
         from celerp.services.auth import create_access_token
         # Reuse the existing snonce - the token was already validated by get_current_user,
-        # so the nonce is correct.  No DB call needed here (sync middleware context).
+        # so the nonce is correct.  No DB call needed here (sync function).
         new_token, _token_jti = create_access_token(sub, company_id, role, jti=jti, snonce=snonce)
-        # register_token is now async (DB); the existing JTI row is already in the DB
-        # from the original login.  Refresh reuses the same JTI, so no new row needed.
-        return new_token
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        new_expiry = _dt.now(_tz.utc) + _td(seconds=total_ttl)
+        return new_token, jti, new_expiry
     except Exception:
         return None
 
@@ -214,7 +228,6 @@ class DrainMiddleware:
             return
 
         try:
-            from celerp.db import get_session_ctx
             async with get_session_ctx() as s:
                 draining = await is_draining(s)
         except Exception:

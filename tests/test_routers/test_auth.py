@@ -390,14 +390,12 @@ async def test_force_login_stores_evicting_ip(client, session):
         r2 = await client.post("/auth/login-force", json={"email": "iptest@test.com", "password": "pw123456"})
     assert r2.status_code == 200
 
-    # The evicting IP should be stored (testclient uses 127.0.0.1 or "testclient")
+    # Self-force-login: evicting user IS the displaced user, so no eviction IP stored.
+    # (Eviction IP is only stored for OTHER users displaced by the force-login.)
     ip = await _pop_ip(session, user_id)
-    assert ip is not None, "Evicting IP should be stored after force-login"
+    assert ip is None, "Self-force-login must NOT store eviction IP on own account"
 
-    # pop_evicted_by_ip is one-shot: second call returns None
-    assert await _pop_ip(session, user_id) is None
-
-    # Old token returns 401
+    # Old token returns 401 (nonce was rotated)
     r_dead = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a}"})
     assert r_dead.status_code == 401
 

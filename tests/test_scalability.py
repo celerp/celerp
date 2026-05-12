@@ -125,7 +125,7 @@ class TestSessionTracker:
         ip = await pop_evicted_by_ip(session, user_id)
         assert ip is None
 
-        # force-login stores the IP
+        # self-force-login: evicting_uid == displaced_uid, so no eviction IP stored
         with patch("celerp.gateway.state.get_session_token", return_value=""):
             await clear(session)
             r2 = await client.post("/auth/login", json={"email": "pop@test.com", "password": "pw123456"})
@@ -135,10 +135,11 @@ class TestSessionTracker:
             r3 = await client.post("/auth/login-force", json={"email": "pop@test.com", "password": "pw123456"})
         assert r3.status_code == 200
 
+        # Self-force-login must NOT set eviction IP on own account
         ip1 = await pop_evicted_by_ip(session, user_id)
-        assert ip1 is not None, "eviction IP should be set after force-login"
+        assert ip1 is None, "Self-force-login must not store eviction IP on own account"
         ip2 = await pop_evicted_by_ip(session, user_id)
-        assert ip2 is None, "pop_evicted_by_ip must be one-shot"
+        assert ip2 is None
 
 
 # ---------------------------------------------------------------------------
@@ -464,3 +465,236 @@ class TestMigrationSystemRuntimeState:
             rows = conn.execute(text("SELECT id FROM system_runtime_state")).fetchall()
         assert len(rows) == 1, "Migration must seed exactly one row (id=1)"
         assert rows[0][0] == 1
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: login_force must evict ALL active sessions, not just this user's
+# ---------------------------------------------------------------------------
+
+class TestLoginForceGlobalEviction:
+    """login_force must clear ALL active JTIs before issuing a new token."""
+
+    @pytest.mark.asyncio
+    async def test_invalidate_all_sessions_clears_all_users(self, client, session):
+        """invalidate_all_sessions wipes JTIs for ALL users and rotates their nonces."""
+        from celerp.services.session_tracker import (
+            clear as _clear, register_token, get_nonce, active_user_ids, invalidate_all_sessions
+        )
+        from celerp.models.auth import SessionRegistry, UserAuthState
+        from sqlalchemy import select
+        import base64, json as _j
+
+        # Register a user to get a real user_id for UserB (force-logger)
+        r_b = await client.post("/auth/register", json={
+            "company_name": "EvictAllCo", "email": "forcer@evict.com",
+            "name": "B", "password": "pw123456",
+        })
+        assert r_b.status_code == 200
+        token_b = r_b.json()["access_token"]
+        user_b_id = _j.loads(base64.b64decode(token_b.split(".")[1] + "=="))["sub"]
+
+        await _clear(session)
+
+        # Get UserB's nonce so we can detect rotation
+        nonce_b_before = await get_nonce(session, user_b_id)
+
+        # Seed a fake active UserA session (no FK in SQLite, valid for testing gate logic)
+        fake_user_a_id = str(uuid.uuid4())
+        # We need a real user for FK. Use UserB as proxy for testing the "other user" path
+        # by giving UserB a second JTI representing "UserA's session"
+        jti_b_old = str(uuid.uuid4())
+        session.add(SessionRegistry(
+            jti=jti_b_old, user_id=uuid.UUID(user_b_id), expiry=_future(900)
+        ))
+        await session.commit()
+
+        active_before = await active_user_ids(session)
+        assert user_b_id in active_before, "UserB must be active before invalidate_all"
+
+        # UserB force-logs in - evicts all including own old JTI
+        await invalidate_all_sessions(session, user_b_id, evicting_ip="1.2.3.4")
+
+        # All JTIs must be gone
+        all_jtis = (await session.execute(select(SessionRegistry))).scalars().all()
+        assert all_jtis == [], "All JTIs must be wiped by invalidate_all_sessions"
+
+        # UserB's nonce must be rotated
+        nonce_b_after = await get_nonce(session, user_b_id)
+        assert nonce_b_after != nonce_b_before, "Evicting user's nonce must be rotated"
+
+        # active_user_ids must be empty now
+        active_after = await active_user_ids(session)
+        assert active_after == set(), "active_user_ids must be empty after invalidate_all"
+
+    @pytest.mark.asyncio
+    async def test_login_force_gate_resets_after_use(self, client, session):
+        """After login-force, the gate is open for a new login (only force-login's JTI active)."""
+        from unittest.mock import patch
+        from celerp.services.session_tracker import clear as _clear, active_user_ids
+        import base64, json as _j
+
+        r = await client.post("/auth/register", json={
+            "company_name": "ResetGateCo", "email": "resetgate@test.com",
+            "name": "Admin", "password": "pw123456",
+        })
+        assert r.status_code == 200
+
+        await _clear(session)
+
+        # First login
+        with patch("celerp.gateway.state.get_session_token", return_value=""):
+            r1 = await client.post("/auth/login", json={"email": "resetgate@test.com", "password": "pw123456"})
+        assert r1.status_code == 200
+        token1 = r1.json()["access_token"]
+
+        # Second login fails - gate blocks
+        with patch("celerp.gateway.state.get_session_token", return_value=""):
+            r2 = await client.post("/auth/login", json={"email": "resetgate@test.com", "password": "pw123456"})
+        assert r2.status_code == 409, f"Second login must be blocked by gate, got {r2.status_code}"
+
+        # Force-login succeeds
+        with patch("celerp.gateway.state.get_session_token", return_value=""):
+            r_force = await client.post("/auth/login-force", json={"email": "resetgate@test.com", "password": "pw123456"})
+        assert r_force.status_code == 200
+        token_force = r_force.json()["access_token"]
+
+        # Old token must be dead
+        r_old = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token1}"})
+        assert r_old.status_code == 401, "Old token must be rejected after force-login"
+
+        # New token works
+        r_new = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_force}"})
+        assert r_new.status_code == 200
+
+        # Gate: active_user_ids has exactly the force-login user (only 1 JTI)
+        active = await active_user_ids(session)
+        user_id = _j.loads(base64.b64decode(token_force.split(".")[1] + "=="))["sub"]
+        assert active == {user_id}, f"Only force-login user should be active, got {active}"
+
+    @pytest.mark.asyncio
+    async def test_force_login_does_not_store_eviction_ip_for_self(self, client, session):
+        """Self-force-login: evicting_by_ip must NOT be set (user evicted themselves)."""
+        from unittest.mock import patch
+        from celerp.services.session_tracker import clear as _clear, pop_evicted_by_ip
+        import base64, json as _j
+
+        r = await client.post("/auth/register", json={
+            "company_name": "SelfEvictCo", "email": "selfevict@test.com",
+            "name": "Admin", "password": "pw123456",
+        })
+        assert r.status_code == 200
+        token = r.json()["access_token"]
+        user_id = _j.loads(base64.b64decode(token.split(".")[1] + "=="))["sub"]
+
+        await _clear(session)
+
+        with patch("celerp.gateway.state.get_session_token", return_value=""):
+            await client.post("/auth/login", json={"email": "selfevict@test.com", "password": "pw123456"})
+
+        with patch("celerp.gateway.state.get_session_token", return_value=""):
+            await client.post("/auth/login-force", json={"email": "selfevict@test.com", "password": "pw123456"})
+
+        ip = await pop_evicted_by_ip(session, user_id)
+        assert ip is None, "Self-force-login must not store eviction IP on own account"
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: _maybe_refresh_bearer updates JTI expiry (gate integrity)
+# ---------------------------------------------------------------------------
+
+class TestRefreshJtiExpiry:
+    """Verify that sliding refresh returns JTI + expiry for the caller to update."""
+
+    def test_maybe_refresh_returns_jti_and_expiry(self):
+        """_maybe_refresh_bearer returns (token, jti, expiry) so caller can update DB row."""
+        from celerp.middleware import _maybe_refresh_bearer
+        from celerp.config import settings
+        from jose import jwt as _jwt
+        import uuid, time as _time
+        from datetime import datetime, timezone
+
+        now = _time.time()
+        total_ttl = int(settings.access_token_expire_minutes) * 60
+        jti = str(uuid.uuid4())
+        stale_payload = {
+            "sub": "user-abc",
+            "company_id": "company-xyz",
+            "role": "admin",
+            "jti": jti,
+            "snonce": "test-nonce",
+            "exp": int(now + total_ttl * 0.49),
+        }
+        stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+        result = _maybe_refresh_bearer(stale_token)
+        assert result is not None
+        new_token, returned_jti, new_expiry = result
+
+        assert returned_jti == jti, "Returned JTI must match the original"
+        assert isinstance(new_expiry, datetime), "Expiry must be a datetime"
+        assert new_expiry.tzinfo is not None, "Expiry must be timezone-aware"
+        # New expiry must be in the future (roughly now + total_ttl)
+        now_dt = datetime.now(timezone.utc)
+        assert new_expiry > now_dt, "New expiry must be in the future"
+
+        # New token must carry the same JTI
+        new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        assert new_claims["jti"] == jti
+
+    @pytest.mark.asyncio
+    async def test_send_with_refresh_updates_jti_expiry_in_db(self, client, session):
+        """The send_with_refresh handler must update the JTI row expiry via get_session_ctx.
+
+        We verify this by patching get_session_ctx to use the test session, then
+        confirming the row's expiry was updated after a request that triggers refresh.
+        """
+        from jose import jwt as _jwt
+        from celerp.config import settings
+        from celerp.models.auth import SessionRegistry
+        from contextlib import asynccontextmanager
+        import time as _time
+        from unittest.mock import patch
+
+        reg = await client.post("/auth/register", json={
+            "company_name": "RefreshDbCo", "email": "refreshdb@test.com",
+            "name": "Admin", "password": "pw123456",
+        })
+        assert reg.status_code == 200
+        original_token = reg.json()["access_token"]
+        original_claims = _jwt.decode(original_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+        jti = original_claims["jti"]
+
+        # Record original expiry
+        row = await session.get(SessionRegistry, jti)
+        assert row is not None
+        expiry_before = row.expiry
+
+        # Patch get_session_ctx to yield the test session
+        @asynccontextmanager
+        async def _test_session_ctx():
+            yield session
+
+        now = _time.time()
+        total_ttl = int(settings.access_token_expire_minutes) * 60
+        stale_payload = {
+            "sub": original_claims["sub"],
+            "company_id": original_claims["company_id"],
+            "role": original_claims["role"],
+            "jti": jti,
+            "snonce": original_claims.get("snonce", ""),
+            "exp": int(now + total_ttl * 0.49),
+        }
+        stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+        with patch("celerp.middleware.get_session_ctx", return_value=_test_session_ctx()):
+            r = await client.get("/items", headers={"Authorization": f"Bearer {stale_token}"})
+
+        assert r.status_code == 200
+        assert "X-Refreshed-Token" in r.headers
+
+        # Now verify the row's expiry was updated via our test session
+        await session.refresh(row)
+        expiry_after = row.expiry
+        assert expiry_after > expiry_before, (
+            f"JTI expiry must be extended after refresh: before={expiry_before}, after={expiry_after}"
+        )

@@ -178,9 +178,9 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    from celerp.services.session_tracker import invalidate_all_sessions as _invalidate_all
     evicting_ip = request.client.host if request.client else None
-    await _invalidate(session, str(user.id), evicting_ip=evicting_ip)
+    await _invalidate_all(session, str(user.id), evicting_ip=evicting_ip)
     return await _issue_tokens(session, str(user.id), str(user.company_id), user.role, user.email)
 
 

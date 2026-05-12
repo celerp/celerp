@@ -104,6 +104,58 @@ async def invalidate_sessions(
     await session.commit()
 
 
+async def invalidate_all_sessions(
+    session: AsyncSession,
+    evicting_user_id: str,
+    evicting_ip: str | None = None,
+) -> None:
+    """Wipe ALL JTIs globally and rotate nonces for every affected user.
+
+    Called by login-force when a user takes over the session slot.
+    - The force-logging user's nonce is rotated (invalidates their own old tokens).
+    - Every OTHER displaced user gets the evicting_ip stored so they see the
+      eviction message on their next 401.
+    - After this call, the global active_user_ids() set is empty.
+    """
+    now = datetime.now(timezone.utc)
+    # Collect all users with active JTIs before we wipe them
+    active_rows = await session.execute(
+        select(SessionRegistry.user_id).where(SessionRegistry.expiry > now).distinct()
+    )
+    active_ids: set[_uuid_mod.UUID] = {r[0] for r in active_rows}
+
+    # Wipe all JTIs
+    await session.execute(delete(SessionRegistry))
+
+    # Rotate nonce for each previously-active user
+    evicting_uid = _uuid_mod.UUID(evicting_user_id)
+    for uid in active_ids:
+        new_nonce = str(_uuid_mod.uuid4())
+        row = await session.get(UserAuthState, uid)
+        if row is not None:
+            row.nonce = new_nonce
+            # Only store evicting IP for OTHER users (not the one taking over)
+            if uid != evicting_uid:
+                row.evicted_by_ip = evicting_ip
+        else:
+            session.add(UserAuthState(
+                user_id=uid,
+                nonce=new_nonce,
+                evicted_by_ip=evicting_ip if uid != evicting_uid else None,
+            ))
+
+    # Ensure the evicting user also has a rotated nonce even if they had no active JTI
+    if evicting_uid not in active_ids:
+        new_nonce = str(_uuid_mod.uuid4())
+        row = await session.get(UserAuthState, evicting_uid)
+        if row is not None:
+            row.nonce = new_nonce
+        else:
+            session.add(UserAuthState(user_id=evicting_uid, nonce=new_nonce))
+
+    await session.commit()
+
+
 async def pop_evicted_by_ip(session: AsyncSession, user_id: str) -> str | None:
     """Return and clear the stored eviction IP for *user_id* (one-shot)."""
     uid = _uuid_mod.UUID(user_id)
