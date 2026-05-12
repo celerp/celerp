@@ -104,6 +104,7 @@ const DEFAULT_MODULES_SRC = IS_DEV
 // ── Globals ──────────────────────────────────────────────────────────────────
 
 let mainWindow = null;
+let isQuitting = false; // set true in before-quit so the close handler doesn't intercept Cmd+Q
 let pgInstance = null;
 let apiProcess = null;
 let uiProcess = null;
@@ -605,7 +606,7 @@ function createWindow() {
   // background and re-opens instantly when the user clicks the dock icon.
   // The `before-quit` handler (Cmd+Q) still kills all processes and fully exits.
   mainWindow.on("close", (event) => {
-    if (process.platform === "darwin") {
+    if (process.platform === "darwin" && !isQuitting) {
       event.preventDefault();
       mainWindow.hide();
     }
@@ -753,6 +754,7 @@ app.on("activate", () => {
 });
 
 app.on("before-quit", async () => {
+  isQuitting = true;
   if (uiProcess) uiProcess.kill();
   if (apiProcess) apiProcess.kill();
   if (pgInstance) await pgInstance.stop();

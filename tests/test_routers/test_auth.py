@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import time
 import pytest
 
 
@@ -218,8 +219,13 @@ async def test_single_user_gate_empty_tracker_allows_login(client):
 
 
 @pytest.mark.asyncio
-async def test_single_user_gate_blocks_same_user_relogin(client):
-    """Gate: same user attempting re-login while already active is blocked (no exclude=self)."""
+async def test_single_user_gate_allows_same_user_relogin(client):
+    """Gate: same user re-logging in while their own session is still tracked is allowed.
+
+    Scenario: user's token expired (or they logged out without the tracker being cleared),
+    and they try to log in again. They should not be blocked by their own stale session.
+    Only *other* users count as a conflict.
+    """
     from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker, record as _record
     import base64, json as _json
@@ -237,13 +243,13 @@ async def test_single_user_gate_blocks_same_user_relogin(client):
     payload_b64 = token.split(".")[1] + "=="
     user_id = _json.loads(base64.b64decode(payload_b64))["sub"]
 
-    # Seed tracker with THIS user (simulates their own existing session)
+    # Seed tracker with THIS user (simulates their own existing/stale session)
     _record(user_id, company_id="")
 
-    # Same user re-login -> blocked (universal gate, no self-exclusion) when relay not connected
+    # Same user re-login -> allowed (only OTHER users block access)
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
-    assert r2.status_code == 409, f"Same-user re-login should be blocked, got {r2.status_code}: {r2.text}"
+    assert r2.status_code == 200, f"Same-user re-login should be allowed, got {r2.status_code}: {r2.text}"
 
 
 @pytest.mark.asyncio
@@ -291,7 +297,12 @@ async def test_single_user_gate_survives_tracker_reload(client, tmp_path):
         r1 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
         assert r1.status_code == 200
 
-        # Force a save so the file is populated
+        # Inject a *different* user into the tracker to represent a foreign active session
+        import uuid as _uuid
+        foreign_id = str(_uuid.uuid4())
+        _tracker._activity[("", foreign_id)] = time.time()
+
+        # Force a save so the file is populated with the foreign session
         _tracker._save()
 
         # Simulate process reload: wipe in-memory state but keep the file
@@ -301,7 +312,7 @@ async def test_single_user_gate_survives_tracker_reload(client, tmp_path):
         _tracker._loaded = False  # force re-load from file on next call
 
         try:
-            # Gate must still fire after in-memory wipe (reads from file)
+            # Gate must still fire after in-memory wipe (foreign session read from file)
             with patch("celerp.gateway.state.get_session_token", return_value=""):
                 r2 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
             assert r2.status_code == 409, f"Gate should persist after tracker reload, got {r2.status_code}: {r2.text}"

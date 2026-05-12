@@ -240,6 +240,17 @@ def setup_routes(app):
 
     @app.post("/logout")
     async def logout(request: Request):
+        token = request.cookies.get(COOKIE_NAME)
+        if token:
+            try:
+                from celerp.services.auth import _decode_token
+                claims = _decode_token(token)
+                user_id = claims.get("sub")
+                if user_id:
+                    from celerp.services.session_tracker import evict as _evict
+                    _evict(user_id)
+            except Exception:
+                pass
         resp = RedirectResponse("/login", status_code=302)
         _clear_tokens(resp)
         return resp
@@ -247,6 +258,17 @@ def setup_routes(app):
     @app.get("/logout")
     async def logout_get(request: Request):
         """GET fallback for no-JS clients. Clears tokens and redirects."""
+        token = request.cookies.get(COOKIE_NAME)
+        if token:
+            try:
+                from celerp.services.auth import _decode_token
+                claims = _decode_token(token)
+                user_id = claims.get("sub")
+                if user_id:
+                    from celerp.services.session_tracker import evict as _evict
+                    _evict(user_id)
+            except Exception:
+                pass
         resp = RedirectResponse("/login", status_code=302)
         _clear_tokens(resp)
         return resp

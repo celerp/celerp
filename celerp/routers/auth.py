@@ -142,8 +142,10 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
 
     from celerp.gateway.state import get_session_token as _get_session_token
     from celerp.services.session_tracker import active_user_ids as _active_ids, record as _record
-    if not _get_session_token() and _active_ids():
-        raise HTTPException(status_code=409, detail="direct_connection_limit")
+    if not _get_session_token():
+        others = _active_ids() - {str(user.id)}
+        if others:
+            raise HTTPException(status_code=409, detail="direct_connection_limit")
 
     _record(str(user.id), str(user.company_id))
     return {

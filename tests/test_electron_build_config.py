@@ -551,3 +551,28 @@ def test_shell_pypi_auto_check_on_load():
         f"runPyPICheck appears only {count} time(s) in shell.py. "
         "Expect at least 3: function definition, click handler body, and auto-call on load."
     )
+
+
+def test_main_js_cmd_q_quits_fully():
+    """Cmd+Q (before-quit) must set isQuitting=true so the close handler lets it through.
+
+    Without this, event.preventDefault() in the 'close' handler intercepts the
+    quit-triggered close event too, making Cmd+Q appear to do nothing on macOS.
+    """
+    src = _main_src()
+    assert "isQuitting" in src, (
+        "main.js does not use an isQuitting flag. "
+        "Cmd+Q will be intercepted by the close handler and appear to do nothing on macOS."
+    )
+    assert "isQuitting = true" in src, (
+        "main.js never sets isQuitting = true. "
+        "The before-quit handler must set it so the close handler stops hiding the window."
+    )
+    # The close handler must check the flag before hiding
+    close_idx = src.find("mainWindow.on(\"close\"")
+    assert close_idx != -1, "close handler not found"
+    close_block = src[close_idx: close_idx + 300]
+    assert "isQuitting" in close_block, (
+        "The close handler does not check isQuitting. "
+        "Cmd+Q will still be intercepted and the app will not quit."
+    )
