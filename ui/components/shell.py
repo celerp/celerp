@@ -510,11 +510,15 @@ document.addEventListener('DOMContentLoaded', function() {
       });
 
       window.celerp.onDownloadProgress(function(progress) {
-        setProgress(progress.percent || 0);
+        var pct = progress && typeof progress.percent === 'number' ? progress.percent : 0;
+        setProgress(pct);
+        // Also update state text so user sees live percentage
+        setState('Downloading... ' + Math.round(pct) + '%', false);
       });
 
       window.celerp.onUpdateNotAvailable(function() {
         setState('Up to date', false);
+        appendLog('Already on the latest version.');
         resetToIdle();
       });
 
