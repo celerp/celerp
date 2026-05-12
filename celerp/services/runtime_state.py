@@ -13,6 +13,7 @@ async context (FastAPI handlers, lifespan tasks, etc.).
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,6 +27,40 @@ _DEFAULT_VALUE: dict[str, Any] = {"draining": False}
 _SINGLETON_ID = 1
 
 
+# ---------------------------------------------------------------------------
+# In-process drain cache
+# ---------------------------------------------------------------------------
+# The drain flag almost never changes (only during deploys).  Caching it for
+# 1 second eliminates a DB round-trip on every write request in DrainMiddleware
+# without any meaningful security or correctness cost.  The cache is explicitly
+# busted by set_draining() so transitions are immediate within the same process.
+# ---------------------------------------------------------------------------
+
+_DRAIN_TTL_S = 1  # seconds - short enough that cross-process propagation lag is negligible
+
+_drain_cache: dict[str, Any] | None = None  # None = not cached
+_drain_cache_at: float = 0.0
+
+
+def _drain_cache_set(value: dict[str, Any]) -> None:
+    global _drain_cache, _drain_cache_at
+    _drain_cache = dict(value)
+    _drain_cache_at = time.monotonic()
+
+
+def _drain_cache_get() -> dict[str, Any] | None:
+    if _drain_cache is None:
+        return None
+    if time.monotonic() - _drain_cache_at > _DRAIN_TTL_S:
+        return None
+    return _drain_cache
+
+
+def _drain_cache_bust() -> None:
+    global _drain_cache
+    _drain_cache = None
+
+
 async def _get_or_create(session: AsyncSession) -> SystemRuntimeState:
     row = await session.get(SystemRuntimeState, _SINGLETON_ID)
     if row is None:
@@ -36,9 +71,18 @@ async def _get_or_create(session: AsyncSession) -> SystemRuntimeState:
 
 
 async def get_runtime_state(session: AsyncSession) -> dict[str, Any]:
-    """Return a copy of the current runtime state dict."""
+    """Return a copy of the current runtime state dict.
+
+    Result is cached for up to ``_DRAIN_TTL_S`` seconds.  The cache is
+    explicitly busted by ``set_draining`` so transitions are immediate.
+    """
+    cached = _drain_cache_get()
+    if cached is not None:
+        return cached
     row = await _get_or_create(session)
-    return dict(row.value) if row.value else dict(_DEFAULT_VALUE)
+    value = dict(row.value) if row.value else dict(_DEFAULT_VALUE)
+    _drain_cache_set(value)
+    return value
 
 
 async def is_draining(session: AsyncSession) -> bool:
@@ -60,3 +104,4 @@ async def set_draining(session: AsyncSession, draining: bool) -> None:
     else:
         row.value = {**current, "draining": False, "drain_since": None}
     await session.commit()
+    _drain_cache_bust()  # bust so next is_draining call reads fresh state

@@ -698,3 +698,132 @@ class TestRefreshJtiExpiry:
         assert expiry_after > expiry_before, (
             f"JTI expiry must be extended after refresh: before={expiry_before}, after={expiry_after}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Performance regression tests: DB query count on hot paths
+# ---------------------------------------------------------------------------
+
+class TestHotPathQueryCount:
+    """Prove that the nonce and drain checks do not issue redundant DB queries.
+
+    Baseline (pre-cache): every GET fires an extra SELECT on user_auth_state;
+    every POST fires an additional get_session_ctx() + SELECT on system_runtime_state.
+
+    Post-cache: nonce hit is served from memory; drain flag is served from memory.
+    These tests fail before the cache is added and pass after.
+    """
+
+    @pytest.mark.asyncio
+    async def test_nonce_check_uses_cache_on_repeat_calls(self, session):
+        """get_nonce called twice for the same user should only hit DB once (cache hit)."""
+        from celerp.services import session_tracker as _st
+        import uuid as _uuid
+
+        user_id = str(_uuid.uuid4())
+        # Seed a UserAuthState row directly
+        from celerp.models.auth import UserAuthState
+        import uuid as _u
+        uid = _u.UUID(user_id)
+        session.add(UserAuthState(user_id=uid, nonce="test-nonce-abc"))
+        await session.commit()
+
+        call_count = 0
+        original_get = session.get
+
+        async def counting_get(model, pk, **kw):
+            nonlocal call_count
+            from celerp.models.auth import UserAuthState as _UAS
+            if model is _UAS:
+                call_count += 1
+            return await original_get(model, pk, **kw)
+
+        session.get = counting_get
+
+        # First call: must hit DB
+        n1 = await _st.get_nonce(session, user_id)
+        assert n1 == "test-nonce-abc"
+        assert call_count == 1, f"First get_nonce must hit DB exactly once, got {call_count}"
+
+        # Second call (same process, same user_id): must use cache, not hit DB again
+        call_count = 0
+        n2 = await _st.get_nonce(session, user_id)
+        assert n2 == "test-nonce-abc"
+        assert call_count == 0, (
+            f"Second get_nonce for same user must be served from cache (0 DB hits), got {call_count}. "
+            "This is the hot path regression: every authenticated request fires an extra SELECT."
+        )
+
+    @pytest.mark.asyncio
+    async def test_is_draining_uses_cache_on_repeat_calls(self, session):
+        """is_draining called twice should only hit DB once (cache hit)."""
+        from celerp.services import runtime_state as _rs
+
+        call_count = 0
+        original_get = session.get
+
+        async def counting_get(model, pk, **kw):
+            nonlocal call_count
+            from celerp.models.auth import SystemRuntimeState as _SRS
+            if model is _SRS:
+                call_count += 1
+            return await original_get(model, pk, **kw)
+
+        session.get = counting_get
+
+        # First call: must hit DB
+        await _rs.is_draining(session)
+        assert call_count == 1, f"First is_draining must hit DB exactly once, got {call_count}"
+
+        # Second call within TTL: must use cache
+        call_count = 0
+        await _rs.is_draining(session)
+        assert call_count == 0, (
+            f"Second is_draining within TTL must be served from cache (0 DB hits), got {call_count}. "
+            "This is the hot path regression: every write request opens a new session + SELECT."
+        )
+
+    @pytest.mark.asyncio
+    async def test_nonce_cache_invalidated_after_invalidate_sessions(self, session):
+        """Cache must be busted when invalidate_sessions is called."""
+        from celerp.services import session_tracker as _st
+        from celerp.models.auth import UserAuthState
+        import uuid as _u
+
+        user_id = str(_u.uuid4())
+        uid = _u.UUID(user_id)
+        session.add(UserAuthState(user_id=uid, nonce="old-nonce"))
+        await session.commit()
+
+        # Warm the cache
+        n1 = await _st.get_nonce(session, user_id)
+        assert n1 == "old-nonce"
+
+        # Invalidate sessions (rotates nonce)
+        await _st.invalidate_sessions(session, user_id)
+
+        # Cache must be busted - next call must return the NEW nonce
+        n2 = await _st.get_nonce(session, user_id)
+        assert n2 != "old-nonce", (
+            "get_nonce must return the rotated nonce after invalidate_sessions. "
+            "If it returns the old cached value, the security property is broken."
+        )
+
+    @pytest.mark.asyncio
+    async def test_drain_cache_invalidated_after_set_draining(self, session):
+        """Drain cache must be busted when set_draining is called."""
+        from celerp.services import runtime_state as _rs
+
+        # Warm the cache (not draining)
+        result1 = await _rs.is_draining(session)
+        assert result1 is False
+
+        # Set draining = True
+        await _rs.set_draining(session, True)
+
+        # Must NOT return stale cached False
+        result2 = await _rs.is_draining(session)
+        assert result2 is True, (
+            "is_draining must return True after set_draining(True). "
+            "If it returns False, the cache was not invalidated correctly."
+        )
