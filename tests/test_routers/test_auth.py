@@ -453,3 +453,77 @@ async def test_force_login_stores_evicting_ip(client):
     # Old token returns 401 with IP in detail
     r_dead = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a}"})
     assert r_dead.status_code == 401
+
+
+# ── _401_redirect helper unit tests ─────────────────────────────────────────
+
+def test_401_redirect_evicted_with_ip():
+    from ui.app import _401_redirect
+    r = _401_redirect("Session expired|192.168.1.1")
+    assert r.status_code == 302
+    assert "reason=evicted" in r.headers["location"]
+    assert "by=192.168.1.1" in r.headers["location"]
+
+
+def test_401_redirect_evicted_no_ip():
+    from ui.app import _401_redirect
+    r = _401_redirect("Session expired")
+    assert r.status_code == 302
+    assert "reason=evicted" in r.headers["location"]
+    assert "by=" not in r.headers["location"]
+
+
+def test_401_redirect_expired():
+    from ui.app import _401_redirect
+    r = _401_redirect("Invalid token")
+    assert r.status_code == 302
+    assert "reason=expired" in r.headers["location"]
+
+
+# ── session-watch SSE endpoint ──────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_session_watch_yields_evicted_on_invalidation(client):
+    """session-watch SSE stream emits 'evicted' event when nonce rotates."""
+    from celerp.services.session_tracker import clear as _clear_tracker, invalidate_sessions as _invalidate
+    import asyncio
+
+    await client.post(
+        "/auth/register",
+        json={"company_name": "WatchCo", "email": "watch@test.com", "name": "Admin", "password": "pw123456"},
+    )
+    _clear_tracker()
+    r_login = await client.post("/auth/login", json={"email": "watch@test.com", "password": "pw123456"})
+    assert r_login.status_code == 200
+    token = r_login.json()["access_token"]
+
+    collected = []
+
+    async def _consume():
+        # Use the API client directly (session-watch is on the API router)
+        from httpx import AsyncClient, ASGITransport
+        from celerp.main import app as api_app
+        async with AsyncClient(transport=ASGITransport(app=api_app), base_url="http://test") as c:
+            async with c.stream(
+                "GET",
+                "/auth/session-watch",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5.0,
+            ) as resp:
+                saw_evicted = False
+                async for line in resp.aiter_lines():
+                    collected.append(line)
+                    if line.startswith("event: evicted"):
+                        saw_evicted = True
+                    elif saw_evicted and line.startswith("data:"):
+                        break
+
+    # Invalidate nonce after a short delay while the stream is open
+    async def _invalidate_after():
+        await asyncio.sleep(0.5)
+        _invalidate(evicting_ip="10.0.0.1")
+
+    await asyncio.gather(_consume(), _invalidate_after())
+
+    assert any("evicted" in line for line in collected), f"Expected evicted event, got: {collected}"
+    assert any("10.0.0.1" in line for line in collected), f"Expected IP in event data, got: {collected}"

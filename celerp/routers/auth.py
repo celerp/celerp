@@ -395,3 +395,50 @@ async def logout(token: str = Depends(oauth2_scheme)) -> dict:
     from celerp.services.session_tracker import invalidate_sessions as _invalidate
     _invalidate()
     return {"detail": "Logged out."}
+
+
+@router.get("/session-watch")
+async def session_watch(token: str = Depends(oauth2_scheme)):
+    """SSE endpoint: streams a single 'evicted' event when this token's nonce
+    is invalidated (force-login or logout), then closes.
+
+    The browser JS subscribes on page load and redirects to /login when it
+    receives the event, giving the user an immediate notification rather than
+    waiting for their next page navigation.
+
+    Keepalive comments are sent every 15s to prevent proxy/browser timeouts.
+    Authentication: requires a valid bearer token at subscription time.
+    If the token is already invalid, the endpoint returns 401 immediately.
+    """
+    import asyncio
+    from fastapi.responses import StreamingResponse
+    from celerp.services.session_tracker import get_nonce as _get_nonce
+    from celerp.services.auth import get_token_claims
+
+    claims = get_token_claims(token)
+    if claims is None:
+        raise HTTPException(status_code=401, detail="Session expired")
+    token_nonce = claims.get("snonce", "")
+
+    async def _stream():
+        tick = 0
+        while True:
+            try:
+                await asyncio.sleep(2)
+            except asyncio.CancelledError:
+                return
+            if _get_nonce() != token_nonce:
+                from celerp.services.session_tracker import pop_evicted_by_ip as _pop_ip
+                import json as _json
+                ip = _pop_ip() or ""
+                yield f"event: evicted\ndata: {_json.dumps({'by': ip})}\n\n"
+                return
+            tick += 1
+            if tick % 8 == 0:  # keepalive every ~16s
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

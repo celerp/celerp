@@ -121,6 +121,10 @@ class TokenRefreshMiddleware:
         if any(path == p or path.startswith(p + "/") for p in _PUBLIC):
             await self._app(scope, receive, send)
             return
+        # SSE streaming routes must bypass the refresh middleware (it buffers responses)
+        if path == "/auth/session-watch":
+            await self._app(scope, receive, send)
+            return
 
         access_token = request.cookies.get(COOKIE_NAME)
         refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
@@ -252,10 +256,13 @@ app.exception_handlers[500] = ui_500_handler
 from ui.api_client import APIError as _APIError
 from starlette.responses import RedirectResponse as _RR
 
-async def ui_401_handler(request: Request, exc) -> _RR:
-    """Redirect 401s to /login with a reason param so the user knows why."""
-    detail = getattr(exc, "detail", "") or ""
-    # detail may be "Session expired|<ip>" when a force-login evicted this user
+
+def _401_redirect(detail: str) -> _RR:
+    """Build a /login redirect from a 401 detail string.
+
+    detail may be bare 'Session expired' or 'Session expired|<ip>' (force-login).
+    Any other detail is treated as a generic expiry.
+    """
     if detail.startswith("Session expired"):
         parts = detail.split("|", 1)
         ip = parts[1] if len(parts) == 2 else ""
@@ -264,7 +271,22 @@ async def ui_401_handler(request: Request, exc) -> _RR:
         params = "reason=expired"
     return _RR(f"/login?{params}", status_code=302)
 
+
+async def ui_401_handler(request: Request, exc) -> _RR:
+    """Redirect HTTPException 401s to /login."""
+    return _401_redirect(getattr(exc, "detail", "") or "")
+
+
+async def ui_api_error_handler(request: Request, exc: _APIError) -> _RR:
+    """Redirect APIError 401s (API → UI proxy calls) to /login."""
+    if exc.status_code == 401:
+        return _401_redirect(str(exc.detail or ""))
+    # re-raise non-401 APIErrors as 500 so the existing 500 handler formats them
+    raise exc
+
+
 app.exception_handlers[401] = ui_401_handler
+app.exception_handlers[_APIError] = ui_api_error_handler
 
 
 _static_dir = os.path.join(os.path.dirname(__file__), "static")

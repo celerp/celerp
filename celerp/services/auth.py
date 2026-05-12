@@ -87,6 +87,18 @@ def _decode_token(token: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from e
 
 
+def get_token_claims(token: str) -> dict | None:
+    """Decode token and return claims dict, or None if invalid/expired.
+
+    Does NOT hit the database or validate session nonce.  Use only where a
+    lightweight claims-only check is needed (e.g. SSE session-watch setup).
+    """
+    try:
+        return _decode_token(token)
+    except HTTPException:
+        return None
+
+
 async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSession = Depends(get_session)) -> User:
     claims = _decode_token(token)
     user_id = claims.get("sub")

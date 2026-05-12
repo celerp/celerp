@@ -608,6 +608,25 @@ document.addEventListener('DOMContentLoaded', function() {
       runPyPICheck();
     }
   })();
+
+  /* ── Session eviction watcher ─────────────────────────────────────── */
+  (function initSessionWatch() {
+    if (typeof EventSource === 'undefined') return;
+    var es = new EventSource('/auth/session-watch');
+    es.addEventListener('evicted', function(e) {
+      es.close();
+      try {
+        var data = JSON.parse(e.data || '{}');
+        var by = data.by ? '&by=' + encodeURIComponent(data.by) : '';
+        window.location.href = '/login?reason=evicted' + by;
+      } catch(_) {
+        window.location.href = '/login?reason=evicted';
+      }
+    });
+    es.onerror = function() {
+      es.close();
+    };
+  })();
 });
 """
 

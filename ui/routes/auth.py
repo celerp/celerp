@@ -277,6 +277,43 @@ def setup_routes(app):
         _clear_tokens(resp)
         return resp
 
+    @app.get("/auth/session-watch")
+    async def session_watch_proxy(request: Request):
+        """Proxy SSE session-watch to the API, injecting the bearer token from cookie.
+
+        The browser EventSource API cannot set custom headers, so the bearer token
+        must be forwarded server-side.  This route reads the httpOnly cookie and
+        streams the API SSE response back to the browser.
+        """
+        from starlette.responses import StreamingResponse as _SR
+        import httpx
+        token = request.cookies.get(COOKIE_NAME)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+
+        async def _stream():
+            try:
+                async with httpx.AsyncClient(base_url=API_BASE, timeout=None) as c:
+                    async with c.stream(
+                        "GET",
+                        "/auth/session-watch",
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=None,
+                    ) as r:
+                        if r.status_code == 401:
+                            yield "event: evicted\ndata: {}\n\n"
+                            return
+                        async for chunk in r.aiter_text():
+                            yield chunk
+            except Exception:
+                return
+
+        return _SR(
+            _stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.get("/health")
     async def health_proxy():
         """Proxy /health to the API so version checks work from the UI port."""
