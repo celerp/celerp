@@ -385,3 +385,58 @@ async def test_force_login_invalidates_other_user_tokens(client):
     assert r_old.status_code == 401, (
         f"Old token should be rejected after force-login, got {r_old.status_code}"
     )
+
+
+@pytest.mark.asyncio
+async def test_login_possible_after_force_login_and_logout(client):
+    """Regression: after B force-logs-in then logs out, both A and B must be able to log in fresh.
+
+    Scenario that Nikolai reported on 2026-05-12:
+      1. User A logged in
+      2. User B force-logs in (no 409 shown - A was silently evicted)
+      3. User B logs out
+      4. Neither A nor B could log in afterwards
+    """
+    from unittest.mock import patch
+    from celerp.services.session_tracker import clear as _clear_tracker
+
+    await client.post(
+        "/auth/register",
+        json={"company_name": "ReloginCo", "email": "userA@relogin.com", "name": "A", "password": "pw123456"},
+    )
+    _clear_tracker()
+
+    # Step 1: A logs in
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r_a = await client.post("/auth/login", json={"email": "userA@relogin.com", "password": "pw123456"})
+    assert r_a.status_code == 200
+    token_a = r_a.json()["access_token"]
+
+    # Confirm A's token works
+    r_check = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a}"})
+    assert r_check.status_code == 200
+
+    # Step 2: B force-logs in (same account in this test - simulates the nonce rotation)
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r_b = await client.post("/auth/login-force", json={"email": "userA@relogin.com", "password": "pw123456"})
+    assert r_b.status_code == 200
+    token_b = r_b.json()["access_token"]
+
+    # A's token is now dead
+    r_dead = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a}"})
+    assert r_dead.status_code == 401
+
+    # B's token works (record() was called in login_force)
+    r_b_check = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_b}"})
+    assert r_b_check.status_code == 200
+
+    # Step 3: B logs out
+    await client.post("/auth/logout", headers={"Authorization": f"Bearer {token_b}"})
+
+    # Step 4: Both A and B can log in again with fresh credentials
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r_a2 = await client.post("/auth/login", json={"email": "userA@relogin.com", "password": "pw123456"})
+    assert r_a2.status_code == 200, f"User A could not log in after B's logout: {r_a2.json()}"
+    token_a2 = r_a2.json()["access_token"]
+    r_a2_check = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a2}"})
+    assert r_a2_check.status_code == 200

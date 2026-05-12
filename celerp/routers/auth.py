@@ -163,8 +163,9 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate, record as _record
     _invalidate()
+    _record(str(user.id), str(user.company_id))
 
     return {
         "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
