@@ -461,77 +461,23 @@ function resolveStorageEnv(cfg) {
  * Guard: only active in packaged builds. Dev mode skips the updater so
  * a missing GitHub release file doesn't throw noise at the developer.
  *
- * When active:
- *   - Checks for updates silently on launch
- *   - Downloads in background
- *   - Forwards update events to the renderer via IPC
- *   - Errors are logged only — never surfaced as crashes
+ * State machine (matches doc section 10):
+ *   IDLE -> CHECKING -> DOWNLOADING -> READY -> [admin clicks] -> INSTALLING
+ *   Any state -> ERROR on failure (always surfaced to renderer)
+ *
+ * autoInstallOnAppQuit = false: Squirrel/NSIS never install on normal quit.
+ * The ONLY install trigger is an explicit admin action (installUpdate IPC).
+ * This eliminates background race conditions entirely.
+ *
+ * Periodic re-check: every 4 hours while the app is running, in case a new
+ * version is released while the user has the app open.
  */
-// ── Pending-update stamp ─────────────────────────────────────────────────────
-// On Mac, autoInstallOnAppQuit hands off to Squirrel which replaces the bundle
-// in the background AFTER the app exits. Relaunching before Squirrel finishes
-// (typically 1-3 min) runs the old binary, which sees no update applied and
-// starts downloading again — creating an infinite loop.
-//
-// We break the loop with a stamp file:
-//   - Written to userData when download completes, recording the pending version.
-//   - On next launch, if the stamp exists and app.getVersion() == stamp.from,
-//     Squirrel hasn't finished yet — skip checkForUpdates and show a waiting UI.
-//   - If the stamp exists and app.getVersion() == stamp.to, install succeeded —
-//     delete the stamp and show a "Updated to vX" toast.
-const PENDING_UPDATE_STAMP = path.join(app.getPath("userData"), "pending-update.json");
-
-function readPendingUpdateStamp() {
-  try {
-    return JSON.parse(fs.readFileSync(PENDING_UPDATE_STAMP, "utf8"));
-  } catch (_) {
-    return null;
-  }
-}
-
-function writePendingUpdateStamp(fromVersion, toVersion) {
-  try {
-    fs.writeFileSync(PENDING_UPDATE_STAMP, JSON.stringify({ from: fromVersion, to: toVersion, ts: Date.now() }));
-  } catch (_) {}
-}
-
-function clearPendingUpdateStamp() {
-  try { fs.unlinkSync(PENDING_UPDATE_STAMP); } catch (_) {}
-}
-
 function setupAutoUpdater() {
   if (!app.isPackaged) return;
 
   autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.allowPrerelease = false;
-
-  const currentVersion = app.getVersion();
-  const stamp = readPendingUpdateStamp();
-
-  // Check if we just successfully updated
-  if (stamp && stamp.to === currentVersion) {
-    clearPendingUpdateStamp();
-    // Notify renderer of successful update once the window loads
-    if (mainWindow) {
-      mainWindow.webContents.once("did-finish-load", () => {
-        mainWindow.webContents.send("update-just-applied", { version: currentVersion });
-      });
-    }
-  }
-
-  // If stamp exists and version hasn't changed, Squirrel is still working —
-  // skip checkForUpdates entirely to avoid the download loop.
-  const installPending = stamp && stamp.from === currentVersion;
-  if (installPending) {
-    console.log("[updater] install pending for v" + stamp.to + " — skipping update check");
-    if (mainWindow) {
-      mainWindow.webContents.once("did-finish-load", () => {
-        mainWindow.webContents.send("update-install-pending", { version: stamp.to });
-      });
-    }
-    return;
-  }
 
   function sendLog(msg) {
     if (mainWindow) mainWindow.webContents.send("update-log", String(msg));
@@ -542,12 +488,11 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("update-available", (info) => {
-    sendLog("Found version " + info.version + " — downloading...");
+    sendLog("Found v" + info.version + " — downloading...");
     if (mainWindow) mainWindow.webContents.send("update-available", info);
   });
 
   autoUpdater.on("update-not-available", () => {
-    sendLog("Already up to date.");
     if (mainWindow) mainWindow.webContents.send("update-not-available");
   });
 
@@ -569,18 +514,17 @@ function setupAutoUpdater() {
   });
 
   autoUpdater.on("update-downloaded", (info) => {
-    sendLog("Download complete — quit Celerp to install v" + info.version);
-    writePendingUpdateStamp(currentVersion, info.version);
+    sendLog("v" + info.version + " ready — click 'Restart to Install'");
     if (mainWindow) mainWindow.webContents.send("update-downloaded", info);
   });
 
   autoUpdater.on("error", (err) => {
-    // Log only — update failures must never interrupt the user's work.
-    // Also notify renderer so the UI can reset from "Checking..." state.
+    // Always surface errors to the renderer — never silently swallow them.
+    // Update failures must never interrupt work, but must be visible.
     const msg = err?.message ?? String(err);
     console.error("[updater] error:", msg);
-    sendLog("Error: " + msg);
-    if (mainWindow) mainWindow.webContents.send("update-not-available");
+    sendLog("Update error: " + msg);
+    if (mainWindow) mainWindow.webContents.send("update-error", { message: msg });
   });
 
   // Delay initial check until the renderer has loaded and registered its IPC handlers.
@@ -594,6 +538,11 @@ function setupAutoUpdater() {
     // Fallback: mainWindow not yet created (shouldn't happen in normal flow)
     autoUpdater.checkForUpdates().catch(() => {});
   }
+
+  // Periodic re-check every 4 hours in case a new release ships while app is open.
+  setInterval(() => {
+    autoUpdater.checkForUpdates().catch(() => {});
+  }, 4 * 60 * 60 * 1000);
 }
 
 function setLoadingStatus(msg) {

@@ -494,7 +494,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     if (window.celerp) {
       // Electron path
-      var isManualCheck = false;
 
       window.celerp.getVersion().then(function(v) {
         if (versionEl) versionEl.textContent = 'v' + v;
@@ -502,8 +501,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
       setState('Up to date', false);
 
+      // Log lines: always show — no isManualCheck gate.
       window.celerp.onUpdateLog(function(msg) {
-        if (isManualCheck) appendLog(msg);
+        appendLog(msg);
       });
 
       window.celerp.onUpdateAvailable(function(info) {
@@ -519,45 +519,33 @@ document.addEventListener('DOMContentLoaded', function() {
       window.celerp.onUpdateNotAvailable(function() {
         setState('Up to date', false);
         resetToIdle();
-        isManualCheck = false;
       });
 
       window.celerp.onUpdateDownloaded(function(info) {
-        setState('Ready — quit Celerp to install v' + info.version, false);
+        var v = info && info.version ? info.version : 'update';
+        setState('v' + v + ' ready to install', false);
         setProgress(100);
         setCheckBtn(false);
-        appendLog('Quit Celerp completely to finish installing v' + info.version + '. Reopen after ~1 minute.');
+        if (restartBtn) restartBtn.style.display = '';
+        appendLog('v' + v + ' downloaded. Click "Restart to Install" when ready.');
       });
 
-      window.celerp.onUpdateInstallPending(function(info) {
-        var v = info && info.version ? info.version : 'update';
-        setState('Installing v' + v + ' in background...', false);
-        setCheckBtn(false);
-        appendLog('Update v' + v + ' is being installed by the system. Please wait 1-2 minutes, then reopen Celerp.');
-      });
-
-      window.celerp.onUpdateJustApplied(function(info) {
-        var v = info && info.version ? info.version : '';
-        setState('Updated to v' + v + ' \u2713', false);
+      // Errors are always visible — never silently swallowed.
+      window.celerp.onUpdateError(function(info) {
+        var msg = info && info.message ? info.message : 'Unknown error';
+        setState('Update check failed', false);
+        appendLog('Error: ' + msg);
         resetToIdle();
-        // Open the notification panel briefly so the user sees the success
-        var panel = document.getElementById('notif-panel');
-        if (panel) panel.style.display = '';
-        setTimeout(function() {
-          setState('Up to date', false);
-        }, 8000);
       });
 
       if (checkBtn) {
         checkBtn.addEventListener('click', function() {
-          isManualCheck = true;
           setCheckBtn(false);
           setState('Checking...', false);
           if (logEl) { logEl.textContent = ''; logEl.style.display = 'none'; }
           window.celerp.checkForUpdates().catch(function() {
-            setState('Up to date', false);
+            setState('Update check failed', false);
             resetToIdle();
-            isManualCheck = false;
           });
         });
       }

@@ -38,11 +38,9 @@ contextBridge.exposeInMainWorld("celerp", {
   // Trigger a manual update check.
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
 
-  // Register a callback for when the app launches while a Squirrel install is still pending.
-  onUpdateInstallPending: (cb) => ipcRenderer.on("update-install-pending", (_event, info) => cb(info)),
-
-  // Register a callback for when the app launches after a successful update.
-  onUpdateJustApplied: (cb) => ipcRenderer.on("update-just-applied", (_event, info) => cb(info)),
+  // Register a callback for update errors ({ message }).
+  // Always fired on any update error — never silently dropped.
+  onUpdateError: (cb) => ipcRenderer.on("update-error", (_event, info) => cb(info)),
 
   // Quit and install the downloaded update immediately.
   installUpdate: () => ipcRenderer.send("install-update"),

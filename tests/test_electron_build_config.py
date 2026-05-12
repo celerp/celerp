@@ -156,6 +156,7 @@ def test_preload_exposes_required_updater_api():
         "onDownloadProgress",
         "onUpdateLog",
         "checkForUpdates",
+        "onUpdateError",
         "installUpdate",
     ]
     for name in required:
@@ -369,4 +370,92 @@ def test_build_yml_delete_checks_http_status():
     assert ">= 500" in step_block or "-ge 500" in step_block, (
         "build.yml DELETE step does not fail on 5xx responses. "
         "A server-side delete failure will silently allow a stale asset to remain."
+    )
+
+
+def test_main_auto_install_on_quit_disabled():
+    """autoInstallOnAppQuit must be false.
+
+    With true, Squirrel installs on any normal quit without admin confirmation.
+    This creates an uncontrolled background install that cannot be monitored or
+    tested. The only install trigger must be an explicit admin action.
+    """
+    src = _main_src()
+    assert "autoInstallOnAppQuit = false" in src, (
+        "main.js sets autoInstallOnAppQuit = true. "
+        "This allows Squirrel to install silently on normal quit, creating a "
+        "background race condition. Set it to false."
+    )
+    assert "autoInstallOnAppQuit = true" not in src, (
+        "main.js still has autoInstallOnAppQuit = true. Remove it."
+    )
+
+
+def test_main_error_sends_update_error_not_not_available():
+    """The updater error handler must send 'update-error', not 'update-not-available'.
+
+    Sending update-not-available on error is misleading — it resets state to
+    'Up to date' even when the check failed. Errors must be visible.
+    """
+    src = _main_src()
+    err_idx = src.find('autoUpdater.on("error"')
+    assert err_idx != -1, "autoUpdater error handler not found in main.js"
+    handler_block = src[err_idx: err_idx + 400]
+    assert '"update-error"' in handler_block, (
+        "autoUpdater error handler does not send 'update-error' IPC. "
+        "Errors will be silently swallowed in the renderer."
+    )
+    assert '"update-not-available"' not in handler_block, (
+        "autoUpdater error handler sends 'update-not-available' on error. "
+        "This misleadingly shows 'Up to date' when the check actually failed."
+    )
+
+
+def test_main_periodic_check_interval():
+    """main.js must schedule a periodic update check (every 4 hours).
+
+    Without a periodic check, users who keep the app open for days will miss
+    newly released versions until they manually restart.
+    """
+    src = _main_src()
+    assert "setInterval" in src, (
+        "main.js does not schedule a periodic update check via setInterval. "
+        "Long-running sessions will never see new releases."
+    )
+    # 4 hours in ms = 14400000; also accept the expression form
+    assert "14400000" in src or "4 * 60 * 60 * 1000" in src, (
+        "main.js periodic check interval is not 4 hours (14400000 ms). "
+        "Use setInterval(..., 4 * 60 * 60 * 1000)."
+    )
+
+
+def test_shell_no_is_manual_check_gate():
+    """shell.py must not gate log output behind isManualCheck.
+
+    All update log lines — including from background checks — must be shown.
+    Errors in particular must always be visible regardless of who triggered the check.
+    """
+    src = _shell_src()
+    # Check for the variable declaration/assignment, not just the word in comments
+    assert "var isManualCheck" not in src, (
+        "shell.py still declares var isManualCheck. Remove it. "
+        "All update log lines must be shown unconditionally."
+    )
+    assert "isManualCheck = true" not in src, (
+        "shell.py still sets isManualCheck = true. Remove it."
+    )
+
+
+def test_shell_has_on_update_error_handler():
+    """shell.py must handle the onUpdateError event from the IPC bridge."""
+    src = _shell_src()
+    assert "onUpdateError" in src, (
+        "shell.py does not register an onUpdateError handler. "
+        "Update errors will be silently ignored in the UI."
+    )
+    err_idx = src.find("onUpdateError")
+    handler_block = src[err_idx: err_idx + 300]
+    assert "Update check failed" in handler_block or "failed" in handler_block.lower(), (
+        "onUpdateError handler does not set an error state. "
+        "The UI will show 'Up to date' even when the check failed."
     )
