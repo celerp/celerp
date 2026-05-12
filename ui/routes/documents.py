@@ -633,28 +633,37 @@ def setup_routes(app):
             docs_resp = None
             if is_drafts_view and doc_type == "purchase_order":
                 # PO drafts view: fetch both purchase_order and bill drafts combined.
+                # Summary and draft counts are fetched concurrently.
+                import asyncio as _asyncio
                 bill_params = {**params, "doc_type": "bill"}
-                po_resp = await api.list_docs(token, params)
-                bill_resp = await api.list_docs(token, bill_params)
+                draft_params = {"status": "draft", "doc_type": doc_type, "limit": 1}
+                bill_draft_params = {"status": "draft", "doc_type": "bill", "limit": 1}
+                po_resp, bill_resp, draft_resp, bill_draft_resp, summary = await _asyncio.gather(
+                    api.list_docs(token, params),
+                    api.list_docs(token, bill_params),
+                    api.list_docs(token, draft_params),
+                    api.list_docs(token, bill_draft_params),
+                    api.get_doc_summary(token, doc_type=doc_type),
+                )
                 po_items = po_resp.get("items", []) if isinstance(po_resp, dict) else po_resp
                 bill_items = bill_resp.get("items", []) if isinstance(bill_resp, dict) else bill_resp
                 docs = po_items + bill_items
+                draft_count = (
+                    (draft_resp.get("total", 0) if isinstance(draft_resp, dict) else len(draft_resp))
+                    + (bill_draft_resp.get("total", 0) if isinstance(bill_draft_resp, dict) else len(bill_draft_resp))
+                )
             else:
-                docs_resp = await api.list_docs(token, params)
+                import asyncio as _asyncio
+                draft_params = {"status": "draft", "limit": 1}
+                if doc_type:
+                    draft_params["doc_type"] = doc_type
+                docs_resp, draft_resp, summary = await _asyncio.gather(
+                    api.list_docs(token, params),
+                    api.list_docs(token, draft_params),
+                    api.get_doc_summary(token, doc_type=doc_type),
+                )
                 docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-            # Fetch draft count for the badge (always unfiltered).
-            # For purchase_order pages, also include bill drafts so users can
-            # find bills they started and closed without finalizing.
-            draft_params = {"status": "draft", "limit": 1}
-            if doc_type:
-                draft_params["doc_type"] = doc_type
-            draft_resp = await api.list_docs(token, {**draft_params, "limit": 250})
-            draft_count = draft_resp.get("total", 0) if isinstance(draft_resp, dict) else len(draft_resp)
-            if doc_type == "purchase_order":
-                bill_draft_resp = await api.list_docs(token, {"status": "draft", "doc_type": "bill", "limit": 250})
-                bill_draft_count = bill_draft_resp.get("total", 0) if isinstance(bill_draft_resp, dict) else len(bill_draft_resp)
-                draft_count += bill_draft_count
-            summary = await api.get_doc_summary(token, doc_type=doc_type)
+                draft_count = draft_resp.get("total", 0) if isinstance(draft_resp, dict) else len(draft_resp)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)

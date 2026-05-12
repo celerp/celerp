@@ -12,7 +12,7 @@ from datetime import UTC, datetime, date as _date
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, func as _func
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -265,45 +265,84 @@ async def list_docs(
 ) -> dict:
     from datetime import date as _date_cls
     today = _date_cls.today().isoformat()
-    rows = (await session.execute(select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
-    out = [r.state | {"id": r.entity_id} for r in rows]
+
+    # Build SQL WHERE conditions - push all indexable filters into the DB.
+    # Complex post-filters (overdue_only, unfulfilled_only, etc.) still run in
+    # Python because they reference nested JSON fields or multi-column logic.
+    base_where = [
+        Projection.company_id == company_id,
+        Projection.entity_type == "doc",
+    ]
     if doc_type:
-        out = [x for x in out if x.get("doc_type") == doc_type]
+        base_where.append(Projection.state["doc_type"].as_string() == doc_type)
     if status:
-        out = [x for x in out if x.get("status") == status]
+        base_where.append(Projection.state["status"].as_string() == status)
     if status_in:
         _allowed = set(status_in.split(","))
-        out = [x for x in out if x.get("status") in _allowed]
-    if all_issued:
-        out = [x for x in out if x.get("status") not in ("draft", "void")]
-    if overdue_only:
-        out = [x for x in out if x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void")]
-    if unfulfilled_only:
-        out = [x for x in out if x.get("status") not in ("draft", "void") and x.get("fulfillment_status") != "fulfilled"]
-    if not_restocked:
-        out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or [])]
-    if not_stocked:
-        out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
-    if converted_to_type:
-        out = [x for x in out if x.get("converted_to_type") == converted_to_type]
+        base_where.append(Projection.state["status"].as_string().in_(_allowed))
     if exclude_status:
-        out = [x for x in out if x.get("status") != exclude_status]
-    if date_from:
-        out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] >= date_from]
-    if date_to:
-        out = [x for x in out if (x.get("issue_date") or x.get("created_at") or x.get("date") or "")[:10] <= date_to]
+        base_where.append(Projection.state["status"].as_string() != exclude_status)
     if contact_id:
-        out = [x for x in out if x.get("contact_id") == contact_id]
+        base_where.append(Projection.state["contact_id"].as_string() == contact_id)
+    if date_from:
+        base_where.append(Projection.state["issue_date"].as_string() >= date_from)
+    if date_to:
+        base_where.append(Projection.state["issue_date"].as_string() <= date_to)
     if q:
-        ql = q.lower()
-        out = [x for x in out if ql in str(x.get("doc_number") or x.get("ref") or "").lower()
-               or ql in str(x.get("contact_name") or x.get("contact_id") or "").lower()]
-    out.sort(key=lambda x: x.get("issue_date") or x.get("created_at") or x.get("date") or "", reverse=True)
-    total = len(out)
-    if offset:
-        out = out[offset:]
+        ql = f"%{q.lower()}%"
+        base_where.append(
+            _sa.or_(
+                _sa.func.lower(Projection.state["doc_number"].as_string()).like(ql),
+                _sa.func.lower(Projection.state["contact_name"].as_string()).like(ql),
+                _sa.func.lower(Projection.state["contact_id"].as_string()).like(ql),
+                _sa.func.lower(Projection.state["ref"].as_string()).like(ql),
+            )
+        )
+
+    # Remaining filters still need Python evaluation (multi-field logic).
+    needs_python_filter = any([all_issued, overdue_only, unfulfilled_only, not_restocked, not_stocked, converted_to_type])
+
+    if needs_python_filter:
+        # Fetch only needed columns to reduce deserialization cost.
+        rows = (await session.execute(select(Projection).where(*base_where))).scalars().all()
+        out = [r.state | {"id": r.entity_id} for r in rows]
+        if all_issued:
+            out = [x for x in out if x.get("status") not in ("draft", "void")]
+        if overdue_only:
+            out = [x for x in out if x.get("due_date") and x["due_date"] < today and x.get("status") not in ("draft", "void")]
+        if unfulfilled_only:
+            out = [x for x in out if x.get("status") not in ("draft", "void") and x.get("fulfillment_status") != "fulfilled"]
+        if not_restocked:
+            out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("return_received_items") or [])]
+        if not_stocked:
+            out = [x for x in out if x.get("status") not in ("draft", "void") and not (x.get("received_items") or [])]
+        if converted_to_type:
+            out = [x for x in out if x.get("converted_to_type") == converted_to_type]
+        out.sort(key=lambda x: x.get("issue_date") or x.get("created_at") or x.get("date") or "", reverse=True)
+        total = len(out)
+        if offset:
+            out = out[offset:]
+        if limit is not None:
+            out = out[:limit]
+        return {"items": out, "total": total}
+
+    # Fast path: all filters in SQL - use COUNT + paginated SELECT.
+    count_q = select(_func.count()).select_from(Projection).where(*base_where)
+    total = (await session.execute(count_q)).scalar_one()
+
+    list_q = (
+        select(Projection)
+        .where(*base_where)
+        .order_by(
+            Projection.state["issue_date"].as_string().desc(),
+        )
+        .offset(offset)
+    )
     if limit is not None:
-        out = out[:limit]
+        list_q = list_q.limit(limit)
+
+    rows = (await session.execute(list_q)).scalars().all()
+    out = [r.state | {"id": r.entity_id} for r in rows]
     return {"items": out, "total": total}
 
 
@@ -315,7 +354,13 @@ async def get_doc_summary(
 ) -> dict:
     from datetime import date as _date_cls
     today = _date_cls.today().isoformat()
-    rows = (await session.execute(select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "doc"))).scalars().all()
+    summary_where = [
+        Projection.company_id == company_id,
+        Projection.entity_type == "doc",
+    ]
+    if doc_type:
+        summary_where.append(Projection.state["doc_type"].as_string() == doc_type)
+    rows = (await session.execute(select(Projection).where(*summary_where))).scalars().all()
     ar_gross = ar_paid = ar_outstanding = 0.0
     count_by_status: dict[str, int] = {}
     invoice_count = 0
@@ -337,8 +382,6 @@ async def get_doc_summary(
     converted_to_invoice_count = 0
     for row in rows:
         state = row.state
-        if doc_type and state.get("doc_type") != doc_type:
-            continue
         st = state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
         dt = state.get("doc_type")
