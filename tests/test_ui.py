@@ -2898,6 +2898,29 @@ class TestSprint4DocCreation:
         assert b"create-blank" in r.content
 
     @pytest.mark.asyncio
+    async def test_docs_page_memo_renders_create_button(self, ui_client):
+        """GET /docs?type=memo renders a create-blank button pointing to type=memo."""
+        with (
+            patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test", "currency": "USD"})),
+        ):
+            r = await ui_client.get("/docs?type=memo", cookies=_authed())
+        assert r.status_code == 200
+        content = r.content.decode()
+        assert "create-blank" in content, "New memo button must have create-blank URL"
+        assert "type=memo" in content, "create-blank URL must include type=memo"
+
+    @pytest.mark.asyncio
+    async def test_create_blank_memo_redirects(self, ui_client):
+        """POST /docs/create-blank?type=memo returns 204 with HX-Redirect."""
+        with patch("ui.api_client.create_doc",
+                   new=AsyncMock(return_value={"id": "doc:MEM-001"})):
+            r = await ui_client.post("/docs/create-blank?type=memo", cookies=_authed())
+        assert r.status_code == 204
+        assert "/docs/doc:MEM-001" in r.headers.get("HX-Redirect", "")
+
+    @pytest.mark.asyncio
     async def test_create_blank_uses_id_key(self, ui_client):
         """API returns {id: ...} not {entity_id: ...}; UI must handle both."""
         with patch("ui.api_client.create_doc",
