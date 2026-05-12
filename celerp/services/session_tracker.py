@@ -54,7 +54,10 @@ from celerp.models.auth import SessionRegistry, UserAuthState
 # invalidation is missed, the window is bounded.
 # ---------------------------------------------------------------------------
 
-_NONCE_TTL_S = 60  # seconds
+# Short TTL so eviction propagates quickly (within one polling interval).
+# session-watch polls every 10s, so 10s TTL means worst-case eviction lag ≈ 20s.
+# Postgres remains authoritative - cache is evicted on every mutation.
+_NONCE_TTL_S = 10  # seconds
 
 # {user_id_str: (nonce: str, cached_at: float)}
 _nonce_cache: dict[str, tuple[str, float]] = {}
@@ -81,6 +84,15 @@ def _nonce_cache_bust(user_id: str) -> None:
 
 def _nonce_cache_bust_all() -> None:
     _nonce_cache.clear()
+
+
+def get_nonce_from_cache(user_id: str) -> str | None:
+    """Return the cached nonce without hitting the DB.  Returns None on miss.
+
+    Used by the session-watch SSE loop so it avoids a DB round-trip on every
+    poll tick when the nonce is already known and fresh.
+    """
+    return _nonce_cache_get(user_id)
 
 
 # ---------------------------------------------------------------------------

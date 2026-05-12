@@ -435,7 +435,7 @@ async def session_watch(
     import asyncio
     import json as _json
     from fastapi.responses import StreamingResponse
-    from celerp.services.session_tracker import get_nonce as _get_nonce, pop_evicted_by_ip as _pop_ip
+    from celerp.services.session_tracker import get_nonce as _get_nonce, pop_evicted_by_ip as _pop_ip, get_nonce_from_cache as _get_nonce_from_cache
     from celerp.services.auth import get_token_claims
     from celerp.db import SessionLocal as AsyncSessionLocal
 
@@ -446,25 +446,47 @@ async def session_watch(
     user_id = claims.get("sub", "")
 
     async def _stream():
+        # Poll every 10s - eviction lag is at most 10s + one cache TTL (also 10s),
+        # so worst-case forced-logout propagation is ~20s. This is fine for a
+        # security control where the alternative is hammering Postgres every 2s.
         tick = 0
         while True:
             try:
-                await asyncio.sleep(2)
+                await asyncio.sleep(10)
             except asyncio.CancelledError:
                 return
+
+            # Fast path: check in-process nonce cache first (no DB round-trip).
+            # get_nonce_from_cache returns None on miss; fall through to DB only then.
+            cached_nonce = _get_nonce_from_cache(user_id)
+            if cached_nonce is not None:
+                if cached_nonce != token_nonce:
+                    # Nonce has changed - need DB to get the evicting IP.
+                    async with AsyncSessionLocal() as s:
+                        ip = await _pop_ip(s, user_id) or ""
+                    yield f"event: evicted\ndata: {_json.dumps({'by': ip})}\n\n"
+                    return
+                # Cache hit + nonce matches - no DB call needed this tick.
+                tick += 1
+                if tick % 3 == 0:  # keepalive every ~30s
+                    yield ": keepalive\n\n"
+                continue
+
+            # Cache miss: hit Postgres (happens at most once per cache TTL = 10s).
             async with AsyncSessionLocal() as s:
                 current_nonce = await _get_nonce(s, user_id)
                 if current_nonce != token_nonce:
                     ip = await _pop_ip(s, user_id) or ""
                     yield f"event: evicted\ndata: {_json.dumps({'by': ip})}\n\n"
                     return
-                # Drain check: ask client to reload so it can pick up a new worker
+                # Drain check: only when we already have a DB connection open.
                 from celerp.services.runtime_state import is_draining as _is_draining
                 if await _is_draining(s):
                     yield "event: drain\ndata: {}\n\n"
                     return
+
             tick += 1
-            if tick % 8 == 0:  # keepalive every ~16s
+            if tick % 3 == 0:  # keepalive every ~30s
                 yield ": keepalive\n\n"
 
     return StreamingResponse(
