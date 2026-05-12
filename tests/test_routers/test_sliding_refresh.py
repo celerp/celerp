@@ -109,7 +109,6 @@ def test_maybe_refresh_bearer_returns_none_for_garbage():
 def test_maybe_refresh_bearer_issues_new_token_when_stale():
     from celerp.middleware import _maybe_refresh_bearer
     from celerp.config import settings
-    from celerp.services.session_tracker import get_nonce as _get_nonce
     from jose import jwt as _jwt
 
     now = time.time()
@@ -118,7 +117,7 @@ def test_maybe_refresh_bearer_issues_new_token_when_stale():
         "sub": "user-abc",
         "company_id": "company-xyz",
         "role": "admin",
-        "snonce": _get_nonce(),  # must match current nonce or get_current_user rejects it
+        "snonce": "test-nonce-value",  # arbitrary; refresh copies it forward as-is
         "exp": int(now + total_ttl * 0.49),
     }
     stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)

@@ -33,14 +33,22 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _issue_tokens(user_id: str, company_id: str, role: str, email: str, jti: str | None = None) -> dict:
-    """Mint an access+refresh token pair, register the access token's JTI, return response dict."""
-    import time as _time
+async def _issue_tokens(
+    session: AsyncSession,
+    user_id: str,
+    company_id: str,
+    role: str,
+    email: str,
+    jti: str | None = None,
+) -> dict:
+    """Mint an access+refresh token pair, register the JTI, return response dict."""
+    from datetime import timezone as _tz
     from celerp.config import settings as _settings
-    from celerp.services.session_tracker import register_token as _register
-    access_token, token_jti = create_access_token(user_id, company_id, role, email, jti=jti)
-    expiry = _time.time() + int(_settings.access_token_expire_minutes) * 60
-    _register(token_jti, user_id, expiry)
+    from celerp.services.session_tracker import get_nonce as _get_nonce, register_token as _register
+    snonce = await _get_nonce(session, user_id)
+    access_token, token_jti = create_access_token(user_id, company_id, role, email, jti=jti, snonce=snonce)
+    expiry_dt = datetime.now(_tz.utc) + timedelta(minutes=int(_settings.access_token_expire_minutes))
+    await _register(session, token_jti, user_id, expiry_dt)
     return {
         "access_token": access_token,
         "refresh_token": create_refresh_token(user_id, company_id, role, email),
@@ -134,7 +142,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         logger.error("register failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
 
-    return _issue_tokens(str(user.id), str(company.id), user.role, user.email)
+    return await _issue_tokens(session, str(user.id), str(company.id), user.role, user.email)
 
 
 from slowapi import Limiter
@@ -155,10 +163,11 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
     from celerp.gateway.state import get_session_token as _get_session_token
     from celerp.services.session_tracker import active_user_ids as _active_ids
     if not _get_session_token():
-        if _active_ids():
+        active = await _active_ids(session)
+        if active:
             raise HTTPException(status_code=409, detail="direct_connection_limit")
 
-    return _issue_tokens(str(user.id), str(user.company_id), user.role, user.email)
+    return await _issue_tokens(session, str(user.id), str(user.company_id), user.role, user.email)
 
 
 @router.post("/login-force")
@@ -170,8 +179,9 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     from celerp.services.session_tracker import invalidate_sessions as _invalidate
-    _invalidate(evicting_ip=request.client.host if request.client else None)
-    return _issue_tokens(str(user.id), str(user.company_id), user.role, user.email)
+    evicting_ip = request.client.host if request.client else None
+    await _invalidate(session, str(user.id), evicting_ip=evicting_ip)
+    return await _issue_tokens(session, str(user.id), str(user.company_id), user.role, user.email)
 
 
 class RefreshRequest(BaseModel):
@@ -200,7 +210,7 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     if link is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    return _issue_tokens(user_id, company_id, role, user.email)
+    return await _issue_tokens(session, user_id, company_id, role, user.email)
 
 
 @router.post("/api-key")
@@ -270,7 +280,7 @@ async def switch_company(
     company = await session.get(Company, company_id)
     if company is None or not company.is_active:
         raise HTTPException(status_code=403, detail="Company is deactivated")
-    return _issue_tokens(str(user.id), str(company_id), link.role, user.email)
+    return await _issue_tokens(session, str(user.id), str(company_id), link.role, user.email)
 
 
 # ── Password Reset ────────────────────────────────────────────────────────────
@@ -318,7 +328,7 @@ async def password_reset_request(
             f"</p>"
             f"<p>This link expires in <strong>{_RESET_TOKEN_TTL_MINUTES} minutes</strong>.</p>"
             f"<p style='color:#888;font-size:13px;'>If you didn't request this, you can safely ignore "
-            f"this email — your password won't change.</p>"
+            f"this email - your password won't change.</p>"
         )
         body_text = (
             f"Hi {user.name},\n\n"
@@ -384,21 +394,31 @@ async def change_password(
 
 
 @router.post("/logout")
-async def logout(token: str = Depends(oauth2_scheme)) -> dict:
-    """Invalidate all active sessions by clearing the tracker and rotating the nonce.
+async def logout(
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Invalidate all active sessions for the current user by wiping their JTIs
+    and rotating their nonce.
 
-    Called by the UI server on logout so the mutation runs inside the API process
-    (the session tracker is in-process state, not shared with the UI server).
-    After this call every existing access token is immediately rejected (401)
-    because the embedded snonce no longer matches.
+    After this call every existing access token for this user is immediately
+    rejected (snonce mismatch) regardless of expiry.
     """
+    from celerp.services.auth import get_token_claims
     from celerp.services.session_tracker import invalidate_sessions as _invalidate
-    _invalidate()
+    claims = get_token_claims(token)
+    if claims:
+        user_id = claims.get("sub", "")
+        if user_id:
+            await _invalidate(session, user_id)
     return {"detail": "Logged out."}
 
 
 @router.get("/session-watch")
-async def session_watch(token: str = Depends(oauth2_scheme)):
+async def session_watch(
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session),
+):
     """SSE endpoint: streams a single 'evicted' event when this token's nonce
     is invalidated (force-login or logout), then closes.
 
@@ -406,19 +426,22 @@ async def session_watch(token: str = Depends(oauth2_scheme)):
     receives the event, giving the user an immediate notification rather than
     waiting for their next page navigation.
 
-    Keepalive comments are sent every 15s to prevent proxy/browser timeouts.
+    Keepalive comments are sent every ~16s to prevent proxy/browser timeouts.
     Authentication: requires a valid bearer token at subscription time.
     If the token is already invalid, the endpoint returns 401 immediately.
     """
     import asyncio
+    import json as _json
     from fastapi.responses import StreamingResponse
-    from celerp.services.session_tracker import get_nonce as _get_nonce
+    from celerp.services.session_tracker import get_nonce as _get_nonce, pop_evicted_by_ip as _pop_ip
     from celerp.services.auth import get_token_claims
+    from celerp.db import SessionLocal as AsyncSessionLocal
 
     claims = get_token_claims(token)
     if claims is None:
         raise HTTPException(status_code=401, detail="Session expired")
     token_nonce = claims.get("snonce", "")
+    user_id = claims.get("sub", "")
 
     async def _stream():
         tick = 0
@@ -427,12 +450,12 @@ async def session_watch(token: str = Depends(oauth2_scheme)):
                 await asyncio.sleep(2)
             except asyncio.CancelledError:
                 return
-            if _get_nonce() != token_nonce:
-                from celerp.services.session_tracker import pop_evicted_by_ip as _pop_ip
-                import json as _json
-                ip = _pop_ip() or ""
-                yield f"event: evicted\ndata: {_json.dumps({'by': ip})}\n\n"
-                return
+            async with AsyncSessionLocal() as s:
+                current_nonce = await _get_nonce(s, user_id)
+                if current_nonce != token_nonce:
+                    ip = await _pop_ip(s, user_id) or ""
+                    yield f"event: evicted\ndata: {_json.dumps({'by': ip})}\n\n"
+                    return
             tick += 1
             if tick % 8 == 0:  # keepalive every ~16s
                 yield ": keepalive\n\n"

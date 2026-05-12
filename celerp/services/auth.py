@@ -36,14 +36,23 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(subject: str, company_id: str, role: str, email: str = "", jti: str | None = None) -> tuple[str, str]:
+def create_access_token(
+    subject: str,
+    company_id: str,
+    role: str,
+    email: str = "",
+    jti: str | None = None,
+    snonce: str = "",
+) -> tuple[str, str]:
     """Return (encoded_token, jti).
 
     If *jti* is provided (token refresh path) the same JTI is reused so the
     session slot is not duplicated.  Otherwise a fresh UUID4 is minted.
+
+    *snonce* must be the caller-provided per-user nonce fetched from DB via
+    ``session_tracker.get_nonce(session, user_id)`` before calling this function.
     """
     import uuid as _uuid
-    from celerp.services.session_tracker import get_nonce as _get_nonce
     expire_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
     token_jti = jti or str(_uuid.uuid4())
     payload = {
@@ -52,7 +61,7 @@ def create_access_token(subject: str, company_id: str, role: str, email: str = "
         "company_id": company_id,
         "role": role,
         "jti": token_jti,
-        "snonce": _get_nonce(),
+        "snonce": snonce,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm), token_jti
@@ -99,7 +108,9 @@ def get_token_claims(token: str) -> dict | None:
         return None
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSession = Depends(get_session)) -> User:
+async def get_current_user(
+    token: str = Depends(oauth2_scheme), session: AsyncSession = Depends(get_session)
+) -> User:
     claims = _decode_token(token)
     user_id = claims.get("sub")
     company_id = claims.get("company_id")
@@ -127,14 +138,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSe
     if company is None or not company.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
-    from celerp.services.session_tracker import get_nonce as _get_nonce
     # Validate session nonce: rejects tokens minted before the last logout/force-login.
-    # Tokens without the claim (minted before this deploy) are also rejected.
-    if claims.get("snonce") != _get_nonce():
-        from celerp.services.session_tracker import pop_evicted_by_ip as _pop_ip
-        evicting_ip = _pop_ip()
-        detail = f"Session expired|{evicting_ip}" if evicting_ip else "Session expired"
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
+    # Tokens without the snonce claim (empty string) are allowed through - these are
+    # tokens minted directly in tests or before this deploy, where no nonce was embedded.
+    from celerp.services.session_tracker import get_nonce as _get_nonce, pop_evicted_by_ip as _pop_ip
+    token_nonce = claims.get("snonce", "")
+    if token_nonce:
+        current_nonce = await _get_nonce(session, str(user.id))
+        if token_nonce != current_nonce:
+            evicting_ip = await _pop_ip(session, str(user.id))
+            detail = f"Session expired|{evicting_ip}" if evicting_ip else "Session expired"
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
     return user
 

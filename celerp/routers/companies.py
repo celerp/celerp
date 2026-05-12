@@ -16,7 +16,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
-from celerp.services.auth import create_access_token, get_current_company_id, get_current_user, hash_password, require_admin, ROLE_LEVELS
+from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, hash_password, require_admin, ROLE_LEVELS
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -252,12 +252,17 @@ async def create_company(
         await session.rollback()
         logger.error("create_company failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
-    import time as _time
+    from celerp.services.session_tracker import register_token as _reg_token, get_nonce as _get_nonce
     from celerp.config import settings as _cfg
-    from celerp.services.session_tracker import register_token as _reg_token
-    access_token, token_jti = create_access_token(str(user.id), str(company.id), "admin")
-    _reg_token(token_jti, str(user.id), _time.time() + int(_cfg.access_token_expire_minutes) * 60)
-    return {"access_token": access_token}
+    from datetime import datetime, timedelta, timezone as _tz
+    snonce = await _get_nonce(session, str(user.id))
+    access_token, token_jti = create_access_token(str(user.id), str(company.id), "admin", snonce=snonce)
+    expiry = datetime.now(_tz.utc) + timedelta(minutes=int(_cfg.access_token_expire_minutes))
+    await _reg_token(session, token_jti, str(user.id), expiry)
+    return {
+        "access_token": access_token,
+        "refresh_token": create_refresh_token(str(user.id), str(company.id), "admin"),
+    }
 
 
 @router.get("/me")

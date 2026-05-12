@@ -22,7 +22,7 @@ async def _register(client: AsyncClient) -> str:
     return r.json()["access_token"]
 
 
-async def _register_manager(client: AsyncClient, admin_token: str) -> str:
+async def _register_manager(client: AsyncClient, session, admin_token: str) -> str:
     """Create a manager user in the same company and return its token."""
     r = await client.post(
         "/companies/me/users",
@@ -31,7 +31,7 @@ async def _register_manager(client: AsyncClient, admin_token: str) -> str:
     )
     assert r.status_code == 200, r.text
     from celerp.services.session_tracker import clear as _clear_tracker
-    _clear_tracker()  # gate is universal; clear so new user can log in
+    await _clear_tracker(session)  # clear so new user can log in
     r2 = await client.post(
         "/auth/login",
         json={"email": "mgr@verticals.test", "password": "testpass123"},
@@ -349,9 +349,9 @@ async def test_apply_category_multiple_verticals(client: AsyncClient):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.anyio
-async def test_apply_preset_requires_admin(client: AsyncClient):
+async def test_apply_preset_requires_admin(client: AsyncClient, session):
     admin_token = await _register(client)
-    mgr_token = await _register_manager(client, admin_token)
+    mgr_token = await _register_manager(client, session, admin_token)
     r = await client.post(
         "/companies/me/apply-preset",
         params={"vertical": "gemstones"},
@@ -361,9 +361,9 @@ async def test_apply_preset_requires_admin(client: AsyncClient):
 
 
 @pytest.mark.anyio
-async def test_apply_category_requires_admin(client: AsyncClient):
+async def test_apply_category_requires_admin(client: AsyncClient, session):
     admin_token = await _register(client)
-    mgr_token = await _register_manager(client, admin_token)
+    mgr_token = await _register_manager(client, session, admin_token)
     r = await client.post(
         "/companies/me/apply-category",
         params={"name": "diamond"},

@@ -153,14 +153,15 @@ def _maybe_refresh_bearer(token: str) -> str | None:
         company_id = claims.get("company_id")
         role = claims.get("role", "")
         jti = claims.get("jti")
+        snonce = claims.get("snonce", "")
         if not sub or not company_id:
             return None
-        import time as _time
-        from celerp.services.session_tracker import register_token as _register
         from celerp.services.auth import create_access_token
-        new_token, token_jti = create_access_token(sub, company_id, role, jti=jti)
-        expiry = _time.time() + total_ttl
-        _register(token_jti, sub, expiry)
+        # Reuse the existing snonce - the token was already validated by get_current_user,
+        # so the nonce is correct.  No DB call needed here (sync middleware context).
+        new_token, _token_jti = create_access_token(sub, company_id, role, jti=jti, snonce=snonce)
+        # register_token is now async (DB); the existing JTI row is already in the DB
+        # from the original login.  Refresh reuses the same JTI, so no new row needed.
         return new_token
     except Exception:
         return None

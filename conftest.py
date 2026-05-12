@@ -344,7 +344,7 @@ async def client(session: AsyncSession):
     from celerp.gateway.state import set_session_token as _set_session_token
     from unittest.mock import patch, MagicMock
 
-    _clear_tracker()
+    await _clear_tracker(session)
     _saved_token = None
     try:
         from celerp.gateway.state import get_session_token
@@ -353,14 +353,13 @@ async def client(session: AsyncSession):
         pass
     _set_session_token("")  # ensure clean gateway state
     # Set a mock relay client (used by relay-dependent code paths in tests).
-    # The concurrent login gate no longer checks relay state - it is bypassed in tests
-    # because the tracker is cleared at teardown (_clear_tracker below), so each test
-    # starts with an empty tracker.
+    # The concurrent login gate is bypassed in tests because the tracker is
+    # cleared at setup/teardown, so each test starts with an empty registry.
     app.dependency_overrides[get_session] = lambda: session
     with patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()
-    _clear_tracker()
+    await _clear_tracker(session)
     _set_session_token(_saved_token or "")
