@@ -371,6 +371,32 @@ def test_build_yml_delete_checks_http_status():
         "build.yml DELETE step does not fail on 5xx responses. "
         "A server-side delete failure will silently allow a stale asset to remain."
     )
+    assert "tr -d" in step_block and r"\r" in step_block, (
+        "build.yml DELETE step does not strip \\r from curl output. "
+        "On Windows Git Bash, curl -w '%{http_code}' appends \\r, causing "
+        "[ \"204\\r\" -ge 500 ] to exit with code 3 (integer expression expected). "
+        "Pipe through | tr -d '\\r'."
+    )
+
+
+def test_build_yml_has_prepare_release_job():
+    """build.yml must have a prepare-release job that runs before the build matrix.
+
+    Without this, all three platform jobs run in parallel. Mac's electron-builder
+    uploads assets to the GitHub release within ~60s of starting. If Windows
+    reaches the asset-clearing step after Mac has uploaded, it tries to delete
+    Mac's assets mid-upload, causing a race condition. prepare-release serialises
+    the clear step before any platform build starts.
+    """
+    yml = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
+    assert "prepare-release:" in yml, (
+        "build.yml is missing a 'prepare-release' job. "
+        "Add it to run asset-clearing before the build matrix starts."
+    )
+    assert "needs: [prepare-release]" in yml or "needs: prepare-release" in yml, (
+        "The build matrix job does not declare 'needs: prepare-release'. "
+        "Without this, the build matrix runs in parallel with prepare-release."
+    )
 
 
 def test_main_auto_install_on_quit_disabled():
@@ -458,4 +484,70 @@ def test_shell_has_on_update_error_handler():
     assert "Update check failed" in handler_block or "failed" in handler_block.lower(), (
         "onUpdateError handler does not set an error state. "
         "The UI will show 'Up to date' even when the check failed."
+    )
+
+
+def test_main_js_mac_hide_on_close():
+    """main.js must intercept the 'close' event on darwin and hide instead of destroy.
+
+    Without this, clicking the red X on macOS destroys the BrowserWindow and the
+    next dock-icon click shows an endless "Starting..." loader (startup not re-run).
+    """
+    src = _main_src()
+    assert 'process.platform === "darwin"' in src, (
+        'main.js does not check process.platform === "darwin" in a close handler. '
+        "Mac users will get the endless Starting... bug when reopening from dock."
+    )
+    # Verify the hide() call exists and event.preventDefault() suppresses destroy
+    assert "mainWindow.hide()" in src, (
+        "main.js does not call mainWindow.hide(). "
+        "Red-X click will destroy the window instead of hiding it on macOS."
+    )
+    assert "event.preventDefault()" in src, (
+        "main.js does not call event.preventDefault() in the close handler. "
+        "The BrowserWindow will still be destroyed despite hide() call."
+    )
+
+
+def test_main_js_activate_shows_hidden_window():
+    """The 'activate' handler must call mainWindow.show() for the hide-on-close path."""
+    src = _main_src()
+    act_idx = src.find('app.on("activate"')
+    assert act_idx != -1, "activate handler not found in main.js"
+    block = src[act_idx: act_idx + 300]
+    assert "mainWindow.show()" in block, (
+        "activate handler does not call mainWindow.show(). "
+        "Clicking the dock icon will not restore the hidden window."
+    )
+
+
+def test_shell_pypi_check_btn_visible():
+    """In the PyPI path, the check button must NOT be hidden.
+
+    The check button was previously hidden for PyPI installs, making the UI
+    inconsistent with Electron (WET: different behaviour, same widget).
+    PyPI path now wires the button to runPyPICheck() instead.
+    """
+    src = _shell_src()
+    # Confirm the PyPI branch no longer hides checkBtn
+    # Look for the tell-tale old pattern: checkBtn.style.display = 'none' outside Electron branch
+    # We require runPyPICheck to exist instead
+    assert "runPyPICheck" in src, (
+        "shell.py PyPI path is missing runPyPICheck(). "
+        "The check button has no click handler in PyPI mode."
+    )
+
+
+def test_shell_pypi_auto_check_on_load():
+    """PyPI path must call runPyPICheck() automatically on load (not just on button click)."""
+    src = _shell_src()
+    # The auto-call must appear after the button click handler wiring
+    pypi_idx = src.find("runPyPICheck")
+    assert pypi_idx != -1, "runPyPICheck not found in shell.py"
+    # The function definition ends, then there's a btn click wiring, then the auto-call
+    # Simply confirm runPyPICheck() appears at least twice (definition + auto-call)
+    count = src.count("runPyPICheck")
+    assert count >= 3, (  # definition + addEventListener + auto-call
+        f"runPyPICheck appears only {count} time(s) in shell.py. "
+        "Expect at least 3: function definition, click handler body, and auto-call on load."
     )

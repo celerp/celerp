@@ -14,7 +14,53 @@ env:
   PBS_PYTHON: "3.12.13"
 
 jobs:
+  # ── Prepare release (tag builds only) ────────────────────────────────────
+  # Runs once before all three platform builds. Creates the GitHub release and
+  # clears any stale assets from a previous attempt at the same tag. This
+  # eliminates the race condition where Mac's electron-builder uploads its first
+  # asset before Windows/Linux reach the asset-clearing step.
+  prepare-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clear existing release assets (retag support)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/tags/$TAG" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || true)
+          if [ -z "$RELEASE_ID" ]; then
+            echo "No existing release for $TAG - nothing to clear"
+            exit 0
+          fi
+          echo "Release $RELEASE_ID found for $TAG - clearing assets"
+          ASSET_IDS=$(curl -s -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets" \
+            | python3 -c "import sys,json; [print(a['id']) for a in json.load(sys.stdin)]" 2>/dev/null || true)
+          if [ -z "$ASSET_IDS" ]; then
+            echo "No assets to delete"
+            exit 0
+          fi
+          for ASSET_ID in $ASSET_IDS; do
+            echo "Deleting asset $ASSET_ID"
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+              -H "Authorization: token $GH_TOKEN" \
+              "https://api.github.com/repos/celerp/celerp/releases/assets/$ASSET_ID" | tr -d '\r')
+            if [ "$STATUS" -ge 500 ]; then
+              echo "ERROR: DELETE asset $ASSET_ID returned HTTP $STATUS - aborting"
+              exit 1
+            fi
+            echo "Deleted asset $ASSET_ID (HTTP $STATUS)"
+          done
+          echo "Assets cleared"
+
   build:
+    needs: [prepare-release]
+    # prepare-release is skipped on non-tag builds; treat skipped as success.
+    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -88,41 +134,6 @@ jobs:
           fi
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
-
-      - name: Clear existing release assets (retag support)
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          TAG="${GITHUB_REF_NAME}"
-          RELEASE_ID=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/tags/$TAG" \
-            | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null || true)
-          if [ -z "$RELEASE_ID" ]; then
-            echo "No existing release for $TAG - nothing to clear"
-            exit 0
-          fi
-          echo "Release $RELEASE_ID found for $TAG - clearing assets"
-          ASSET_IDS=$(curl -s -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/celerp/celerp/releases/$RELEASE_ID/assets" \
-            | python3 -c "import sys,json; [print(a['id']) for a in json.load(sys.stdin)]" 2>/dev/null || true)
-          if [ -z "$ASSET_IDS" ]; then
-            echo "No assets to delete"
-            exit 0
-          fi
-          for ASSET_ID in $ASSET_IDS; do
-            echo "Deleting asset $ASSET_ID"
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
-              -H "Authorization: token $GH_TOKEN" \
-              "https://api.github.com/repos/celerp/celerp/releases/assets/$ASSET_ID")
-            if [ "$STATUS" -ge 500 ]; then
-              echo "ERROR: DELETE asset $ASSET_ID returned HTTP $STATUS - aborting"
-              exit 1
-            fi
-            echo "Deleted asset $ASSET_ID (HTTP $STATUS)"
-          done
-          echo "Assets cleared"
 
       - name: Build macOS (production - signed + notarized)
         if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
