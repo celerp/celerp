@@ -623,6 +623,10 @@ document.addEventListener('DOMContentLoaded', function() {
         window.location.href = '/login?reason=evicted';
       }
     });
+    es.addEventListener('drain', function(e) {
+      es.close();
+      window.location.href = '/login?reason=expired';
+    });
     es.onerror = function() {
       es.close();
     };

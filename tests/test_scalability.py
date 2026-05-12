@@ -52,31 +52,57 @@ class TestSessionTracker:
         uid = str(uuid.uuid4())
         jti = str(uuid.uuid4())
 
-        # Need a real user in the DB for FK - use the session fixture's user
-        # Instead, we test via the client fixture to get a real user_id
-        # For pure unit testing, use the fact that clear() works and active returns empty
-        assert await active_user_ids(session) == set()
-
     @pytest.mark.asyncio
-    async def test_clear_removes_all_jtis(self, session):
-        """clear() wipes all session_registry rows."""
-        from celerp.services.session_tracker import clear, active_user_ids
+    async def test_register_token_and_active_user_ids(self, session, client):
+        """register_token stores a JTI; active_user_ids returns that user."""
+        from celerp.services.session_tracker import clear, register_token, active_user_ids
+
+        # Register a real user so FK constraint is satisfied
+        r = await client.post("/auth/register", json={
+            "company_name": "RegTokenCo", "email": "regtoken@test.com",
+            "name": "T", "password": "pw123456",
+        })
+        assert r.status_code == 200
+        import base64, json as _j
+        user_id = _j.loads(base64.b64decode(r.json()["access_token"].split(".")[1] + "=="))["sub"]
 
         await clear(session)
         assert await active_user_ids(session) == set()
 
+        # Register a non-expired JTI
+        jti = str(uuid.uuid4())
+        await register_token(session, jti, user_id, _future(3600))
+        active = await active_user_ids(session)
+        assert user_id in active, "register_token must make user appear in active_user_ids"
+
     @pytest.mark.asyncio
-    async def test_active_user_ids_excludes_expired(self, session):
+    async def test_active_user_ids_excludes_expired(self, session, client):
         """active_user_ids only returns users with at least one non-expired JTI."""
-        from celerp.services.session_tracker import clear, active_user_ids
-        from celerp.models.auth import SessionRegistry
+        from celerp.services.session_tracker import clear, register_token, active_user_ids
+
+        # Register a real user so FK constraint is satisfied
+        r = await client.post("/auth/register", json={
+            "company_name": "ExpiredJTICo", "email": "expiredjti@test.com",
+            "name": "T", "password": "pw123456",
+        })
+        assert r.status_code == 200
+        import base64, json as _j
+        user_id = _j.loads(base64.b64decode(r.json()["access_token"].split(".")[1] + "=="))["sub"]
 
         await clear(session)
 
-        # Seed an already-expired row directly (bypassing FK by using known user)
-        # Since FK requires a real user, we verify via the existing gate test
-        # that expired JTIs don't count. Here just verify clear + empty state.
-        assert await active_user_ids(session) == set()
+        # Seed an expired JTI
+        expired_jti = str(uuid.uuid4())
+        await register_token(session, expired_jti, user_id, _past(10))
+
+        active = await active_user_ids(session)
+        assert user_id not in active, "Expired JTI must not appear in active_user_ids"
+
+        # Seed a live JTI - now must appear
+        live_jti = str(uuid.uuid4())
+        await register_token(session, live_jti, user_id, _future(3600))
+        active2 = await active_user_ids(session)
+        assert user_id in active2, "Live JTI must appear in active_user_ids"
 
     @pytest.mark.asyncio
     async def test_get_nonce_auto_creates(self, session, client):

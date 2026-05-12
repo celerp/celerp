@@ -249,15 +249,21 @@ async def run_jti_cleanup_loop() -> None:
             return
         try:
             async with SessionLocal() as s:
+                skip = False
                 try:
                     # Advisory lock: 0x43454C5250 = b"CELERP" as int
+                    # Only one of N workers acquires the lock; others skip cleanup.
                     from sqlalchemy import text as _text
-                    await s.execute(_text("SELECT pg_try_advisory_xact_lock(0x43454C5250)"))
+                    result = await s.execute(_text("SELECT pg_try_advisory_xact_lock(0x43454C5250)"))
+                    lock_acquired = result.scalar()
+                    if lock_acquired is False:  # False = lock held by another worker; None = SQLite
+                        skip = True
                 except Exception:
-                    pass  # SQLite or PG advisory lock failed - run anyway (single worker)
-                now = datetime.now(timezone.utc)
-                await s.execute(delete(SessionRegistry).where(SessionRegistry.expiry < now))
-                await s.commit()
+                    pass  # SQLite: pg function unavailable - run anyway (single worker)
+                if not skip:
+                    now = datetime.now(timezone.utc)
+                    await s.execute(delete(SessionRegistry).where(SessionRegistry.expiry < now))
+                    await s.commit()
         except asyncio.CancelledError:
             return
         except Exception:

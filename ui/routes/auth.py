@@ -59,7 +59,13 @@ def setup_routes(app):
             return RedirectResponse("/setup", status_code=302)
         deactivated = request.query_params.get("deactivated")
         reason = request.query_params.get("reason")
-        by_ip = request.query_params.get("by", "").strip()
+        by_ip_raw = request.query_params.get("by", "").strip()
+        # Validate as IP address to prevent XSS - only show if it looks like a real IP
+        import ipaddress as _ip
+        try:
+            by_ip = str(_ip.ip_address(by_ip_raw)) if by_ip_raw else ""
+        except ValueError:
+            by_ip = ""
         if deactivated:
             notice = flash("This company has been deactivated. Contact your administrator to reactivate it.")
         elif reason == "evicted":
@@ -69,7 +75,7 @@ def setup_routes(app):
                     f"You were signed out because a new session was started{ip_note}. "
                     "Celerp's native infrastructure only supports a single login at a time. "
                     "If you need multiple people to use the system at the same time, we provide an inexpensive "
-                    '<a href="https://celerp.com/relay" target="_blank">relay service</a> '
+                    '<a href="https://celerp.com/relay" target="_blank" rel="noopener noreferrer">relay service</a> '
                     "which creates a tunnel to your system and securely allows multiple users to access it simultaneously."
                 ),
                 kind="warning",

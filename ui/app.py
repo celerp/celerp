@@ -279,7 +279,7 @@ async def ui_401_handler(request: Request, exc) -> _RR:
 
 async def ui_api_error_handler(request: Request, exc: _APIError) -> _RR:
     """Redirect APIError 401s (API → UI proxy calls) to /login."""
-    if exc.status_code == 401:
+    if exc.status == 401:
         return _401_redirect(str(exc.detail or ""))
     # re-raise non-401 APIErrors as 500 so the existing 500 handler formats them
     raise exc

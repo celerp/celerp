@@ -47,7 +47,9 @@ async def _issue_tokens(
     from celerp.services.session_tracker import get_nonce as _get_nonce, register_token as _register
     snonce = await _get_nonce(session, user_id)
     access_token, token_jti = create_access_token(user_id, company_id, role, email, jti=jti, snonce=snonce)
-    expiry_dt = datetime.now(_tz.utc) + timedelta(minutes=int(_settings.access_token_expire_minutes))
+    # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp
+    capped_minutes = min(int(_settings.access_token_expire_minutes), 24 * 60)
+    expiry_dt = datetime.now(_tz.utc) + timedelta(minutes=capped_minutes)
     await _register(session, token_jti, user_id, expiry_dt)
     return {
         "access_token": access_token,
