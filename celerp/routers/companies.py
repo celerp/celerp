@@ -252,7 +252,12 @@ async def create_company(
         await session.rollback()
         logger.error("create_company failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Could not create company: {e}") from e
-    return {"access_token": create_access_token(str(user.id), str(company.id), "admin")}
+    import time as _time
+    from celerp.config import settings as _cfg
+    from celerp.services.session_tracker import register_token as _reg_token
+    access_token, token_jti = create_access_token(str(user.id), str(company.id), "admin")
+    _reg_token(token_jti, str(user.id), _time.time() + int(_cfg.access_token_expire_minutes) * 60)
+    return {"access_token": access_token}
 
 
 @router.get("/me")

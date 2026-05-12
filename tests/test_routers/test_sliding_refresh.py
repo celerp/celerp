@@ -18,7 +18,8 @@ def _make_token(subject: str, company_id: str, role: str, expire_minutes: int) -
         mock_settings.jwt_secret = "test-secret"
         mock_settings.jwt_algorithm = "HS256"
         mock_settings.access_token_expire_minutes = expire_minutes
-        return create_access_token(subject, company_id, role)
+        token, _ = create_access_token(subject, company_id, role)
+        return token
 
 
 @pytest.mark.asyncio
@@ -92,7 +93,7 @@ def test_maybe_refresh_bearer_returns_none_for_fresh_token():
     from celerp.middleware import _maybe_refresh_bearer
     from celerp.config import settings
     from celerp.services.auth import create_access_token
-    token = create_access_token("user-1", "company-1", "admin")
+    token, _ = create_access_token("user-1", "company-1", "admin")
     # Fresh token: should not refresh
     result = _maybe_refresh_bearer(token)
     assert result is None

@@ -33,6 +33,20 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
+def _issue_tokens(user_id: str, company_id: str, role: str, email: str, jti: str | None = None) -> dict:
+    """Mint an access+refresh token pair, register the access token's JTI, return response dict."""
+    import time as _time
+    from celerp.config import settings as _settings
+    from celerp.services.session_tracker import register_token as _register
+    access_token, token_jti = create_access_token(user_id, company_id, role, email, jti=jti)
+    expiry = _time.time() + int(_settings.access_token_expire_minutes) * 60
+    _register(token_jti, user_id, expiry)
+    return {
+        "access_token": access_token,
+        "refresh_token": create_refresh_token(user_id, company_id, role, email),
+    }
+
+
 def _slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
     return slug or str(uuid.uuid4())
@@ -120,10 +134,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         logger.error("register failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
 
-    return {
-        "access_token": create_access_token(str(user.id), str(company.id), user.role, user.email),
-        "refresh_token": create_refresh_token(str(user.id), str(company.id), user.role, user.email),
-    }
+    return _issue_tokens(str(user.id), str(company.id), user.role, user.email)
 
 
 from slowapi import Limiter
@@ -142,17 +153,13 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     from celerp.gateway.state import get_session_token as _get_session_token
-    from celerp.services.session_tracker import active_user_ids as _active_ids, record as _record
+    from celerp.services.session_tracker import active_user_ids as _active_ids
     if not _get_session_token():
         others = _active_ids() - {str(user.id)}
         if others:
             raise HTTPException(status_code=409, detail="direct_connection_limit")
 
-    _record(str(user.id), str(user.company_id))
-    return {
-        "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
-        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
-    }
+    return _issue_tokens(str(user.id), str(user.company_id), user.role, user.email)
 
 
 @router.post("/login-force")
@@ -163,14 +170,9 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    from celerp.services.session_tracker import invalidate_sessions as _invalidate, record as _record
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate
     _invalidate()
-    _record(str(user.id), str(user.company_id))
-
-    return {
-        "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
-        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
-    }
+    return _issue_tokens(str(user.id), str(user.company_id), user.role, user.email)
 
 
 class RefreshRequest(BaseModel):
@@ -199,10 +201,7 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     if link is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    return {
-        "access_token": create_access_token(user_id, company_id, role, user.email),
-        "refresh_token": create_refresh_token(user_id, company_id, role, user.email),
-    }
+    return _issue_tokens(user_id, company_id, role, user.email)
 
 
 @router.post("/api-key")
@@ -272,7 +271,7 @@ async def switch_company(
     company = await session.get(Company, company_id)
     if company is None or not company.is_active:
         raise HTTPException(status_code=403, detail="Company is deactivated")
-    return {"access_token": create_access_token(str(user.id), str(company_id), link.role)}
+    return _issue_tokens(str(user.id), str(company_id), link.role, user.email)
 
 
 # ── Password Reset ────────────────────────────────────────────────────────────

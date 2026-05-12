@@ -171,30 +171,31 @@ async def test_change_password_requires_auth(client):
 
 
 
+# ---------------------------------------------------------------------------
+# Single-user gate tests (JTI-based registry)
+# ---------------------------------------------------------------------------
+
+def _seed_foreign_session(user_id: str, expiry_offset: float = 900.0) -> None:
+    """Directly insert a JTI for *user_id* into the tracker (test helper)."""
+    import uuid as _uuid
+    import time as _time
+    from celerp.services.session_tracker import register_token as _reg
+    _reg(str(_uuid.uuid4()), user_id, _time.time() + expiry_offset)
+
+
 @pytest.mark.asyncio
 async def test_single_user_gate_blocks_any_concurrent_user(client):
-    """Gate: any second user is blocked when relay is not connected.
-
-    The gate is global (not company-scoped): if ANY user has been active
-    in the past 15 minutes, a different user cannot log in without relay.
-
-    This test directly seeds the tracker with a fake other_user_id to
-    simulate an active session, then verifies a real user login returns 409.
-    """
+    """Gate: a different user cannot log in while another user has an active JTI."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker, record as _record
+    from celerp.services.session_tracker import clear as _clear_tracker
 
     await client.post(
         "/auth/register",
         json={"company_name": "GateCo", "email": "gate_admin@test.com", "name": "Admin", "password": "longpass123"},
     )
-
     _clear_tracker()
+    _seed_foreign_session("00000000-0000-0000-0000-000000000001")
 
-    # Directly seed tracker with a different user (simulates another active session)
-    _record("00000000-0000-0000-0000-000000000001", company_id="")
-
-    # Login attempt -> 409 because another user is active (and relay not connected)
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r = await client.post("/auth/login", json={"email": "gate_admin@test.com", "password": "longpass123"})
     assert r.status_code == 409, f"Expected 409 but got {r.status_code}: {r.text}"
@@ -203,15 +204,13 @@ async def test_single_user_gate_blocks_any_concurrent_user(client):
 
 @pytest.mark.asyncio
 async def test_single_user_gate_empty_tracker_allows_login(client):
-    """Gate: login succeeds when tracker is empty (no active sessions)."""
-    from unittest.mock import patch
+    """Gate: login succeeds when tracker is empty (no active JTIs)."""
     from celerp.services.session_tracker import clear as _clear_tracker
 
     await client.post(
         "/auth/register",
         json={"company_name": "GateCo2", "email": "gate2@test.com", "name": "Admin", "password": "longpass123"},
     )
-
     _clear_tracker()
 
     r = await client.post("/auth/login", json={"email": "gate2@test.com", "password": "longpass123"})
@@ -220,33 +219,26 @@ async def test_single_user_gate_empty_tracker_allows_login(client):
 
 @pytest.mark.asyncio
 async def test_single_user_gate_allows_same_user_relogin(client):
-    """Gate: same user re-logging in while their own session is still tracked is allowed.
-
-    Scenario: user's token expired (or they logged out without the tracker being cleared),
-    and they try to log in again. They should not be blocked by their own stale session.
-    Only *other* users count as a conflict.
-    """
+    """Same user may log in again even while their own JTI is still registered (multi-tab)."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker, record as _record
     import base64, json as _json
+    from celerp.services.session_tracker import clear as _clear_tracker
 
     await client.post(
         "/auth/register",
         json={"company_name": "GateCo3", "email": "gate3@test.com", "name": "Admin", "password": "longpass123"},
     )
-
     _clear_tracker()
     r1 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
     assert r1.status_code == 200
-    # Decode token to get real user id
     token = r1.json()["access_token"]
     payload_b64 = token.split(".")[1] + "=="
     user_id = _json.loads(base64.b64decode(payload_b64))["sub"]
 
-    # Seed tracker with THIS user (simulates their own existing/stale session)
-    _record(user_id, company_id="")
+    # Seed tracker with THIS user (simulates their existing session - e.g. another tab)
+    _seed_foreign_session(user_id)
 
-    # Same user re-login -> allowed (only OTHER users block access)
+    # Same user re-login must be allowed (only OTHER user_ids block)
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "gate3@test.com", "password": "longpass123"})
     assert r2.status_code == 200, f"Same-user re-login should be allowed, got {r2.status_code}: {r2.text}"
@@ -254,20 +246,17 @@ async def test_single_user_gate_allows_same_user_relogin(client):
 
 @pytest.mark.asyncio
 async def test_single_user_gate_bypassed_with_relay(client):
-    """Gate is bypassed when relay session token is active (cloud tier = multi-user)."""
+    """Gate is skipped when relay session token is active (cloud tier = multi-user)."""
     from unittest.mock import patch
-    from celerp.services.session_tracker import clear as _clear_tracker, record as _record
+    from celerp.services.session_tracker import clear as _clear_tracker
 
     await client.post(
         "/auth/register",
         json={"company_name": "GateCo4", "email": "gate4@test.com", "name": "Admin", "password": "longpass123"},
     )
-
     _clear_tracker()
-    # Seed tracker with another user
-    _record("00000000-0000-0000-0000-000000000002", company_id="")
+    _seed_foreign_session("00000000-0000-0000-0000-000000000002")
 
-    # With relay token active, gate is bypassed - multi-user allowed on cloud tier
     with patch("celerp.gateway.state.get_session_token", return_value="live-token-abc"):
         r = await client.post("/auth/login", json={"email": "gate4@test.com", "password": "longpass123"})
     assert r.status_code == 200, f"Relay present should bypass gate, got {r.status_code}: {r.text}"
@@ -275,14 +264,14 @@ async def test_single_user_gate_bypassed_with_relay(client):
 
 @pytest.mark.asyncio
 async def test_single_user_gate_survives_tracker_reload(client, tmp_path):
-    """Gate persists across tracker in-memory wipe (simulates process reload in dev mode).
+    """Gate persists across in-memory wipe when the file is populated.
 
-    Regression: uvicorn --reload wipes in-memory _activity on config.toml write
-    (e.g. after cloud disconnect). Gate must still fire after reload because
-    session_tracker persists to .active_sessions.json next to config.toml.
+    Regression: uvicorn --reload wipes in-process state; gate must still fire
+    because session_tracker loads JTIs from .active_sessions.json on next use.
     """
     import celerp.services.session_tracker as _tracker
     from unittest.mock import patch
+    import uuid as _uuid
 
     sessions_file = tmp_path / ".active_sessions.json"
 
@@ -291,44 +280,56 @@ async def test_single_user_gate_survives_tracker_reload(client, tmp_path):
         json={"company_name": "ReloadCo", "email": "reload@test.com", "name": "Admin", "password": "longpass123"},
     )
 
-    # Point tracker at a known tmp file so saves/loads are deterministic in CI
     with patch("celerp.services.session_tracker._sessions_path", return_value=sessions_file):
-        # First login - seeds the file-backed tracker
         r1 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
         assert r1.status_code == 200
 
-        # Inject a *different* user into the tracker to represent a foreign active session
-        import uuid as _uuid
+        # Inject a foreign session directly into the tracker and save to file
         foreign_id = str(_uuid.uuid4())
-        _tracker._activity[("", foreign_id)] = time.time()
-
-        # Force a save so the file is populated with the foreign session
+        _seed_foreign_session(foreign_id)
         _tracker._save()
 
-        # Simulate process reload: wipe in-memory state but keep the file
-        old_loaded = _tracker._loaded
-        old_activity = dict(_tracker._activity)
-        _tracker._activity.clear()
-        _tracker._loaded = False  # force re-load from file on next call
+        # Simulate process reload: wipe in-memory state, force re-read from file
+        old_sessions = dict(_tracker._sessions)
+        old_nonce = _tracker._nonce
+        _tracker._sessions.clear()
+        _tracker._loaded = False
 
         try:
-            # Gate must still fire after in-memory wipe (foreign session read from file)
             with patch("celerp.gateway.state.get_session_token", return_value=""):
                 r2 = await client.post("/auth/login", json={"email": "reload@test.com", "password": "longpass123"})
             assert r2.status_code == 409, f"Gate should persist after tracker reload, got {r2.status_code}: {r2.text}"
         finally:
-            # Restore so teardown clear() works correctly
-            _tracker._activity.update(old_activity)
+            _tracker._sessions.update(old_sessions)
+            _tracker._nonce = old_nonce
             _tracker._loaded = True
 
 
 @pytest.mark.asyncio
-async def test_logout_endpoint_invalidates_existing_tokens(client):
-    """POST /auth/logout must rotate the nonce so existing tokens return 401.
+async def test_gate_opens_when_all_jtis_expired(client):
+    """Gate must NOT fire when the only registered JTI has already expired."""
+    from unittest.mock import patch
+    import uuid as _uuid
+    import time as _time
+    from celerp.services.session_tracker import clear as _clear_tracker, register_token as _reg
 
-    This is the cross-process enforcement: after logout, user A's token must stop
-    working immediately regardless of which process holds the tracker state.
-    """
+    await client.post(
+        "/auth/register",
+        json={"company_name": "IdleCo", "email": "idle@test.com", "name": "Admin", "password": "longpass123"},
+    )
+    _clear_tracker()
+
+    # Register an already-expired JTI for a foreign user
+    _reg(str(_uuid.uuid4()), "00000000-0000-0000-0000-000000000099", _time.time() - 1)
+
+    with patch("celerp.gateway.state.get_session_token", return_value=""):
+        r = await client.post("/auth/login", json={"email": "idle@test.com", "password": "longpass123"})
+    assert r.status_code == 200, f"Expired JTI should not block login, got {r.status_code}: {r.text}"
+
+
+@pytest.mark.asyncio
+async def test_logout_endpoint_invalidates_existing_tokens(client):
+    """POST /auth/logout must rotate the nonce so existing tokens return 401."""
     r = await client.post(
         "/auth/register",
         json={"company_name": "LogoutCo", "email": "logout@test.com", "name": "Admin", "password": "longpass123"},
@@ -340,19 +341,14 @@ async def test_logout_endpoint_invalidates_existing_tokens(client):
     token = r_login.json()["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Token works before logout
     r_pre = await client.get("/auth/my-companies", headers=headers)
     assert r_pre.status_code == 200
 
-    # Logout rotates the nonce
     r_logout = await client.post("/auth/logout", headers=headers)
     assert r_logout.status_code == 200
 
-    # Same token is now rejected
     r_post = await client.get("/auth/my-companies", headers=headers)
-    assert r_post.status_code == 401, (
-        f"Token should be rejected after logout (nonce rotated), got {r_post.status_code}"
-    )
+    assert r_post.status_code == 401, f"Token should be rejected after logout, got {r_post.status_code}"
 
 
 @pytest.mark.asyncio
@@ -361,42 +357,28 @@ async def test_force_login_invalidates_other_user_tokens(client):
     from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker
 
-    # Register two users
     await client.post(
         "/auth/register",
         json={"company_name": "ForceCo", "email": "owner@force.com", "name": "Owner", "password": "longpass123"},
     )
-    # Register user B via the same company isn't straightforward in tests; use owner token to
-    # validate that after force-login the owner token is invalidated.
     _clear_tracker()
     r_owner = await client.post("/auth/login", json={"email": "owner@force.com", "password": "longpass123"})
     assert r_owner.status_code == 200
     owner_token = r_owner.json()["access_token"]
 
-    # Force-login as same user (simulates another user doing force-login)
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r_force = await client.post(
             "/auth/login-force", json={"email": "owner@force.com", "password": "longpass123"}
         )
     assert r_force.status_code == 200
 
-    # Old token is now rejected
     r_old = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {owner_token}"})
-    assert r_old.status_code == 401, (
-        f"Old token should be rejected after force-login, got {r_old.status_code}"
-    )
+    assert r_old.status_code == 401, f"Old token should be rejected after force-login, got {r_old.status_code}"
 
 
 @pytest.mark.asyncio
 async def test_login_possible_after_force_login_and_logout(client):
-    """Regression: after B force-logs-in then logs out, both A and B must be able to log in fresh.
-
-    Scenario that Nikolai reported on 2026-05-12:
-      1. User A logged in
-      2. User B force-logs in (no 409 shown - A was silently evicted)
-      3. User B logs out
-      4. Neither A nor B could log in afterwards
-    """
+    """Regression (Nikolai 2026-05-12): A logs in, B force-logs in, B logs out, both can log in again."""
     from unittest.mock import patch
     from celerp.services.session_tracker import clear as _clear_tracker
 
@@ -406,34 +388,27 @@ async def test_login_possible_after_force_login_and_logout(client):
     )
     _clear_tracker()
 
-    # Step 1: A logs in
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r_a = await client.post("/auth/login", json={"email": "userA@relogin.com", "password": "pw123456"})
     assert r_a.status_code == 200
     token_a = r_a.json()["access_token"]
 
-    # Confirm A's token works
     r_check = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a}"})
     assert r_check.status_code == 200
 
-    # Step 2: B force-logs in (same account in this test - simulates the nonce rotation)
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r_b = await client.post("/auth/login-force", json={"email": "userA@relogin.com", "password": "pw123456"})
     assert r_b.status_code == 200
     token_b = r_b.json()["access_token"]
 
-    # A's token is now dead
     r_dead = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_a}"})
     assert r_dead.status_code == 401
 
-    # B's token works (record() was called in login_force)
     r_b_check = await client.get("/auth/my-companies", headers={"Authorization": f"Bearer {token_b}"})
     assert r_b_check.status_code == 200
 
-    # Step 3: B logs out
     await client.post("/auth/logout", headers={"Authorization": f"Bearer {token_b}"})
 
-    # Step 4: Both A and B can log in again with fresh credentials
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r_a2 = await client.post("/auth/login", json={"email": "userA@relogin.com", "password": "pw123456"})
     assert r_a2.status_code == 200, f"User A could not log in after B's logout: {r_a2.json()}"

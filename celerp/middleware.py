@@ -129,7 +129,10 @@ class SlidingTokenRefreshMiddleware:
 
 
 def _maybe_refresh_bearer(token: str) -> str | None:
-    """Return a fresh access token if the given token is past half-life, else None."""
+    """Return a fresh access token if the given token is past half-life, else None.
+
+    Reuses the original JTI so the session slot is not duplicated in the registry.
+    """
     import base64 as _b64
     import json as _json
 
@@ -149,10 +152,16 @@ def _maybe_refresh_bearer(token: str) -> str | None:
         sub = claims.get("sub")
         company_id = claims.get("company_id")
         role = claims.get("role", "")
+        jti = claims.get("jti")
         if not sub or not company_id:
             return None
+        import time as _time
+        from celerp.services.session_tracker import register_token as _register
         from celerp.services.auth import create_access_token
-        return create_access_token(sub, company_id, role)
+        new_token, token_jti = create_access_token(sub, company_id, role, jti=jti)
+        expiry = _time.time() + total_ttl
+        _register(token_jti, sub, expiry)
+        return new_token
     except Exception:
         return None
 

@@ -249,6 +249,18 @@ async def ui_500_handler(request: Request, exc) -> HTMLResponse:
 app.exception_handlers[500] = ui_500_handler
 
 
+from ui.api_client import APIError as _APIError
+from starlette.responses import RedirectResponse as _RR
+
+async def ui_401_handler(request: Request, exc) -> _RR:
+    """Redirect 401s to /login with a reason param so the user knows why."""
+    detail = getattr(exc, "detail", "") or ""
+    reason = "evicted" if detail == "Session expired" else "expired"
+    return _RR(f"/login?reason={reason}", status_code=302)
+
+app.exception_handlers[401] = ui_401_handler
+
+
 _static_dir = os.path.join(os.path.dirname(__file__), "static")
 
 # Proxy /static/attachments/* to the API server (API and UI serve /static from different dirs)

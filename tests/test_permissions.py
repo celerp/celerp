@@ -606,7 +606,7 @@ class TestLegacyRoleMigration:
         claims = _json.loads(base64.urlsafe_b64decode(pad))
         company_id = claims["company_id"]
         # Forge old-style token with role=salesperson
-        legacy_tok = create_access_token(user_id, company_id, "salesperson")
+        legacy_tok, _ = create_access_token(user_id, company_id, "salesperson")
         return admin_h, legacy_tok
 
     async def test_salesperson_token_allowed_as_operator(self, client):

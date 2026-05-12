@@ -114,7 +114,8 @@ async def test_cloud_disconnect_clears_session_token(client):
     when the relay is no longer connected.
     """
     import celerp.gateway.state as gw_state
-    from celerp.services.session_tracker import clear as _clear_tracker, record as _record
+    from celerp.services.session_tracker import clear as _clear_tracker, register_token as _register_token
+    import uuid as _uuid, time as _time
 
     token = await _register(client, "disc-session")
     gw = _mock_gw("active")
@@ -138,7 +139,7 @@ async def test_cloud_disconnect_clears_session_token(client):
 
     # Verify the login gate now actually fires (patch relay token to empty, as disconnect does)
     _clear_tracker()
-    _record("00000000-0000-0000-0000-000000000099", company_id="")
+    _register_token(str(_uuid.uuid4()), "00000000-0000-0000-0000-000000000099", _time.time() + 900)
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "cloud-disc-session@test.local", "password": "pw"})
     assert r2.status_code == 409, f"Gate should fire after disconnect, got {r2.status_code}"

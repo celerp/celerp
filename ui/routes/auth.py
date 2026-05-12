@@ -58,8 +58,16 @@ def setup_routes(app):
         if not bootstrapped:
             return RedirectResponse("/setup", status_code=302)
         deactivated = request.query_params.get("deactivated")
-        msg = flash("This company has been deactivated. Contact your administrator to reactivate it.") if deactivated else ""
-        resp = auth_shell(_login_form(notice=msg), title="Sign in - Celerp")
+        reason = request.query_params.get("reason")
+        if deactivated:
+            notice = flash("This company has been deactivated. Contact your administrator to reactivate it.")
+        elif reason == "evicted":
+            notice = flash("You were signed out because another user logged in. Upgrade to Celerp Cloud for simultaneous multi-user access.", kind="warning")
+        elif reason == "expired":
+            notice = flash("Your session expired. Please sign in again.", kind="warning")
+        else:
+            notice = ""
+        resp = auth_shell(_login_form(notice=notice), title="Sign in - Celerp")
         if token:
             # Clear the invalid token so the browser doesn't keep sending it
             from starlette.responses import Response as _Resp

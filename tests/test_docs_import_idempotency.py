@@ -30,7 +30,7 @@ async def test_docs_import_batch_idempotency(client, session):
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
 
-    token = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
+    token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
     headers = {"Authorization": f"Bearer {token}"}
 
     entity_id = "doc-test-" + uuid.uuid4().hex[:8]
