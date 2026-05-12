@@ -456,6 +456,11 @@ async def session_watch(
                     ip = await _pop_ip(s, user_id) or ""
                     yield f"event: evicted\ndata: {_json.dumps({'by': ip})}\n\n"
                     return
+                # Drain check: ask client to reload so it can pick up a new worker
+                from celerp.services.runtime_state import is_draining as _is_draining
+                if await _is_draining(s):
+                    yield "event: drain\ndata: {}\n\n"
+                    return
             tick += 1
             if tick % 8 == 0:  # keepalive every ~16s
                 yield ": keepalive\n\n"

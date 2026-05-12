@@ -180,3 +180,52 @@ def log_unhandled_exception(request: Request, exc: Exception) -> None:
         ),
         exc_info=exc,
     )
+
+
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_DRAIN_BYPASS_PREFIXES = ("/__celerp/", "/health", "/auth/session-watch")
+
+
+class DrainMiddleware:
+    """Return 503 on write requests while the cluster is draining.
+
+    Reads the drain flag from ``SystemRuntimeState`` on every write request.
+    Fails open (passes the request through) if the DB is unreachable so that
+    a DB hiccup doesn't hard-block all mutations.
+
+    Safe paths (bypass): /__celerp/*, /health, /auth/session-watch.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "")
+        path = scope.get("path", "")
+        if method not in _WRITE_METHODS or any(path.startswith(p) for p in _DRAIN_BYPASS_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        try:
+            from celerp.db import get_session_ctx
+            from celerp.services.runtime_state import is_draining
+            async with get_session_ctx() as s:
+                draining = await is_draining(s)
+        except Exception:
+            draining = False  # fail open
+
+        if draining:
+            response = Response(
+                content='{"detail":"Server is temporarily unavailable for maintenance"}',
+                status_code=503,
+                media_type="application/json",
+                headers={"Retry-After": "10"},
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)

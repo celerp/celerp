@@ -5,8 +5,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import JSON
 
 from celerp.models.base import Base
 
@@ -32,6 +33,25 @@ class UserAuthState(Base):
     )
     nonce: Mapped[str] = mapped_column(String(64))
     evicted_by_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class SystemRuntimeState(Base):
+    """Singleton row: cluster-wide runtime flags (draining, worker count, etc.).
+
+    Accessed via ``get_runtime_state()`` / ``set_draining()`` helpers.
+    Single row, id=1.  ``value`` is a JSON dict - always replace the full dict
+    when updating to avoid mutation-tracking issues.
+    """
+
+    __tablename__ = "system_runtime_state"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    value: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

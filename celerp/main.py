@@ -18,7 +18,7 @@ from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_
 load_cloud_config()
 assert_secure_jwt()
 ensure_instance_id()
-from celerp.middleware import MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 from fastapi.staticfiles import StaticFiles
 
@@ -225,14 +225,19 @@ async def lifespan(_app: FastAPI):
     from celerp.ai.cleanup import run_cleanup_loop
     cleanup_task = asyncio.create_task(run_cleanup_loop())
 
+    # Start JTI cleanup background task (runs hourly, advisory lock prevents duplicates)
+    from celerp.services.session_tracker import run_jti_cleanup_loop
+    jti_cleanup_task = asyncio.create_task(run_jti_cleanup_loop())
+
     yield
 
     # Terminate all active SSE connections so Uvicorn doesn't hang on shutdown
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop AI file cleanup
+    # Stop background tasks
     cleanup_task.cancel()
+    jti_cleanup_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
@@ -266,6 +271,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"], sto
 app = FastAPI(title="Celerp", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(DrainMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)

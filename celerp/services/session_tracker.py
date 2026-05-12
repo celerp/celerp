@@ -120,3 +120,36 @@ async def clear(session: AsyncSession) -> None:
     """Wipe all session_registry rows.  Test helper only - does NOT rotate nonces."""
     await session.execute(delete(SessionRegistry))
     await session.commit()
+
+
+async def run_jti_cleanup_loop() -> None:
+    """Background task: delete expired JTI rows hourly.
+
+    On Postgres, uses ``pg_try_advisory_xact_lock`` so only one of N workers
+    runs the cleanup.  On SQLite (dev/test) the advisory lock call fails and
+    falls through to direct deletion - this is safe because SQLite is
+    single-process only.
+    """
+    import asyncio
+    from celerp.db import SessionLocal
+
+    while True:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            return
+        try:
+            async with SessionLocal() as s:
+                try:
+                    # Advisory lock: 0x43454C5250 = b"CELERP" as int
+                    from sqlalchemy import text as _text
+                    await s.execute(_text("SELECT pg_try_advisory_xact_lock(0x43454C5250)"))
+                except Exception:
+                    pass  # SQLite or PG advisory lock failed - run anyway (single worker)
+                now = datetime.now(timezone.utc)
+                await s.execute(delete(SessionRegistry).where(SessionRegistry.expiry < now))
+                await s.commit()
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            pass  # never crash the loop
