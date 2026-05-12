@@ -633,37 +633,33 @@ def setup_routes(app):
             docs_resp = None
             if is_drafts_view and doc_type == "purchase_order":
                 # PO drafts view: fetch both purchase_order and bill drafts combined.
-                # Summary and draft counts are fetched concurrently.
                 import asyncio as _asyncio
                 bill_params = {**params, "doc_type": "bill"}
-                draft_params = {"status": "draft", "doc_type": doc_type, "limit": 1}
-                bill_draft_params = {"status": "draft", "doc_type": "bill", "limit": 1}
-                po_resp, bill_resp, draft_resp, bill_draft_resp, summary = await _asyncio.gather(
+                po_summary_params = {"doc_type": doc_type}
+                bill_summary_params = {"doc_type": "bill"}
+                po_resp, bill_resp, po_summary, bill_summary = await _asyncio.gather(
                     api.list_docs(token, params),
                     api.list_docs(token, bill_params),
-                    api.list_docs(token, draft_params),
-                    api.list_docs(token, bill_draft_params),
                     api.get_doc_summary(token, doc_type=doc_type),
+                    api.get_doc_summary(token, doc_type="bill"),
                 )
                 po_items = po_resp.get("items", []) if isinstance(po_resp, dict) else po_resp
                 bill_items = bill_resp.get("items", []) if isinstance(bill_resp, dict) else bill_resp
                 docs = po_items + bill_items
                 draft_count = (
-                    (draft_resp.get("total", 0) if isinstance(draft_resp, dict) else len(draft_resp))
-                    + (bill_draft_resp.get("total", 0) if isinstance(bill_draft_resp, dict) else len(bill_draft_resp))
+                    (po_summary.get("draft_count", 0) if isinstance(po_summary, dict) else 0)
+                    + (bill_summary.get("draft_count", 0) if isinstance(bill_summary, dict) else 0)
                 )
+                summary = po_summary  # use PO summary for cards
             else:
                 import asyncio as _asyncio
-                draft_params = {"status": "draft", "limit": 1}
-                if doc_type:
-                    draft_params["doc_type"] = doc_type
-                docs_resp, draft_resp, summary = await _asyncio.gather(
+                docs_resp, summary = await _asyncio.gather(
                     api.list_docs(token, params),
-                    api.list_docs(token, draft_params),
                     api.get_doc_summary(token, doc_type=doc_type),
                 )
                 docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-                draft_count = draft_resp.get("total", 0) if isinstance(draft_resp, dict) else len(draft_resp)
+                # Draft count comes from summary - no extra round-trip needed.
+                draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -778,12 +774,28 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             from starlette.responses import Response as _R
-            return _R("", status_code=401)
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         doc_type = request.query_params.get("type", "invoice")
         try:
             result = await api.create_doc(token, {"doc_type": doc_type, "status": "draft"})
             entity_id = result.get("entity_id") or result.get("id", "")
-            # Auto-populate default T&C template for this doc_type
+        except APIError as e:
+            if e.status == 401:
+                from starlette.responses import Response as _R
+                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+            import json as _json
+            from starlette.responses import Response as _R
+            detail = e.detail if hasattr(e, "detail") and e.detail else "Failed to create document."
+            return _R(
+                "",
+                status_code=200,
+                headers={"HX-Trigger": _json.dumps({"flashError": detail})},
+            )
+        # Apply default T&C template in the background (non-blocking).
+        # The user is already redirected; T&C is a nice-to-have not a blocker.
+        import asyncio as _asyncio
+
+        async def _apply_tc():
             try:
                 tc_templates = await api.get_terms_conditions(token)
                 default_tc = next(
@@ -797,13 +809,9 @@ def setup_routes(app):
                         "terms_text": default_tc.get("text", ""),
                     })
             except Exception:
-                pass  # Non-critical: doc still created, user can set T&C manually
-        except APIError as e:
-            if e.status == 401:
-                from starlette.responses import Response as _R
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            from starlette.responses import Response as _R
-            return _R("", status_code=500)
+                pass
+
+        _asyncio.create_task(_apply_tc())
         from starlette.responses import Response as _R
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
