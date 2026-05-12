@@ -371,6 +371,32 @@ def test_build_yml_delete_checks_http_status():
         "build.yml DELETE step does not fail on 5xx responses. "
         "A server-side delete failure will silently allow a stale asset to remain."
     )
+    assert "tr -d" in step_block and r"\r" in step_block, (
+        "build.yml DELETE step does not strip \\r from curl output. "
+        "On Windows Git Bash, curl -w '%{http_code}' appends \\r, causing "
+        "[ \"204\\r\" -ge 500 ] to exit with code 3 (integer expression expected). "
+        "Pipe through | tr -d '\\r'."
+    )
+
+
+def test_build_yml_has_prepare_release_job():
+    """build.yml must have a prepare-release job that runs before the build matrix.
+
+    Without this, all three platform jobs run in parallel. Mac's electron-builder
+    uploads assets to the GitHub release within ~60s of starting. If Windows
+    reaches the asset-clearing step after Mac has uploaded, it tries to delete
+    Mac's assets mid-upload, causing a race condition. prepare-release serialises
+    the clear step before any platform build starts.
+    """
+    yml = (Path(__file__).parent.parent / ".github" / "workflows" / "build.yml").read_text()
+    assert "prepare-release:" in yml, (
+        "build.yml is missing a 'prepare-release' job. "
+        "Add it to run asset-clearing before the build matrix starts."
+    )
+    assert "needs: [prepare-release]" in yml or "needs: prepare-release" in yml, (
+        "The build matrix job does not declare 'needs: prepare-release'. "
+        "Without this, the build matrix runs in parallel with prepare-release."
+    )
 
 
 def test_main_auto_install_on_quit_disabled():
