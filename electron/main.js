@@ -600,6 +600,17 @@ function createWindow() {
     return { action: "allow" };
   });
 
+  // On macOS, hide the window instead of destroying it when the user clicks
+  // the red X. This matches Telegram's behaviour: app stays alive in the
+  // background and re-opens instantly when the user clicks the dock icon.
+  // The `before-quit` handler (Cmd+Q) still kills all processes and fully exits.
+  mainWindow.on("close", (event) => {
+    if (process.platform === "darwin") {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
+
   mainWindow.on("closed", () => { mainWindow = null; });
 }
 
@@ -735,7 +746,10 @@ app.on("window-all-closed", () => {
 });
 
 app.on("activate", () => {
-  if (mainWindow === null && uiPort) createWindow();
+  // Dock icon clicked: show the hidden window (Mac hide-on-close) or create
+  // a new one if it was genuinely destroyed (shouldn't normally happen).
+  if (mainWindow) mainWindow.show();
+  else if (uiPort) createWindow();
 });
 
 app.on("before-quit", async () => {

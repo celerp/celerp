@@ -493,8 +493,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     if (window.celerp) {
-      // Electron path
-
+      // ── Electron path ────────────────────────────────────────────────
       window.celerp.getVersion().then(function(v) {
         if (versionEl) versionEl.textContent = 'v' + v;
       }).catch(function() {});
@@ -502,9 +501,7 @@ document.addEventListener('DOMContentLoaded', function() {
       setState('Up to date', false);
 
       // Log lines: always show — no isManualCheck gate.
-      window.celerp.onUpdateLog(function(msg) {
-        appendLog(msg);
-      });
+      window.celerp.onUpdateLog(function(msg) { appendLog(msg); });
 
       window.celerp.onUpdateAvailable(function(info) {
         setState('Downloading v' + (info && info.version ? info.version : 'update') + '...', false);
@@ -558,26 +555,41 @@ document.addEventListener('DOMContentLoaded', function() {
         });
       }
     } else {
-      // PyPI path - fetch current version from /health, compare to PyPI
-      fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
-        var current = health.version || '';
-        var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current === '0.0.0+dev';
-        if (versionEl) versionEl.textContent = isDev ? 'Development build' : (current ? 'v' + current : 'Unknown');
-        if (isDev) { setState('Running from source - no updates', false); return; }
-        return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
-          var latest = pypi.info && pypi.info.version ? pypi.info.version : null;
-          if (!latest) { setState('Up to date', false); return; }
-          if (latest !== current) {
-            setState('Update available: v' + latest, false);
-            var upgrade = card.querySelector('.update-card__upgrade-cmd');
-            if (upgrade) upgrade.style.display = '';
-          } else {
-            setState('Up to date', false);
-          }
+      // ── PyPI / pip path ───────────────────────────────────────────────
+      // Electron-only controls are hidden; everything else (version label,
+      // state text, check button, pip upgrade command) works identically.
+      if (restartBtn) restartBtn.style.display = 'none';
+      if (progressBar) progressBar.style.display = 'none';
+
+      function runPyPICheck() {
+        setCheckBtn(false);
+        setState('Checking...', false);
+        fetch('/health').then(function(r) { return r.json(); }).then(function(health) {
+          var current = health.version || '';
+          var isDev = current.indexOf('.dev') !== -1 || current.indexOf('+dev') !== -1 || current === '0.0.0+dev';
+          if (versionEl) versionEl.textContent = isDev ? 'Development build' : (current ? 'v' + current : 'Unknown');
+          if (isDev) { setState('Running from source - no updates', false); resetToIdle(); return; }
+          return fetch('https://pypi.org/pypi/celerp/json').then(function(r) { return r.json(); }).then(function(pypi) {
+            var latest = pypi.info && pypi.info.version ? pypi.info.version : null;
+            if (!latest) { setState('Up to date', false); resetToIdle(); return; }
+            if (latest !== current) {
+              setState('Update available: v' + latest, false);
+              var upgrade = card.querySelector('.update-card__upgrade-cmd');
+              if (upgrade) upgrade.style.display = '';
+            } else {
+              setState('Up to date', false);
+            }
+            resetToIdle();
+          });
+        }).catch(function() {
+          setState('Check failed', false);
+          resetToIdle();
         });
-      }).catch(function() {
-        setState('', false);
-      });
+      }
+
+      if (checkBtn) {
+        checkBtn.addEventListener('click', function() { runPyPICheck(); });
+      }
 
       var copyBtn = card.querySelector('.update-card__copy-btn');
       if (copyBtn) {
@@ -588,9 +600,8 @@ document.addEventListener('DOMContentLoaded', function() {
         });
       }
 
-      // Hide electron-only buttons
-      if (checkBtn) checkBtn.style.display = 'none';
-      if (restartBtn) restartBtn.style.display = 'none';
+      // Auto-check on load so the card shows a version immediately.
+      runPyPICheck();
     }
   })();
 });
