@@ -1026,8 +1026,9 @@ def auth_shell(*content, title: str = "Celerp") -> FT:
     )
 
 
-def flash(msg: str, kind: str = "error") -> FT:
-    return Div(msg, cls=f"flash flash--{kind}", id="flash")
+def flash(msg: str, kind: str = "error", raw: bool = False) -> FT:
+    content = NotStr(msg) if raw else msg
+    return Div(content, cls=f"flash flash--{kind}", id="flash")
 
 
 def spinner() -> FT:

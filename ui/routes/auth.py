@@ -63,11 +63,17 @@ def setup_routes(app):
         if deactivated:
             notice = flash("This company has been deactivated. Contact your administrator to reactivate it.")
         elif reason == "evicted":
-            ip_note = f" The new session was started from IP {by_ip}." if by_ip else ""
+            ip_note = f" from ({by_ip})" if by_ip else ""
             notice = flash(
-                f"You were signed out because a new login session was started.{ip_note} "
-                "If this wasn't you, contact your administrator.",
+                (
+                    f"You were signed out because a new session was started{ip_note}. "
+                    "Celerp's native infrastructure only supports a single login at a time. "
+                    "If you need multiple people to use the system at the same time, we provide an inexpensive "
+                    '<a href="https://celerp.com/relay" target="_blank">relay service</a> '
+                    "which creates a tunnel to your system and securely allows multiple users to access it simultaneously."
+                ),
                 kind="warning",
+                raw=True,
             )
         elif reason == "expired":
             notice = flash("Your session expired. Please sign in again.", kind="warning")
