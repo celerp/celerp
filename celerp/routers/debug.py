@@ -262,6 +262,24 @@ async def in_flight_requests() -> dict[str, Any]:
     return {"count": len(requests), "requests": requests}
 
 
+@router.get("/gateway", dependencies=[Depends(require_admin)])
+async def gateway_state() -> dict[str, Any]:
+    """Live gateway connection state - session token presence, subscription tier, feature flags."""
+    from celerp.gateway.state import get_session_token, get_subscription_state, get_feature_flags
+    from celerp.gateway.client import get_client
+    gw = get_client()
+    tier, status = get_subscription_state()
+    session_token = get_session_token()
+    return {
+        "relay_status": gw.relay_status if gw else "no_client",
+        "session_token_present": bool(session_token),
+        "session_token_prefix": session_token[:8] + "..." if session_token else None,
+        "subscription_tier": tier or None,
+        "subscription_status": status or None,
+        "feature_flags": get_feature_flags(),
+    }
+
+
 @router.get("/slow", dependencies=[Depends(require_admin)])
 async def slow_request_log() -> dict[str, Any]:
     """Log of requests that exceeded the slow threshold (currently {threshold}s).
