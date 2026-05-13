@@ -390,5 +390,5 @@ if os.environ.get("CELERP_DEBUG") == "1":
                 return _JSONResponse({"error": str(exc)}, status_code=503)
         return _proxy
 
-    for _debug_path in ("/debug/pool", "/debug/sse", "/debug/caches"):
+    for _debug_path in ("/debug/pool", "/debug/sse", "/debug/caches", "/debug/requests", "/debug/slow"):
         app.get(_debug_path)(_make_debug_proxy(_debug_path))
