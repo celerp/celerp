@@ -374,6 +374,7 @@ if __name__ == "__main__":
 # Visit http://localhost:8080/debug/pool, /debug/sse, /debug/caches in the browser.
 if os.environ.get("CELERP_DEBUG") == "1":
     from starlette.responses import JSONResponse as _JSONResponse
+    from ui.config import API_BASE as _DEBUG_API_BASE
     import httpx as _httpx
 
     def _make_debug_proxy(path: str):
@@ -382,7 +383,7 @@ if os.environ.get("CELERP_DEBUG") == "1":
             if not token:
                 return _JSONResponse({"error": "not authenticated"}, status_code=401)
             try:
-                async with _httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+                async with _httpx.AsyncClient(base_url=_DEBUG_API_BASE, timeout=10.0) as c:
                     r = await c.get(path, headers={"Authorization": f"Bearer {token}"})
                     return _JSONResponse(r.json(), status_code=r.status_code)
             except Exception as exc:
