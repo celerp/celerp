@@ -48,7 +48,7 @@ def _worst(*statuses: str) -> str:
 
 def get_system_health() -> dict:
     mem = psutil.virtual_memory()
-    cpu_pct = psutil.cpu_percent(interval=1)
+    cpu_pct = psutil.cpu_percent(interval=0.1)
     disk = psutil.disk_usage("/")
 
     ram_status, ram_suffix = _threshold(mem.percent, _RAM_WARN, _RAM_CRIT)

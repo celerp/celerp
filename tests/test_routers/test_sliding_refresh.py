@@ -18,7 +18,8 @@ def _make_token(subject: str, company_id: str, role: str, expire_minutes: int) -
         mock_settings.jwt_secret = "test-secret"
         mock_settings.jwt_algorithm = "HS256"
         mock_settings.access_token_expire_minutes = expire_minutes
-        return create_access_token(subject, company_id, role)
+        token, _ = create_access_token(subject, company_id, role)
+        return token
 
 
 @pytest.mark.asyncio
@@ -57,6 +58,8 @@ async def test_refresh_header_set_when_token_past_half_life(client):
         "sub": claims["sub"],
         "company_id": claims["company_id"],
         "role": claims["role"],
+        "jti": claims.get("jti", str(uuid.uuid4())),  # preserve jti so refresh can update expiry
+        "snonce": claims.get("snonce", ""),  # preserve nonce so token passes session validation
         "exp": int(now + total_ttl * 0.49),  # only 49% TTL remaining => past half-life
     }
     stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
@@ -91,7 +94,7 @@ def test_maybe_refresh_bearer_returns_none_for_fresh_token():
     from celerp.middleware import _maybe_refresh_bearer
     from celerp.config import settings
     from celerp.services.auth import create_access_token
-    token = create_access_token("user-1", "company-1", "admin")
+    token, _ = create_access_token("user-1", "company-1", "admin")
     # Fresh token: should not refresh
     result = _maybe_refresh_bearer(token)
     assert result is None
@@ -108,21 +111,47 @@ def test_maybe_refresh_bearer_issues_new_token_when_stale():
     from celerp.middleware import _maybe_refresh_bearer
     from celerp.config import settings
     from jose import jwt as _jwt
+    import uuid
 
     now = time.time()
     total_ttl = int(settings.access_token_expire_minutes) * 60
+    stale_jti = str(uuid.uuid4())
     stale_payload = {
         "sub": "user-abc",
         "company_id": "company-xyz",
         "role": "admin",
+        "jti": stale_jti,
+        "snonce": "test-nonce-value",  # arbitrary; refresh copies it forward as-is
         "exp": int(now + total_ttl * 0.49),
     }
     stale_token = _jwt.encode(stale_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     result = _maybe_refresh_bearer(stale_token)
-    assert result is not None
-    new_claims = _jwt.decode(result, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
+    assert result is not None, "Stale token should trigger a refresh"
+    new_token, returned_jti, new_expiry = result
+    assert returned_jti == stale_jti, "Refresh must reuse the original JTI"
+    new_claims = _jwt.decode(new_token, settings.jwt_secret, algorithms=[settings.jwt_algorithm])
     assert new_claims["sub"] == "user-abc"
     assert new_claims["company_id"] == "company-xyz"
     assert new_claims["role"] == "admin"
+    assert new_claims["jti"] == stale_jti, "Refreshed token must carry the same JTI"
     # New token should have a longer remaining TTL
     assert new_claims["exp"] > now + total_ttl * 0.49
+
+
+def test_maybe_refresh_bearer_returns_none_for_token_without_jti():
+    """Token without jti cannot be refreshed (no registry row to update)."""
+    from celerp.middleware import _maybe_refresh_bearer
+    from celerp.config import settings
+    from jose import jwt as _jwt
+
+    now = time.time()
+    total_ttl = int(settings.access_token_expire_minutes) * 60
+    payload = {
+        "sub": "user-abc",
+        "company_id": "company-xyz",
+        "role": "admin",
+        # no jti
+        "exp": int(now + total_ttl * 0.49),
+    }
+    token = _jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    assert _maybe_refresh_bearer(token) is None

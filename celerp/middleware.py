@@ -12,6 +12,11 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+# Imported at module level so tests can patch celerp.middleware.is_draining
+# and celerp.middleware.get_session_ctx
+from celerp.db import get_session_ctx
+from celerp.services.runtime_state import is_draining
+
 logger = logging.getLogger(__name__)
 
 
@@ -117,19 +122,34 @@ class SlidingTokenRefreshMiddleware:
             if message["type"] == "http.response.start":
                 status_holder.append(message["status"])
                 if message["status"] < 300 and token:
-                    refreshed = _maybe_refresh_bearer(token)
-                    if refreshed:
+                    result = _maybe_refresh_bearer(token)
+                    if result:
+                        refreshed, jti, new_expiry = result
                         message = dict(message)
                         message["headers"] = list(message.get("headers", [])) + [
                             (b"x-refreshed-token", refreshed.encode("latin-1"))
                         ]
+                        # Update JTI expiry in DB so active_user_ids() stays accurate
+                        try:
+                            from celerp.models.auth import SessionRegistry
+                            async with get_session_ctx() as s:
+                                row = await s.get(SessionRegistry, jti)
+                                if row is not None:
+                                    row.expiry = new_expiry
+                                    await s.commit()
+                        except Exception:
+                            pass  # fail open - expiry update is best-effort
             await send(message)
 
         await self.app(scope, receive, send_with_refresh)
 
 
-def _maybe_refresh_bearer(token: str) -> str | None:
-    """Return a fresh access token if the given token is past half-life, else None."""
+def _maybe_refresh_bearer(token: str) -> tuple[str, str, datetime] | None:
+    """Return (new_token, jti, new_expiry) if past half-life, else None.
+
+    Reuses the original JTI so the session slot is not duplicated in the registry.
+    The caller is responsible for updating the JTI row's expiry in the DB.
+    """
     import base64 as _b64
     import json as _json
 
@@ -141,7 +161,8 @@ def _maybe_refresh_bearer(token: str) -> str | None:
         if not isinstance(exp, (int, float)):
             return None
         from celerp.config import settings
-        total_ttl = int(settings.access_token_expire_minutes) * 60
+        capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
+        total_ttl = capped_minutes * 60
         issued_at = exp - total_ttl
         elapsed = time.time() - issued_at
         if elapsed <= total_ttl / 2:
@@ -149,10 +170,17 @@ def _maybe_refresh_bearer(token: str) -> str | None:
         sub = claims.get("sub")
         company_id = claims.get("company_id")
         role = claims.get("role", "")
-        if not sub or not company_id:
+        jti = claims.get("jti")
+        snonce = claims.get("snonce", "")
+        if not sub or not company_id or not jti:
             return None
         from celerp.services.auth import create_access_token
-        return create_access_token(sub, company_id, role)
+        # Reuse the existing snonce - the token was already validated by get_current_user,
+        # so the nonce is correct.  No DB call needed here (sync function).
+        new_token, _token_jti = create_access_token(sub, company_id, role, jti=jti, snonce=snonce)
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        new_expiry = _dt.now(_tz.utc) + _td(seconds=total_ttl)
+        return new_token, jti, new_expiry
     except Exception:
         return None
 
@@ -170,3 +198,49 @@ def log_unhandled_exception(request: Request, exc: Exception) -> None:
         ),
         exc_info=exc,
     )
+
+
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_DRAIN_BYPASS_PREFIXES = ("/__celerp/", "/health", "/auth/session-watch")
+
+
+class DrainMiddleware:
+    """Return 503 on write requests while the cluster is draining.
+
+    Reads the drain flag from ``SystemRuntimeState`` on every write request.
+    Fails open (passes the request through) if the DB is unreachable so that
+    a DB hiccup doesn't hard-block all mutations.
+
+    Safe paths (bypass): /__celerp/*, /health, /auth/session-watch.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "")
+        path = scope.get("path", "")
+        if method not in _WRITE_METHODS or any(path.startswith(p) for p in _DRAIN_BYPASS_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        try:
+            async with get_session_ctx() as s:
+                draining = await is_draining(s)
+        except Exception:
+            draining = False  # fail open
+
+        if draining:
+            response = JSONResponse(
+                status_code=503,
+                content={"detail": "Server is temporarily unavailable for maintenance"},
+                headers={"Retry-After": "10"},
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)

@@ -28,7 +28,7 @@ async def _register_admin(client) -> str:
     return r.json()["access_token"]
 
 
-async def _invite_user(client, admin_headers: dict, email: str, role: str) -> str:
+async def _invite_user(client, session, admin_headers: dict, email: str, role: str) -> str:
     """Create a user with the given role and return their access token."""
     from celerp.services.session_tracker import clear as _clear_tracker
     r = await client.post(
@@ -37,7 +37,7 @@ async def _invite_user(client, admin_headers: dict, email: str, role: str) -> st
         headers=admin_headers,
     )
     assert r.status_code == 200, r.text
-    _clear_tracker()  # clear so the new user can log in (gate is universal)
+    await _clear_tracker(session)  # clear so the new user can log in
     r2 = await client.post("/auth/login", json={"email": email, "password": "pw123"})
     assert r2.status_code == 200, r2.text
     return r2.json()["access_token"]
@@ -54,7 +54,7 @@ async def _create_item(client, headers: dict, location_id: str, sku: str = "SKU-
     return r.json()["id"]
 
 
-async def _setup(client):
+async def _setup(client, session):
     """Bootstrap: admin token, manager token, operator token, location_id, item_id."""
     admin_tok = await _register_admin(client)
     admin_h = {"Authorization": f"Bearer {admin_tok}"}
@@ -67,8 +67,8 @@ async def _setup(client):
     location_id = loc_r.json()["id"]
     item_id = await _create_item(client, admin_h, location_id)
 
-    manager_tok = await _invite_user(client, admin_h, "mgr@perm.com", "manager")
-    operator_tok = await _invite_user(client, admin_h, "operator@perm.com", "operator")
+    manager_tok = await _invite_user(client, session, admin_h, "mgr@perm.com", "manager")
+    operator_tok = await _invite_user(client, session, admin_h, "operator@perm.com", "operator")
 
     return {
         "admin_h":    {"Authorization": f"Bearer {admin_tok}"},
@@ -84,43 +84,43 @@ async def _setup(client):
 
 class TestFieldVisibility:
 
-    async def test_admin_sees_cost_price_in_list(self, client):
-        ctx = await _setup(client)
+    async def test_admin_sees_cost_price_in_list(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items", headers=ctx["admin_h"])
         assert r.status_code == 200
         items = r.json()["items"]
         assert len(items) > 0
         assert "cost_price" in items[0]
 
-    async def test_manager_sees_cost_price_in_list(self, client):
-        ctx = await _setup(client)
+    async def test_manager_sees_cost_price_in_list(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items", headers=ctx["manager_h"])
         assert r.status_code == 200
         items = r.json()["items"]
         assert "cost_price" in items[0]
 
-    async def test_staff_cannot_see_cost_price_in_list(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_see_cost_price_in_list(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items", headers=ctx["staff_h"])
         assert r.status_code == 200
         items = r.json()["items"]
         assert len(items) > 0
         assert "cost_price" not in items[0]
 
-    async def test_admin_sees_cost_price_in_detail(self, client):
-        ctx = await _setup(client)
+    async def test_admin_sees_cost_price_in_detail(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["admin_h"])
         assert r.status_code == 200
         assert "cost_price" in r.json()
 
-    async def test_staff_cannot_see_cost_price_in_detail(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_see_cost_price_in_detail(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["staff_h"])
         assert r.status_code == 200
         assert "cost_price" not in r.json()
 
-    async def test_manager_sees_cost_price_in_detail(self, client):
-        ctx = await _setup(client)
+    async def test_manager_sees_cost_price_in_detail(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["manager_h"])
         assert r.status_code == 200
         assert "cost_price" in r.json()
@@ -130,8 +130,8 @@ class TestFieldVisibility:
 
 class TestCostPriceWriteGuard:
 
-    async def test_staff_cannot_set_cost_price_on_create(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_set_cost_price_on_create(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items",
             json={"sku": "STAFF-SKU", "name": "Staff Item", "quantity": 1,
@@ -140,8 +140,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 403
 
-    async def test_staff_can_create_item_without_cost_price(self, client):
-        ctx = await _setup(client)
+    async def test_staff_can_create_item_without_cost_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items",
             json={"sku": "STAFF-SKU2", "name": "Staff Item", "quantity": 1,
@@ -150,8 +150,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_patch_cost_price(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_patch_cost_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             f"/items/{ctx['item_id']}",
             json={"fields_changed": {"cost_price": {"old": 100.0, "new": 50.0}}},
@@ -159,8 +159,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 403
 
-    async def test_staff_can_patch_non_restricted_field(self, client):
-        ctx = await _setup(client)
+    async def test_staff_can_patch_non_restricted_field(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             f"/items/{ctx['item_id']}",
             json={"fields_changed": {"name": {"old": "Perm Item", "new": "Updated"}}},
@@ -168,8 +168,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 200
 
-    async def test_manager_can_patch_cost_price(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_patch_cost_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             f"/items/{ctx['item_id']}",
             json={"fields_changed": {"cost_price": {"old": 100.0, "new": 80.0}}},
@@ -177,8 +177,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 200
 
-    async def test_admin_can_set_cost_price_on_create(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_set_cost_price_on_create(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items",
             json={"sku": "ADMIN-COST", "name": "Admin Item", "quantity": 1,
@@ -192,8 +192,8 @@ class TestCostPriceWriteGuard:
 
 class TestManagerRequiredItemOps:
 
-    async def test_staff_cannot_bulk_delete(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_bulk_delete(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items/bulk/delete",
             json={"entity_ids": [ctx["item_id"]]},
@@ -201,8 +201,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 403
 
-    async def test_manager_can_bulk_delete(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_bulk_delete(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items/bulk/delete",
             json={"entity_ids": [ctx["item_id"]]},
@@ -210,8 +210,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_adjust_quantity(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_adjust_quantity(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             f"/items/{ctx['item_id']}/adjust",
             json={"new_qty": 99},
@@ -219,8 +219,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 403
 
-    async def test_admin_can_adjust_quantity(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_adjust_quantity(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             f"/items/{ctx['item_id']}/adjust",
             json={"new_qty": 99},
@@ -228,8 +228,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_set_price(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_set_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             f"/items/{ctx['item_id']}/price",
             json={"price_type": "cost_price", "new_price": 50.0},
@@ -237,8 +237,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 403
 
-    async def test_manager_can_set_price(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_set_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             f"/items/{ctx['item_id']}/price",
             json={"price_type": "retail_price", "new_price": 150.0},
@@ -246,28 +246,28 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_dispose_item(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_dispose_item(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(f"/items/{ctx['item_id']}/dispose", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_dispose_item(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_dispose_item(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(f"/items/{ctx['item_id']}/dispose", headers=ctx["manager_h"])
         assert r.status_code == 200
 
-    async def test_staff_cannot_expire_item(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_expire_item(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(f"/items/{ctx['item_id']}/expire", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_staff_cannot_access_valuation(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_access_valuation(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_access_valuation(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_access_valuation(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["manager_h"])
         assert r.status_code == 200
 
@@ -285,20 +285,20 @@ class TestManagerRequiredDocOps:
         assert r.status_code == 200, r.text
         return r.json()["id"]
 
-    async def test_staff_cannot_finalize_doc(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_finalize_doc(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_finalize_doc(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_finalize_doc(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["manager_h"])
         assert r.status_code in (200, 409)  # 409 if already finalized
 
-    async def test_staff_cannot_void_doc(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_void_doc(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/void",
@@ -307,8 +307,8 @@ class TestManagerRequiredDocOps:
         )
         assert r.status_code == 403
 
-    async def test_staff_cannot_record_payment(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_record_payment(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/payment",
@@ -317,8 +317,8 @@ class TestManagerRequiredDocOps:
         )
         assert r.status_code == 403
 
-    async def test_staff_cannot_refund_payment(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_refund_payment(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/refund",
@@ -332,8 +332,8 @@ class TestManagerRequiredDocOps:
 
 class TestManagerRequiredAccountingOps:
 
-    async def test_staff_cannot_create_account(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_create_account(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/accounting/accounts",
             json={"code": "9999", "name": "Test Account", "account_type": "expense"},
@@ -341,8 +341,8 @@ class TestManagerRequiredAccountingOps:
         )
         assert r.status_code == 403
 
-    async def test_manager_can_create_account(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_create_account(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/accounting/accounts",
             json={"code": "9998", "name": "Mgr Account", "account_type": "expense"},
@@ -350,23 +350,23 @@ class TestManagerRequiredAccountingOps:
         )
         assert r.status_code in (200, 409)  # 409 if code already exists
 
-    async def test_staff_cannot_see_profit_and_loss(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_see_profit_and_loss(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/accounting/pnl", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_see_profit_and_loss(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_see_profit_and_loss(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/accounting/pnl", headers=ctx["manager_h"])
         assert r.status_code == 200
 
-    async def test_staff_cannot_see_balance_sheet(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_see_balance_sheet(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/accounting/balance-sheet", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_see_balance_sheet(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_see_balance_sheet(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/accounting/balance-sheet", headers=ctx["manager_h"])
         assert r.status_code == 200
 
@@ -375,35 +375,35 @@ class TestManagerRequiredAccountingOps:
 
 class TestManagerRequiredReports:
 
-    async def test_staff_cannot_access_sales_report(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_access_sales_report(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/reports/sales", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_access_sales_report(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_access_sales_report(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/reports/sales", headers=ctx["manager_h"])
         assert r.status_code == 200
 
-    async def test_staff_cannot_access_purchases_report(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_access_purchases_report(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/reports/purchases", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_admin_can_access_purchases_report(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_access_purchases_report(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/reports/purchases", headers=ctx["admin_h"])
         assert r.status_code == 200
 
-    async def test_staff_can_access_ar_aging(self, client):
+    async def test_staff_can_access_ar_aging(self, client, session):
         """AR aging is operational data - staff-accessible."""
-        ctx = await _setup(client)
+        ctx = await _setup(client, session)
         r = await client.get("/reports/ar-aging", headers=ctx["staff_h"])
         assert r.status_code == 200
 
-    async def test_staff_can_access_expiring_items(self, client):
+    async def test_staff_can_access_expiring_items(self, client, session):
         """Expiring items report - operational, staff-accessible."""
-        ctx = await _setup(client)
+        ctx = await _setup(client, session)
         r = await client.get("/reports/expiring", headers=ctx["staff_h"])
         assert r.status_code == 200
 
@@ -412,8 +412,8 @@ class TestManagerRequiredReports:
 
 class TestAdminOnlyOps:
 
-    async def test_staff_cannot_patch_company(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_patch_company(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me",
             json={"name": "Hacked Co"},
@@ -421,8 +421,8 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 403
 
-    async def test_manager_cannot_patch_company(self, client):
-        ctx = await _setup(client)
+    async def test_manager_cannot_patch_company(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me",
             json={"name": "Hacked Co"},
@@ -430,8 +430,8 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 403
 
-    async def test_admin_can_patch_company(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_patch_company(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me",
             json={"name": "Renamed Co"},
@@ -439,14 +439,14 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 200
 
-    async def test_manager_cannot_undo_import(self, client):
-        ctx = await _setup(client)
+    async def test_manager_cannot_undo_import(self, client, session):
+        ctx = await _setup(client, session)
         # Non-existent batch — 403 should fire before 404
         r = await client.post("/items/import/batches/fake-id/undo", headers=ctx["manager_h"])
         assert r.status_code == 403
 
-    async def test_manager_cannot_patch_item_schema(self, client):
-        ctx = await _setup(client)
+    async def test_manager_cannot_patch_item_schema(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me/item-schema",
             json={"fields": []},
@@ -454,8 +454,8 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 403
 
-    async def test_admin_can_patch_item_schema(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_patch_item_schema(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me/item-schema",
             json={"fields": [
@@ -471,7 +471,7 @@ class TestAdminOnlyOps:
 
 class TestRoleHierarchy:
 
-    async def test_owner_can_patch_company(self, client):
+    async def test_owner_can_patch_company(self, client, session):
         """Owner (level 5) passes require_admin (level 4)."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
@@ -483,7 +483,7 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 200
 
-    async def test_owner_can_create_user(self, client):
+    async def test_owner_can_create_user(self, client, session):
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
         r = await client.post(
@@ -493,11 +493,11 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 200
 
-    async def test_admin_user_can_patch_company(self, client):
+    async def test_admin_user_can_patch_company(self, client, session):
         """Explicitly created admin (level 4) also passes require_admin."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
-        admin2_tok = await _invite_user(client, admin_h, "admin2@x.com", "admin")
+        admin2_tok = await _invite_user(client, session, admin_h, "admin2@x.com", "admin")
         admin2_h = {"Authorization": f"Bearer {admin2_tok}"}
         r = await client.patch(
             "/companies/me",
@@ -506,7 +506,7 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 200
 
-    async def test_viewer_is_blocked_from_manager_ops(self, client):
+    async def test_viewer_is_blocked_from_manager_ops(self, client, session):
         """Viewer (level 1) cannot perform manager-level operations."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
@@ -517,7 +517,7 @@ class TestRoleHierarchy:
         )
         location_id = loc_r.json()["id"]
         item_id = await _create_item(client, admin_h, location_id, sku="VIEWER-ITEM")
-        viewer_tok = await _invite_user(client, admin_h, "viewer@x.com", "viewer")
+        viewer_tok = await _invite_user(client, session, admin_h, "viewer@x.com", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         r = await client.post(
             "/items/bulk/delete",
@@ -526,17 +526,17 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 403
 
-    async def test_viewer_cannot_access_valuation(self, client):
+    async def test_viewer_cannot_access_valuation(self, client, session):
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
-        viewer_tok = await _invite_user(client, admin_h, "viewer2@x.com", "viewer")
+        viewer_tok = await _invite_user(client, session, admin_h, "viewer2@x.com", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         r = await client.get("/items/valuation", headers=viewer_h)
         assert r.status_code == 403
 
-    async def test_operator_blocked_from_manager_ops(self, client):
+    async def test_operator_blocked_from_manager_ops(self, client, session):
         """Operator (level 2) cannot perform manager-level operations."""
-        ctx = await _setup(client)
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items/bulk/delete",
             json={"entity_ids": [ctx["item_id"]]},
@@ -544,8 +544,8 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 403
 
-    async def test_operator_blocked_from_finalize_doc(self, client):
-        ctx = await _setup(client)
+    async def test_operator_blocked_from_finalize_doc(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/docs",
             json={"doc_type": "invoice", "contact_name": "Client", "line_items": []},
@@ -555,7 +555,7 @@ class TestRoleHierarchy:
         r2 = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["operator_h"])
         assert r2.status_code == 403
 
-    async def test_invalid_role_rejected_on_create_user(self, client):
+    async def test_invalid_role_rejected_on_create_user(self, client, session):
         """Role not in ROLE_LEVELS is rejected with 400."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
@@ -566,11 +566,11 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 400
 
-    async def test_invalid_role_rejected_on_patch_user(self, client):
+    async def test_invalid_role_rejected_on_patch_user(self, client, session):
         """Patching a user to an invalid role returns 400."""
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
-        op_tok = await _invite_user(client, admin_h, "patchme@x.com", "operator")
+        op_tok = await _invite_user(client, session, admin_h, "patchme@x.com", "operator")
         # Get user id by listing
         users_r = await client.get("/companies/me/users", headers=admin_h)
         user_id = next(u["id"] for u in users_r.json()["items"] if u["email"] == "patchme@x.com")
@@ -606,10 +606,10 @@ class TestLegacyRoleMigration:
         claims = _json.loads(base64.urlsafe_b64decode(pad))
         company_id = claims["company_id"]
         # Forge old-style token with role=salesperson
-        legacy_tok = create_access_token(user_id, company_id, "salesperson")
+        legacy_tok, _ = create_access_token(user_id, company_id, "salesperson")
         return admin_h, legacy_tok
 
-    async def test_salesperson_token_allowed_as_operator(self, client):
+    async def test_salesperson_token_allowed_as_operator(self, client, session):
         """Legacy salesperson JWT passes operator-level checks."""
         admin_h, legacy_tok = await self._make_salesperson_token(client)
         legacy_h = {"Authorization": f"Bearer {legacy_tok}"}
@@ -628,7 +628,7 @@ class TestLegacyRoleMigration:
         )
         assert r.status_code == 200
 
-    async def test_salesperson_token_blocked_from_manager_ops(self, client):
+    async def test_salesperson_token_blocked_from_manager_ops(self, client, session):
         """Legacy salesperson JWT is blocked from manager-level operations."""
         admin_h, legacy_tok = await self._make_salesperson_token(client)
         legacy_h = {"Authorization": f"Bearer {legacy_tok}"}
@@ -646,7 +646,7 @@ class TestLegacyRoleMigration:
         )
         assert r.status_code == 403
 
-    async def test_salesperson_token_blocked_from_cost_price(self, client):
+    async def test_salesperson_token_blocked_from_cost_price(self, client, session):
         """Legacy salesperson JWT cannot set cost_price (manager field)."""
         admin_h, legacy_tok = await self._make_salesperson_token(client)
         legacy_h = {"Authorization": f"Bearer {legacy_tok}"}
@@ -669,7 +669,7 @@ class TestLegacyRoleMigration:
 
 class TestRequireMinRole:
 
-    async def test_require_min_role_importable(self, client):
+    async def test_require_min_role_importable(self, client, session):
         """require_min_role and ROLE_LEVELS are importable from auth service."""
         from celerp.services.auth import ROLE_LEVELS, require_min_role
         assert "viewer" in ROLE_LEVELS
@@ -681,14 +681,14 @@ class TestRequireMinRole:
         assert ROLE_LEVELS["viewer"] < ROLE_LEVELS["operator"] < ROLE_LEVELS["manager"]
         assert ROLE_LEVELS["manager"] < ROLE_LEVELS["admin"] < ROLE_LEVELS["owner"]
 
-    async def test_require_min_role_returns_depends(self, client):
+    async def test_require_min_role_returns_depends(self, client, session):
         """require_min_role returns a FastAPI Depends object."""
         from fastapi.params import Depends
         from celerp.services.auth import require_min_role
         dep = require_min_role("operator")
         assert isinstance(dep, Depends)
 
-    async def test_legacy_migration_dict(self, client):
+    async def test_legacy_migration_dict(self, client, session):
         """_ROLE_MIGRATION maps salesperson → operator."""
         from celerp.services.auth import _ROLE_MIGRATION
         assert _ROLE_MIGRATION.get("salesperson") == "operator"
@@ -699,43 +699,43 @@ class TestRequireMinRole:
 
 class TestFieldVisibility:
 
-    async def test_admin_sees_cost_price_in_list(self, client):
-        ctx = await _setup(client)
+    async def test_admin_sees_cost_price_in_list(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items", headers=ctx["admin_h"])
         assert r.status_code == 200
         items = r.json()["items"]
         assert len(items) > 0
         assert "cost_price" in items[0]
 
-    async def test_manager_sees_cost_price_in_list(self, client):
-        ctx = await _setup(client)
+    async def test_manager_sees_cost_price_in_list(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items", headers=ctx["manager_h"])
         assert r.status_code == 200
         items = r.json()["items"]
         assert "cost_price" in items[0]
 
-    async def test_staff_cannot_see_cost_price_in_list(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_see_cost_price_in_list(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items", headers=ctx["staff_h"])
         assert r.status_code == 200
         items = r.json()["items"]
         assert len(items) > 0
         assert "cost_price" not in items[0]
 
-    async def test_admin_sees_cost_price_in_detail(self, client):
-        ctx = await _setup(client)
+    async def test_admin_sees_cost_price_in_detail(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["admin_h"])
         assert r.status_code == 200
         assert "cost_price" in r.json()
 
-    async def test_staff_cannot_see_cost_price_in_detail(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_see_cost_price_in_detail(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["staff_h"])
         assert r.status_code == 200
         assert "cost_price" not in r.json()
 
-    async def test_manager_sees_cost_price_in_detail(self, client):
-        ctx = await _setup(client)
+    async def test_manager_sees_cost_price_in_detail(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get(f"/items/{ctx['item_id']}", headers=ctx["manager_h"])
         assert r.status_code == 200
         assert "cost_price" in r.json()
@@ -745,8 +745,8 @@ class TestFieldVisibility:
 
 class TestCostPriceWriteGuard:
 
-    async def test_staff_cannot_set_cost_price_on_create(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_set_cost_price_on_create(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items",
             json={"sku": "STAFF-SKU", "name": "Staff Item", "quantity": 1,
@@ -755,8 +755,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 403
 
-    async def test_staff_can_create_item_without_cost_price(self, client):
-        ctx = await _setup(client)
+    async def test_staff_can_create_item_without_cost_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items",
             json={"sku": "STAFF-SKU2", "name": "Staff Item", "quantity": 1,
@@ -765,8 +765,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_patch_cost_price(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_patch_cost_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             f"/items/{ctx['item_id']}",
             json={"fields_changed": {"cost_price": {"old": 100.0, "new": 50.0}}},
@@ -774,8 +774,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 403
 
-    async def test_staff_can_patch_non_restricted_field(self, client):
-        ctx = await _setup(client)
+    async def test_staff_can_patch_non_restricted_field(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             f"/items/{ctx['item_id']}",
             json={"fields_changed": {"name": {"old": "Perm Item", "new": "Updated"}}},
@@ -783,8 +783,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 200
 
-    async def test_manager_can_patch_cost_price(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_patch_cost_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             f"/items/{ctx['item_id']}",
             json={"fields_changed": {"cost_price": {"old": 100.0, "new": 80.0}}},
@@ -792,8 +792,8 @@ class TestCostPriceWriteGuard:
         )
         assert r.status_code == 200
 
-    async def test_admin_can_set_cost_price_on_create(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_set_cost_price_on_create(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items",
             json={"sku": "ADMIN-COST", "name": "Admin Item", "quantity": 1,
@@ -807,8 +807,8 @@ class TestCostPriceWriteGuard:
 
 class TestManagerRequiredItemOps:
 
-    async def test_staff_cannot_bulk_delete(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_bulk_delete(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items/bulk/delete",
             json={"entity_ids": [ctx["item_id"]]},
@@ -816,8 +816,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 403
 
-    async def test_manager_can_bulk_delete(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_bulk_delete(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/items/bulk/delete",
             json={"entity_ids": [ctx["item_id"]]},
@@ -825,8 +825,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_adjust_quantity(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_adjust_quantity(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             f"/items/{ctx['item_id']}/adjust",
             json={"new_qty": 99},
@@ -834,8 +834,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 403
 
-    async def test_admin_can_adjust_quantity(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_adjust_quantity(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             f"/items/{ctx['item_id']}/adjust",
             json={"new_qty": 99},
@@ -843,8 +843,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_set_price(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_set_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             f"/items/{ctx['item_id']}/price",
             json={"price_type": "cost_price", "new_price": 50.0},
@@ -852,8 +852,8 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 403
 
-    async def test_manager_can_set_price(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_set_price(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             f"/items/{ctx['item_id']}/price",
             json={"price_type": "retail_price", "new_price": 150.0},
@@ -861,28 +861,28 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_dispose_item(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_dispose_item(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(f"/items/{ctx['item_id']}/dispose", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_dispose_item(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_dispose_item(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(f"/items/{ctx['item_id']}/dispose", headers=ctx["manager_h"])
         assert r.status_code == 200
 
-    async def test_staff_cannot_expire_item(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_expire_item(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(f"/items/{ctx['item_id']}/expire", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_staff_cannot_access_valuation(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_access_valuation(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_access_valuation(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_access_valuation(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["manager_h"])
         assert r.status_code == 200
 
@@ -900,20 +900,20 @@ class TestManagerRequiredDocOps:
         assert r.status_code == 200, r.text
         return r.json()["id"]
 
-    async def test_staff_cannot_finalize_doc(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_finalize_doc(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_finalize_doc(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_finalize_doc(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["manager_h"])
         assert r.status_code in (200, 409)  # 409 if already finalized
 
-    async def test_staff_cannot_void_doc(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_void_doc(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/void",
@@ -922,8 +922,8 @@ class TestManagerRequiredDocOps:
         )
         assert r.status_code == 403
 
-    async def test_staff_cannot_record_payment(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_record_payment(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/payment",
@@ -932,8 +932,8 @@ class TestManagerRequiredDocOps:
         )
         assert r.status_code == 403
 
-    async def test_staff_cannot_refund_payment(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_refund_payment(self, client, session):
+        ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/refund",
@@ -947,8 +947,8 @@ class TestManagerRequiredDocOps:
 
 class TestManagerRequiredAccountingOps:
 
-    async def test_staff_cannot_create_account(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_create_account(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/accounting/accounts",
             json={"code": "9999", "name": "Test Account", "account_type": "expense"},
@@ -956,8 +956,8 @@ class TestManagerRequiredAccountingOps:
         )
         assert r.status_code == 403
 
-    async def test_manager_can_create_account(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_create_account(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.post(
             "/accounting/accounts",
             json={"code": "9998", "name": "Mgr Account", "account_type": "expense"},
@@ -965,23 +965,23 @@ class TestManagerRequiredAccountingOps:
         )
         assert r.status_code in (200, 409)  # 409 if code already exists
 
-    async def test_staff_cannot_see_profit_and_loss(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_see_profit_and_loss(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/accounting/pnl", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_see_profit_and_loss(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_see_profit_and_loss(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/accounting/pnl", headers=ctx["manager_h"])
         assert r.status_code == 200
 
-    async def test_staff_cannot_see_balance_sheet(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_see_balance_sheet(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/accounting/balance-sheet", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_see_balance_sheet(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_see_balance_sheet(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/accounting/balance-sheet", headers=ctx["manager_h"])
         assert r.status_code == 200
 
@@ -990,35 +990,35 @@ class TestManagerRequiredAccountingOps:
 
 class TestManagerRequiredReports:
 
-    async def test_staff_cannot_access_sales_report(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_access_sales_report(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/reports/sales", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_access_sales_report(self, client):
-        ctx = await _setup(client)
+    async def test_manager_can_access_sales_report(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/reports/sales", headers=ctx["manager_h"])
         assert r.status_code == 200
 
-    async def test_staff_cannot_access_purchases_report(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_access_purchases_report(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/reports/purchases", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_admin_can_access_purchases_report(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_access_purchases_report(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.get("/reports/purchases", headers=ctx["admin_h"])
         assert r.status_code == 200
 
-    async def test_staff_can_access_ar_aging(self, client):
+    async def test_staff_can_access_ar_aging(self, client, session):
         """AR aging is operational data - staff-accessible."""
-        ctx = await _setup(client)
+        ctx = await _setup(client, session)
         r = await client.get("/reports/ar-aging", headers=ctx["staff_h"])
         assert r.status_code == 200
 
-    async def test_staff_can_access_expiring_items(self, client):
+    async def test_staff_can_access_expiring_items(self, client, session):
         """Expiring items report - operational, staff-accessible."""
-        ctx = await _setup(client)
+        ctx = await _setup(client, session)
         r = await client.get("/reports/expiring", headers=ctx["staff_h"])
         assert r.status_code == 200
 
@@ -1027,8 +1027,8 @@ class TestManagerRequiredReports:
 
 class TestAdminOnlyOps:
 
-    async def test_staff_cannot_patch_company(self, client):
-        ctx = await _setup(client)
+    async def test_staff_cannot_patch_company(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me",
             json={"name": "Hacked Co"},
@@ -1036,8 +1036,8 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 403
 
-    async def test_manager_cannot_patch_company(self, client):
-        ctx = await _setup(client)
+    async def test_manager_cannot_patch_company(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me",
             json={"name": "Hacked Co"},
@@ -1045,8 +1045,8 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 403
 
-    async def test_admin_can_patch_company(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_patch_company(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me",
             json={"name": "Renamed Co"},
@@ -1054,14 +1054,14 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 200
 
-    async def test_manager_cannot_undo_import(self, client):
-        ctx = await _setup(client)
+    async def test_manager_cannot_undo_import(self, client, session):
+        ctx = await _setup(client, session)
         # Non-existent batch — 403 should fire before 404
         r = await client.post("/items/import/batches/fake-id/undo", headers=ctx["manager_h"])
         assert r.status_code == 403
 
-    async def test_manager_cannot_patch_item_schema(self, client):
-        ctx = await _setup(client)
+    async def test_manager_cannot_patch_item_schema(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me/item-schema",
             json={"fields": []},
@@ -1069,8 +1069,8 @@ class TestAdminOnlyOps:
         )
         assert r.status_code == 403
 
-    async def test_admin_can_patch_item_schema(self, client):
-        ctx = await _setup(client)
+    async def test_admin_can_patch_item_schema(self, client, session):
+        ctx = await _setup(client, session)
         r = await client.patch(
             "/companies/me/item-schema",
             json={"fields": [

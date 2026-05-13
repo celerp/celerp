@@ -279,6 +279,23 @@ def _ensure_slots() -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_hot_path_caches():
+    """Bust the in-process nonce and drain caches before each test.
+
+    These module-level caches are correct at runtime (single process, explicit
+    bust on mutation).  In tests, each test gets a fresh SQLite schema so the
+    cache must be cleared to avoid leaking state between tests.
+    """
+    from celerp.services.session_tracker import _nonce_cache_bust_all
+    from celerp.services.runtime_state import _drain_cache_bust
+    _nonce_cache_bust_all()
+    _drain_cache_bust()
+    yield
+    _nonce_cache_bust_all()
+    _drain_cache_bust()
+
+
+@pytest.fixture(autouse=True)
 def _disable_rate_limits():
     from celerp.routers.auth import limiter as auth_limiter
 
@@ -344,7 +361,7 @@ async def client(session: AsyncSession):
     from celerp.gateway.state import set_session_token as _set_session_token
     from unittest.mock import patch, MagicMock
 
-    _clear_tracker()
+    await _clear_tracker(session)
     _saved_token = None
     try:
         from celerp.gateway.state import get_session_token
@@ -353,14 +370,13 @@ async def client(session: AsyncSession):
         pass
     _set_session_token("")  # ensure clean gateway state
     # Set a mock relay client (used by relay-dependent code paths in tests).
-    # The concurrent login gate no longer checks relay state - it is bypassed in tests
-    # because the tracker is cleared at teardown (_clear_tracker below), so each test
-    # starts with an empty tracker.
+    # The concurrent login gate is bypassed in tests because the tracker is
+    # cleared at setup/teardown, so each test starts with an empty registry.
     app.dependency_overrides[get_session] = lambda: session
     with patch("celerp.gateway.client._client", MagicMock()), \
          patch("celerp.gateway.state.get_session_token", return_value="test-session-token"):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     app.dependency_overrides.clear()
-    _clear_tracker()
+    await _clear_tracker(session)
     _set_session_token(_saved_token or "")

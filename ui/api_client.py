@@ -93,6 +93,15 @@ async def login(email: str, password: str) -> tuple[str, str]:
         return data["access_token"], data["refresh_token"]
 
 
+async def logout(access_token: str) -> None:
+    """Clear all active sessions in the API process (rotates nonce, invalidates all tokens)."""
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
+        try:
+            await c.post("/auth/logout", headers={"Authorization": f"Bearer {access_token}"})
+        except Exception:
+            pass  # best-effort: cookie is cleared regardless
+
+
 async def login_force(email: str, password: str) -> tuple[str, str]:
     """Like login() but evicts other active sessions first."""
     async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:

@@ -83,22 +83,35 @@ def _build_router() -> APIRouter:
         session: AsyncSession = Depends(get_session),
     ) -> dict:
         """List subscription templates (docs with subscription_invoice/subscription_po doc_type)."""
-        rows = (await session.execute(
-            select(Projection).where(
+        from sqlalchemy import or_ as _or
+        where = [
+            Projection.company_id == company_id,
+            Projection.entity_type == "doc",
+            _or(*(Projection.state["doc_type"].as_string() == dt for dt in SUBSCRIPTION_DOC_TYPES)),
+        ]
+        if direction == "sales":
+            where = [
                 Projection.company_id == company_id,
                 Projection.entity_type == "doc",
-            )
-        )).scalars().all()
-        items = [r.state | {"id": r.entity_id} for r in rows
-                 if r.state.get("doc_type") in SUBSCRIPTION_DOC_TYPES]
-        if direction == "sales":
-            items = [i for i in items if i.get("doc_type") == "subscription_invoice"]
+                Projection.state["doc_type"].as_string() == "subscription_invoice",
+            ]
         elif direction == "purchasing":
-            items = [i for i in items if i.get("doc_type") == "subscription_po"]
+            where = [
+                Projection.company_id == company_id,
+                Projection.entity_type == "doc",
+                Projection.state["doc_type"].as_string() == "subscription_po",
+            ]
         if status:
-            items = [i for i in items if i.get("status") == status]
-        total = len(items)
-        return {"items": items[offset:offset + limit], "total": total}
+            where.append(Projection.state["status"].as_string() == status)
+        from sqlalchemy import func as _func
+        total = (await session.execute(
+            select(_func.count()).select_from(Projection).where(*where)
+        )).scalar_one()
+        rows = (await session.execute(
+            select(Projection).where(*where).offset(offset).limit(limit)
+        )).scalars().all()
+        items = [r.state | {"id": r.entity_id} for r in rows]
+        return {"items": items, "total": total}
 
     @router.post("/{entity_id}/generate")
     async def generate_now(

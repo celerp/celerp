@@ -36,16 +36,35 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
-def create_access_token(subject: str, company_id: str, role: str, email: str = "") -> str:
+def create_access_token(
+    subject: str,
+    company_id: str,
+    role: str,
+    email: str = "",
+    jti: str | None = None,
+    snonce: str = "",
+) -> tuple[str, str]:
+    """Return (encoded_token, jti).
+
+    If *jti* is provided (token refresh path) the same JTI is reused so the
+    session slot is not duplicated.  Otherwise a fresh UUID4 is minted.
+
+    *snonce* must be the caller-provided per-user nonce fetched from DB via
+    ``session_tracker.get_nonce(session, user_id)`` before calling this function.
+    """
+    import uuid as _uuid
     expire_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
+    token_jti = jti or str(_uuid.uuid4())
     payload = {
         "sub": subject,
         "email": email,
         "company_id": company_id,
         "role": role,
+        "jti": token_jti,
+        "snonce": snonce,
         "exp": datetime.now(timezone.utc) + timedelta(minutes=expire_minutes),
     }
-    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+    return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm), token_jti
 
 
 def create_refresh_token(subject: str, company_id: str, role: str, email: str = "") -> str:
@@ -77,7 +96,21 @@ def _decode_token(token: str) -> dict:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token") from e
 
 
-async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSession = Depends(get_session)) -> User:
+def get_token_claims(token: str) -> dict | None:
+    """Decode token and return claims dict, or None if invalid/expired.
+
+    Does NOT hit the database or validate session nonce.  Use only where a
+    lightweight claims-only check is needed (e.g. SSE session-watch setup).
+    """
+    try:
+        return _decode_token(token)
+    except HTTPException:
+        return None
+
+
+async def get_current_user(
+    token: str = Depends(oauth2_scheme), session: AsyncSession = Depends(get_session)
+) -> User:
     claims = _decode_token(token)
     user_id = claims.get("sub")
     company_id = claims.get("company_id")
@@ -105,8 +138,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme), session: AsyncSe
     if company is None or not company.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
-    from celerp.services.session_tracker import record as _record_activity
-    _record_activity(str(user.id), company_id=str(company_id))
+    # Validate session nonce: rejects tokens minted before the last logout/force-login.
+    # Tokens without the snonce claim (empty string) are allowed through - these are
+    # tokens minted directly in tests or before this deploy, where no nonce was embedded.
+    from celerp.services.session_tracker import get_nonce as _get_nonce, pop_evicted_by_ip as _pop_ip
+    token_nonce = claims.get("snonce", "")
+    if token_nonce:
+        current_nonce = await _get_nonce(session, str(user.id))
+        if token_nonce != current_nonce:
+            evicting_ip = await _pop_ip(session, str(user.id))
+            detail = f"Session expired|{evicting_ip}" if evicting_ip else "Session expired"
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
 
     return user
 

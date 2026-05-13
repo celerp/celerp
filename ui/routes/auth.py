@@ -19,7 +19,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse
 
 from ui.api_client import APIError, bootstrap_status
-from ui.api_client import login as api_login, login_force as api_login_force, register as api_register
+from ui.api_client import login as api_login, login_force as api_login_force, logout as api_logout, register as api_register
 from ui.api_client import my_companies as api_my_companies
 from ui.api_client import get_company as api_get_company
 from ui.components.shell import auth_shell, flash
@@ -58,8 +58,34 @@ def setup_routes(app):
         if not bootstrapped:
             return RedirectResponse("/setup", status_code=302)
         deactivated = request.query_params.get("deactivated")
-        msg = flash("This company has been deactivated. Contact your administrator to reactivate it.") if deactivated else ""
-        resp = auth_shell(_login_form(notice=msg), title="Sign in - Celerp")
+        reason = request.query_params.get("reason")
+        by_ip_raw = request.query_params.get("by", "").strip()
+        # Validate as IP address to prevent XSS - only show if it looks like a real IP
+        import ipaddress as _ip
+        try:
+            by_ip = str(_ip.ip_address(by_ip_raw)) if by_ip_raw else ""
+        except ValueError:
+            by_ip = ""
+        if deactivated:
+            notice = flash("This company has been deactivated. Contact your administrator to reactivate it.")
+        elif reason == "evicted":
+            ip_note = f" from ({by_ip})" if by_ip else ""
+            notice = flash(
+                (
+                    f"You were signed out because a new session was started{ip_note}. "
+                    "Celerp's native infrastructure only supports a single login at a time. "
+                    "If you need multiple people to use the system at the same time, we provide an inexpensive "
+                    '<a href="https://celerp.com/relay" target="_blank" rel="noopener noreferrer">relay service</a> '
+                    "which creates a tunnel to your system and securely allows multiple users to access it simultaneously."
+                ),
+                kind="warning",
+                raw=True,
+            )
+        elif reason == "expired":
+            notice = flash("Your session expired. Please sign in again.", kind="warning")
+        else:
+            notice = ""
+        resp = auth_shell(_login_form(notice=notice), title="Sign in - Celerp")
         if token:
             # Clear the invalid token so the browser doesn't keep sending it
             from starlette.responses import Response as _Resp
@@ -242,15 +268,7 @@ def setup_routes(app):
     async def logout(request: Request):
         token = request.cookies.get(COOKIE_NAME)
         if token:
-            try:
-                from celerp.services.auth import _decode_token
-                claims = _decode_token(token)
-                user_id = claims.get("sub")
-                if user_id:
-                    from celerp.services.session_tracker import evict as _evict
-                    _evict(user_id)
-            except Exception:
-                pass
+            await api_logout(token)
         resp = RedirectResponse("/login", status_code=302)
         _clear_tokens(resp)
         return resp
@@ -260,18 +278,47 @@ def setup_routes(app):
         """GET fallback for no-JS clients. Clears tokens and redirects."""
         token = request.cookies.get(COOKIE_NAME)
         if token:
-            try:
-                from celerp.services.auth import _decode_token
-                claims = _decode_token(token)
-                user_id = claims.get("sub")
-                if user_id:
-                    from celerp.services.session_tracker import evict as _evict
-                    _evict(user_id)
-            except Exception:
-                pass
+            await api_logout(token)
         resp = RedirectResponse("/login", status_code=302)
         _clear_tokens(resp)
         return resp
+
+    @app.get("/auth/session-watch")
+    async def session_watch_proxy(request: Request):
+        """Proxy SSE session-watch to the API, injecting the bearer token from cookie.
+
+        The browser EventSource API cannot set custom headers, so the bearer token
+        must be forwarded server-side.  This route reads the httpOnly cookie and
+        streams the API SSE response back to the browser.
+        """
+        from starlette.responses import StreamingResponse as _SR
+        import httpx
+        token = request.cookies.get(COOKIE_NAME)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+
+        async def _stream():
+            try:
+                async with httpx.AsyncClient(base_url=API_BASE, timeout=None) as c:
+                    async with c.stream(
+                        "GET",
+                        "/auth/session-watch",
+                        headers={"Authorization": f"Bearer {token}"},
+                        timeout=None,
+                    ) as r:
+                        if r.status_code == 401:
+                            yield "event: evicted\ndata: {}\n\n"
+                            return
+                        async for chunk in r.aiter_text():
+                            yield chunk
+            except Exception:
+                return
+
+        return _SR(
+            _stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/health")
     async def health_proxy():

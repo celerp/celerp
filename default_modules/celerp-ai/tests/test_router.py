@@ -52,7 +52,7 @@ async def session() -> AsyncSession:
 async def auth_client(session: AsyncSession):
     """Authenticated async client with gateway session token pre-set."""
     from celerp.services.session_tracker import clear as _clear_tracker
-    _clear_tracker()
+    await _clear_tracker(session)
     app.dependency_overrides[get_session] = lambda: session
     app.state.limiter.enabled = False
     app.state.limiter._storage.reset()
@@ -95,13 +95,14 @@ async def test_ai_query_requires_session_token(session):
     app.dependency_overrides[get_session] = lambda: session
     saved = gw_state.get_session_token()
     gw_state.set_session_token("")
-    _clear_tracker()
+    await _clear_tracker(session)
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             await c.post("/auth/register", json={
                 "company_name": "Co2", "email": "t2@test.com",
                 "name": "U", "password": "pw",
             })
+            await _clear_tracker(session)  # clear JTI registered by /register so /login can proceed
             r = await c.post("/auth/login", json={"email": "t2@test.com", "password": "pw"})
             jwt = r.json()["access_token"]
             resp = await c.post(

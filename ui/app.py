@@ -42,7 +42,7 @@ from ui.config import COOKIE_NAME, REFRESH_COOKIE_NAME, cookie_domain
 from ui.routes import (
     auth, setup, search, settings, settings_import,
     settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-    settings_contacts, settings_cloud, settings_connectors, notifications,
+    settings_contacts, settings_cloud, settings_connectors, notifications, events,
 )
 from fasthtml.common import *
 from starlette.responses import HTMLResponse
@@ -121,6 +121,10 @@ class TokenRefreshMiddleware:
         if any(path == p or path.startswith(p + "/") for p in _PUBLIC):
             await self._app(scope, receive, send)
             return
+        # SSE streaming routes must bypass the refresh middleware (it buffers responses)
+        if path == "/auth/session-watch":
+            await self._app(scope, receive, send)
+            return
 
         access_token = request.cookies.get(COOKIE_NAME)
         refresh_token = request.cookies.get(REFRESH_COOKIE_NAME)
@@ -185,7 +189,7 @@ class TokenRefreshMiddleware:
 
 
 app = FastHTML(
-    before=Beforeware(_auth_guard, skip=[r"/login", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
+    before=Beforeware(_auth_guard, skip=[r"/login", r"/login-force", r"/setup.*", r"/logout", r"/static/.*", r"/health"]),
     secret_key=os.environ.get("JWT_SECRET", "dev-secret"),
 )
 
@@ -249,6 +253,42 @@ async def ui_500_handler(request: Request, exc) -> HTMLResponse:
 app.exception_handlers[500] = ui_500_handler
 
 
+from ui.api_client import APIError as _APIError
+from starlette.responses import RedirectResponse as _RR
+
+
+def _401_redirect(detail: str) -> _RR:
+    """Build a /login redirect from a 401 detail string.
+
+    detail may be bare 'Session expired' or 'Session expired|<ip>' (force-login).
+    Any other detail is treated as a generic expiry.
+    """
+    if detail.startswith("Session expired"):
+        parts = detail.split("|", 1)
+        ip = parts[1] if len(parts) == 2 else ""
+        params = f"reason=evicted&by={ip}" if ip else "reason=evicted"
+    else:
+        params = "reason=expired"
+    return _RR(f"/login?{params}", status_code=302)
+
+
+async def ui_401_handler(request: Request, exc) -> _RR:
+    """Redirect HTTPException 401s to /login."""
+    return _401_redirect(getattr(exc, "detail", "") or "")
+
+
+async def ui_api_error_handler(request: Request, exc: _APIError) -> _RR:
+    """Redirect APIError 401s (API → UI proxy calls) to /login."""
+    if exc.status == 401:
+        return _401_redirect(str(exc.detail or ""))
+    # re-raise non-401 APIErrors as 500 so the existing 500 handler formats them
+    raise exc
+
+
+app.exception_handlers[401] = ui_401_handler
+app.exception_handlers[_APIError] = ui_api_error_handler
+
+
 _static_dir = os.path.join(os.path.dirname(__file__), "static")
 
 # Proxy /static/attachments/* to the API server (API and UI serve /static from different dirs)
@@ -292,7 +332,7 @@ if not _ENABLED_MODULES and os.environ.get("MODULE_DIR"):
 # Kernel UI routes — always registered
 for mod in (auth, setup, search, settings, settings_import,
             settings_general, settings_sales, settings_purchasing, settings_inventory, settings_accounting,
-            settings_contacts, settings_cloud, settings_connectors, notifications):
+            settings_contacts, settings_cloud, settings_connectors, notifications, events):
     mod.setup_routes(app)
 
 # Module-conditional UI routes
@@ -328,3 +368,62 @@ if _MODULE_DIR and _ENABLED_MODULES:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("ui.app:app", host="0.0.0.0", port=8080, reload=True)
+
+# Debug proxy routes — only registered when CELERP_DEBUG=1
+# Proxies /debug/* to the API with the logged-in user's bearer token.
+# Visit http://localhost:8080/debug/pool, /debug/sse, /debug/caches in the browser.
+if os.environ.get("CELERP_DEBUG") == "1":
+    from starlette.responses import JSONResponse as _JSONResponse
+    from ui.config import API_BASE as _DEBUG_API_BASE
+    import httpx as _httpx
+    import time as _time
+    import uuid as _uuid
+
+    _ui_slow_requests: list[dict] = []
+    _UI_SLOW_THRESHOLD_S = 5.0
+    _UI_MAX_SLOW = 50
+
+    class _UISlowMiddleware:
+        def __init__(self, app):
+            self._app = app
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self._app(scope, receive, send)
+                return
+            path = scope.get("path", "")
+            started = _time.monotonic()
+            await self._app(scope, receive, send)
+            elapsed = _time.monotonic() - started
+            if elapsed >= _UI_SLOW_THRESHOLD_S:
+                _ui_slow_requests.append({
+                    "path": path,
+                    "method": scope.get("method", ""),
+                    "duration_s": round(elapsed, 2),
+                })
+                if len(_ui_slow_requests) > _UI_MAX_SLOW:
+                    del _ui_slow_requests[:-_UI_MAX_SLOW]
+
+    app.add_middleware(_UISlowMiddleware)
+    def _make_debug_proxy(path: str):
+        async def _proxy(request: Request):
+            token = request.cookies.get(COOKIE_NAME)
+            if not token:
+                return _JSONResponse({"error": "not authenticated"}, status_code=401)
+            try:
+                async with _httpx.AsyncClient(base_url=_DEBUG_API_BASE, timeout=10.0) as c:
+                    r = await c.get(path, headers={"Authorization": f"Bearer {token}"})
+                    return _JSONResponse(r.json(), status_code=r.status_code)
+            except Exception as exc:
+                return _JSONResponse({"error": str(exc)}, status_code=503)
+        return _proxy
+
+    for _debug_path in ("/debug/pool", "/debug/sse", "/debug/caches", "/debug/requests", "/debug/slow"):
+        app.get(_debug_path)(_make_debug_proxy(_debug_path))
+
+    async def _ui_slow_handler(request: Request):
+        return _JSONResponse({
+            "threshold_s": _UI_SLOW_THRESHOLD_S,
+            "count": len(_ui_slow_requests),
+            "requests": list(reversed(_ui_slow_requests)),
+        })
+    app.get("/debug/ui-slow")(_ui_slow_handler)

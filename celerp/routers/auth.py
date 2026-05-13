@@ -24,12 +24,37 @@ from celerp.services.auth import (
     get_current_company_id,
     get_current_user,
     hash_password,
+    oauth2_scheme,
     verify_password,
 )
 
 router = APIRouter()
 
 logger = logging.getLogger(__name__)
+
+
+async def _issue_tokens(
+    session: AsyncSession,
+    user_id: str,
+    company_id: str,
+    role: str,
+    email: str,
+    jti: str | None = None,
+) -> dict:
+    """Mint an access+refresh token pair, register the JTI, return response dict."""
+    from datetime import timezone as _tz
+    from celerp.config import settings as _settings
+    from celerp.services.session_tracker import get_nonce as _get_nonce, register_token as _register
+    snonce = await _get_nonce(session, user_id)
+    access_token, token_jti = create_access_token(user_id, company_id, role, email, jti=jti, snonce=snonce)
+    # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp
+    capped_minutes = min(int(_settings.access_token_expire_minutes), 24 * 60)
+    expiry_dt = datetime.now(_tz.utc) + timedelta(minutes=capped_minutes)
+    await _register(session, token_jti, user_id, expiry_dt)
+    return {
+        "access_token": access_token,
+        "refresh_token": create_refresh_token(user_id, company_id, role, email),
+    }
 
 
 def _slugify(name: str) -> str:
@@ -119,10 +144,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         logger.error("register failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
 
-    return {
-        "access_token": create_access_token(str(user.id), str(company.id), user.role, user.email),
-        "refresh_token": create_refresh_token(str(user.id), str(company.id), user.role, user.email),
-    }
+    return await _issue_tokens(session, str(user.id), str(company.id), user.role, user.email)
 
 
 from slowapi import Limiter
@@ -141,17 +163,13 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
     from celerp.gateway.state import get_session_token as _get_session_token
-    from celerp.services.session_tracker import active_user_ids as _active_ids, record as _record
+    from celerp.services.session_tracker import active_user_ids as _active_ids
     if not _get_session_token():
-        others = _active_ids() - {str(user.id)}
-        if others:
+        active = await _active_ids(session)
+        if active:
             raise HTTPException(status_code=409, detail="direct_connection_limit")
 
-    _record(str(user.id), str(user.company_id))
-    return {
-        "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
-        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
-    }
+    return await _issue_tokens(session, str(user.id), str(user.company_id), user.role, user.email)
 
 
 @router.post("/login-force")
@@ -162,13 +180,10 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     if not user or not user.auth_hash or not verify_password(payload.password, user.auth_hash) or not user.is_active:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    from celerp.services.session_tracker import clear as _clear_tracker
-    _clear_tracker()
-
-    return {
-        "access_token": create_access_token(str(user.id), str(user.company_id), user.role, user.email),
-        "refresh_token": create_refresh_token(str(user.id), str(user.company_id), user.role, user.email),
-    }
+    from celerp.services.session_tracker import invalidate_all_sessions as _invalidate_all
+    evicting_ip = request.client.host if request.client else None
+    await _invalidate_all(session, str(user.id), evicting_ip=evicting_ip)
+    return await _issue_tokens(session, str(user.id), str(user.company_id), user.role, user.email)
 
 
 class RefreshRequest(BaseModel):
@@ -197,10 +212,7 @@ async def refresh_token(payload: RefreshRequest, session: AsyncSession = Depends
     if link is None:
         raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-    return {
-        "access_token": create_access_token(user_id, company_id, role, user.email),
-        "refresh_token": create_refresh_token(user_id, company_id, role, user.email),
-    }
+    return await _issue_tokens(session, user_id, company_id, role, user.email)
 
 
 @router.post("/api-key")
@@ -270,7 +282,7 @@ async def switch_company(
     company = await session.get(Company, company_id)
     if company is None or not company.is_active:
         raise HTTPException(status_code=403, detail="Company is deactivated")
-    return {"access_token": create_access_token(str(user.id), str(company_id), link.role)}
+    return await _issue_tokens(session, str(user.id), str(company_id), link.role, user.email)
 
 
 # ── Password Reset ────────────────────────────────────────────────────────────
@@ -318,7 +330,7 @@ async def password_reset_request(
             f"</p>"
             f"<p>This link expires in <strong>{_RESET_TOKEN_TTL_MINUTES} minutes</strong>.</p>"
             f"<p style='color:#888;font-size:13px;'>If you didn't request this, you can safely ignore "
-            f"this email — your password won't change.</p>"
+            f"this email - your password won't change.</p>"
         )
         body_text = (
             f"Hi {user.name},\n\n"
@@ -381,3 +393,104 @@ async def change_password(
     user.auth_hash = hash_password(payload.new_password)
     await session.commit()
     return {"detail": "Password changed successfully."}
+
+
+@router.post("/logout")
+async def logout(
+    token: str = Depends(oauth2_scheme),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Invalidate all active sessions for the current user by wiping their JTIs
+    and rotating their nonce.
+
+    After this call every existing access token for this user is immediately
+    rejected (snonce mismatch) regardless of expiry.
+    """
+    from celerp.services.auth import get_token_claims
+    from celerp.services.session_tracker import invalidate_sessions as _invalidate
+    claims = get_token_claims(token)
+    if claims:
+        user_id = claims.get("sub", "")
+        if user_id:
+            await _invalidate(session, user_id)
+    return {"detail": "Logged out."}
+
+
+@router.get("/session-watch")
+async def session_watch(token: str = Depends(oauth2_scheme)):
+    """SSE endpoint: streams a single 'evicted' event when this token's nonce
+    is invalidated (force-login or logout), then closes.
+
+    Auth uses manual token decode (no Depends(get_session)) so FastAPI does NOT
+    hold a DB connection open for the stream lifetime. Per-tick nonce checks open
+    their own short-lived SessionLocal() context managers as needed.
+
+    The browser JS subscribes on page load and redirects to /login when it
+    receives the event, giving the user an immediate notification rather than
+    waiting for their next page navigation.
+
+    Authentication: requires a valid bearer token at subscription time.
+    If the token is already invalid, the endpoint returns 401 immediately.
+    """
+    import asyncio
+    import json as _json
+    from fastapi.responses import StreamingResponse
+    from celerp.services.session_tracker import get_nonce as _get_nonce, pop_evicted_by_ip as _pop_ip, get_nonce_from_cache as _get_nonce_from_cache
+    from celerp.services.auth import get_token_claims
+    from celerp.db import SessionLocal as AsyncSessionLocal
+
+    claims = get_token_claims(token)
+    if claims is None:
+        raise HTTPException(status_code=401, detail="Session expired")
+    token_nonce = claims.get("snonce", "")
+    user_id = claims.get("sub", "")
+
+    async def _stream():
+        # Poll every 10s - eviction lag is at most 10s + one cache TTL (also 10s),
+        # so worst-case forced-logout propagation is ~20s. This is fine for a
+        # security control where the alternative is hammering Postgres every 2s.
+        tick = 0
+        while True:
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                return
+
+            # Fast path: check in-process nonce cache first (no DB round-trip).
+            # get_nonce_from_cache returns None on miss; fall through to DB only then.
+            cached_nonce = _get_nonce_from_cache(user_id)
+            if cached_nonce is not None:
+                if cached_nonce != token_nonce:
+                    # Nonce has changed - need DB to get the evicting IP.
+                    async with AsyncSessionLocal() as s:
+                        ip = await _pop_ip(s, user_id) or ""
+                    yield f"event: evicted\ndata: {_json.dumps({'by': ip})}\n\n"
+                    return
+                # Cache hit + nonce matches - no DB call needed this tick.
+                tick += 1
+                if tick % 3 == 0:  # keepalive every ~30s
+                    yield ": keepalive\n\n"
+                continue
+
+            # Cache miss: hit Postgres (happens at most once per cache TTL = 10s).
+            async with AsyncSessionLocal() as s:
+                current_nonce = await _get_nonce(s, user_id)
+                if current_nonce != token_nonce:
+                    ip = await _pop_ip(s, user_id) or ""
+                    yield f"event: evicted\ndata: {_json.dumps({'by': ip})}\n\n"
+                    return
+                # Drain check: only when we already have a DB connection open.
+                from celerp.services.runtime_state import is_draining as _is_draining
+                if await _is_draining(s):
+                    yield "event: drain\ndata: {}\n\n"
+                    return
+
+            tick += 1
+            if tick % 3 == 0:  # keepalive every ~30s
+                yield ": keepalive\n\n"
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

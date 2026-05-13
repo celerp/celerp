@@ -12,7 +12,7 @@ async def _register(client: AsyncClient, email: str = "owner@deact.test", compan
     return r.json()["access_token"]
 
 
-async def _add_user(client: AsyncClient, admin_token: str, email: str = "staff@deact.test", role: str = "operator") -> str:
+async def _add_user(client: AsyncClient, session, admin_token: str, email: str = "staff@deact.test", role: str = "operator") -> str:
     r = await client.post(
         "/companies/me/users",
         headers={"Authorization": f"Bearer {admin_token}"},
@@ -20,7 +20,7 @@ async def _add_user(client: AsyncClient, admin_token: str, email: str = "staff@d
     )
     assert r.status_code == 200, r.text
     from celerp.services.session_tracker import clear as _clear_tracker
-    _clear_tracker()  # gate is universal; clear so new user can log in
+    await _clear_tracker(session)  # gate is per-user; clear so new user can log in
     r2 = await client.post("/auth/login", json={"email": email, "password": "pass1234"})
     assert r2.status_code == 200, r2.text
     return r2.json()["access_token"]
@@ -40,10 +40,10 @@ async def test_active_company_accessible(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_deactivate_requires_admin(client: AsyncClient):
+async def test_deactivate_requires_admin(client: AsyncClient, session):
     """Non-admin cannot deactivate a company."""
     admin_token = await _register(client)
-    user_token = await _add_user(client, admin_token)
+    user_token = await _add_user(client, session, admin_token)
     r = await client.delete("/companies/me", headers=_auth(user_token))
     assert r.status_code == 403
 
@@ -137,10 +137,10 @@ async def test_reactivate_via_db(client: AsyncClient, session):
 
 
 @pytest.mark.asyncio
-async def test_reactivate_endpoint_requires_admin(client: AsyncClient):
+async def test_reactivate_endpoint_requires_admin(client: AsyncClient, session):
     """Non-admin cannot call reactivate endpoint."""
     admin_token = await _register(client)
-    user_token = await _add_user(client, admin_token)
+    user_token = await _add_user(client, session, admin_token)
     r = await client.post("/companies/me/reactivate", headers=_auth(user_token))
     assert r.status_code == 403
 

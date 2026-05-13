@@ -18,12 +18,12 @@ from celerp.config import settings, assert_secure_jwt, ensure_instance_id, load_
 load_cloud_config()
 assert_secure_jwt()
 ensure_instance_id()
-from celerp.middleware import MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
+from celerp.middleware import DrainMiddleware, MaxBodySizeMiddleware, SecurityHeadersMiddleware, SlidingTokenRefreshMiddleware, log_unhandled_exception
 from celerp.models.base import Base
 from fastapi.staticfiles import StaticFiles
 
 from celerp.routers import auth, companies, ledger
-from celerp.routers import health, notifications, system
+from celerp.routers import health, notifications, system, events as events_router_mod
 
 import celerp.models  # noqa: F401 - ensures kernel models (UserCompany, ImportBatch, DocShareToken) are registered
 
@@ -225,14 +225,19 @@ async def lifespan(_app: FastAPI):
     from celerp.ai.cleanup import run_cleanup_loop
     cleanup_task = asyncio.create_task(run_cleanup_loop())
 
+    # Start JTI cleanup background task (runs hourly, advisory lock prevents duplicates)
+    from celerp.services.session_tracker import run_jti_cleanup_loop
+    jti_cleanup_task = asyncio.create_task(run_jti_cleanup_loop())
+
     yield
 
     # Terminate all active SSE connections so Uvicorn doesn't hang on shutdown
     from celerp.notifications.sse import shutdown_all as _sse_shutdown
     _sse_shutdown()
 
-    # Stop AI file cleanup
+    # Stop background tasks
     cleanup_task.cancel()
+    jti_cleanup_task.cancel()
     try:
         await cleanup_task
     except asyncio.CancelledError:
@@ -266,6 +271,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"], sto
 app = FastAPI(title="Celerp", docs_url=None, redoc_url=None, lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(DrainMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(SlidingTokenRefreshMiddleware)
 app.add_middleware(MaxBodySizeMiddleware, max_body_size_bytes=10 * 1024 * 1024)
@@ -304,4 +310,14 @@ app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
 app.include_router(notifications.router)
+app.include_router(events_router_mod.router)
+
+# Debug router — only active when CELERP_DEBUG=1 (never in production by default)
+import os as _os
+if _os.environ.get("CELERP_DEBUG") == "1":
+    from celerp.routers import debug as _debug
+    _debug.install_pool_listeners()
+    app.add_middleware(_debug.DebugMiddleware)
+    app.include_router(_debug.router)
+
 app.mount("/static", StaticFiles(directory=str(settings.data_dir / "static"), check_dir=False), name="static")

@@ -2,8 +2,12 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Shared test utilities importable from any test location.
 
-These are pure functions (no pytest fixtures). Import directly:
-    from tests.helpers import make_test_token, authed_cookies, REPO_ROOT
+This file lives at the repo root. It is on the pytest pythonpath (pyproject.toml:
+  pythonpath = [".", ".."]) so any test file can import it directly:
+
+    from test_helpers import make_test_token, authed_cookies, REPO_ROOT
+
+tests/helpers.py is a shim that re-exports from here for backward compatibility.
 """
 from __future__ import annotations
 
@@ -12,7 +16,7 @@ import json
 import os
 from pathlib import Path
 
-# Repo root: one level above this file (tests/helpers.py → repo root)
+# Repo root: this file lives at repo root, so parent == repo root.
 REPO_ROOT = Path(__file__).resolve().parent
 
 DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///:memory:")

@@ -20,7 +20,7 @@ from celerp.services.auth import create_access_token
 
 def _make_user(company_id: uuid.UUID) -> tuple[uuid.UUID, str]:
     user_id = uuid.uuid4()
-    token = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
+    token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
     return user_id, token
 
 
@@ -35,7 +35,7 @@ async def _setup(session) -> tuple[uuid.UUID, uuid.UUID, str]:
     ))
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
-    token = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
+    token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
     return company_id, user_id, token
 
 

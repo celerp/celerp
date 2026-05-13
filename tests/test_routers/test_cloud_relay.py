@@ -106,7 +106,7 @@ async def test_cloud_disconnect_stops_client_and_clears_token(client):
 
 
 @pytest.mark.asyncio
-async def test_cloud_disconnect_clears_session_token(client):
+async def test_cloud_disconnect_clears_session_token(client, session):
     """Disconnect must clear the in-memory session token.
 
     Regression: without this, get_session_token() remains truthy after disconnect,
@@ -114,7 +114,8 @@ async def test_cloud_disconnect_clears_session_token(client):
     when the relay is no longer connected.
     """
     import celerp.gateway.state as gw_state
-    from celerp.services.session_tracker import clear as _clear_tracker, record as _record
+    from celerp.services.session_tracker import clear as _clear_tracker, register_token as _register_token
+    import uuid as _uuid
 
     token = await _register(client, "disc-session")
     gw = _mock_gw("active")
@@ -137,8 +138,9 @@ async def test_cloud_disconnect_clears_session_token(client):
     assert gw_state._session_token == "", "session_token must be cleared on disconnect"
 
     # Verify the login gate now actually fires (patch relay token to empty, as disconnect does)
-    _clear_tracker()
-    _record("00000000-0000-0000-0000-000000000099", company_id="")
+    from datetime import datetime, timedelta, timezone as _tz
+    await _clear_tracker(session)
+    await _register_token(session, str(_uuid.uuid4()), "00000000-0000-0000-0000-000000000099", datetime.now(_tz.utc) + timedelta(seconds=900))
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "cloud-disc-session@test.local", "password": "pw"})
     assert r2.status_code == 409, f"Gate should fire after disconnect, got {r2.status_code}"
