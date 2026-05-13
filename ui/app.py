@@ -368,3 +368,26 @@ if _MODULE_DIR and _ENABLED_MODULES:
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("ui.app:app", host="0.0.0.0", port=8080, reload=True)
+
+# Debug proxy routes — only registered when CELERP_DEBUG=1
+# Proxies /debug/* to the API with the logged-in user's bearer token.
+# Visit http://localhost:8080/debug/pool, /debug/sse, /debug/caches in the browser.
+if os.environ.get("CELERP_DEBUG") == "1":
+    from starlette.responses import JSONResponse as _JSONResponse
+    import httpx as _httpx
+
+    def _make_debug_proxy(path: str):
+        async def _proxy(request: Request):
+            token = request.cookies.get(COOKIE_NAME)
+            if not token:
+                return _JSONResponse({"error": "not authenticated"}, status_code=401)
+            try:
+                async with _httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+                    r = await c.get(path, headers={"Authorization": f"Bearer {token}"})
+                    return _JSONResponse(r.json(), status_code=r.status_code)
+            except Exception as exc:
+                return _JSONResponse({"error": str(exc)}, status_code=503)
+        return _proxy
+
+    for _debug_path in ("/debug/pool", "/debug/sse", "/debug/caches"):
+        app.get(_debug_path)(_make_debug_proxy(_debug_path))
