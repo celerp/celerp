@@ -316,6 +316,7 @@ import os as _os
 if _os.environ.get("CELERP_DEBUG") == "1":
     from celerp.routers import debug as _debug
     _debug.install_pool_listeners()
+    app.add_middleware(_debug.DebugMiddleware)
     app.include_router(_debug.router)
 
 app.mount("/static", StaticFiles(directory=str(settings.data_dir / "static"), check_dir=False), name="static")
