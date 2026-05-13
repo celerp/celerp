@@ -2045,7 +2045,7 @@ a:hover { text-decoration: underline; }
 .update-card__progress-fill {
   height: 100%;
   width: 0%;
-  background: var(--c-primary);
+  background: var(--c-accent);
   border-radius: 3px;
   transition: width 0.3s ease;
 }
