@@ -78,7 +78,7 @@ def setup_ui_routes(app) -> None:
         # Check if AI is available by querying the API (which has the gateway state)
         try:
             status = await api.ai_quota_status(token)
-            has_cloud = not status.get("local", True)
+            has_cloud = not status.get("local", False)
         except Exception:
             has_cloud = False
 
