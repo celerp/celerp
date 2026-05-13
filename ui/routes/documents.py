@@ -4000,7 +4000,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
         )
     # Refund is now handled via credit notes + void in the payment section
-    # Send (relay modal) + Mark as Sent - hidden for internal/purchasing doc types
+    # Send (relay modal) + Mark as Sent - hidden for internal/receiving doc types (bill, consignment_in)
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES, NO_SEND_STATUSES
     _can_send = (
         not is_list
