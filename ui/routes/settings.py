@@ -2080,10 +2080,10 @@ def setup_routes(app):
             remaining = r2.json().get("total", 0) if r2.status_code == 200 else 0
         except Exception:
             remaining = 0
-        if remaining > 0:
-            # User still has other companies - keep token, let them pick one
+        if remaining == 0:
+            # No companies left - keep token so they can create a new one
             return RedirectResponse(url="/setup/company?reason=deactivated", status_code=303)
-        # No companies left - clear session and go to login
+        # Other companies exist - clear session, go to login to pick one
         resp = RedirectResponse(url="/login?deactivated=1", status_code=303)
         resp.delete_cookie("token")
         return resp
