@@ -52,6 +52,7 @@ def _drain_cache_get() -> dict[str, Any] | None:
     if _drain_cache is None:
         return None
     if time.monotonic() - _drain_cache_at > _DRAIN_TTL_S:
+        _drain_cache_bust()
         return None
     return _drain_cache
 

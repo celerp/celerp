@@ -74,28 +74,38 @@ async def events_stream(token: str = Depends(oauth2_scheme)):
                     continue
 
                 # Timeout path: poll nonce (same cache-first logic as auth.py session_watch)
-                cached_nonce = _get_nonce_from_cache(user_id_str)
-                if cached_nonce is not None:
-                    if cached_nonce != token_nonce:
-                        async with AsyncSessionLocal() as s:
-                            ip = await _pop_ip(s, user_id_str) or ""
-                        yield f"event: evicted\ndata: {json.dumps({'by': ip})}\n\n"
-                        return
-                    keepalive_tick += 1
-                    if keepalive_tick % 3 == 0:
-                        yield ": keepalive\n\n"
-                    continue
+                # Skip nonce checks for legacy tokens that have no snonce claim - consistent
+                # with get_current_user which allows missing snonce for backward compatibility.
+                if token_nonce:
+                    cached_nonce = _get_nonce_from_cache(user_id_str)
+                    if cached_nonce is not None:
+                        if cached_nonce != token_nonce:
+                            async with AsyncSessionLocal() as s:
+                                ip = await _pop_ip(s, user_id_str) or ""
+                            yield f"event: evicted\ndata: {json.dumps({'by': ip})}\n\n"
+                            return
+                        keepalive_tick += 1
+                        if keepalive_tick % 3 == 0:
+                            yield ": keepalive\n\n"
+                        continue
 
-                # Cache miss: hit Postgres
-                async with AsyncSessionLocal() as s:
-                    current_nonce = await _get_nonce(s, user_id_str)
-                    if current_nonce != token_nonce:
-                        ip = await _pop_ip(s, user_id_str) or ""
-                        yield f"event: evicted\ndata: {json.dumps({'by': ip})}\n\n"
-                        return
-                    if await _is_draining(s):
-                        yield "event: drain\ndata: {}\n\n"
-                        return
+                    # Cache miss: hit Postgres
+                    async with AsyncSessionLocal() as s:
+                        current_nonce = await _get_nonce(s, user_id_str)
+                        if current_nonce != token_nonce:
+                            ip = await _pop_ip(s, user_id_str) or ""
+                            yield f"event: evicted\ndata: {json.dumps({'by': ip})}\n\n"
+                            return
+                        if await _is_draining(s):
+                            yield "event: drain\ndata: {}\n\n"
+                            return
+                else:
+                    # No snonce - still check drain (DB already open on cache miss path above
+                    # is skipped, so open a fresh session for drain check only).
+                    async with AsyncSessionLocal() as s:
+                        if await _is_draining(s):
+                            yield "event: drain\ndata: {}\n\n"
+                            return
 
                 keepalive_tick += 1
                 if keepalive_tick % 3 == 0:

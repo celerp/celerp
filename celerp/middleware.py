@@ -161,7 +161,8 @@ def _maybe_refresh_bearer(token: str) -> tuple[str, str, datetime] | None:
         if not isinstance(exp, (int, float)):
             return None
         from celerp.config import settings
-        total_ttl = int(settings.access_token_expire_minutes) * 60
+        capped_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
+        total_ttl = capped_minutes * 60
         issued_at = exp - total_ttl
         elapsed = time.time() - issued_at
         if elapsed <= total_ttl / 2:
@@ -234,10 +235,9 @@ class DrainMiddleware:
             draining = False  # fail open
 
         if draining:
-            response = Response(
-                content='{"detail":"Server is temporarily unavailable for maintenance"}',
+            response = JSONResponse(
                 status_code=503,
-                media_type="application/json",
+                content={"detail": "Server is temporarily unavailable for maintenance"},
                 headers={"Retry-After": "10"},
             )
             await response(scope, receive, send)

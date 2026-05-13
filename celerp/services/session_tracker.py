@@ -50,7 +50,7 @@ from celerp.models.auth import SessionRegistry, UserAuthState
 # or invalidate_all_sessions which bust the cache explicitly.  A short TTL is a
 # safety backstop (e.g. after a process restart the cache is cold anyway).
 #
-# TTL is intentionally short (60 s) so that, in the pathological case where cache
+# TTL is intentionally short (10 s) so that, in the pathological case where cache
 # invalidation is missed, the window is bounded.
 # ---------------------------------------------------------------------------
 
@@ -123,7 +123,7 @@ async def get_nonce(session: AsyncSession, user_id: str) -> str:
 
     Result is cached in-process for up to ``_NONCE_TTL_S`` seconds.  The cache
     is explicitly busted by ``invalidate_sessions`` and ``invalidate_all_sessions``
-    so security is not weakened - the only window is TTL expiry, which is 60 s.
+    so security is not weakened - the only window is TTL expiry, which is 10 s.
 
     Auto-creates a ``user_auth_state`` row with a fresh nonce on first call
     (new user, first login).
