@@ -628,6 +628,7 @@ ipcMain.handle("check-for-updates", () => {
 // Electron's process lingers long enough for ShipIt to see it and cancel. We kill
 // subprocesses first, then give them 500ms to exit before handing off to ShipIt.
 ipcMain.on("install-update", async () => {
+  isQuitting = true;  // prevent the macOS hide-on-close handler from blocking quit
   if (uiProcess) uiProcess.kill();
   if (apiProcess) apiProcess.kill();
   if (pgInstance) {
