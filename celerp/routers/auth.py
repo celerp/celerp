@@ -417,18 +417,18 @@ async def logout(
 
 
 @router.get("/session-watch")
-async def session_watch(
-    token: str = Depends(oauth2_scheme),
-    session: AsyncSession = Depends(get_session),
-):
+async def session_watch(token: str = Depends(oauth2_scheme)):
     """SSE endpoint: streams a single 'evicted' event when this token's nonce
     is invalidated (force-login or logout), then closes.
+
+    Auth uses manual token decode (no Depends(get_session)) so FastAPI does NOT
+    hold a DB connection open for the stream lifetime. Per-tick nonce checks open
+    their own short-lived SessionLocal() context managers as needed.
 
     The browser JS subscribes on page load and redirects to /login when it
     receives the event, giving the user an immediate notification rather than
     waiting for their next page navigation.
 
-    Keepalive comments are sent every ~16s to prevent proxy/browser timeouts.
     Authentication: requires a valid bearer token at subscription time.
     If the token is already invalid, the endpoint returns 401 immediately.
     """

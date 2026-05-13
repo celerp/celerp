@@ -358,3 +358,73 @@ class TestListDocsCorrectness:
             assert len(pg_ids) == 10, f"Page {i+1}: expected 10 items"
         assert not (ids[0] & ids[1]), "Pages 1-2 overlap"
         assert not (ids[1] & ids[2]), "Pages 2-3 overlap"
+
+
+# ---------------------------------------------------------------------------
+# SSE DB session leak tests
+# ---------------------------------------------------------------------------
+# The /notifications/stream SSE endpoint uses Depends(get_current_user), which
+# in turn calls Depends(get_session). FastAPI holds the yielded session alive
+# for the entire request lifetime - for StreamingResponse that means until the
+# stream is closed or the client disconnects. Each open browser tab holds one
+# DB connection permanently, exhausting the pool under normal multi-tab usage.
+#
+# Fix: do auth manually inside the handler body (decode token claims, no
+# Depends(get_session)), so no session is retained after the StreamingResponse
+# is returned.
+
+class TestSSESessionLeak:
+    """Verify that SSE endpoints do not hold DB sessions open for their stream lifetime."""
+
+    def _collect_dep_calls(self, dependant) -> list:
+        """Walk the FastAPI dependency tree, collecting all .call values."""
+        result = []
+        for dep in getattr(dependant, "dependencies", []):
+            result.append(getattr(dep, "call", None))
+            result.extend(self._collect_dep_calls(dep))
+        return result
+
+    @pytest.mark.asyncio
+    async def test_notifications_stream_holds_no_db_session_dependency(self):
+        """The /notifications/stream route must not use Depends(get_session) directly
+        or transitively via get_current_user. FastAPI keeps Depends-yielded sessions
+        alive for the entire StreamingResponse lifetime, one DB connection per open tab.
+        """
+        from fastapi.routing import APIRoute
+        from celerp.main import app
+        from celerp.db import get_session
+
+        stream_route = next(
+            (r for r in app.routes if isinstance(r, APIRoute) and r.path == "/notifications/stream"),
+            None,
+        )
+        assert stream_route is not None, "/notifications/stream route not found"
+
+        all_calls = self._collect_dep_calls(stream_route.dependant)
+        assert get_session not in all_calls, (
+            "/notifications/stream holds a DB session via Depends(get_session) (directly or via "
+            "get_current_user). FastAPI keeps Depends-yielded sessions alive for the entire "
+            "StreamingResponse lifetime - one DB connection per open browser tab causes pool "
+            "exhaustion. Fix: decode the token manually inside the handler, without Depends(get_session)."
+        )
+
+    @pytest.mark.asyncio
+    async def test_session_watch_holds_no_db_session_dependency(self):
+        """The /auth/session-watch route must not use Depends(get_session) at handler level.
+        Per-tick nonce checks use manual SessionLocal() context managers, not DI sessions.
+        """
+        from fastapi.routing import APIRoute
+        from celerp.main import app
+        from celerp.db import get_session
+
+        watch_route = next(
+            (r for r in app.routes if isinstance(r, APIRoute) and r.path == "/auth/session-watch"),
+            None,
+        )
+        assert watch_route is not None, "/auth/session-watch route not found"
+
+        all_calls = self._collect_dep_calls(watch_route.dependant)
+        assert get_session not in all_calls, (
+            "/auth/session-watch holds a DB session via Depends(get_session). "
+            "This leaks a connection for the entire SSE stream lifetime."
+        )
