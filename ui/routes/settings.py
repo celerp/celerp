@@ -2073,6 +2073,17 @@ def setup_routes(app):
         except Exception as exc:
             return Div(f"Error: {exc}", cls="flash flash--error")
         from starlette.responses import RedirectResponse
+        # Check if the user has other active companies
+        try:
+            async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
+                r2 = await c.get("/auth/my-companies", headers=headers)
+            remaining = r2.json().get("total", 0) if r2.status_code == 200 else 0
+        except Exception:
+            remaining = 0
+        if remaining > 0:
+            # User still has other companies - keep token, let them pick one
+            return RedirectResponse(url="/setup/company?reason=deactivated", status_code=303)
+        # No companies left - clear session and go to login
         resp = RedirectResponse(url="/login?deactivated=1", status_code=303)
         resp.delete_cookie("token")
         return resp

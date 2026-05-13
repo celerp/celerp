@@ -107,7 +107,10 @@ def setup_routes(app):
             company = await api.get_company(token)
         except APIError:
             company = {}
+        reason = request.query_params.get("reason")
+        notice = flash("Your company was deactivated. Create a new one to continue.", kind="info") if reason == "deactivated" else ""
         return auth_shell(
+            notice,
             _company_details_form(company, lang=get_lang(request)),
             title="Company setup - Celerp",
         )
