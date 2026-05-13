@@ -376,7 +376,34 @@ if os.environ.get("CELERP_DEBUG") == "1":
     from starlette.responses import JSONResponse as _JSONResponse
     from ui.config import API_BASE as _DEBUG_API_BASE
     import httpx as _httpx
+    import time as _time
+    import uuid as _uuid
 
+    _ui_slow_requests: list[dict] = []
+    _UI_SLOW_THRESHOLD_S = 5.0
+    _UI_MAX_SLOW = 50
+
+    class _UISlowMiddleware:
+        def __init__(self, app):
+            self._app = app
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self._app(scope, receive, send)
+                return
+            path = scope.get("path", "")
+            started = _time.monotonic()
+            await self._app(scope, receive, send)
+            elapsed = _time.monotonic() - started
+            if elapsed >= _UI_SLOW_THRESHOLD_S:
+                _ui_slow_requests.append({
+                    "path": path,
+                    "method": scope.get("method", ""),
+                    "duration_s": round(elapsed, 2),
+                })
+                if len(_ui_slow_requests) > _UI_MAX_SLOW:
+                    del _ui_slow_requests[:-_UI_MAX_SLOW]
+
+    app.add_middleware(_UISlowMiddleware)
     def _make_debug_proxy(path: str):
         async def _proxy(request: Request):
             token = request.cookies.get(COOKIE_NAME)
@@ -392,3 +419,11 @@ if os.environ.get("CELERP_DEBUG") == "1":
 
     for _debug_path in ("/debug/pool", "/debug/sse", "/debug/caches", "/debug/requests", "/debug/slow"):
         app.get(_debug_path)(_make_debug_proxy(_debug_path))
+
+    async def _ui_slow_handler(request: Request):
+        return _JSONResponse({
+            "threshold_s": _UI_SLOW_THRESHOLD_S,
+            "count": len(_ui_slow_requests),
+            "requests": list(reversed(_ui_slow_requests)),
+        })
+    app.get("/debug/ui-slow")(_ui_slow_handler)
