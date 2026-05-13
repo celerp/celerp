@@ -310,4 +310,12 @@ app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
 app.include_router(notifications.router)
+
+# Debug router — only active when CELERP_DEBUG=1 (never in production by default)
+import os as _os
+if _os.environ.get("CELERP_DEBUG") == "1":
+    from celerp.routers import debug as _debug
+    _debug.install_pool_listeners()
+    app.include_router(_debug.router)
+
 app.mount("/static", StaticFiles(directory=str(settings.data_dir / "static"), check_dir=False), name="static")
