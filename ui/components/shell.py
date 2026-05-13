@@ -405,25 +405,41 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 
-  // SSE for real-time updates
-  if (typeof EventSource !== 'undefined') {
-    var es = new EventSource('/notifications/stream');
-    es.onmessage = function(e) {
+  // SSE for real-time updates (muxed: notifications + session-watch)
+  (function initEventStream() {
+    if (typeof EventSource === 'undefined') return;
+    var es = new EventSource('/events/stream');
+
+    es.addEventListener('notification', function(e) {
       try {
         var data = JSON.parse(e.data);
-        if (data.type === 'notification') {
-          loadNotifications();
-          // Browser notification for high priority
-          if (data.priority === 'high' && Notification.permission === 'granted') {
-            new Notification(data.title, { body: data.body });
-          }
+        loadNotifications();
+        if (data.priority === 'high' && Notification.permission === 'granted') {
+          new Notification(data.title, { body: data.body });
         }
       } catch(err) {}
-    };
+    });
+
+    es.addEventListener('evicted', function(e) {
+      es.close();
+      try {
+        var data = JSON.parse(e.data || '{}');
+        var by = data.by ? '&by=' + encodeURIComponent(data.by) : '';
+        window.location.href = '/login?reason=evicted' + by;
+      } catch(_) {
+        window.location.href = '/login?reason=evicted';
+      }
+    });
+
+    es.addEventListener('drain', function(e) {
+      es.close();
+      window.location.href = '/login?reason=expired';
+    });
+
     es.onerror = function() {
       // Auto-reconnect is built into EventSource
     };
-  }
+  })();
 
   // Initial load
   loadNotifications();
@@ -607,29 +623,6 @@ document.addEventListener('DOMContentLoaded', function() {
       // Auto-check on load so the card shows a version immediately.
       runPyPICheck();
     }
-  })();
-
-  /* ── Session eviction watcher ─────────────────────────────────────── */
-  (function initSessionWatch() {
-    if (typeof EventSource === 'undefined') return;
-    var es = new EventSource('/auth/session-watch');
-    es.addEventListener('evicted', function(e) {
-      es.close();
-      try {
-        var data = JSON.parse(e.data || '{}');
-        var by = data.by ? '&by=' + encodeURIComponent(data.by) : '';
-        window.location.href = '/login?reason=evicted' + by;
-      } catch(_) {
-        window.location.href = '/login?reason=evicted';
-      }
-    });
-    es.addEventListener('drain', function(e) {
-      es.close();
-      window.location.href = '/login?reason=expired';
-    });
-    es.onerror = function() {
-      es.close();
-    };
   })();
 });
 """

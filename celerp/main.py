@@ -23,7 +23,7 @@ from celerp.models.base import Base
 from fastapi.staticfiles import StaticFiles
 
 from celerp.routers import auth, companies, ledger
-from celerp.routers import health, notifications, system
+from celerp.routers import health, notifications, system, events as events_router_mod
 
 import celerp.models  # noqa: F401 - ensures kernel models (UserCompany, ImportBatch, DocShareToken) are registered
 
@@ -310,6 +310,7 @@ app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
 app.include_router(notifications.router)
+app.include_router(events_router_mod.router)
 
 # Debug router — only active when CELERP_DEBUG=1 (never in production by default)
 import os as _os
