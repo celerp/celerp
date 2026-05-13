@@ -61,10 +61,6 @@ def install_pool_listeners() -> None:
     def on_checkin(dbapi_conn, conn_record):
         _record_pool_event("checkin")
 
-    @sa_event.listens_for(sync_pool, "overflow")
-    def on_overflow(dbapi_conn, conn_record):
-        _record_pool_event("overflow")
-
     @sa_event.listens_for(sync_pool, "invalidate")
     def on_invalidate(dbapi_conn, conn_record, exception):
         _record_pool_event("invalidate")
