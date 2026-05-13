@@ -428,3 +428,57 @@ class TestSSESessionLeak:
             "/auth/session-watch holds a DB session via Depends(get_session). "
             "This leaks a connection for the entire SSE stream lifetime."
         )
+
+
+class TestBlockingCallsInAsyncHandlers:
+    """Verify that no sync-blocking calls exist in async route handlers.
+
+    Blocking calls (psutil.cpu_percent(interval>0), time.sleep, etc.) in async
+    handlers block the entire uvicorn event loop, stalling ALL concurrent requests
+    for the duration of the block. This causes intermittent 30s+ page loads.
+    """
+
+    @pytest.mark.asyncio
+    async def test_system_health_endpoint_does_not_block_event_loop(self):
+        """GET /health/system must run get_system_health() in a thread (asyncio.to_thread),
+        not directly in the async handler. psutil.cpu_percent(interval>0) blocks the
+        calling thread for the interval duration - fatal in uvicorn's event loop.
+        """
+        import asyncio
+        import inspect
+        from fastapi.routing import APIRoute
+        from celerp.main import app
+
+        health_route = next(
+            (r for r in app.routes if isinstance(r, APIRoute) and r.path == "/health/system"),
+            None,
+        )
+        assert health_route is not None, "/health/system route not found"
+
+        # The handler must use asyncio.to_thread() - check source
+        src = inspect.getsource(health_route.endpoint)
+        assert "to_thread" in src, (
+            "/health/system handler calls get_system_health() directly without asyncio.to_thread(). "
+            "psutil.cpu_percent(interval=N) blocks the event loop for N seconds on every page load "
+            "since the health banner JS fires this request on DOMContentLoaded. "
+            "Fix: return await asyncio.to_thread(get_system_health)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cpu_percent_interval_is_short(self):
+        """psutil.cpu_percent must use a short interval (<=0.2s) to avoid excessive blocking
+        even when called from a thread. 1-second interval means every page load adds 1s latency.
+        """
+        import inspect
+        from celerp.services import system_health
+        src = inspect.getsource(system_health)
+        # Extract the interval value - must not be 'interval=1' or larger
+        import re
+        intervals = re.findall(r'cpu_percent\s*\(\s*interval\s*=\s*([0-9.]+)', src)
+        for interval_str in intervals:
+            interval = float(interval_str)
+            assert interval <= 0.2, (
+                f"psutil.cpu_percent(interval={interval}) blocks the thread for {interval}s. "
+                "Use interval<=0.2 to keep health checks fast. "
+                "For accuracy, use a background loop with interval=None in hot path."
+            )

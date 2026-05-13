@@ -64,7 +64,8 @@ async def drain_status(session: AsyncSession = Depends(get_session)) -> dict:
 
 @router.get("/health/system")
 async def system_health() -> dict:
-    return get_system_health()
+    import asyncio
+    return await asyncio.to_thread(get_system_health)
 
 
 @router.get("/settings/cloud-status")
