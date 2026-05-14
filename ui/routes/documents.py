@@ -4956,7 +4956,23 @@ async function celerpAcSearch(input, field) {{
 }}
 function celerpAcBlur(input) {{
     const list = input.parentElement.querySelector('.catalog-ac-list');
+    // If cursor moved to a dropdown option (mousedown), let that handler fire first
     setTimeout(() => {{ list.style.display = 'none'; }}, 200);
+    // If this is the SKU field and no entity_id linked yet, attempt a silent exact lookup
+    if (input.dataset.name === 'sku') {{
+        const row = input.closest('tr');
+        const eidEl = row ? row.querySelector('[data-name="entity_id"]') : null;
+        if (row && eidEl && !eidEl.value && input.value.trim()) {{
+            const sku = input.value.trim();
+            const pl = _celerpPriceListParam();
+            fetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam())
+              .then(r => r.ok ? r.json() : [])
+              .then(items => {{
+                const exact = items.find(i => i.sku && i.sku.toLowerCase() === sku.toLowerCase());
+                if (exact && exact.entity_id) celerpFillRow(row, exact);
+              }});
+        }}
+    }}
     celerpAutoSave();
 }}
 function celerpAcKey(e, input) {{
@@ -5329,7 +5345,7 @@ async function celerpCsvImport(input, entityId) {{
       var id=(eidInput&&eidInput.value)||cb.value||'';
       if(id) ids.push(id);
     }});
-    if(!ids.length){{alert('No inventory items found in selected rows. Only rows linked to a saved inventory item can be label-printed.');return;}}
+    if(!ids.length){{alert('The selected rows have no linked inventory items. Only items picked from the product catalog can be label-printed.');return;}}
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
