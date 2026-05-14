@@ -5322,13 +5322,18 @@ async function celerpCsvImport(input, entityId) {{
     _hideBtns(); _update();
   }};
   window.liBulkLabelsConfirmed=function(){{
-    var action=sel?sel.value:'';
-    if(!action.startsWith('mod:')) return;
-    if(typeof CelerpSelection!=='undefined') CelerpSelection.clear();
+    var ids=[];
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
-      if(cb.value&&typeof CelerpSelection!=='undefined') CelerpSelection.add(cb.value,{{}});
+      if(cb.value) ids.push(cb.value);
     }});
-    if(typeof bulkActionChanged==='function') bulkActionChanged(action);
+    if(!ids.length) return;
+    var form=document.createElement('form');
+    form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
+    ids.forEach(function(id){{
+      var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
+      form.appendChild(inp);
+    }});
+    document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
   }};
   window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
 }})();
