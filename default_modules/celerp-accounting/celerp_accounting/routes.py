@@ -725,10 +725,58 @@ async def balance_sheet(
     liability_lines, total_liabilities = _section(["liability"], credit_normal=True)
     equity_lines, total_equity = _section(["equity"], credit_normal=True)
 
-    # Derive retained earnings from P&L (Assets - Liabilities - explicit Equity)
+    # Compute opening inventory balance: catalog cost basis not yet entered via JEs.
+    # This is inventory that exists in the system but has no purchase documentation.
+    # It's a synthetic line (not a real account) that reconciles accounting to physical reality.
+    je_inventory_balance = float(balances.get("1130", Decimal(0)))
+    inventory_rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )
+    ).scalars().all()
+    catalog_cost_total = Decimal(0)
+    for ir in inventory_rows:
+        st = ir.state
+        if ir.consignment_flag == "in" or st.get("consignment_flag") == "in":
+            continue
+        if (st.get("inventory_type") or "stocked") != "stocked":
+            continue
+        row_status = str(st.get("status") or "").lower()
+        if row_status in ("disposed", "expired", "consumed", "archived", "deactivated"):
+            continue
+        tc = st.get("total_cost")
+        if tc is not None:
+            catalog_cost_total += Decimal(str(tc))
+    opening_inventory = float(catalog_cost_total) - je_inventory_balance
+    opening_inventory_line: dict | None = None
+    if abs(opening_inventory) >= 0.01:
+        opening_inventory_line = {
+            "code": "1130-opening",
+            "name": "Opening Balance: Inventory",
+            "account_type": "asset",
+            "amount": opening_inventory,
+            "synthetic": True,
+            "tooltip": "Inventory in the catalog without purchase documentation. Does not affect your ledger.",
+            "href": "/inventory",
+        }
+        asset_lines.append(opening_inventory_line)
+        total_assets += opening_inventory
+
+    # Retained earnings = net income (all revenue - COGS - expenses) accumulated to date.
+    # This equals Assets - Liabilities - explicit Equity by the accounting equation.
     retained_earnings = total_assets - total_liabilities - total_equity
     if abs(retained_earnings) >= 0.01:
-        equity_lines.append({"code": "—", "name": "Retained Earnings (derived)", "account_type": "equity", "amount": retained_earnings})
+        equity_lines.append({
+            "code": "RE",
+            "name": "Retained Earnings",
+            "account_type": "equity",
+            "amount": retained_earnings,
+            "synthetic": True,
+            "href_pnl": True,
+        })
         total_equity += retained_earnings
 
     total_l_e = total_liabilities + total_equity

@@ -1642,6 +1642,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             total=po_total,
             unique_suffix=str(uuid.uuid4()),
             base_currency=_rcv_base_currency,
+            receive_date=datetime.now(UTC).date().isoformat(),
         )
     await session.commit()
     return {"event_id": entry.id}
@@ -1982,6 +1983,7 @@ async def _import_auto_je(session: AsyncSession, company_id, user_id, entity_id:
     elif doc_type == "purchase_order" and status in ("received", "partially_received", "final"):
         await auto_je.create_for_po_received(
             session, company_id=company_id, user_id=user_id, po_id=entity_id, doc=data, total=total, base_currency=base_currency,
+            receive_date=data.get("issue_date"),
         )
 
     elif doc_type == "bill" and status in ("awaiting_payment", "partial", "paid", "final"):

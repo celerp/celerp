@@ -214,6 +214,7 @@ async def create_for_po_received(
     doc: dict | None = None,
     unique_suffix: str | None = None,
     base_currency: str = "USD",
+    receive_date: str | None = None,
 ) -> None:
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     debit_account = {
@@ -237,6 +238,7 @@ async def create_for_po_received(
         idem_create=je_idempotency_key(po_id, f"po.received{idem_suffix}", "c"),
         idem_posted=je_idempotency_key(po_id, f"po.received{idem_suffix}", "p"),
         memo=f"Auto JE for {po_id} received",
+        ts=receive_date,
         entries=[
             {"account": debit_account, "debit": base_total, "credit": 0.0},
             {"account": "2110", "debit": 0.0, "credit": base_total},

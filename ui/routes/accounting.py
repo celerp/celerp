@@ -654,6 +654,9 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
         # Ledger up to as_of date for balance sheet context
         return f"/accounting/ledger/{code}?date_to={as_of}" if as_of else f"/accounting/ledger/{code}"
 
+    def _pnl_href() -> str:
+        return f"/accounting?tab=pnl&date_to={as_of}" if as_of else "/accounting?tab=pnl"
+
     def _tb_href() -> str:
         return f"/accounting?tab=trial-balance&as_of={as_of}" if as_of else "/accounting?tab=trial-balance"
 
@@ -662,12 +665,26 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
         rows = []
         for l in lines:
             code = l.get("code", "")
-            label = f"{code} {l.get('name', '')}".strip()
-            # Derived entries (code "—") have no real ledger; show as plain text
-            if code and code != "—":
+            label = f"{code} {l.get('name', '')}".strip() if not l.get("synthetic") else l.get("name", "")
+            synthetic = l.get("synthetic", False)
+
+            if synthetic and l.get("href_pnl"):
+                # Retained Earnings: link to P&L page
+                name_cell = Td(
+                    A(label, href=_pnl_href(), cls="drilldown-link"),
+                    title="Net income accumulated from P&L. Click to see the calculation.",
+                )
+            elif synthetic and l.get("href"):
+                # Opening Balance: Inventory - link to inventory page with tooltip
+                name_cell = Td(
+                    A(label, href=l["href"], cls="drilldown-link"),
+                    title=l.get("tooltip", ""),
+                )
+            elif code and not synthetic:
                 name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"))
             else:
                 name_cell = Td(label)
+
             rows.append(Tr(
                 name_cell,
                 Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"),
