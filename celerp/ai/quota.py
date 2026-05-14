@@ -146,6 +146,7 @@ async def get_quota_status() -> dict | None:
                 "X-Session-Token": session_token,
                 "X-Instance-ID": instance_id,
             })
+        log.info("Quota status: url=%s status=%s body=%s", url, r.status_code, r.text[:200])
         if r.status_code == 200:
             return r.json()
     except Exception as exc:
