@@ -200,15 +200,24 @@ def setup_routes(app):
                     _balance_sheet_view(data, currency),
                 )
             elif tab == "trial-balance":
-                trial_balance = await api.get_trial_balance(token)
+                fy = await _get_fiscal(token)
+                d_from, d_to, preset = _parse_dates(request, fy)
+                tb_params = {}
+                if d_from:
+                    tb_params["date_from"] = d_from
+                if d_to:
+                    tb_params["date_to"] = d_to
+                trial_balance = await api.get_trial_balance(token, tb_params)
                 content = Div(
                     Div(
-                        Div(cls="date-filter-bar"),  # spacer to keep action bar right-aligned
+                        _date_filter_bar("/accounting", d_from, d_to, preset,
+                                         settings_link="/settings/general?tab=company",
+                                         extra_params="&tab=trial-balance"),
                         _action_bar("trial-balance", {}),
                         cls="flex-row flex-between",
                     ),
                     _trial_balance_summary(trial_balance, currency),
-                    _trial_balance_table(trial_balance, currency),
+                    _trial_balance_table(trial_balance, currency, date_from=d_from or "", date_to=d_to or ""),
                 )
             else:
                 return RedirectResponse("/accounting", status_code=302)
@@ -414,6 +423,57 @@ def setup_routes(app):
             headers={"Content-Disposition": f'attachment; filename="{fname}"'},
         )
 
+    # ── Account ledger drilldown ───────────────────────────────────────────
+
+    @app.get("/accounting/ledger/{account_code}")
+    async def account_ledger_page(request: Request, account_code: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            fy = await _get_fiscal(token)
+            d_from, d_to, preset = _parse_dates(request, fy)
+            params = {}
+            if d_from:
+                params["date_from"] = d_from
+            if d_to:
+                params["date_to"] = d_to
+            data = await api.get_ledger(token, account_code, params)
+            company = await api.get_company(token)
+            currency = company.get("currency")
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            content = Div(f"Error loading ledger: {e.detail}", cls="error-banner")
+            return base_shell(content, title="Ledger - Celerp", nav_active="accounting", request=request)
+
+        tb_back_qs = "?tab=trial-balance"
+        if d_from:
+            tb_back_qs += f"&date_from={d_from}"
+        if d_to:
+            tb_back_qs += f"&date_to={d_to}"
+
+        content = Div(
+            Div(
+                _date_filter_bar(
+                    f"/accounting/ledger/{account_code}", d_from, d_to, preset,
+                    settings_link="/settings/general?tab=company",
+                ),
+                A("← Trial Balance", href=f"/accounting{tb_back_qs}", cls="btn btn--ghost btn--sm"),
+                cls="flex-row flex-between",
+            ),
+            _ledger_view(data, currency),
+        )
+
+        account_name = data.get("account_name", account_code)
+        return base_shell(
+            page_header(f"Ledger: {account_code} {account_name}"),
+            content,
+            title=f"Ledger {account_code} - Celerp",
+            nav_active="accounting",
+            request=request,
+        )
+
 
 def _accounting_tabs(active: str) -> FT:
     tabs = [
@@ -431,15 +491,23 @@ def _accounting_tabs(active: str) -> FT:
     )
 
 
-def _trial_balance_table(tb: dict, currency: str | None = None) -> FT:
+def _trial_balance_table(tb: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
     from ui.components.table import fmt_money
     lines = tb.get("lines", [])
     if not lines:
         return P(t("acct.no_trial_balance_entries"), cls="empty-state")
+
+    def _ledger_href(code: str) -> str:
+        parts = [f"date_from={date_from}"] if date_from else []
+        if date_to:
+            parts.append(f"date_to={date_to}")
+        qs = ("?" + "&".join(parts)) if parts else ""
+        return f"/accounting/ledger/{code}{qs}"
+
     rows = [
         Tr(
             Td(l.get("code", ""), cls="cell--mono"),
-            Td(l.get("name", "")),
+            Td(A(l.get("name", ""), href=_ledger_href(l.get("code", "")), cls="drilldown-link")),
             Td(fmt_money(l.get('total_debit', 0), currency), cls="cell--number"),
             Td(fmt_money(l.get('total_credit', 0), currency), cls="cell--number"),
         )
@@ -461,6 +529,48 @@ def _trial_balance_summary(tb: dict, currency: str | None = None) -> FT:
         Span("Balanced ✓" if balanced else "⚠ Out of balance",
              cls="val-chip" if balanced else "val-chip val-chip--alert"),
         cls="valuation-bar",
+    )
+
+
+def _ledger_view(data: dict, currency: str | None = None) -> FT:
+    from ui.components.table import fmt_money
+    lines = data.get("lines", [])
+    if not lines:
+        return P("No entries found for this account in the selected period.", cls="empty-state")
+
+    def _fmt_nonzero(val: float) -> str:
+        return fmt_money(val, currency) if val else ""
+
+    def _balance_cls(val: float) -> str:
+        if val < 0:
+            return "cell--number cell--negative"
+        return "cell--number"
+
+    rows = [
+        Tr(
+            Td(line["date"], cls="cell--mono"),
+            Td(
+                A(line["doc_id"], href=f"/docs/{line['doc_id']}", cls="drilldown-link")
+                if line.get("doc_id") else "",
+            ),
+            Td(line.get("memo", ""), cls="cell--muted"),
+            Td(_fmt_nonzero(line["debit"]), cls="cell--number"),
+            Td(_fmt_nonzero(line["credit"]), cls="cell--number"),
+            Td(fmt_money(line["balance"], currency), cls=_balance_cls(line["balance"])),
+        )
+        for line in lines
+    ]
+    return Table(
+        Thead(Tr(
+            Th("Date"),
+            Th("Source Doc"),
+            Th("Description"),
+            Th("Debit", cls="cell--number"),
+            Th("Credit", cls="cell--number"),
+            Th("Balance", cls="cell--number"),
+        )),
+        Tbody(*rows),
+        cls="data-table",
     )
 
 

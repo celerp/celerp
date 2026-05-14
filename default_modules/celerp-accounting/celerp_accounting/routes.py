@@ -437,6 +437,95 @@ async def list_journal_entries(
     return {"items": items, "total": len(items)}
 
 
+@router.get("/ledger/{account_code}")
+async def account_ledger(
+    account_code: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Account ledger: all posted JE lines for a single account, with running balance and source doc links."""
+    from celerp.models.ledger import LedgerEntry
+
+    # Fetch account metadata for name + type (sign convention)
+    account = (
+        await session.execute(
+            select(Account).where(Account.company_id == company_id, Account.code == account_code)
+        )
+    ).scalar_one_or_none()
+
+    # Fetch all posted JE projections for this company
+    je_rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "journal_entry",
+            )
+        )
+    ).scalars().all()
+
+    # Build je_id -> doc_id map from ledger events (one join query)
+    ledger_events = (
+        await session.execute(
+            select(LedgerEntry).where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.event_type == "acc.journal_entry.created",
+            )
+        )
+    ).scalars().all()
+    je_doc_map: dict[str, str] = {}
+    for ev in ledger_events:
+        meta = ev.metadata_ or {}
+        if meta.get("doc_id"):
+            je_doc_map[ev.entity_id] = meta["doc_id"]
+
+    # Filter to lines that touch this account, apply date filter
+    lines = []
+    for row in je_rows:
+        state = row.state
+        if state.get("status") != "posted":
+            continue
+        ts = (state.get("ts") or state.get("created_at") or "")[:10]
+        if date_from and ts < date_from:
+            continue
+        if date_to and ts > date_to:
+            continue
+        for entry in state.get("entries", []):
+            if entry.get("account") != account_code:
+                continue
+            lines.append({
+                "date": ts,
+                "je_id": row.entity_id,
+                "memo": state.get("memo", ""),
+                "doc_id": je_doc_map.get(row.entity_id),
+                "debit": float(entry.get("debit") or 0),
+                "credit": float(entry.get("credit") or 0),
+            })
+
+    # Sort chronologically for running balance
+    lines.sort(key=lambda x: (x["date"], x["je_id"]))
+
+    # Compute running balance (debit-normal for asset/expense, credit-normal for others)
+    account_type = account.account_type if account else "asset"
+    debit_normal = account_type in ("asset", "expense", "cogs")
+    running = Decimal(0)
+    for line in lines:
+        d, c = Decimal(str(line["debit"])), Decimal(str(line["credit"]))
+        running += (d - c) if debit_normal else (c - d)
+        line["balance"] = float(running)
+
+    return {
+        "account_code": account_code,
+        "account_name": account.name if account else account_code,
+        "account_type": account_type,
+        "date_from": date_from,
+        "date_to": date_to,
+        "lines": lines,
+    }
+
+
 @router.get("/trial-balance")
 async def trial_balance(
     date_from: str | None = None,

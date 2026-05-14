@@ -465,6 +465,7 @@ a:hover { text-decoration: underline; }
 .section-total { font-size: 12px; padding: 6px 10px; text-align: right; border-top: 1px solid var(--c-border); color: var(--c-text2); }
 .drilldown-link { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; }
 .drilldown-link:hover { color: var(--c-accent); }
+.cell--negative { color: var(--c-danger, #b91c1c); }
 .report-subtotal { padding: 8px 10px; background: var(--c-bg3); border: 1px solid var(--c-border); border-radius: var(--radius); margin-bottom: 12px; font-size: 13px; }
 .report-total { margin-top: 16px; padding: 12px 16px; background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); }
 .net-profit { font-size: 18px; font-weight: 700; font-family: var(--font-mono); }
