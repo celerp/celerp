@@ -1010,6 +1010,8 @@ a:hover { text-decoration: underline; }
 .flex-col { display: flex; flex-direction: column; }
 .flex-end { display: flex; flex-direction: column; align-items: flex-end; }
 .flex-wrap { flex-wrap: wrap; }
+.flex-between { justify-content: space-between; }
+.ml-auto { margin-left: auto; }
 .d-inline { display: inline; }
 /* Width */
 .max-w-sm { max-width: 120px; }
