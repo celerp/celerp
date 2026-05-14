@@ -250,6 +250,8 @@ async def list_docs(
     exclude_status: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    due_from: str | None = None,
+    due_to: str | None = None,
     q: str | None = None,
     contact_id: str | None = None,
     limit: int | None = None,
@@ -288,6 +290,10 @@ async def list_docs(
         base_where.append(Projection.state["issue_date"].as_string() >= date_from)
     if date_to:
         base_where.append(Projection.state["issue_date"].as_string() <= date_to)
+    if due_from:
+        base_where.append(Projection.state["due_date"].as_string() >= due_from)
+    if due_to:
+        base_where.append(Projection.state["due_date"].as_string() <= due_to)
     if q:
         ql = f"%{q.lower()}%"
         base_where.append(

@@ -87,3 +87,120 @@ async def test_reports_unit_branches_heavy():
     exp = await reports.expiring_items(days=30, company_id=cid, session=session)
     assert exp["count"] == 1
     assert exp["lines"][0]["sku"] == "E1"
+
+
+# ---------------------------------------------------------------------------
+# Aging drilldown link generation
+# ---------------------------------------------------------------------------
+
+def _fake_aging_data(as_of: str, customer_id: str = "c1") -> dict:
+    """Minimal aging API response for _aging_view testing."""
+    return {
+        "as_of": as_of,
+        "lines": [
+            {
+                "customer_id": customer_id,
+                "customer_name": "Acme Corp",
+                "current": 100.0,
+                "d30": 200.0,
+                "d60": 0.0,
+                "d90": 50.0,
+                "d90plus": 300.0,
+                "total": 650.0,
+            }
+        ],
+        "buckets": {"current": 100.0, "1-30": 200.0, "31-60": 0.0, "61-90": 50.0, "90+": 300.0},
+    }
+
+
+def test_aging_drilldown_links_ar():
+    """AR aging cells with non-zero values link to /docs with correct due_date ranges."""
+    from datetime import date, timedelta
+    from ui.routes.reports import _aging_view
+    today = date.today()
+    data = _fake_aging_data(today.isoformat(), "cust-123")
+    html = str(_aging_view(data, "AR"))
+
+    # current bucket: due_from=today, no due_to
+    assert f"due_from={today.isoformat()}" in html
+    # d30 bucket: due_from=today-30, due_to=today-1
+    assert f"due_from={(today - timedelta(days=30)).isoformat()}" in html
+    assert f"due_to={(today - timedelta(days=1)).isoformat()}" in html
+    # d90 bucket present
+    assert f"due_from={(today - timedelta(days=90)).isoformat()}" in html
+    # d90plus: due_to=today-91, no due_from
+    assert f"due_to={(today - timedelta(days=91)).isoformat()}" in html
+    # doc_type=invoice for AR
+    assert "doc_type=invoice" in html
+    # contact_id embedded
+    assert "contact_id=cust-123" in html
+    # zero bucket (d60=0) must NOT be a link
+    assert "d60" not in html or f"due_from={(today - timedelta(days=60)).isoformat()}" not in html
+
+
+def test_aging_drilldown_links_ap():
+    """AP aging cells link with doc_type=purchase_order."""
+    from datetime import date
+    from ui.routes.reports import _aging_view
+    today = date.today()
+    data = {
+        "as_of": today.isoformat(),
+        "lines": [
+            {
+                "supplier_id": "sup-456",
+                "supplier_name": "Vendor Co",
+                "current": 500.0,
+                "d30": 0.0,
+                "d60": 0.0,
+                "d90": 0.0,
+                "d90plus": 0.0,
+                "total": 500.0,
+            }
+        ],
+        "buckets": {},
+    }
+    html = str(_aging_view(data, "AP"))
+    assert "doc_type=purchase_order" in html
+    assert f"due_from={today.isoformat()}" in html
+    assert "contact_id=sup-456" in html
+
+
+def test_aging_drilldown_zero_cells_not_linked():
+    """Cells with zero amount render plain text, not links."""
+    from datetime import date
+    from ui.routes.reports import _aging_view
+    today = date.today()
+    data = _fake_aging_data(today.isoformat())
+    html = str(_aging_view(data, "AR"))
+    # d60=0 - its specific due range should NOT appear as a link
+    from datetime import timedelta
+    d60_due_from = (today - timedelta(days=60)).isoformat()
+    d60_due_to = (today - timedelta(days=31)).isoformat()
+    # The d60 range params should not appear since that bucket is 0
+    assert f"due_from={d60_due_from}&due_to={d60_due_to}" not in html
+
+
+def test_aging_drilldown_unlinked_contact_no_contact_id():
+    """Rows with unlinked contact_id do not include contact_id in the drilldown URL."""
+    from datetime import date
+    from ui.routes.reports import _aging_view
+    today = date.today()
+    data = {
+        "as_of": today.isoformat(),
+        "lines": [
+            {
+                "customer_id": "unlinked",
+                "customer_name": "Unlinked Invoices",
+                "current": 0.0,
+                "d30": 150.0,
+                "d60": 0.0,
+                "d90": 0.0,
+                "d90plus": 0.0,
+                "total": 150.0,
+            }
+        ],
+        "buckets": {},
+    }
+    html = str(_aging_view(data, "AR"))
+    assert "contact_id=unlinked" not in html
+    assert "doc_type=invoice" in html

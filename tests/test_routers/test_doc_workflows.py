@@ -497,6 +497,57 @@ async def test_list_docs_overdue_only_filter(client, session):
 
 
 @pytest.mark.anyio
+async def test_list_docs_due_from_due_to_filter(client, session):
+    """due_from/due_to filter on due_date (not issue_date)."""
+    from datetime import date, timedelta
+    token = await _register(client)
+    today = date.today()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    future = (today + timedelta(days=10)).isoformat()
+
+    # Doc A: due yesterday - created with due_date at creation time
+    r_a = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "invoice",
+        "due_date": yesterday,
+        "line_items": [{"name": "A", "quantity": 1, "unit_price": 100, "line_total": 100}],
+        "total": 100,
+    })
+    assert r_a.status_code == 200
+    doc_a = r_a.json()["id"]
+
+    # Doc B: due in 10 days
+    r_b = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "invoice",
+        "due_date": future,
+        "line_items": [{"name": "B", "quantity": 1, "unit_price": 200, "line_total": 200}],
+        "total": 200,
+    })
+    assert r_b.status_code == 200
+    doc_b = r_b.json()["id"]
+
+    # due_from=today should include doc_b (future) but not doc_a (past)
+    r = await client.get(f"/docs?doc_type=invoice&due_from={today.isoformat()}", headers=_h(token))
+    assert r.status_code == 200
+    ids = {item["id"] for item in r.json().get("items", [])}
+    assert doc_b in ids, "due_from=today must include doc with future due_date"
+    assert doc_a not in ids, "due_from=today must exclude doc with past due_date"
+
+    # due_to=yesterday should include doc_a but not doc_b
+    r2 = await client.get(f"/docs?doc_type=invoice&due_to={yesterday}", headers=_h(token))
+    assert r2.status_code == 200
+    ids2 = {item["id"] for item in r2.json().get("items", [])}
+    assert doc_a in ids2, "due_to=yesterday must include doc with past due_date"
+    assert doc_b not in ids2, "due_to=yesterday must exclude doc with future due_date"
+
+    # Exact range: yesterday only
+    r3 = await client.get(f"/docs?doc_type=invoice&due_from={yesterday}&due_to={yesterday}", headers=_h(token))
+    assert r3.status_code == 200
+    ids3 = {item["id"] for item in r3.json().get("items", [])}
+    assert doc_a in ids3
+    assert doc_b not in ids3
+
+
+@pytest.mark.anyio
 async def test_amount_outstanding_recalculated_after_line_items_added(client, session):
     """Regression: adding line items after creation must update amount_outstanding.
 
