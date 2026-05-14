@@ -197,7 +197,7 @@ def setup_routes(app):
                         _action_bar("balance-sheet", {"as_of": as_of}),
                         cls="flex-row flex-between",
                     ),
-                    _balance_sheet_view(data, currency),
+                    _balance_sheet_view(data, currency, as_of=as_of),
                 )
             elif tab == "trial-balance":
                 fy = await _get_fiscal(token)
@@ -293,7 +293,7 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             return PlainTextResponse(f"Error: {e.detail}", status_code=500)
 
-        body = _balance_sheet_view(data, currency)
+        body = _balance_sheet_view(data, currency, as_of=as_of)
         return _print_shell(company, "Balance Sheet", f"As of: {as_of}", body)
 
     @app.get("/accounting/print/trial-balance")
@@ -585,6 +585,13 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
         _qs_parts.append(f"date_to={date_to}")
     _dqs = ("?" + "&".join(_qs_parts)) if _qs_parts else ""
 
+    def _ledger_href(code: str) -> str:
+        parts = [f"date_from={date_from}"] if date_from else []
+        if date_to:
+            parts.append(f"date_to={date_to}")
+        qs = ("?" + "&".join(parts)) if parts else ""
+        return f"/accounting/ledger/{code}{qs}"
+
     def _pct_of_rev(amount: float) -> str:
         if not rev_total:
             return "--"
@@ -595,8 +602,11 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
         rows = []
         for l in lines:
             amt = float(l.get("amount", 0) or 0)
+            code = l.get("code", "")
+            label = f"{code} {l.get('name', '')}".strip()
+            name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link") if code else label)
             cells = [
-                Td(f"{l.get('code', '')} {l.get('name', '')}".strip()),
+                name_cell,
                 Td(fmt_money(amt, currency), cls="cell--number"),
             ]
             if show_pct:
@@ -637,23 +647,36 @@ def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date
     )
 
 
-def _balance_sheet_view(data: dict, currency: str | None = None) -> FT:
+def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = "") -> FT:
     from ui.components.table import fmt_money
+
+    def _ledger_href(code: str) -> str:
+        # Ledger up to as_of date for balance sheet context
+        return f"/accounting/ledger/{code}?date_to={as_of}" if as_of else f"/accounting/ledger/{code}"
+
+    def _tb_href() -> str:
+        return f"/accounting?tab=trial-balance&as_of={as_of}" if as_of else "/accounting?tab=trial-balance"
 
     def _section(title, section_data):
         lines = section_data.get("lines", [])
-        rows = [Tr(Td(f"{l.get('code', '')} {l.get('name', '')}".strip()),
-                   Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"))
-                for l in lines]
+        rows = []
+        for l in lines:
+            code = l.get("code", "")
+            label = f"{code} {l.get('name', '')}".strip()
+            name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link") if code else label)
+            rows.append(Tr(
+                name_cell,
+                Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"),
+            ))
+        total_el = fmt_money(section_data.get('total', 0), currency)
         return Div(
             H3(title, cls="report-section-title"),
             Table(Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),
-            P(Strong(fmt_money(section_data.get('total', 0), currency)), cls="section-total"),
+            P(A(Strong(total_el), href=_tb_href(), cls="drilldown-link"), cls="section-total"),
             cls="report-section",
         )
 
     balanced = data.get("balanced", True)
-    total_assets = data.get("assets", {}).get("total", 0)
     total_liab = data.get("liabilities", {}).get("total", 0)
     total_equity = data.get("equity", {}).get("total", 0)
     return Div(

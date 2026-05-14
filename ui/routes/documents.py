@@ -712,6 +712,7 @@ def setup_routes(app):
         doc_type = request.query_params.get("type", "") or request.query_params.get("doc_type", "")
         status = request.query_params.get("status", "")
         status_in = request.query_params.get("status_in", "")
+        contact_id = request.query_params.get("contact_id", "")
         overdue_only = request.query_params.get("overdue_only", "") in ("1", "true")
         unfulfilled_only = request.query_params.get("unfulfilled_only", "") in ("1", "true")
         not_restocked = request.query_params.get("not_restocked", "") in ("1", "true")
@@ -762,6 +763,8 @@ def setup_routes(app):
             params = {"limit": per_page, "offset": (page - 1) * per_page}
             if q:
                 params["q"] = q
+            if contact_id:
+                params["contact_id"] = contact_id
             if doc_type:
                 params["doc_type"] = doc_type
             if is_drafts_view:
@@ -861,7 +864,7 @@ def setup_routes(app):
                 docs,
                 sort=sort,
                 sort_dir=sort_dir,
-                base_params={"q": q, "type": doc_type, "status": status, "view": view, "page": str(page), "per_page": str(per_page)},
+                base_params={"q": q, "type": doc_type, "status": status, "contact_id": contact_id, "view": view, "page": str(page), "per_page": str(per_page)},
                 doc_type=doc_type if not is_drafts_view else doc_type,
                 lang=lang,
             ),
