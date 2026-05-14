@@ -757,6 +757,21 @@ ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
 // uninstall-delete-data: delete all user data then quit.
 ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
 
+// ── Single-instance lock ─────────────────────────────────────────────────────
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 // ── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
