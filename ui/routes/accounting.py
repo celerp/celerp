@@ -176,7 +176,7 @@ def setup_routes(app):
                         _action_bar("pnl", {"date_from": d_from or "", "date_to": d_to or ""}),
                         cls="flex-row flex-between",
                     ),
-                    _pnl_view(data, currency),
+                    _pnl_view(data, currency, date_from=d_from or "", date_to=d_to or ""),
                 )
             elif tab == "balance-sheet":
                 as_of = request.query_params.get("as_of", "") or _date.today().isoformat()
@@ -265,7 +265,7 @@ def setup_routes(app):
             subtitle_parts.append(f"To: {d_to}")
         subtitle = "  |  ".join(subtitle_parts) if subtitle_parts else "All periods"
 
-        body = _pnl_view(data, currency)
+        body = _pnl_view(data, currency, date_from=d_from, date_to=d_to)
         return _print_shell(company, "Profit & Loss Statement", subtitle, body)
 
     @app.get("/accounting/print/balance-sheet")
@@ -464,17 +464,23 @@ def _trial_balance_summary(tb: dict, currency: str | None = None) -> FT:
     )
 
 
-def _pnl_view(data: dict, currency: str | None = None) -> FT:
+def _pnl_view(data: dict, currency: str | None = None, date_from: str = "", date_to: str = "") -> FT:
     from ui.components.table import fmt_money
 
     rev_total = float(data.get("revenue", {}).get("total", 0) or 0)
+
+    # Build date query string for drilldown links
+    _qs_parts = [f"date_from={date_from}"] if date_from else []
+    if date_to:
+        _qs_parts.append(f"date_to={date_to}")
+    _dqs = ("?" + "&".join(_qs_parts)) if _qs_parts else ""
 
     def _pct_of_rev(amount: float) -> str:
         if not rev_total:
             return "--"
         return f"{abs(amount) / rev_total * 100:.1f}%"
 
-    def _section(title, section_data, show_pct: bool = False, cls=""):
+    def _section(title, section_data, show_pct: bool = False, cls="", total_href: str = ""):
         lines = section_data.get("lines", [])
         rows = []
         for l in lines:
@@ -491,19 +497,27 @@ def _pnl_view(data: dict, currency: str | None = None) -> FT:
             Th(t("label.amount"), cls="cell--number"),
             *([] if not show_pct else [Th(t("th._of_revenue"), cls="cell--right")]),
         )
+        total_el = fmt_money(section_data.get('total', 0), currency)
+        total_content = (
+            A(Strong(total_el), href=total_href, cls="drilldown-link", target="_blank")
+            if total_href else Strong(total_el)
+        )
         return Div(
             H3(title, cls="report-section-title"),
             Table(Thead(header_row), Tbody(*rows), cls="data-table data-table--compact") if rows else P(t("acct.no_entries"), cls="empty-state"),
-            P(Strong(fmt_money(section_data.get('total', 0), currency)), cls="section-total"),
+            P(total_content, cls="section-total"),
             cls=f"report-section {cls}",
         )
 
     net = float(data.get("net_profit", 0))
     return Div(
-        _section("Revenue", data.get("revenue", {}), show_pct=True),
-        _section("Cost of Goods Sold", data.get("cogs", {}), show_pct=True),
+        _section("Revenue", data.get("revenue", {}), show_pct=True,
+                 total_href=f"/reports/sales{_dqs}"),
+        _section("Cost of Goods Sold", data.get("cogs", {}), show_pct=True,
+                 total_href=f"/reports/purchases{_dqs}"),
         Div(P(Strong(f"Gross Profit: {fmt_money(data.get('gross_profit', 0), currency)}")), cls="report-subtotal"),
-        _section("Operating Expenses", data.get("expenses", {}), show_pct=True),
+        _section("Operating Expenses", data.get("expenses", {}), show_pct=True,
+                 total_href=f"/reports/purchases{_dqs}"),
         Div(
             P(Strong(f"Net Profit: {fmt_money(net, currency)}"),
               cls=f"net-profit {'net-profit--positive' if net >= 0 else 'net-profit--negative'}"),
