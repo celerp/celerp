@@ -162,10 +162,13 @@ class GatewayClient:
             self._relay_status = "active"
             # Store short-lived session token - required for cloud-gated endpoints
             session_token = payload.get("session_token", "")
+            log.info("Gateway hello_ack: session_token present=%s, payload_keys=%s", bool(session_token), list(payload.keys()))
             if session_token:
                 from celerp.gateway.state import set_session_token
                 set_session_token(session_token)
-                log.debug("Gateway session token updated.")
+                log.info("Gateway session token stored.")
+            else:
+                log.warning("Gateway hello_ack received but no session_token in payload.")
             feature_flags = payload.get("feature_flags", {})
             if feature_flags:
                 from celerp.gateway.state import set_feature_flags
