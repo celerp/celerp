@@ -2082,7 +2082,7 @@ def setup_routes(app):
             remaining = 0
         if remaining == 0:
             # No companies left - keep token so they can create a new one
-            return RedirectResponse(url="/setup/company?reason=deactivated", status_code=303)
+            return RedirectResponse(url="/setup/new-company?reason=deactivated", status_code=303)
         # Other companies exist - clear session, go to login to pick one
         resp = RedirectResponse(url="/login?deactivated=1", status_code=303)
         resp.delete_cookie("token")

@@ -109,7 +109,7 @@ def setup_routes(app):
         except APIError:
             company = {}
         reason = request.query_params.get("reason")
-        notice = flash("Your company was deactivated. Create a new one to continue.", kind="info") if reason == "deactivated" else ""
+        notice = ""
         uninstall_link = P(
             "Want a fresh start? ",
             A("Uninstall and delete all data →",
@@ -326,8 +326,10 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         error = request.query_params.get("error", "")
+        reason = request.query_params.get("reason", "")
+        notice = flash("Your company was deactivated. Enter a name to create a new one.", kind="info") if reason == "deactivated" else ""
         return auth_shell(
-            _new_company_form(error=error, lang=lang),
+            Div(notice, _new_company_form(error=error, lang=lang)) if notice else _new_company_form(error=error, lang=lang),
             title="New company - Celerp",
         )
 
