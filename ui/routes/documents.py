@@ -1087,7 +1087,7 @@ def setup_routes(app):
                 "sell_by": item.get("sell_by") or None,
                 "quantity": item.get("quantity") or 0,
                 "hs_code": item.get("hs_code") or None,
-                "entity_id": item.get("entity_id") or None,
+                "entity_id": item.get("entity_id") or item.get("id") or None,
                 "allow_splitting": bool(item.get("allow_splitting")),
                 "category": item.get("category") or None,
                 "cost_price": item.get("cost_price") or None,
@@ -1139,7 +1139,7 @@ def setup_routes(app):
                 "sell_by": item.get("sell_by") or None,
                 "hs_code": item.get("hs_code") or None,
                 "quantity": item.get("quantity") or 0,
-                "entity_id": item.get("entity_id") or None,
+                "entity_id": item.get("entity_id") or item.get("id") or None,
                 "allow_splitting": bool(item.get("allow_splitting")),
                 "category": item.get("category") or None,
                 "cost_price": item.get("cost_price") or None,
@@ -5349,6 +5349,7 @@ async function celerpCsvImport(input, entityId) {{
       var row=cb.closest('tr');
       var eidInput=row?row.querySelector('[data-name="entity_id"]'):null;
       var id=(eidInput&&eidInput.value)||cb.value||'';
+      if(!id){{var skuEl=row?row.querySelector('[data-name="sku"]'):null;var sku=skuEl?skuEl.value.trim():'';if(sku)id='sku:'+sku;}}
       if(id) ids.push(id);
     }});
     if(!ids.length){{alert('The selected rows have no linked inventory items. Only items picked from the product catalog can be label-printed.');return;}}
@@ -5381,8 +5382,9 @@ async function celerpCsvImport(input, entityId) {{
             cells = []
             if _fin_show_bulk:
                 li_eid = li.get("entity_id") or li.get("item_id") or ""
+                li_sku = li.get("sku") or ""
                 cells.append(Td(
-                    Input(type="checkbox", cls="li-select", value=li_eid),
+                    Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
@@ -5452,6 +5454,7 @@ async function celerpCsvImport(input, entityId) {{
       var row=cb.closest('tr');
       var eidInput=row?row.querySelector('[data-name="entity_id"]'):null;
       var id=(eidInput&&eidInput.value)||cb.value||'';
+      if(!id){{var sku=cb.dataset.sku||'';if(sku)id='sku:'+sku;}}
       if(id) ids.push(id);
     }});
     if(!ids.length){{alert('The selected rows have no linked inventory items. Only items picked from the product catalog can be label-printed.');return;}}

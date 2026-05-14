@@ -1037,6 +1037,25 @@ class TestDocCatalogLookup:
     """Test /docs/catalog-lookup returns sell_by and quantity."""
 
     @pytest.mark.asyncio
+    async def test_catalog_search_preserves_entity_id_from_id_field(self, ui_client):
+        """Inventory API returns items with 'id' not 'entity_id' (_flatten_item sets flat['id']).
+        catalog-search must read item.get('entity_id') or item.get('id') so the eye icon
+        and bulk label print receive a valid entity_id, not None."""
+        item = {
+            "id": "item:abc",  # _flatten_item sets 'id', never 'entity_id'
+            "sku": "SKU-1", "name": "Widget", "retail_price": 100,
+        }
+        with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
+            r = await ui_client.get("/docs/catalog-search?q=SKU-1", cookies=_authed())
+        assert r.status_code == 200
+        results = r.json()
+        assert results, "Expected at least one result"
+        assert results[0]["entity_id"] == "item:abc", (
+            f"entity_id was {results[0].get('entity_id')!r}; "
+            "catalog-search must fall back to item['id'] when entity_id is absent"
+        )
+
+    @pytest.mark.asyncio
     async def test_catalog_lookup_weight_item(self, ui_client):
         item = {
             "entity_id": "item:w1", "sku": "EM-001", "name": "Emerald",

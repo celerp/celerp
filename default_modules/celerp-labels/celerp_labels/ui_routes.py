@@ -1488,12 +1488,50 @@ def setup_ui_routes(app) -> None:
 
     @app.post("/labels/print-bulk")
     async def labels_print_bulk(request: Request):
-        """Bulk print preview: show template picker + print button for selected items."""
+        """Bulk print preview: show template picker + print button for selected items.
+
+        Accepts ``selected`` values that are either entity_ids (item:uuid) or
+        ``sku:{sku_value}`` fallbacks for legacy docs where entity_id was not stored.
+        SKU values are resolved to entity_ids via inventory search before rendering.
+        """
         if not _token(request):
             return RedirectResponse("/login", status_code=302)
         token = _token(request)
         form = await request.form()
-        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+        raw_selected = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not raw_selected:
+            return RedirectResponse("/inventory", status_code=302)
+
+        # Resolve sku: fallbacks to entity_ids
+        entity_ids: list[str] = []
+        skus_to_resolve: list[str] = []
+        for val in raw_selected:
+            if val.startswith("sku:"):
+                skus_to_resolve.append(val[4:])
+            else:
+                entity_ids.append(val)
+        if skus_to_resolve:
+            try:
+                async with httpx.AsyncClient(timeout=10) as c:
+                    for sku in dict.fromkeys(skus_to_resolve):  # dedup, preserve order
+                        r = await c.get(
+                            f"{_api_base(request)}/items",
+                            params={"q": sku, "limit": 5},
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
+                        if r.status_code == 200:
+                            items = r.json().get("items", []) if isinstance(r.json(), dict) else r.json()
+                            match = next(
+                                (it for it in items if (it.get("sku") or "").lower() == sku.lower()),
+                                None,
+                            )
+                            if match:
+                                eid = match.get("entity_id") or match.get("id")
+                                if eid:
+                                    entity_ids.append(eid)
+            except Exception:
+                pass  # best-effort; unresolved SKUs are simply omitted
+
         if not entity_ids:
             return RedirectResponse("/inventory", status_code=302)
         templates = await _seed_presets_if_empty(request)
