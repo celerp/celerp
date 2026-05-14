@@ -485,6 +485,22 @@ async def account_ledger(
         if meta.get("doc_id"):
             je_doc_map[ev.entity_id] = meta["doc_id"]
 
+    # Build doc_id -> doc_ref (human-readable number) map for display
+    doc_ids = set(je_doc_map.values())
+    doc_ref_map: dict[str, str] = {}
+    if doc_ids:
+        doc_rows = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_id.in_(doc_ids),
+                )
+            )
+        ).scalars().all()
+        for dr in doc_rows:
+            ref = dr.state.get("ref_id") or dr.state.get("doc_number") or dr.entity_id
+            doc_ref_map[dr.entity_id] = ref
+
     # Filter to lines that touch this account, apply date filter
     lines = []
     for row in je_rows:
@@ -505,6 +521,7 @@ async def account_ledger(
                 "je_id": row.entity_id,
                 "memo": state.get("memo", ""),
                 "doc_id": je_doc_map.get(row.entity_id),
+                "doc_ref": doc_ref_map.get(je_doc_map.get(row.entity_id, ""), je_doc_map.get(row.entity_id)) if je_doc_map.get(row.entity_id) else None,
                 "debit": float(entry.get("debit") or 0),
                 "credit": float(entry.get("credit") or 0),
             })

@@ -139,7 +139,9 @@ async def test_reports_ap_aging_all_buckets(client):
             "amount_outstanding": 100.0,
         })
         assert r.status_code == 200, r.text
-
+        doc_id = r.json()["id"]
+        fin = await client.post(f"/docs/{doc_id}/finalize", headers=_h(tok))
+        assert fin.status_code == 200, f"finalize failed: {fin.text}"
     # Zero outstanding → skip (line 166)
     await client.post("/docs", headers=_h(tok), json={
         "doc_type": "purchase_order",

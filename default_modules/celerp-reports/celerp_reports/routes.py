@@ -85,7 +85,7 @@ async def ar_aging(
         if doc_type not in ("invoice", "Invoice"):
             continue
         status = state.get("status", "")
-        if status in ("void", "paid"):
+        if status in ("void", "paid", "draft"):
             continue
         outstanding = _parse_d(state.get("amount_outstanding") or state.get("total"))
         if outstanding <= 0:
@@ -169,10 +169,10 @@ async def ap_aging(
     for row in rows:
         state = row.state
         doc_type = state.get("doc_type", state.get("type", ""))
-        if doc_type not in ("purchase_order", "PO"):
+        if doc_type not in ("purchase_order", "bill", "PO"):
             continue
         status = state.get("status", "")
-        if status in ("void", "received"):
+        if status in ("void", "received", "draft", "paid"):
             continue
         outstanding = _parse_d(state.get("amount_outstanding") or state.get("total"))
         if outstanding <= 0:

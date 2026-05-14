@@ -550,7 +550,7 @@ def _ledger_view(data: dict, currency: str | None = None) -> FT:
         Tr(
             Td(line["date"], cls="cell--mono"),
             Td(
-                A(line["doc_id"], href=f"/docs/{line['doc_id']}", cls="drilldown-link")
+                A(line.get("doc_ref") or line["doc_id"], href=f"/docs/{line['doc_id']}", cls="drilldown-link")
                 if line.get("doc_id") else "",
             ),
             Td(line.get("memo", ""), cls="cell--muted"),
@@ -663,7 +663,11 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
         for l in lines:
             code = l.get("code", "")
             label = f"{code} {l.get('name', '')}".strip()
-            name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link") if code else label)
+            # Derived entries (code "—") have no real ledger; show as plain text
+            if code and code != "—":
+                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"))
+            else:
+                name_cell = Td(label)
             rows.append(Tr(
                 name_cell,
                 Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"),
