@@ -2061,8 +2061,11 @@ def setup_routes(app):
 
     @app.delete("/settings/company/deactivate")
     async def deactivate_company_ui(request: Request):
-        """Deactivate the current company and redirect to login."""
+        """Deactivate the current company and redirect to login. Owner only."""
         import httpx
+        role = _get_role(request)
+        if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["owner"]:
+            return Div("Only the company owner can deactivate this company.", cls="flash flash--error")
         from ui.config import API_BASE
         token = _token(request)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -2316,9 +2319,10 @@ def _settings_content(
     vert_categories: list[dict] | None = None,
     vert_presets: list[dict] | None = None,
     lang: str = "en",
+    is_owner: bool = False,
 ) -> FT:
     if tab == "company":
-        return _company_tab(company, locations=locations, lang=lang)
+        return _company_tab(company, locations=locations, lang=lang, is_owner=is_owner)
     if tab == "users":
         return _users_tab(users, lang=lang)
     if tab == "taxes":
@@ -2455,7 +2459,7 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
     )
 
 
-def _company_tab(company: dict, locations: list | None = None, lang: str = "en") -> FT:
+def _company_tab(company: dict, locations: list | None = None, lang: str = "en", is_owner: bool = False) -> FT:
     fields = [
         ("name", t("label.company_name", lang)),
         ("currency", t("label.currency", lang)),
@@ -2531,45 +2535,50 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en")
             cls="detail-table",
         ),
         H3(t("page.danger_zone"), cls="settings-section-title settings-section-title--danger"),
-        Div(
-            P(t("settings.deactivating_this_company_will_block_all_access_an"), cls="settings-help-text"),
-            Button(t("btn.deactivate_company"),
-                cls="btn btn--danger",
-                hx_delete="/settings/company/deactivate",
-                hx_confirm="Are you sure? All users will be logged out and the company will be deactivated.",
-                hx_target="body",
-                hx_push_url="true",
-            ),
-            cls="settings-card settings-card--danger",
-        ),
         *(
             [
                 Div(
-                    Div(
-                        Strong("Uninstall Celerp"),
-                        P("Quit the app. Your data is preserved and can be re-imported later. Drag Celerp from Applications to Trash to complete removal.",
-                          cls="settings-help-text"),
-                        cls="danger-zone-desc",
+                    P(t("settings.deactivating_this_company_will_block_all_access_an"), cls="settings-help-text"),
+                    Button(t("btn.deactivate_company"),
+                        cls="btn btn--danger",
+                        hx_delete="/settings/company/deactivate",
+                        hx_confirm="Are you sure? All users will be logged out and the company will be deactivated.",
+                        hx_target="body",
+                        hx_push_url="true",
                     ),
-                    Button("Uninstall (keep data)",
-                        cls="btn btn--outline btn--danger",
-                        onclick="window.celerp?.uninstallKeepData()"),
                     cls="settings-card settings-card--danger",
                 ),
-                Div(
-                    Div(
-                        Strong("Uninstall and Delete All Data"),
-                        P("Permanently deletes all company data and removes Celerp. This cannot be undone.",
-                          cls="settings-help-text"),
-                        cls="danger-zone-desc",
-                    ),
-                    Button("Uninstall and delete all data",
-                        cls="btn btn--danger",
-                        onclick="if(confirm('This will permanently delete all your data and cannot be undone. Are you sure?')){window.celerp?.uninstallDeleteData()}"),
-                    cls="settings-card settings-card--danger",
+                *(
+                    [
+                        Div(
+                            Div(
+                                Strong("Uninstall Celerp"),
+                                P("Quit the app. Your data is preserved and can be re-imported later. Drag Celerp from Applications to Trash to complete removal.",
+                                  cls="settings-help-text"),
+                                cls="danger-zone-desc",
+                            ),
+                            Button("Uninstall (keep data)",
+                                cls="btn btn--outline btn--danger",
+                                onclick="window.celerp?.uninstallKeepData()"),
+                            cls="settings-card settings-card--danger",
+                        ),
+                        Div(
+                            Div(
+                                Strong("Uninstall and Delete All Data"),
+                                P("Permanently deletes all company data and removes Celerp. This cannot be undone.",
+                                  cls="settings-help-text"),
+                                cls="danger-zone-desc",
+                            ),
+                            Button("Uninstall and delete all data",
+                                cls="btn btn--danger",
+                                onclick="if(confirm('This will permanently delete all your data and cannot be undone. Are you sure?')){window.celerp?.uninstallDeleteData()}"),
+                            cls="settings-card settings-card--danger",
+                        ),
+                    ]
+                    if os.environ.get("CELERP_INSTALL_CHANNEL") == "electron" else []
                 ),
             ]
-            if os.environ.get("CELERP_INSTALL_CHANNEL") == "electron" else []
+            if is_owner else []
         ),
         cls="settings-card",
     )

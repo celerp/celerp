@@ -79,6 +79,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         role = _get_role(request)
         is_admin = _ROLE_LEVELS.get(role, 0) >= _ROLE_LEVELS["admin"]
+        is_owner = role == "owner"
         tab = request.query_params.get("tab", "password" if not is_admin else "company")
 
         # Non-admins can only access the password tab
@@ -120,7 +121,7 @@ def setup_routes(app):
                     company_locations = []
 
             if tab == "company":
-                content = _company_tab(company, locations=company_locations, lang=lang)
+                content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
             elif tab == "users":
                 content = _users_tab(users, lang=lang)
             elif tab == "modules":
@@ -138,7 +139,7 @@ def setup_routes(app):
                     company_locations = loc_resp.get("items") or loc_resp.get("locations") or (loc_resp if isinstance(loc_resp, list) else [])
                 except Exception:
                     company_locations = []
-                content = _company_tab(company, locations=company_locations, lang=lang)
+                content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
                 tab = "company"
 
         setup_done = request.query_params.get("setup") == "done"
