@@ -5326,7 +5326,7 @@ async function celerpCsvImport(input, entityId) {{
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
       if(cb.value) ids.push(cb.value);
     }});
-    if(!ids.length) return;
+    if(!ids.length){{alert('No saved items selected. Save the document first, then select items to print labels.');return;}}
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
