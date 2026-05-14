@@ -669,7 +669,8 @@ async def patch_account(token: str, code: str, data: dict) -> dict:
 
 
 async def get_ledger(token: str, account_code: str, params: dict | None = None) -> dict:
-    return await _get(f"/accounting/ledger/{account_code}", token, params=params)
+    async with _client(token) as c:
+        return _raise(await c.get(f"/accounting/ledger/{account_code}", params=params or {})).json()
 
 
 async def get_trial_balance(token: str, params: dict | None = None) -> dict:
