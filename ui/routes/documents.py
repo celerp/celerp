@@ -1356,6 +1356,40 @@ def setup_routes(app):
         return _J({"ok": True, "imported": len(new_lines)})
 
     # Same export for lists
+    @app.get("/lists/{entity_id}/print")
+    async def list_print_view(request: Request, entity_id: str):
+        """Standalone printable HTML for a list - auto-triggers window.print()."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            lst = await api.get_list(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            from starlette.responses import HTMLResponse as _HR
+            return _HR(f"<p>Error: {e.detail}</p>", status_code=e.status)
+        lst.setdefault("doc_type", "list")
+        if not lst.get("contact_name"):
+            lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or ""
+        if not lst.get("issue_date"):
+            lst["issue_date"] = lst.get("created_at") or lst.get("date")
+        if not lst.get("company_name"):
+            try:
+                company = await api.get_company(token)
+                lst.update({
+                    "company_name": company.get("name") or "",
+                    "company_address": company.get("address") or "",
+                    "company_phone": company.get("phone") or "",
+                    "company_tax_id": company.get("tax_id") or "",
+                    "company_email": company.get("email") or "",
+                })
+            except Exception:
+                pass
+        from starlette.responses import HTMLResponse as _HR
+        from fasthtml.common import to_xml
+        return _HR(to_xml(_doc_print_view(lst)))
+
     @app.get("/lists/{entity_id}/items/csv")
     async def list_items_export_csv(request: Request, entity_id: str):
         """Export a list's line items as CSV - delegates to shared handler."""
@@ -4277,8 +4311,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
     # PDF + CSV buttons → print group (hidden entirely when suppress_pdf is set)
     if not suppress_pdf:
-        if not is_list:
-            action_btns_print.append(A(NotStr(_ICON_PRINT), href=f"/docs/{entity_id}/print", target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
+        _print_href = f"/lists/{entity_id}/print" if is_list else f"/docs/{entity_id}/print"
+        action_btns_print.append(A(NotStr(_ICON_PRINT), href=_print_href, target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
         # CSV line items export/import icons
         action_btns_print.append(
             A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
