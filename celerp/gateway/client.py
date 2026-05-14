@@ -158,23 +158,21 @@ class GatewayClient:
         payload = msg.get("payload", {})
 
         if msg_type == "hello_ack":
-            log.info("Gateway handshake complete (instance_id=%s)", self._instance_id)
             self._relay_status = "active"
             # Relay returns the canonical instance_id - store it for quota calls
             from celerp.gateway.state import set_session_token, set_instance_id
             canonical_id = payload.get("instance_id", "")
             if canonical_id and canonical_id != self._instance_id:
-                log.info("Gateway: canonical instance_id updated %s -> %s", self._instance_id, canonical_id)
+                log.debug("Gateway: canonical instance_id updated %s -> %s", self._instance_id, canonical_id)
                 self._instance_id = canonical_id
             set_instance_id(self._instance_id)
             # Store short-lived session token - required for cloud-gated endpoints
             session_token = payload.get("session_token", "")
-            log.info("Gateway hello_ack: session_token present=%s, instance_id=%s", bool(session_token), self._instance_id)
             if session_token:
                 set_session_token(session_token)
-                log.info("Gateway session token stored.")
             else:
-                log.warning("Gateway hello_ack received but no session_token in payload.")
+                log.warning("Gateway hello_ack: no session_token in payload (instance=%s)", self._instance_id)
+            log.info("Gateway handshake complete (instance_id=%s)", self._instance_id)
             feature_flags = payload.get("feature_flags", {})
             if feature_flags:
                 from celerp.gateway.state import set_feature_flags

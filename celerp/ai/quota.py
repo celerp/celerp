@@ -139,7 +139,6 @@ async def get_quota_status() -> dict | None:
 
     relay_url = _relay_http_url()
     url = f"{relay_url}/quota/ai/status"
-    log.info("Quota status request: instance_id=%s session_token_prefix=%s", instance_id, session_token[:8] if session_token else None)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -147,9 +146,9 @@ async def get_quota_status() -> dict | None:
                 "X-Session-Token": session_token,
                 "X-Instance-ID": instance_id,
             })
-        log.info("Quota status: url=%s status=%s body=%s", url, r.status_code, r.text[:200])
         if r.status_code == 200:
             return r.json()
+        log.warning("Quota status returned %s", r.status_code)
     except Exception as exc:
         log.warning("Failed to fetch quota status: %s", exc)
     return None
