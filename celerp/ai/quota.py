@@ -139,6 +139,7 @@ async def get_quota_status() -> dict | None:
 
     relay_url = _relay_http_url()
     url = f"{relay_url}/quota/ai/status"
+    log.info("Quota status request: instance_id=%s session_token_prefix=%s", instance_id, session_token[:8] if session_token else None)
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
