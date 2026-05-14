@@ -4464,7 +4464,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if is_draft:
         def _sku_input(val: str = "", entity_id: str = "") -> FT:
             eye_cls = "item-link item-link--active" if entity_id else "item-link item-link--inactive"
-            eye_href = f"/items/{entity_id}" if entity_id else "#"
+            eye_href = f"/inventory/{entity_id}" if entity_id else "#"
             eye = A("👁", href=eye_href, target="_blank" if entity_id else "",
                      cls=eye_cls, data_name="item_link",
                      title="View item details" if entity_id else "No linked item",
@@ -4874,7 +4874,7 @@ function celerpFillRow(row, data) {{
     const linkEl = row.querySelector('[data-name="item_link"]');
     if (linkEl) {{
         if (data.entity_id) {{
-            linkEl.href = '/items/' + data.entity_id;
+            linkEl.href = '/inventory/' + data.entity_id;
             linkEl.target = '_blank';
             linkEl.className = 'item-link item-link--active';
             linkEl.title = 'View item details';
@@ -5016,7 +5016,7 @@ function celerpQtyBlur(input) {{
     if (itemQty > 0 && currentQty !== itemQty) {{
         const eid = entityIdEl.value;
         const msg = 'Allow splitting is set to false for this item, so you cannot sell less than the full quantity (' + itemQty + '). '
-            + 'You can modify this in the item details page: /items/' + eid;
+            + 'You can modify this in the item details page: /inventory/' + eid;
         alert(msg);
         // Per UX rules: do NOT revert the value or make readonly - just warn
     }}
