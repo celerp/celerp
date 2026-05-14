@@ -9510,12 +9510,12 @@ class TestDocumentsOverhaul:
         assert r.status_code != 404
 
     @pytest.mark.asyncio
-    async def test_doc_detail_pdf_link_uses_proxy(self, ui_client):
-        """PDF link on doc detail page points to UI proxy, not /api/docs/."""
+    async def test_doc_detail_print_link_exists(self, ui_client):
+        """Print link on doc detail page points to /docs/{id}/print (not PDF proxy)."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
-        assert '/docs/doc:INV-2026-0001/pdf' in content
+        assert '/docs/doc:INV-2026-0001/print' in content
         assert '/api/docs/doc:INV-2026-0001/pdf' not in content
 
     @pytest.mark.asyncio

@@ -4018,8 +4018,9 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
-    """Bulk action toolbar for draft line items. Hidden until JS detects 1+ checked rows.
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False) -> FT:
+    """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
+    labels_only=True: finalized docs - only Print Labels action, no delete.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -4027,25 +4028,37 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
         (a for a in get_slot("bulk_action") if a.get("_module") == "celerp-labels"),
         None,
     )
-    options = [
-        Option(t("doc.action"), value="", disabled=True, selected=True),
-        Option(t("btn.delete_selected"), value="li-delete"),
-    ]
-    if labels_action:
-        options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
-    return Div(
+    if not labels_only:
+        options = [
+            Option(t("doc.action"), value="", disabled=True, selected=True),
+            Option(t("btn.delete_selected"), value="li-delete"),
+        ]
+        if labels_action:
+            options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
+    else:
+        options = [
+            Option(t("doc.action"), value="", disabled=True, selected=True),
+            Option(t("doc.print_labels"), value="mod:labels_print-bulk"),
+        ]
+    children = [
         Span(t("doc.0_rows_selected"), id="li-bulk-count", cls="bulk-count"),
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
                onchange="liBulkActionSelected(this.value)"),
-        # Delete confirm button - only shown when li-delete is selected
-        Button(t("btn.delete_selected"), type="button", id="li-bulk-delete-btn",
-               cls="btn btn--danger btn--sm", style="display:none",
-               onclick="liBulkDeleteConfirmed()"),
-        # Labels apply button - only shown when labels action is selected
+    ]
+    if not labels_only:
+        children.append(
+            Button(t("btn.delete_selected"), type="button", id="li-bulk-delete-btn",
+                   cls="btn btn--danger btn--sm", style="display:none",
+                   onclick="liBulkDeleteConfirmed()"),
+        )
+    children += [
         Button(t("doc.print_labels"), type="button", id="li-bulk-labels-btn",
                cls="btn btn--secondary btn--sm", style="display:none",
                onclick="liBulkLabelsConfirmed()"),
         Div(id="li-bulk-context"),
+    ]
+    return Div(
+        *children,
         id="li-bulk-toolbar",
         cls="bulk-toolbar",
         style="display:none",
@@ -4331,16 +4344,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Button(NotStr(_ICON_CSV_IMPORT), type="button",
                        cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
                        onclick="document.getElementById('csv-import-input').click()"),
-            )
-    # Print Labels button — non-draft docs only, when celerp-labels is installed, not for subscription templates
-    if not is_draft and not suppress_doc_actions:
-        from celerp.modules.slots import get as _get_slot_labels
-        _labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels("bulk_action"))
-        if _labels_active and line_items:
-            _labels_url = f"/labels/print-doc/{entity_id}{'?list=1' if is_list else ''}"
-            action_btns_print.append(
-                A(t("doc._labels"), href=_labels_url, target="_blank", cls="btn btn--secondary",
-                  title="Print labels for all line items in this document"),
             )
     action_btns_print.append(Span("", id="share-result"))
     action_btns_print.append(Span("", id="action-error"))
@@ -5361,6 +5364,10 @@ async function celerpCsvImport(input, entityId) {{
         )
     else:
         _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
+        # Show checkboxes + bulk toolbar on finalized docs when celerp-labels is installed
+        from celerp.modules.slots import get as _get_slot_labels_fin
+        _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
+        _fin_show_bulk = _fin_labels_active and bool(line_items)
 
         def _li_row(li: dict) -> FT:
             qty = float(li.get("quantity", 0) or 0)
@@ -5368,7 +5375,15 @@ async function celerpCsvImport(input, entityId) {{
             discount_pct = float(li.get("discount_pct") or 0)
             discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
             line_total = float(li.get("line_total", 0) or 0) or discounted
-            cells = [
+            cells = []
+            if _fin_show_bulk:
+                li_eid = li.get("entity_id") or ""
+                cells.append(Td(
+                    Input(type="checkbox", cls="li-select", value=li_eid),
+                    Input(type="hidden", value=li_eid, data_name="entity_id"),
+                    cls="col-checkbox li-checkbox-cell",
+                ))
+            cells += [
                 Td(format_value(li.get("description") or li.get("name"))),
                 Td(format_value(li.get("sku") or None)),
             ]
@@ -5385,19 +5400,69 @@ async function celerpCsvImport(input, entityId) {{
             ])
             return Tr(*cells)
 
-        _thead_base = [Th(t("th.description")), Th(t("th.skuitem"))]
+        _thead_base = []
+        if _fin_show_bulk:
+            _thead_base.append(Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"))
+        _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.category")), Th(t("th.type"))]
         _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"))]
         _colspan = len(_thead_base)
+        _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
+            _li_bulk_toolbar(entity_id, is_list, labels_only=True) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li) for li in line_items] if line_items else [
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
-                ])),
+                ]), id=_fin_bulk_id),
                 cls="data-table doc-lines",
             ),
+            Script(f"""
+(function(){{
+  var table=document.getElementById('{_fin_bulk_id}');
+  var toolbar=document.getElementById('li-bulk-toolbar');
+  var countEl=document.getElementById('li-bulk-count');
+  var sel=document.getElementById('li-bulk-select');
+  function _n(){{return table?table.querySelectorAll('.li-select:checked').length:0;}}
+  function _update(){{
+    var n=_n();
+    if(countEl) countEl.textContent=n+' row'+(n===1?'':'s')+' selected';
+    if(toolbar) toolbar.style.display=n>0?'flex':'none';
+    if(sel&&n===0) sel.value='';
+  }}
+  if(table) table.addEventListener('change',function(e){{
+    if(e.target&&e.target.classList.contains('li-select')) _update();
+  }});
+  var sa=document.getElementById('li-select-all');
+  if(sa) sa.addEventListener('change',function(){{
+    if(table) table.querySelectorAll('.li-select').forEach(function(cb){{cb.checked=sa.checked;}});
+    _update();
+  }});
+  var labelsBtn=document.getElementById('li-bulk-labels-btn');
+  window.liBulkActionSelected=function(action){{
+    if(labelsBtn) labelsBtn.style.display=action&&action.startsWith('mod:')?'':'none';
+  }};
+  window.liBulkLabelsConfirmed=function(){{
+    var ids=[];
+    if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{
+      var row=cb.closest('tr');
+      var eidInput=row?row.querySelector('[data-name="entity_id"]'):null;
+      var id=(eidInput&&eidInput.value)||cb.value||'';
+      if(id) ids.push(id);
+    }});
+    if(!ids.length){{alert('The selected rows have no linked inventory items. Only items picked from the product catalog can be label-printed.');return;}}
+    var form=document.createElement('form');
+    form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
+    ids.forEach(function(id){{
+      var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
+      form.appendChild(inp);
+    }});
+    document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
+  }};
+  window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
+}})();
+""") if _fin_show_bulk else None,
         )
 
     # --- Totals ---
