@@ -4549,7 +4549,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             discount_pct = float(li.get("discount_pct") or 0)
             discounted = float(qty or 0) * float(price or 0) * (1 - discount_pct / 100)
             line_tot = discounted
-            li_entity_id = li.get("entity_id") or ""
+            li_entity_id = li.get("entity_id") or li.get("item_id") or ""
             li_allow_splitting = "1" if li.get("allow_splitting") else ""
             account_cell = Td(Input(type="text", value=li.get("account_code", "") or "",
                          data_name="account_code", placeholder="e.g. 1130",
