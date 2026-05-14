@@ -510,6 +510,168 @@ def _send_to_modal(
 # Compact SVG icons for CSV export/import (16x16, matching pair)
 _ICON_CSV_EXPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>'
 _ICON_CSV_IMPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 12 15 15"/></svg>'
+_ICON_PRINT = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" '
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<polyline points="6 9 6 2 18 2 18 9"/>'
+    '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>'
+    '<rect x="6" y="14" width="12" height="8"/></svg>'
+)
+
+_DOC_PRINT_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background: white; padding: 20mm; }
+.dp-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8mm; padding-bottom: 4mm; border-bottom: 2px solid #111; }
+.dp-company-name { font-size: 14pt; font-weight: 700; margin-bottom: 2mm; }
+.dp-company-sub { font-size: 9pt; color: #555; line-height: 1.5; }
+.dp-doc-title { font-size: 18pt; font-weight: 700; text-align: right; text-transform: uppercase; letter-spacing: 0.03em; }
+.dp-doc-meta { font-size: 9pt; text-align: right; margin-top: 2mm; line-height: 1.6; color: #333; }
+.dp-doc-meta strong { color: #111; }
+.dp-parties { display: flex; gap: 10mm; margin-bottom: 6mm; }
+.dp-party { flex: 1; }
+.dp-party-label { font-size: 8pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #888; margin-bottom: 1mm; }
+.dp-party-name { font-size: 10pt; font-weight: 600; }
+.dp-party-sub { font-size: 9pt; color: #444; line-height: 1.5; }
+.dp-lines { width: 100%; border-collapse: collapse; margin-bottom: 4mm; font-size: 9pt; }
+.dp-lines thead th { background: #f5f5f5; font-weight: 700; text-align: left; padding: 1.5mm 2mm; border-bottom: 1px solid #999; }
+.dp-lines thead th.r { text-align: right; }
+.dp-lines tbody td { padding: 1.5mm 2mm; border-bottom: 1px solid #eee; vertical-align: top; }
+.dp-lines tbody td.r { text-align: right; }
+.dp-lines tbody td.mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
+.dp-totals { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 6mm; }
+.dp-totals table { border-collapse: collapse; min-width: 60mm; }
+.dp-totals td { padding: 1mm 2mm; font-size: 9.5pt; }
+.dp-totals td.label { text-align: left; color: #555; }
+.dp-totals td.amount { text-align: right; font-weight: 600; }
+.dp-totals tr.grand td { border-top: 2px solid #111; font-size: 11pt; font-weight: 700; padding-top: 2mm; }
+.dp-notes { margin-top: 4mm; font-size: 9pt; color: #444; border-top: 1px solid #ddd; padding-top: 3mm; }
+.dp-notes-label { font-weight: 700; color: #111; margin-bottom: 1mm; }
+.dp-footer { margin-top: 8mm; padding-top: 3mm; border-top: 1px solid #ccc; font-size: 8pt; color: #888; text-align: center; }
+@page { margin: 0; size: A4 portrait; }
+@media print { body { padding: 15mm; } }
+"""
+
+
+def _doc_print_view(doc: dict) -> FT:
+    """Render a standalone printable HTML page for a document."""
+    from ui.components.table import fmt_money, currency_symbol
+
+    entity_id = doc.get("id") or doc.get("entity_id") or ""
+    doc_type = doc.get("doc_type", "")
+    doc_number = doc.get("doc_number") or doc.get("ref_id") or entity_id
+    title = doc_type.replace("_", " ").title() if doc_type else "Document"
+    issue_date = (doc.get("issue_date") or "")[:10]
+    due_date = (doc.get("due_date") or "")[:10]
+    currency = doc.get("currency") or "USD"
+
+    company_name = doc.get("company_name") or ""
+    company_address = doc.get("company_address") or ""
+    company_tax_id = doc.get("company_tax_id") or ""
+    company_email = doc.get("company_email") or ""
+    company_phone = doc.get("company_phone") or ""
+
+    contact_name = doc.get("contact_name") or doc.get("customer_name") or ""
+    contact_company = doc.get("contact_company_name") or ""
+    contact_address = doc.get("contact_billing_address") or doc.get("contact_address") or ""
+    contact_tax_id = doc.get("contact_tax_id") or ""
+    contact_email = doc.get("contact_email") or ""
+
+    line_items = doc.get("line_items") or []
+
+    def _money(v) -> str:
+        try:
+            return fmt_money(v, currency)
+        except Exception:
+            sym = currency_symbol(currency)
+            return f"{sym}{float(v or 0):,.2f}"
+
+    has_disc = any(li.get("discount_pct") for li in line_items)
+    rows = []
+    for li in line_items:
+        qty = li.get("quantity") or li.get("qty") or 0
+        price = li.get("unit_price") or li.get("price") or 0
+        disc = li.get("discount_pct") or 0
+        line_total = li.get("line_total") or (float(qty) * float(price) * (1 - float(disc) / 100))
+        desc = li.get("description") or ""
+        item_name = li.get("name") or li.get("item_name") or li.get("sku") or ""
+        sku = li.get("sku") or ""
+        rows.append(Tr(
+            Td(sku, cls="mono"),
+            Td(Div(Strong(item_name), P(desc, style="font-size:8pt;color:#555;") if desc and desc != item_name else None)),
+            Td(str(qty), cls="r"),
+            Td(_money(price), cls="r"),
+            *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
+            Td(_money(line_total), cls="r"),
+        ))
+
+    headers = Tr(
+        Th("SKU"), Th("Description"), Th("Qty", cls="r"), Th("Unit Price", cls="r"),
+        *([] if not has_disc else [Th("Disc%", cls="r")]),
+        Th("Amount", cls="r"),
+    )
+
+    subtotal = doc.get("subtotal") or 0
+    tax_total = doc.get("tax_total") or 0
+    grand_total = doc.get("grand_total") or doc.get("total") or 0
+    notes_text = doc.get("notes") or doc.get("terms") or ""
+
+    totals_rows = [Tr(Td("Subtotal", cls="label"), Td(_money(subtotal), cls="amount"))]
+    if float(tax_total or 0):
+        totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
+    totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
+
+    return Html(
+        Head(
+            Meta(charset="utf-8"),
+            Meta(name="viewport", content="width=device-width, initial-scale=1"),
+            Title(f"{title} {doc_number}"),
+            Style(_DOC_PRINT_CSS),
+        ),
+        Body(
+            Div(
+                Div(
+                    P(company_name, cls="dp-company-name"),
+                    Div(
+                        P(company_address) if company_address else None,
+                        P(f"Tax ID: {company_tax_id}") if company_tax_id else None,
+                        P(company_email) if company_email else None,
+                        P(company_phone) if company_phone else None,
+                        cls="dp-company-sub",
+                    ),
+                ),
+                Div(
+                    P(title, cls="dp-doc-title"),
+                    Div(
+                        P(Strong("No.: "), doc_number),
+                        P(Strong("Date: "), issue_date) if issue_date else None,
+                        P(Strong("Due: "), due_date) if due_date else None,
+                        cls="dp-doc-meta",
+                    ),
+                ),
+                cls="dp-header",
+            ),
+            Div(
+                Div(
+                    P("Bill To", cls="dp-party-label"),
+                    P(contact_name, cls="dp-party-name") if contact_name else None,
+                    Div(
+                        P(contact_company) if contact_company and contact_company != contact_name else None,
+                        P(contact_address) if contact_address else None,
+                        P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
+                        P(contact_email) if contact_email else None,
+                        cls="dp-party-sub",
+                    ),
+                ) if contact_name else None,
+                cls="dp-parties",
+            ),
+            Table(Thead(headers), Tbody(*rows), cls="dp-lines") if rows else P("No line items.", style="font-size:9pt;color:#888;margin-bottom:4mm;"),
+            Div(Table(*totals_rows), cls="dp-totals"),
+            Div(P("Notes", cls="dp-notes-label"), P(notes_text), cls="dp-notes") if notes_text else None,
+            Div(f"Generated by Celerp  ·  {doc_number}", cls="dp-footer"),
+            Script("window.onload = function() { window.print(); }"),
+        ),
+    )
+
 
 
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
@@ -1204,27 +1366,52 @@ def setup_routes(app):
         """Import line items from CSV and append to list - delegates to doc handler."""
         return await doc_items_import_csv(request, entity_id)
 
-    @app.get("/docs/{entity_id}/pdf")
-    async def doc_pdf_proxy(request: Request, entity_id: str):
-        """Proxy PDF generation from the API app so the browser can access it on the UI port."""
-        from starlette.responses import Response as _Resp
+    @app.get("/docs/{entity_id}/print")
+    async def doc_print_view(request: Request, entity_id: str):
+        """Standalone printable HTML for a document - auto-triggers window.print()."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            import httpx
-            from ui.config import API_BASE
-            async with httpx.AsyncClient(base_url=API_BASE, headers={"Authorization": f"Bearer {token}"}, timeout=30.0) as c:
-                r = await c.get(f"/docs/{entity_id}/pdf")
-                if r.status_code != 200:
-                    return _Resp(content=f"PDF generation failed ({r.status_code})", status_code=r.status_code)
-                return _Resp(
-                    content=r.content,
-                    media_type=r.headers.get("content-type", "application/pdf"),
-                    headers={"Content-Disposition": r.headers.get("content-disposition", f'inline; filename="{entity_id}.pdf"')},
-                )
-        except Exception as e:
-            return _Resp(content=f"PDF error: {e}", status_code=500)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            from starlette.responses import HTMLResponse as _HR
+            return _HR(f"<p>Error loading document: {e.detail}</p>", status_code=e.status)
+        # Inject company fields
+        if not doc.get("company_name"):
+            try:
+                company = await api.get_company(token)
+                doc = {**doc,
+                    "company_name": company.get("name") or "",
+                    "company_address": company.get("address") or "",
+                    "company_phone": company.get("phone") or "",
+                    "company_tax_id": company.get("tax_id") or "",
+                    "company_email": company.get("email") or "",
+                }
+            except Exception:
+                pass
+        # Resolve contact
+        cid = doc.get("contact_id")
+        if cid and not doc.get("contact_name"):
+            try:
+                contact = await api.get_contact(token, cid)
+                doc["contact_name"] = contact.get("name") or ""
+                doc["contact_company_name"] = contact.get("company_name") or ""
+                doc["contact_email"] = contact.get("email") or ""
+                doc["contact_billing_address"] = contact.get("billing_address") or contact.get("address") or ""
+                doc["contact_tax_id"] = contact.get("tax_id") or ""
+            except Exception:
+                pass
+        from starlette.responses import HTMLResponse as _HR
+        from fasthtml.common import to_xml
+        return _HR(to_xml(_doc_print_view(doc)))
+
+    @app.get("/docs/{entity_id}/pdf")
+    async def doc_pdf_redirect(request: Request, entity_id: str):
+        """Legacy PDF route - redirect to new print view."""
+        return RedirectResponse(f"/docs/{entity_id}/print", status_code=302)
 
     @app.get("/docs/{entity_id}")
     async def doc_detail(request: Request, entity_id: str):
@@ -4091,7 +4278,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # PDF + CSV buttons → print group (hidden entirely when suppress_pdf is set)
     if not suppress_pdf:
         if not is_list:
-            action_btns_print.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
+            action_btns_print.append(A(NotStr(_ICON_PRINT), href=f"/docs/{entity_id}/print", target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
         # CSV line items export/import icons
         action_btns_print.append(
             A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
