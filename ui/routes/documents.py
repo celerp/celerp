@@ -4020,7 +4020,8 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     """Bulk action toolbar for draft line items. Hidden until JS detects 1+ checked rows.
-    Print Labels option only appears when celerp-labels is installed (slot-driven, DRY)."""
+    Two-stage: select action → confirm button appears. Print Labels only shown when
+    celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
     labels_action = next(
         (a for a in get_slot("bulk_action") if a.get("_module") == "celerp-labels"),
@@ -4029,14 +4030,21 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
     options = [
         Option(t("doc.action"), value="", disabled=True, selected=True),
         Option(t("btn.delete_selected"), value="li-delete"),
-        Option(t("doc.print_selected"), value="li-print"),
     ]
     if labels_action:
         options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
     return Div(
         Span(t("doc.0_rows_selected"), id="li-bulk-count", cls="bulk-count"),
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
-               onchange="liActionChanged(this.value)"),
+               onchange="liBulkActionSelected(this.value)"),
+        # Delete confirm button - only shown when li-delete is selected
+        Button(t("btn.delete_selected"), type="button", id="li-bulk-delete-btn",
+               cls="btn btn--danger btn--sm", style="display:none",
+               onclick="liBulkDeleteConfirmed()"),
+        # Labels apply button - only shown when labels action is selected
+        Button(t("doc.print_labels"), type="button", id="li-bulk-labels-btn",
+               cls="btn btn--secondary btn--sm", style="display:none",
+               onclick="liBulkLabelsConfirmed()"),
         Div(id="li-bulk-context"),
         id="li-bulk-toolbar",
         cls="bulk-toolbar",
@@ -4611,8 +4619,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(account_cell)
             cells.extend([
                 Td(Span(fmt_money(line_tot, currency), cls="line-total"), cls="cell--number"),
-                Td(Button("x", type="button", cls="btn btn--danger btn--xs",
-                          onclick="this.closest('tr').remove(); celerpUpdateTotals(); celerpAutoSave();")),
             ])
             return Tr(*cells)
 
@@ -4671,8 +4677,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value="", data_name="allow_splitting"),
                    Input(type="hidden", value="", data_name="item_quantity")),
                 Td(Span(fmt_money(0, currency), cls="line-total"), cls="cell--number"),
-                Td(Button("x", type="button", cls="btn btn--danger btn--xs",
-                          onclick="this.closest('tr').remove(); celerpUpdateTotals(); celerpAutoSave();")),
             ])
             return Tr(*cells)
 
@@ -5296,32 +5300,37 @@ async function celerpCsvImport(input, entityId) {{
     if(table) table.querySelectorAll('tbody .li-select').forEach(function(cb){{cb.checked=sa.checked;}});
     _update();
   }});
-  window.liActionChanged=function(action){{
+  var deleteBtn=document.getElementById('li-bulk-delete-btn');
+  var labelsBtn=document.getElementById('li-bulk-labels-btn');
+  function _hideBtns(){{
+    if(deleteBtn) deleteBtn.style.display='none';
+    if(labelsBtn) labelsBtn.style.display='none';
+  }}
+  window.liBulkActionSelected=function(action){{
+    _hideBtns();
     if(!action) return;
     if(action==='li-delete'){{
-      if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
-      celerpUpdateTotals(); celerpAutoSave(); _update(); return;
-    }}
-    if(action==='li-print'){{
-      var hidden=[];
-      if(table) table.querySelectorAll('tbody tr').forEach(function(tr){{
-        var cb=tr.querySelector('.li-select');
-        if(cb&&!cb.checked){{tr.style.display='none';hidden.push(tr);}}
-      }});
-      document.body.classList.add('li-print-mode');
-      window.print();
-      document.body.classList.remove('li-print-mode');
-      hidden.forEach(function(tr){{tr.style.display='';}});
-      if(sel) sel.value=''; return;
-    }}
-    if(action.startsWith('mod:')){{
-      if(typeof CelerpSelection!=='undefined') CelerpSelection.clear();
-      if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
-        if(cb.value&&typeof CelerpSelection!=='undefined') CelerpSelection.add(cb.value,{{}});
-      }});
-      if(typeof bulkActionChanged==='function') bulkActionChanged(action);
+      if(deleteBtn) deleteBtn.style.display='';
+    }} else if(action.startsWith('mod:')){{
+      if(labelsBtn) labelsBtn.style.display='';
     }}
   }};
+  window.liBulkDeleteConfirmed=function(){{
+    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
+    celerpUpdateTotals(); celerpAutoSave();
+    if(sel) sel.value='';
+    _hideBtns(); _update();
+  }};
+  window.liBulkLabelsConfirmed=function(){{
+    var action=sel?sel.value:'';
+    if(!action.startsWith('mod:')) return;
+    if(typeof CelerpSelection!=='undefined') CelerpSelection.clear();
+    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
+      if(cb.value&&typeof CelerpSelection!=='undefined') CelerpSelection.add(cb.value,{{}});
+    }});
+    if(typeof bulkActionChanged==='function') bulkActionChanged(action);
+  }};
+  window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
 }})();
 """),
             cls="lines-section",
