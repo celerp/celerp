@@ -12,6 +12,18 @@ _session_token: str = ""
 _subscription_tier: str = ""
 _subscription_status: str = ""
 _feature_flags: dict = {}
+_instance_id: str = ""
+
+
+def get_instance_id() -> str:
+    """Return the relay-canonical instance_id (empty string if not connected)."""
+    return _instance_id
+
+
+def set_instance_id(iid: str) -> None:
+    """Set the canonical instance_id. Called only by GatewayClient on hello_ack."""
+    global _instance_id
+    _instance_id = iid
 
 
 def get_session_token() -> str:

@@ -15,7 +15,7 @@ import logging
 import httpx
 
 from celerp.config import settings
-from celerp.gateway.state import get_session_token
+from celerp.gateway.state import get_session_token, get_instance_id
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ async def check_ai_quota(credits: int = 1) -> None:
         log.debug("Quota check skipped: gateway not configured.")
         return
 
-    instance_id = settings.gateway_instance_id
+    instance_id = get_instance_id() or settings.gateway_instance_id
     session_token = get_session_token()
 
     if not instance_id:
@@ -132,7 +132,7 @@ async def get_quota_status() -> dict | None:
     if not settings.gateway_token or not get_session_token():
         return None
 
-    instance_id = settings.gateway_instance_id
+    instance_id = get_instance_id() or settings.gateway_instance_id
     session_token = get_session_token()
     if not instance_id:
         return None
