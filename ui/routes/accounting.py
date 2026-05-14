@@ -89,6 +89,7 @@ def _print_shell(company: dict, title: str, subtitle: str, body: FT) -> FT:
         Body(
             _report_header(company, title, subtitle),
             body,
+            Div(NotStr('Powered by <a href="https://celerp.com">celerp.com</a>'), cls="report-footer"),
             Script("window.onload = function() { window.print(); }"),
         ),
     )
@@ -136,6 +137,8 @@ td.cell--mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
 /* Page breaks */
 .report-section { page-break-inside: avoid; }
 
+.report-footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 2mm 20mm; border-top: 1px solid #ddd; font-size: 8pt; color: #aaa; text-align: center; background: white; }
+.report-footer a { color: #aaa; text-decoration: none; }
 @page { margin: 0; size: A4 portrait; }
 @media print {
   body { padding: 15mm; }
