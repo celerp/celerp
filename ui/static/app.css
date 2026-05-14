@@ -480,15 +480,8 @@ a:hover { text-decoration: underline; }
 .settings-tabs .tab { padding: 10px 18px; font-size: 12px; font-weight: 500; color: var(--c-text2); border-bottom: 2px solid transparent; margin-bottom: -2px; cursor: pointer; text-decoration: none; white-space: nowrap; transition: color 0.15s, border-color 0.15s; }
 .settings-tabs .tab:hover { color: var(--c-text); background: var(--c-bg-hover, rgba(0,0,0,0.03)); text-decoration: none; }
 .settings-tabs .tab--active { color: var(--c-accent); border-bottom-color: var(--c-accent); font-weight: 600; }
-.settings-tabs .tab--danger { color: var(--c-red); margin-left: auto; }
-.settings-tabs .tab--danger:hover { color: var(--c-red); background: rgba(239,68,68,0.06); }
-.settings-tabs .tab--danger.tab--active { color: var(--c-red); border-bottom-color: var(--c-red); }
-.danger-zone-list { display: flex; flex-direction: column; gap: 16px; max-width: 600px; }
-.danger-zone-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid rgba(239,68,68,0.3); border-radius: 6px; background: rgba(239,68,68,0.04); }
 .danger-zone-desc { flex: 1; }
 .danger-zone-desc strong { display: block; margin-bottom: 4px; }
-.link--danger { color: var(--c-red); text-decoration: underline; }
-.link--danger:hover { color: var(--c-red-dark, #b91c1c); }
 .settings-card .settings-hint { color: var(--c-text2); font-size: 12px; margin-bottom: 8px; }
 
 /* ─── Table link ──────────────────────────────────────────────────────── */
