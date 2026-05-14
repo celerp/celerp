@@ -126,7 +126,7 @@ class GatewayClient:
     async def _connect_and_serve(self) -> None:
         log.debug("Connecting to gateway at %s", self._url)
         self._relay_status = "connecting"
-        async with websockets.connect(self._url, ping_interval=_PING_INTERVAL) as ws:
+        async with websockets.connect(self._url, ping_interval=None) as ws:
             self._ws = ws
             # Read current TOS version from config
             from celerp.config import read_config
