@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import zoneinfo as _zi
 
 from fasthtml.common import *
@@ -2540,6 +2541,35 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en")
                 hx_push_url="true",
             ),
             cls="settings-card settings-card--danger",
+        ),
+        *(
+            [
+                Div(
+                    Div(
+                        Strong("Uninstall Celerp"),
+                        P("Quit the app. Your data is preserved and can be re-imported later. Drag Celerp from Applications to Trash to complete removal.",
+                          cls="settings-help-text"),
+                        cls="danger-zone-desc",
+                    ),
+                    Button("Uninstall (keep data)",
+                        cls="btn btn--outline btn--danger",
+                        onclick="window.celerp?.uninstallKeepData()"),
+                    cls="settings-card settings-card--danger",
+                ),
+                Div(
+                    Div(
+                        Strong("Uninstall and Delete All Data"),
+                        P("Permanently deletes all company data and removes Celerp. This cannot be undone.",
+                          cls="settings-help-text"),
+                        cls="danger-zone-desc",
+                    ),
+                    Button("Uninstall and delete all data",
+                        cls="btn btn--danger",
+                        onclick="if(confirm('This will permanently delete all your data and cannot be undone. Are you sure?')){window.celerp?.uninstallDeleteData()}"),
+                    cls="settings-card settings-card--danger",
+                ),
+            ]
+            if os.environ.get("CELERP_INSTALL_CHANNEL") == "electron" else []
         ),
         cls="settings-card",
     )

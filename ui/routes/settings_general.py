@@ -19,7 +19,6 @@ from ui.i18n import t, get_lang
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from ui.components.phone import phone_head_items as _phone_head_items
 
-_IS_ELECTRON = os.environ.get("CELERP_INSTALL_CHANNEL") == "electron"
 
 # shared helpers imported from settings.py (keep DRY - only ONE copy)
 from ui.routes.settings import (
@@ -52,50 +51,13 @@ def _general_tabs(active: str, lang: str = "en", is_admin: bool = True) -> FT:
             ("backup", t("settings.tab_backup", lang)),
         ]
     tabs.append(("password", t("settings.change_password", lang)))
-    if is_admin and _IS_ELECTRON:
-        tabs.append(("danger", "Danger Zone"))
     return Div(
         *[
             A(label, href=f"/settings/general?tab={key}",
-              cls=f"tab {'tab--active' if key == active else ''}" + (" tab--danger" if key == "danger" else ""))
+              cls=f"tab {'tab--active' if key == active else ''}")
             for key, label in tabs
         ],
         cls="settings-tabs",
-    )
-
-
-def _danger_zone_tab() -> FT:
-    """Electron-only: uninstall options shown in Settings > General > Danger Zone."""
-    return Div(
-        H3("Danger Zone", cls="settings-section-title"),
-        Div(
-            Div(
-                Div(
-                    Strong("Uninstall Celerp"),
-                    P("Quit the app. Your data is preserved. Drag Celerp from Applications to Trash to complete removal.",
-                      cls="text-muted"),
-                    cls="danger-zone-desc",
-                ),
-                Button("Uninstall (keep data)",
-                       cls="btn btn--secondary btn--sm",
-                       onclick="window.celerp?.uninstallKeepData()"),
-                cls="danger-zone-row",
-            ),
-            Div(
-                Div(
-                    Strong("Uninstall and Delete All Data"),
-                    P("Permanently deletes your database, configuration, and all business data. This cannot be undone.",
-                      cls="text-muted"),
-                    cls="danger-zone-desc",
-                ),
-                Button("Delete All Data & Quit",
-                       cls="btn btn--danger btn--sm",
-                       onclick="window.celerp?.uninstallDeleteData()"),
-                cls="danger-zone-row",
-            ),
-            cls="danger-zone-list",
-        ),
-        cls="settings-section",
     )
 
 
@@ -170,8 +132,6 @@ def setup_routes(app):
                 except Exception:
                     pass
                 content = _backup_tab(backup_data=backup_data)
-            elif tab == "danger" and _IS_ELECTRON:
-                content = _danger_zone_tab()
             else:
                 try:
                     loc_resp = await api.get_locations(token)
