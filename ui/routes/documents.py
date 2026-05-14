@@ -5324,9 +5324,12 @@ async function celerpCsvImport(input, entityId) {{
   window.liBulkLabelsConfirmed=function(){{
     var ids=[];
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
-      if(cb.value) ids.push(cb.value);
+      var row=cb.closest('tr');
+      var eidInput=row?row.querySelector('[data-name="entity_id"]'):null;
+      var id=(eidInput&&eidInput.value)||cb.value||'';
+      if(id) ids.push(id);
     }});
-    if(!ids.length){{alert('No saved items selected. Save the document first, then select items to print labels.');return;}}
+    if(!ids.length){{alert('No inventory items found in selected rows. Only rows linked to a saved inventory item can be label-printed.');return;}}
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
