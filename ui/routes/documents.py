@@ -5380,7 +5380,7 @@ async function celerpCsvImport(input, entityId) {{
             line_total = float(li.get("line_total", 0) or 0) or discounted
             cells = []
             if _fin_show_bulk:
-                li_eid = li.get("entity_id") or ""
+                li_eid = li.get("entity_id") or li.get("item_id") or ""
                 cells.append(Td(
                     Input(type="checkbox", cls="li-select", value=li_eid),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),

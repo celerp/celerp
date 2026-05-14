@@ -403,7 +403,8 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = (state.get("ts") or state.get("created_at") or "")[:10]
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        ts = str(ts_raw)[:10] if ts_raw else ""
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
@@ -412,8 +413,11 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
             code = entry.get("account")
             if not code:
                 continue
-            debit = Decimal(str(entry.get("debit") or 0))
-            credit = Decimal(str(entry.get("credit") or 0))
+            try:
+                debit = Decimal(str(entry.get("debit") or 0))
+                credit = Decimal(str(entry.get("credit") or 0))
+            except Exception:
+                continue
             balances[code] = balances.get(code, Decimal(0)) + debit - credit
     return balances
 
@@ -487,7 +491,8 @@ async def account_ledger(
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = (state.get("ts") or state.get("created_at") or "")[:10]
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        ts = str(ts_raw)[:10] if ts_raw else ""
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
@@ -559,7 +564,8 @@ async def trial_balance(
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = (state.get("ts") or state.get("created_at") or "")[:10]
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        ts = str(ts_raw)[:10] if ts_raw else ""
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:

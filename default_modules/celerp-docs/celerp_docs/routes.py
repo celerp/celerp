@@ -11,7 +11,7 @@ from datetime import UTC, datetime, date as _date
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select, func as _func
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,6 +38,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 class LineItem(BaseModel):
     item_id: str | None = None
+    entity_id: str | None = None  # alias sent by the frontend; resolved to item_id below
     sku: str | None = None
     name: str | None = None
     description: str | None = None
@@ -48,6 +49,14 @@ class LineItem(BaseModel):
     taxes: list[TaxApplication] = Field(default_factory=list)
     sell_by: str | None = None
     line_total: float | None = None
+
+    @model_validator(mode="after")
+    def _resolve_entity_id(self) -> "LineItem":
+        """Frontend sends entity_id; normalise to item_id so the stored state is consistent."""
+        if self.entity_id and not self.item_id:
+            self.item_id = self.entity_id
+        self.entity_id = None  # never persist entity_id; always use item_id
+        return self
 
 
 class DocCreatePayload(BaseModel):
