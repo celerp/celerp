@@ -12,6 +12,7 @@ Flow:
 
 from __future__ import annotations
 
+import os
 from fasthtml.common import *
 from starlette.requests import Request
 from starlette.responses import RedirectResponse
@@ -109,9 +110,19 @@ def setup_routes(app):
             company = {}
         reason = request.query_params.get("reason")
         notice = flash("Your company was deactivated. Create a new one to continue.", kind="info") if reason == "deactivated" else ""
+        uninstall_link = P(
+            "Want a fresh start? ",
+            A("Uninstall and delete all data →",
+              href="#",
+              onclick="window.celerp?.uninstallDeleteData(); return false;",
+              cls="link--danger"),
+            cls="text-muted text-sm",
+            style="margin-top:1.5rem;text-align:center;",
+        ) if reason == "deactivated" and os.environ.get("CELERP_INSTALL_CHANNEL") == "electron" else None
         return auth_shell(
             notice,
             _company_details_form(company, lang=get_lang(request)),
+            *([ uninstall_link] if uninstall_link else []),
             title="Company setup - Celerp",
         )
 

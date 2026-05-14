@@ -13,7 +13,7 @@
 
 "use strict";
 
-const { app, BrowserWindow, shell, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, dialog, ipcMain, Menu } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs");
@@ -554,6 +554,98 @@ function setLoadingStatus(msg) {
   }
 }
 
+function setupAppMenu() {
+  // macOS: build a native menu that includes Uninstall items in the app menu.
+  // On other platforms there is no standard app-menu slot; skip.
+  if (process.platform !== "darwin") return;
+
+  const template = [
+    {
+      label: app.name,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        {
+          label: "Uninstall Celerp…",
+          submenu: [
+            {
+              label: "Quit and Keep Data",
+              click: () => ipcMain.emit("_uninstall-keep-data-menu"),
+            },
+            {
+              label: "Quit and Delete All Data…",
+              click: () => ipcMain.emit("_uninstall-delete-data-menu"),
+            },
+          ],
+        },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+
+  // Wire menu clicks to the same handlers as the IPC calls
+  ipcMain.on("_uninstall-keep-data-menu", () => {
+    ipcMain.emit("_trigger-uninstall-keep-data");
+  });
+  ipcMain.on("_uninstall-delete-data-menu", () => {
+    ipcMain.emit("_trigger-uninstall-delete-data");
+  });
+}
+
+// Internal helpers called by both menu and IPC
+async function _doUninstallKeepData() {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Cancel", "Quit Celerp"],
+    defaultId: 1,
+    cancelId: 0,
+    title: "Uninstall Celerp",
+    message: "Uninstall Celerp",
+    detail:
+      "To remove the app, drag Celerp from your Applications folder to the Trash.\n\n" +
+      "Your data will be preserved at:\n" +
+      `${app.getPath("userData")}\n\n` +
+      "Click \"Quit Celerp\" to close the app first, then delete it from Applications.",
+  });
+  if (response === 1) { isQuitting = true; app.quit(); }
+}
+
+async function _doUninstallDeleteData() {
+  const dataPath = app.getPath("userData");
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["Cancel", "Delete Data & Quit"],
+    defaultId: 0,
+    cancelId: 0,
+    title: "Uninstall and Delete All Data",
+    message: "Delete all Celerp data?",
+    detail:
+      "This will permanently delete:\n\n" +
+      `• ${dataPath}\n\n` +
+      "This includes your database, configuration, and all business data. " +
+      "This cannot be undone.\n\n" +
+      "After quitting, drag Celerp from Applications to Trash to complete removal.",
+  });
+  if (response === 1) {
+    try { fs.rmSync(dataPath, { recursive: true, force: true }); }
+    catch (err) { console.error("[uninstall] failed to delete data dir:", err); }
+    isQuitting = true;
+    app.quit();
+  }
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -657,9 +749,18 @@ ipcMain.on("show-confirm", (event, message) => {
   event.returnValue = result === 1; // true = OK, false = Cancel
 });
 
+// ── Uninstall IPC handlers ───────────────────────────────────────────────────
+
+// uninstall-keep-data: quit without touching user data.
+ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
+
+// uninstall-delete-data: delete all user data then quit.
+ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
+
 // ── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  setupAppMenu();
   try {
     if (DEV_MODE) {
       // Skip Postgres/Python management — connect to already-running local services.
