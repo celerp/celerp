@@ -83,7 +83,7 @@ def _apply_field_visibility(items: list[dict], role: str, field_schema: list[dic
 class ItemCreate(BaseModel):
     model_config = {"extra": "allow"}  # Accept dynamic price fields (e.g. vip_price)
 
-    sku: str
+    sku: str | None = None
     name: str
     sell_by: str                           # required - must be a valid unit name from company settings
     quantity: float = 0
@@ -548,6 +548,23 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     # Validate barcode format (digits only)
     if payload.barcode is not None and not payload.barcode.isdigit():
         raise HTTPException(status_code=422, detail="Barcode must contain digits only")
+
+    # Auto-assign sequential SKU if not provided
+    if not payload.sku:
+        from sqlalchemy import func as _func
+        all_skus_row = (await session.execute(
+            select(Projection.state["sku"].as_string()).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )).scalars().all()
+        max_seq = 0
+        for s in all_skus_row:
+            try:
+                max_seq = max(max_seq, int(s))
+            except (ValueError, TypeError):
+                pass
+        payload = payload.model_copy(update={"sku": str(max_seq + 1).zfill(6)})
 
     # SKU uniqueness
     existing_sku = (await session.execute(

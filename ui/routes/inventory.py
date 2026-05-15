@@ -832,10 +832,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-        import uuid as _uuid
-        sku = f"ITEM-{_uuid.uuid4().hex[:8].upper()}"
         try:
-            result = await api.create_item(token, {"sku": sku, "name": "New Item", "quantity": 0, "sell_by": "piece"})
+            result = await api.create_item(token, {"name": "New Item", "quantity": 0, "sell_by": "piece"})
             item_id = result.get("id", result.get("entity_id", ""))
         except APIError as e:
             if e.status == 401:
