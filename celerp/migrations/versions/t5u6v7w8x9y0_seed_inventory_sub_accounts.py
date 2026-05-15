@@ -49,8 +49,8 @@ def upgrade() -> None:
             if not exists:
                 conn.execute(
                     sa.text(
-                        "INSERT INTO accounts (id, company_id, code, name, account_type, parent_code, is_active) "
-                        "VALUES (gen_random_uuid(), :cid, :code, :name, :acc_type, :parent, TRUE)"
+                        "INSERT INTO accounts (id, company_id, code, name, account_type, parent_code, is_active, created_at) "
+                        "VALUES (gen_random_uuid(), :cid, :code, :name, :acc_type, :parent, TRUE, NOW())"
                     ),
                     {"cid": company_id, "code": code, "name": name, "acc_type": acc_type, "parent": parent_code},
                 )
