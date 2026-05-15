@@ -37,7 +37,7 @@
         "Aquatint",
         "Woodblock",
         "Linocut",
-        "Giclée",
+        "Gicl\u00e9e",
         "Offset Print",
         "Mezzotint",
         "Engraving",
@@ -82,7 +82,7 @@
         "Artist's Proof (AP)",
         "Printer's Proof (PP)",
         "Hors Commerce (HC)",
-        "Bon à Tirer (BAT)",
+        "Bon \u00e0 Tirer (BAT)",
         "Unique",
         "Open Edition"
       ],
@@ -138,5 +138,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "piece"
+  "default_sell_by": "piece",
+  "default_purchase_unit": "piece",
+  "default_weight_unit": "kg"
 }

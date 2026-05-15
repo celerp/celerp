@@ -142,6 +142,8 @@ def _build_router() -> APIRouter:
                 "display_name": c["display_name"],
                 "vertical_tags": c.get("vertical_tags", []),
                 "default_sell_by": c.get("default_sell_by"),
+                "default_purchase_unit": c.get("default_purchase_unit"),
+                "default_weight_unit": c.get("default_weight_unit"),
             }
             for c in cats.values()
         ]
@@ -190,9 +192,10 @@ def _build_router() -> APIRouter:
         for cat_name in applied:
             cat = cats.get(cat_name)
             if cat:
-                dsb = cat.get("default_sell_by")
-                if dsb:
-                    _ensure_unit_seeded(settings, dsb)
+                for field in ("default_sell_by", "default_purchase_unit", "default_weight_unit"):
+                    val = cat.get(field)
+                    if val:
+                        _ensure_unit_seeded(settings, val)
 
         # Apply any preset-level company settings (e.g. inventory_method)
         extra = preset.get("company_settings") or {}
@@ -225,6 +228,10 @@ def _build_router() -> APIRouter:
         dsb = cat.get("default_sell_by")
         if dsb:
             _ensure_unit_seeded(settings, dsb)
+        for field in ("default_purchase_unit", "default_weight_unit"):
+            val = cat.get(field)
+            if val:
+                _ensure_unit_seeded(settings, val)
         company.settings = settings
 
         await session.commit()

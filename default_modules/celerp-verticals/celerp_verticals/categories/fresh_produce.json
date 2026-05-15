@@ -78,5 +78,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "kg"
+  "default_sell_by": "kg",
+  "default_purchase_unit": "kg",
+  "default_weight_unit": "kg"
 }

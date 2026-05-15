@@ -74,5 +74,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "piece"
+  "default_sell_by": "piece",
+  "default_purchase_unit": "gram",
+  "default_weight_unit": "gram"
 }

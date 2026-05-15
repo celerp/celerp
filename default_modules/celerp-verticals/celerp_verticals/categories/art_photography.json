@@ -34,7 +34,7 @@
         "C-Print",
         "Silver Gelatin",
         "Chromogenic",
-        "Inkjet / Giclée",
+        "Inkjet / Gicl\u00e9e",
         "Platinum-Palladium",
         "Cyanotype",
         "Dye Transfer",
@@ -52,7 +52,7 @@
     },
     {
       "key": "dimensions_cm",
-      "label": "Dimensions H×W (cm)",
+      "label": "Dimensions H\u00d7W (cm)",
       "type": "text",
       "options": [],
       "visible_to_roles": []
@@ -117,5 +117,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "piece"
+  "default_sell_by": "piece",
+  "default_purchase_unit": "piece",
+  "default_weight_unit": "kg"
 }

@@ -570,6 +570,22 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if payload.location_id is not None:
         data["location_id"] = str(payload.location_id)
 
+    # Apply category defaults for purchase_unit and weight_unit if not explicitly provided
+    if payload.category:
+        try:
+            from celerp_verticals.routes import _all_categories  # type: ignore
+            _cats = _all_categories()
+            _cat = _cats.get(payload.category)
+            if _cat:
+                if payload.purchase_unit is None and _cat.get("default_purchase_unit"):
+                    data["purchase_unit"] = _cat["default_purchase_unit"]
+                if payload.purchase_conversion_factor is None:
+                    data["purchase_conversion_factor"] = 1
+                if data.get("weight_unit") is None and _cat.get("default_weight_unit"):
+                    data["weight_unit"] = _cat["default_weight_unit"]
+        except ImportError:
+            pass
+
     # Ensure status is set (not part of ItemCreate model but required for projections)
     data.setdefault("status", "available")
 

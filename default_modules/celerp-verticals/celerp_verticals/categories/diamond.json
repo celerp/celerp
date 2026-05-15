@@ -164,5 +164,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "carat"
+  "default_sell_by": "gram",
+  "default_purchase_unit": "gram",
+  "default_weight_unit": "gram"
 }
