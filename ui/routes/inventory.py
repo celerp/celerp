@@ -3173,6 +3173,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     sell_by = str(item.get("sell_by") or "unit")
     has_qty = qty > 0
 
+    cur_sym = currency or ""
     rows = []
     for pl in price_lists:
         pl_name = pl.get("name", "")
@@ -3213,7 +3214,6 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
             ),
         ))
 
-    cur_sym = currency or ""
     unit_hdr = f"Unit price ({cur_sym} / {sell_by})" if cur_sym else f"Unit price / {sell_by}"
     total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else f"Total (no stock)"
 
