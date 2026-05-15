@@ -82,15 +82,28 @@ def _unit_display_cell(unit_name: str, field: str, value) -> FT:
     )
 
 
+def _unit_type_select(name_attr: str, selected: str = "quantity") -> FT:
+    """Reusable unit_type dropdown."""
+    return Select(
+        Option("Weight", value="weight", selected=(selected == "weight")),
+        Option("Pieces", value="pieces", selected=(selected == "pieces")),
+        Option("Quantity", value="quantity", selected=(selected == "quantity")),
+        name=name_attr,
+        cls="input-sm",
+    )
+
+
 def _units_tab(units: list[dict]) -> FT:
     """Units settings tab — table of units with inline edit + add form."""
     rows = []
     for u in units:
         uname = u.get("name", "")
+        utype = u.get("unit_type", "quantity")
         rows.append(Tr(
             Td(uname, cls="cell cell--mono"),
             _unit_display_cell(uname, "label", u.get("label", "")),
             _unit_display_cell(uname, "decimals", u.get("decimals", 0)),
+            _unit_display_cell(uname, "unit_type", utype),
             Td(
                 Button(
                     "✕",
@@ -110,6 +123,7 @@ def _units_tab(units: list[dict]) -> FT:
             Td(Input(name="name", placeholder="piece", required=True, cls="input-sm"), cls="cell"),
             Td(Input(name="label", placeholder="Piece", required=True, cls="input-sm"), cls="cell"),
             Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
+            Td(_unit_type_select("unit_type"), cls="cell"),
             Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
             cls="data-row",
         ),
@@ -122,7 +136,7 @@ def _units_tab(units: list[dict]) -> FT:
         H3(t("page.units"), cls="settings-section-title"),
         P(t("inv.configure_measurement_units_available_for_inventor"), cls="settings-hint"),
         Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th(""))),
+            Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th("Type"), Th(""))),
             Tbody(*rows, add_form),
             cls="data-table",
         ),
@@ -444,7 +458,10 @@ def setup_routes(app):
         except (ValueError, TypeError):
             decimals = 0
         current = await api.get_units(token)
-        current.append({"name": name, "label": label, "decimals": decimals})
+        unit_type = (str(form.get("unit_type") or "quantity")).strip()
+        if unit_type not in {"weight", "pieces", "quantity"}:
+            unit_type = "quantity"
+        current.append({"name": name, "label": label, "decimals": decimals, "unit_type": unit_type})
         await api.patch_units(token, current)
         return RedirectResponse("/settings/inventory?tab=units", status_code=303)
 
@@ -476,6 +493,16 @@ def setup_routes(app):
                 hx_target="closest td", hx_swap="outerHTML", hx_include="this",
                 hx_trigger="change, keydown[key=='Enter']",
             )
+        elif field == "unit_type":
+            sel = _unit_type_select("value", selected=str(value))
+            sel.attrs.update({
+                "hx-patch": f"/settings/units/{name}/{field}",
+                "hx-target": "closest td",
+                "hx-swap": "outerHTML",
+                "hx-include": "this",
+                "hx-trigger": "change",
+            })
+            inp = sel
         else:
             inp = Input(
                 name="value", type="text", value=str(value), cls="input-sm",

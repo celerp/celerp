@@ -344,6 +344,7 @@ a:hover { text-decoration: underline; }
 .cell--paired .paired-sep { color: var(--c-text-muted, #888); user-select: none; }
 
 .cell-error { color: var(--c-red); font-size: 11px; padding: 4px 8px; }
+.cell-derived { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; cursor: default; user-select: none; }
 
 /* cell inputs */
 .cell-input {

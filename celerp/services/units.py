@@ -34,6 +34,20 @@ def build_unit_map(units: list[dict]) -> dict[str, dict]:
     return {u["name"]: u for u in units}
 
 
+def is_weight_unit(unit_name: str | None, unit_map: dict[str, dict]) -> bool:
+    """Return True if the named unit has unit_type='weight'."""
+    if not unit_name:
+        return False
+    return unit_map.get(unit_name, {}).get("unit_type") == "weight"
+
+
+def is_pieces_unit(unit_name: str | None, unit_map: dict[str, dict]) -> bool:
+    """Return True if the named unit has unit_type='pieces'."""
+    if not unit_name:
+        return False
+    return unit_map.get(unit_name, {}).get("unit_type") == "pieces"
+
+
 def validate_quantity(qty: float, decimals: int, *, label: str = "Quantity") -> None:
     """Raise HTTP 422 if *qty* has more decimal places than *decimals* allows.
 

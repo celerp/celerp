@@ -182,6 +182,7 @@ class UnitRecord(BaseModel):
     name: str
     label: str
     decimals: int
+    unit_type: str = "quantity"  # "weight" | "pieces" | "quantity"
 
 
 class UnitsPatch(BaseModel):
@@ -1249,16 +1250,19 @@ async def import_purchasing_payment_terms_batch(
 import re as _re
 
 _DEFAULT_UNITS: list[dict] = [
-    {"name": "piece", "label": "Piece", "decimals": 0},
-    {"name": "carat", "label": "Carat (ct)", "decimals": 2},
-    {"name": "gram", "label": "Gram (g)", "decimals": 2},
-    {"name": "kg", "label": "Kilogram (kg)", "decimals": 3},
-    {"name": "oz", "label": "Ounce (oz)", "decimals": 2},
-    {"name": "liter", "label": "Liter (L)", "decimals": 2},
-    {"name": "meter", "label": "Meter (m)", "decimals": 2},
+    {"name": "piece",  "label": "Piece",         "decimals": 0, "unit_type": "pieces"},
+    {"name": "carat",  "label": "Carat (ct)",     "decimals": 2, "unit_type": "weight"},
+    {"name": "gram",   "label": "Gram (g)",        "decimals": 2, "unit_type": "weight"},
+    {"name": "kg",     "label": "Kilogram (kg)",   "decimals": 3, "unit_type": "weight"},
+    {"name": "oz",     "label": "Ounce (oz)",      "decimals": 2, "unit_type": "weight"},
+    {"name": "liter",  "label": "Liter (L)",       "decimals": 2, "unit_type": "quantity"},
+    {"name": "meter",  "label": "Meter (m)",       "decimals": 2, "unit_type": "quantity"},
 ]
 
 _UNIT_NAME_RE = _re.compile(r"^[a-z0-9_]+$")
+
+
+_VALID_UNIT_TYPES: frozenset[str] = frozenset({"weight", "pieces", "quantity"})
 
 
 def _validate_units(units: list[UnitRecord]) -> None:
@@ -1268,6 +1272,8 @@ def _validate_units(units: list[UnitRecord]) -> None:
             raise HTTPException(status_code=422, detail=f"Unit name '{u.name}' must be lowercase alphanumeric + underscore")
         if not (0 <= u.decimals <= 6):
             raise HTTPException(status_code=422, detail=f"Unit '{u.name}' decimals must be 0–6")
+        if u.unit_type not in _VALID_UNIT_TYPES:
+            raise HTTPException(status_code=422, detail=f"Unit '{u.name}' type must be one of: {', '.join(sorted(_VALID_UNIT_TYPES))}")
         if u.name in seen:
             raise HTTPException(status_code=422, detail=f"Duplicate unit name: '{u.name}'")
         seen.add(u.name)

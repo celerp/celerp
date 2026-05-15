@@ -21,6 +21,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
 from ui.config import get_token as _token, API_BASE as _api_base
 from ui.i18n import t, get_lang
+from celerp.services.units import is_weight_unit, is_pieces_unit
 
 _DEFAULT_PER_PAGE = 50
 
@@ -102,8 +103,9 @@ async def _inventory_content(
         )
         items = items_resp.get("items", [])
         unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
+        units_map: dict[str, dict] = {u["name"]: u for u in units_resp if u.get("name")}
     except APIError:
-        valuation, items, unit_names = {}, [], []
+        valuation, items, unit_names, units_map = {}, [], [], {}
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -139,7 +141,7 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names),
+            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map),
             hidden_fields=set(_PAIRED_TABLE.values()),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
@@ -1023,11 +1025,28 @@ function celerpPrintLabel(entityId, templateId) {
         # Override sell_by → searchable select from company units
         if field == "sell_by":
             try:
-                unit_names = [u["name"] for u in await api.get_units(token) if u.get("name")]
+                units_resp = await api.get_units(token)
+                unit_names = [u["name"] for u in units_resp if u.get("name")]
             except Exception:
-                unit_names = []
+                unit_names, units_resp = [], []
             if unit_names:
                 cell_type, options, allow_custom = "select", unit_names, True
+        elif field in ("weight", "pieces"):
+            # Derived fields: block editing when sell_by qualifies
+            try:
+                units_resp = await api.get_units(token)
+                _umap = {u["name"]: u for u in units_resp if u.get("name")}
+            except Exception:
+                _umap = {}
+            sell_by = item.get("sell_by") or ""
+            derived = (field == "weight" and is_weight_unit(sell_by, _umap)) or \
+                      (field == "pieces" and is_pieces_unit(sell_by, _umap))
+            if derived:
+                return Td(
+                    Span("Derived from Qty column", cls="cell-derived"),
+                    cls="cell",
+                    data_col=field,
+                )
         from ui.components.table import editable_cell
         restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -2261,15 +2280,19 @@ def _inventory_type_tabs(p: dict) -> FT:
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit"}
 
 
-def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None) -> dict:
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None) -> dict:
     """Build cell_renderers dict for paired columns (quantity+sell_by, weight+weight_unit).
 
-    Only registers a renderer for a primary if its secondary exists in schema.
+    Also registers derived renderers for weight (when sell_by is a weight unit) and
+    pieces (when sell_by is a pieces unit) - both derived from qty at render time.
+
     unit_names: company unit names used as sell_by dropdown options.
+    units_map: full unit dict keyed by name, used to check unit_type for derivation.
     """
-    from ui.components.table import paired_display_cell
+    from ui.components.table import paired_display_cell, display_cell
     schema_keys = {f["key"] for f in schema}
     renderers: dict = {}
+    _umap = units_map or {}
     # sell_by options: company units (searchable select); fallback to text if no units
     sell_by_opts = unit_names or None
     paired_options: dict[str, list[str] | None] = {
@@ -2294,6 +2317,48 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     )
                 return renderer
             renderers[primary] = _make()
+
+    # Derived cell renderers for weight and pieces
+    # weight: derived from qty when sell_by is a weight unit; falls back to paired cell
+    if "weight" in schema_keys:
+        _weight_paired = renderers.get("weight")  # paired renderer built above (may be None)
+        def _weight_renderer(entity_id: str, row: dict, _umap=_umap, _paired=_weight_paired) -> FT:
+            sell_by = row.get("sell_by") or ""
+            if is_weight_unit(sell_by, _umap):
+                qty_val = row.get("quantity", "")
+                return Td(
+                    Span(
+                        f"{qty_val} {sell_by}" if qty_val not in ("", None) else EMPTY,
+                        title="Derived from Qty column",
+                        cls="cell-derived",
+                    ),
+                    cls="cell",
+                    data_col="weight",
+                )
+            # Not a weight unit - use paired cell (weight + weight_unit) or plain editable
+            if _paired:
+                return _paired(entity_id, row)
+            return display_cell(entity_id=entity_id, field="weight", value=row.get("weight", ""), cell_type="number", editable=True)
+        renderers["weight"] = _weight_renderer
+
+    # pieces: derived from qty when sell_by is a pieces unit
+    if "pieces" in schema_keys:
+        def _pieces_renderer(entity_id: str, row: dict, _umap=_umap) -> FT:
+            sell_by = row.get("sell_by") or ""
+            if is_pieces_unit(sell_by, _umap):
+                qty_val = row.get("quantity", "")
+                return Td(
+                    Span(
+                        str(qty_val) if qty_val not in ("", None) else EMPTY,
+                        title="Derived from Qty column",
+                        cls="cell-derived",
+                    ),
+                    cls="cell",
+                    data_col="pieces",
+                )
+            return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=True)
+        renderers["pieces"] = _pieces_renderer
+
     return renderers
 
 
@@ -2917,7 +2982,7 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
 
 # Base import columns (without price columns - those are added dynamically)
 _IMPORT_BASE_COLS = ["sku", "name", "category", "quantity"]
-_IMPORT_TAIL_COLS = ["weight", "weight_unit", "sell_by", "status", "barcode", "hs_code",
+_IMPORT_TAIL_COLS = ["weight", "weight_unit", "sell_by", "pieces", "status", "barcode", "hs_code",
                      "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
                      "short_description", "description", "notes", "location_name",
                      "created_at", "updated_at"]
@@ -2933,7 +2998,7 @@ _IMPORT_SPEC = CsvImportSpec(
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     """Build import spec with dynamic price columns from company price lists."""
     price_cols = [f"{pl.get('name', '').lower()}_price" for pl in price_lists if pl.get("name")]
-    type_map = {"quantity": float, "weight": float}
+    type_map = {"quantity": float, "weight": float, "pieces": float}
     for col in price_cols:
         type_map[col] = float
     return CsvImportSpec(
@@ -2984,7 +3049,7 @@ async def _build_item_validator(token: str) -> ValidateFn:
 # Price columns (any key ending in _price) are excluded from attributes separately.
 _CORE_ITEM_COLS: frozenset[str] = frozenset({
     "sku", "name", "category", "quantity",
-    "weight", "weight_ct", "weight_unit", "sell_by", "status",
+    "weight", "weight_ct", "weight_unit", "sell_by", "pieces", "status",
     "barcode", "hs_code", "short_description", "description", "notes", "location_name",
     "location_id", "created_at", "updated_at",
 })

@@ -233,7 +233,7 @@ async def list_items(
         _SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
         # Keys that are never useful to search (IDs, numbers, booleans)
         _SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
-                                 "weight", "status", "created_at", "updated_at"})
+                                 "weight", "pieces", "status", "created_at", "updated_at"})
         def _item_matches(r: dict) -> bool:
             for field in _SEARCH_FIELDS:
                 if q_lower in str(r.get(field, "")).lower():
@@ -1706,7 +1706,7 @@ async def export_items_csv(
     price_lists: list[dict] = (settings or {}).get("price_lists") or [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
     price_cols = [f"{pl.get('name', '').lower()}_price" for pl in price_lists if pl.get("name")]
 
-    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
+    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
 
     def _fmt_ts(val) -> str:
         """Ensure timestamps are ISO 8601 UTC with Z suffix."""
