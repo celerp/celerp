@@ -1294,11 +1294,12 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Bulk split (simplified single-qty) ───────────────────────────────
 
-    async def _next_split_sku(token: str, parent_sku: str) -> str:
+    async def _next_split_sku(token: str, parent_sku: str, exclude: set[str] | None = None) -> str:
         """Find next available child SKU suffix for splitting.
 
         DEMO-RGH-001 -> DEMO-RGH-001.1, DEMO-RGH-001.2, ...
         DEMO-RGH-001.1 -> DEMO-RGH-001.1.1, DEMO-RGH-001.1.2, ...
+        exclude: set of SKUs already allocated in this batch (not yet committed to DB).
         """
         prefix = f"{parent_sku}."
         try:
@@ -1306,18 +1307,30 @@ function celerpPrintLabel(entityId, templateId) {
             items = resp.get("items", []) if isinstance(resp, dict) else resp
         except Exception:
             items = []
-        max_suffix = 0
+        taken: set[int] = set()
         for it in items:
             sku = str(it.get("sku", ""))
             if sku.startswith(prefix):
                 suffix_part = sku[len(prefix):]
-                # Only count direct children (no dots in suffix)
                 if "." not in suffix_part:
                     try:
-                        max_suffix = max(max_suffix, int(suffix_part))
+                        taken.add(int(suffix_part))
                     except ValueError:
                         pass
-        return f"{prefix}{max_suffix + 1}"
+        # Also exclude in-batch allocations
+        if exclude:
+            for s in exclude:
+                if s.startswith(prefix):
+                    suffix_part = s[len(prefix):]
+                    if "." not in suffix_part:
+                        try:
+                            taken.add(int(suffix_part))
+                        except ValueError:
+                            pass
+        n = 1
+        while n in taken:
+            n += 1
+        return f"{prefix}{n}"
 
     @app.get("/api/items/bulk/split-preview")
     async def bulk_split_preview(request: Request):
@@ -1869,31 +1882,43 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/{entity_id}/split-inline")
     async def item_split_inline(request: Request, entity_id: str):
-        """Simple split from detail page: single child, auto-SKU, redirect to filtered inventory."""
+        """Detail page split: one or more children, auto-SKU, redirect to exact filtered inventory."""
         from urllib.parse import quote as _quote
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
-        split_qty_raw = str(form.get("split_qty", "")).strip()
-        child_sku_input = str(form.get("child_sku", "")).strip()
-        try:
-            split_qty = float(split_qty_raw)
-        except (ValueError, TypeError):
+        qty_raws = [v.strip() for v in form.getlist("split_qty") if v.strip()]
+        if not qty_raws:
             return Span(t("inv.invalid_split_quantity"), cls="flash flash--error", id="item-action-error")
-        if split_qty <= 0:
-            return Span(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--error", id="item-action-error")
+        children_qtys: list[float] = []
+        for raw in qty_raws:
+            try:
+                q = float(raw)
+            except (ValueError, TypeError):
+                return Span(t("inv.invalid_split_quantity"), cls="flash flash--error", id="item-action-error")
+            if q <= 0:
+                return Span(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--error", id="item-action-error")
+            children_qtys.append(q)
         try:
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         orig_sku = str(item.get("sku", "") or "")
-        child_sku = child_sku_input if child_sku_input else await _next_split_sku(token, orig_sku)
+        # Auto-generate sequential SKUs for each child
+        children: list[dict] = []
+        used_skus: set[str] = set()
+        for qty in children_qtys:
+            child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
+            used_skus.add(child_sku)
+            children.append({"sku": child_sku, "quantity": qty})
         try:
-            await api.split_item(token, entity_id, [{"sku": child_sku, "quantity": split_qty}])
+            await api.split_item(token, entity_id, children)
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
-        redirect = f"/inventory?q={_quote(orig_sku)}&status=all" if orig_sku else "/inventory"
+        child_skus = [c["sku"] for c in children]
+        skus_param = ",".join(_quote(s) for s in [orig_sku] + child_skus)
+        redirect = f"/inventory?skus={skus_param}&status=all" if orig_sku else "/inventory"
         return Response("", status_code=204, headers={"HX-Redirect": redirect})
 
     @app.post("/api/items/merge")
@@ -3451,17 +3476,37 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
     allow_splitting = item.get("allow_splitting", True)
     sell_by = item.get("sell_by") or "piece"
     if allow_splitting:
+        sell_by_label = sell_by.capitalize()
         split_card = Div(
             Form(
                 Strong(t("inv.u2702_split"), cls="action-card-title"),
                 Div(
-                    Input(type="number", name="split_qty", placeholder=f"{sell_by.capitalize()} to split off",
-                          step="any", min="0.001", cls="form-input form-input--sm", required=True),
-                    Input(type="text", name="child_sku", placeholder="Child SKU (auto)",
-                          cls="form-input form-input--sm"),
+                    # Dynamic qty rows - JS adds more via addSplitRow()
+                    Div(
+                        Div(
+                            Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
+                                   onclick="addSplitRow(this)"),
+                            Input(type="number", name="split_qty", placeholder=f"{sell_by_label} to split off",
+                                  step="any", min="0.001", cls="form-input form-input--sm", required=True),
+                            cls="split-qty-row",
+                        ),
+                        id="split-qty-rows",
+                    ),
                     Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
-                    cls="action-card-row",
+                    cls="action-card-row action-card-row--col",
                 ),
+                Script(f"""
+function addSplitRow(btn) {{
+  var container = document.getElementById('split-qty-rows');
+  var row = document.createElement('div');
+  row.className = 'split-qty-row';
+  row.innerHTML = '<button type="button" class="btn btn--secondary btn--xs split-add-btn" onclick="addSplitRow(this)">+</button>'
+    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" step="any" min="0.001" class="form-input form-input--sm" required>'
+    + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">✕</button>';
+  container.appendChild(row);
+  row.querySelector('input').focus();
+}}
+"""),
                 hx_post=f"/api/items/{entity_id}/split-inline",
                 hx_target="#item-action-error",
                 hx_swap="outerHTML",

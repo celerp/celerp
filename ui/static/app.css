@@ -1570,6 +1570,12 @@ a:hover { text-decoration: underline; }
 .action-card-hint { font-size: 11px; color: var(--c-muted, #888); margin: 0; }
 .action-card-row { display: flex; gap: 6px; align-items: center; }
 .action-card-row .form-input--sm { flex: 1; min-width: 0; }
+.action-card-row--col { flex-direction: column; align-items: flex-start; }
+.action-card-row--col .btn--primary { align-self: flex-start; margin-top: 2px; }
+.split-qty-row { display: flex; gap: 6px; align-items: center; width: 100%; }
+.split-qty-row .form-input--sm { flex: 1; min-width: 0; }
+.split-add-btn { flex-shrink: 0; }
+.split-remove-btn { flex-shrink: 0; color: var(--c-text2); }
 .form-input--sm { padding: 4px 8px; font-size: 12px; height: 28px; }
 .btn--xs { padding: 3px 10px; font-size: 11px; height: 28px; }
 @media (max-width: 640px) { .action-cards-grid { grid-template-columns: 1fr; } }
