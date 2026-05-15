@@ -228,7 +228,7 @@ def _categories_tab(
     result_div = Div(id="verticals-apply-result")
 
     # Build preset lookup: preset name → preset object (preset name == vertical tag)
-    preset_by_tag = {p.get("name", ""): p for p in vert_presets}
+    # (kept for potential future use; actual tag→preset mapping is built in Section C)
 
     # ── Section A: Your Categories ────────────────────────────────────
     if applied_names:
@@ -269,6 +269,17 @@ def _categories_tab(
             tag = (vc.get("vertical_tags") or ["other"])[0]
             groups[tag].append(vc)
 
+        # Build tag → preset map dynamically from what tags each preset's categories cover
+        # (preset name may differ from tag, e.g. preset "gemstones" covers tag "gems_jewelry")
+        tag_to_preset: dict[str, dict] = {}
+        cat_tag_map: dict[str, str] = {vc.get("name", ""): (vc.get("vertical_tags") or ["other"])[0]
+                                       for vc in vert_categories}
+        for p in vert_presets:
+            for cname_in_preset in (p.get("categories") or []):
+                t = cat_tag_map.get(cname_in_preset)
+                if t and t not in tag_to_preset:
+                    tag_to_preset[t] = p
+
         group_sections = []
         for tag in sorted(groups.keys(), key=lambda t_: _TAG_LABELS.get(t_, t_)):
             cats_in_group = groups[tag]
@@ -300,7 +311,7 @@ def _categories_tab(
                         Span(_TAG_LABELS.get(tag, tag), cls="vert-group-label"),
                         *(
                             [Form(
-                                Input(type="hidden", name="vertical", value=tag),
+                                Input(type="hidden", name="vertical", value=tag_to_preset[tag].get("name", "")),
                                 Button(t("btn.apply_preset"), type="submit",
                                        cls="btn btn--secondary btn--xs vert-preset-btn",
                                        onclick="event.stopPropagation()"),
@@ -309,7 +320,7 @@ def _categories_tab(
                                 hx_swap="outerHTML",
                                 hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
                             )]
-                            if tag in preset_by_tag else []
+                            if tag in tag_to_preset else []
                         ),
                         cls="vert-group-heading",
                     ),
