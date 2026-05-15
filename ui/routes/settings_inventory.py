@@ -276,9 +276,9 @@ def _categories_tab(
                                        for vc in vert_categories}
         for p in vert_presets:
             for cname_in_preset in (p.get("categories") or []):
-                t = cat_tag_map.get(cname_in_preset)
-                if t and t not in tag_to_preset:
-                    tag_to_preset[t] = p
+                vtag = cat_tag_map.get(cname_in_preset)
+                if vtag and vtag not in tag_to_preset:
+                    tag_to_preset[vtag] = p
 
         group_sections = []
         for tag in sorted(groups.keys(), key=lambda t_: _TAG_LABELS.get(t_, t_)):
