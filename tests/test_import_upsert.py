@@ -29,9 +29,9 @@ async def _setup(session) -> tuple[uuid.UUID, uuid.UUID, str]:
     user_id = uuid.uuid4()
     session.add(Company(id=company_id, name="UpsertCo", slug=f"upsertco-{company_id.hex[:8]}"))
     session.add(User(
-        id=user_id, company_id=company_id,
+        id=user_id,
         email=f"admin-{user_id.hex[:8]}@test.co", name="Admin",
-        auth_hash="x", role="admin", is_active=True,
+        auth_hash="x", is_active=True,
     ))
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()

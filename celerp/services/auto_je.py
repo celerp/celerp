@@ -311,7 +311,7 @@ async def create_for_bill_conversion(
         idem_create=je_idempotency_key(doc_id, "po.converted_to_bill", "c"),
         idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
-        ts=doc.get("issue_date") or doc.get("finalized_at"),
+        ts=doc.get("issue_date") or doc.get("finalized_at") or __import__("datetime").date.today().isoformat(),
         entries=entries,
         metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id},
     )

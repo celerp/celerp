@@ -528,9 +528,10 @@ async def account_ledger(
             continue
         ts_raw = state.get("ts") or state.get("created_at") or ""
         ts = str(ts_raw)[:10] if ts_raw else ""
-        if date_from and ts < date_from:
+        # Dateless JEs (ts="") are always included - hiding them would be worse than showing them.
+        if ts and date_from and ts < date_from:
             continue
-        if date_to and ts > date_to:
+        if ts and date_to and ts > date_to:
             continue
         for entry in state.get("entries", []):
             if entry.get("account") not in match_codes:
