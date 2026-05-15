@@ -223,8 +223,11 @@ def _categories_tab(
 
     # ── Library view ──────────────────────────────────────────────────
 
-    # Shared result div targeted by both Quick Setup and Browse Library
+    # Shared result div targeted by Browse Library
     result_div = Div(id="verticals-apply-result")
+
+    # Build preset lookup: preset name → preset object (preset name == vertical tag)
+    preset_by_tag = {p.get("name", ""): p for p in vert_presets}
 
     # ── Section A: Your Categories ────────────────────────────────────
     if applied_names:
@@ -237,14 +240,14 @@ def _categories_tab(
                       href=f"/settings/inventory?tab=categories&cat={_q(name, safe='')}",
                       cls="btn btn--secondary btn--xs"),
                     # TODO: add Remove button once DELETE /settings/verticals/remove-category endpoint exists
-                    cls="cell",
+                    cls="cell cell--action",
                 ),
                 cls="data-row",
             )
             for name in sorted(applied_names)
         ]
         your_cats_body = Table(
-            Thead(Tr(Th(t("th.category")), Th("Fields"), Th(""))),
+            Thead(Tr(Th(t("th.category")), Th("Fields"), Th("", cls="th--action"))),
             Tbody(*applied_rows),
             cls="data-table",
         )
@@ -256,41 +259,6 @@ def _categories_tab(
         P(t("settings.categories_hint"), cls="settings-hint"),
         your_cats_body,
         cls="mb-xl",
-    )
-
-    # ── Section B: Quick Setup ────────────────────────────────────────
-    preset_cards = []
-    for p in vert_presets:
-        pname = p.get("name", "")
-        pdisplay = p.get("display_name", pname)
-        n_cats = len(p.get("categories", []))
-        preset_cards.append(
-            Div(
-                Div(
-                    Strong(pdisplay, cls="vert-preset-name"),
-                    Span(f"{n_cats} categories", cls="vert-preset-count"),
-                    cls="vert-preset-info",
-                ),
-                Form(
-                    Input(type="hidden", name="vertical", value=pname),
-                    Button(t("btn.apply_preset"), type="submit", cls="btn btn--secondary btn--xs"),
-                    hx_post="/settings/verticals/apply-preset",
-                    hx_target="#verticals-apply-result",
-                    hx_swap="outerHTML",
-                    hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
-                ),
-                cls="vert-preset-card",
-            )
-        )
-
-    section_b = Details(
-        Summary(t("settings.quick_setup")),
-        Div(
-            P(t("settings.quick_setup_hint"), cls="settings-hint"),
-            Div(*preset_cards, cls="vert-preset-strip") if preset_cards else P("No presets available.", cls="settings-hint"),
-        ),
-        open=(len(applied_names) == 0),
-        cls="cat-section-details",
     )
 
     # ── Section C: Browse & Add Categories ───────────────────────────
@@ -327,7 +295,23 @@ def _categories_tab(
                 ))
             group_sections.append(
                 Details(
-                    Summary(_TAG_LABELS.get(tag, tag), cls="vert-group-heading"),
+                    Summary(
+                        Span(_TAG_LABELS.get(tag, tag), cls="vert-group-label"),
+                        *(
+                            [Form(
+                                Input(type="hidden", name="vertical", value=tag),
+                                Button(t("btn.apply_preset"), type="submit",
+                                       cls="btn btn--secondary btn--xs vert-preset-btn",
+                                       onclick="event.stopPropagation()"),
+                                hx_post="/settings/verticals/apply-preset",
+                                hx_target="#verticals-apply-result",
+                                hx_swap="outerHTML",
+                                hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
+                            )]
+                            if tag in preset_by_tag else []
+                        ),
+                        cls="vert-group-heading",
+                    ),
                     Table(
                         Thead(Tr(Th(t("th.category")), Th("", cls="th--action"))),
                         Tbody(*rows),
@@ -366,7 +350,6 @@ def _categories_tab(
     return Div(
         result_div,
         section_a,
-        section_b,
         section_c,
         cls="settings-card",
     )

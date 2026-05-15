@@ -1230,9 +1230,11 @@ a:hover { text-decoration: underline; }
 .vert-library-panel { min-width: 0; }
 .vert-applied-panel { min-width: 0; }
 .vert-group { margin-bottom: 12px; border: 1px solid var(--c-border); border-radius: 6px; overflow: hidden; }
-.vert-group > summary.vert-group-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); text-transform: uppercase; letter-spacing: 0.04em; margin: 0; padding: 8px 12px; cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; user-select: none; }
-.vert-group > summary.vert-group-heading::before { content: "▶"; font-size: 10px; transition: transform 0.15s; }
-.vert-group[open] > summary.vert-group-heading::before { transform: rotate(90deg); }
+.vert-group > summary.vert-group-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); text-transform: uppercase; letter-spacing: 0.04em; margin: 0; padding: 8px 12px; cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; user-select: none; justify-content: space-between; }
+.vert-group-label { display: flex; align-items: center; gap: 6px; }
+.vert-group-label::before { content: "▶"; font-size: 10px; transition: transform 0.15s; }
+.vert-group[open] > summary.vert-group-heading .vert-group-label::before { transform: rotate(90deg); }
+.vert-preset-btn { flex-shrink: 0; }
 .vert-group > .data-table { margin: 0; border-top: 1px solid var(--c-border); border-radius: 0; }
 .vert-cat-table td { padding: 6px 8px; font-size: 14px; }
 .vert-cat-table .cell--action { width: 80px; text-align: right; }
