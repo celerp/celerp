@@ -714,6 +714,7 @@ async def balance_sheet(
     """Balance sheet as of a given date (default: all posted entries to date)."""
     from celerp.services.auto_je import upsert_opening_inventory_je
     await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
+    await session.commit()
 
     rows = (
         await session.execute(
