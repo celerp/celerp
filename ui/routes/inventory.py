@@ -1291,7 +1291,6 @@ function celerpPrintLabel(entityId, templateId) {
                         pass
         return f"{prefix}{max_suffix + 1}"
 
-    @app.post("/api/items/bulk/split")
     @app.get("/api/items/bulk/split-preview")
     async def bulk_split_preview(request: Request):
         """HTMX fragment: preview for bulk split (inline in toolbar, no modal)."""
@@ -1319,73 +1318,65 @@ function celerpPrintLabel(entityId, templateId) {
         fmt = f"{{:.{decimals}f}}"
         is_weight = preview.get("is_weight_unit", False)
 
-        # Determine editable field: weight editable if sell_by is pieces; pieces editable if sell_by is weight
-        has_weight = "parent_weight" in preview
-        has_pieces = "parent_pieces" in preview
+        # sell_by=weight → Pieces editable, Weight hidden (same as QTY)
+        # sell_by=pieces → Weight editable, Pieces hidden (same as QTY)
+        show_pieces = is_weight    # pieces column shown when sell_by is weight
+        show_weight = not is_weight  # weight column shown when sell_by is pieces
 
-        def _row(label: str, value: str, field_name: str | None = None, editable: bool = False) -> FT:
-            if editable and field_name:
-                return Tr(
-                    Td(label, cls="preview-label"),
-                    Td(Input(type="number", name=field_name, value=value, step="any",
-                             cls="form-input form-input--xs preview-input"), cls="preview-val"),
-                )
-            return Tr(Td(label, cls="preview-label"), Td(value if value else "\u2014", cls="preview-val"))
+        # Build column headers
+        headers = [Th(""), Th("SKU", cls="sp-th"), Th("QTY", cls="sp-th")]
+        if show_weight:
+            headers.append(Th("Weight", cls="sp-th"))
+        if show_pieces:
+            headers.append(Th("Pieces", cls="sp-th"))
 
-        def _parcel_rows(prefix: str, qty_val: float, weight_val, pieces_val, editable_weight: bool, editable_pieces: bool) -> list:
-            rows = [
-                Tr(Td("QTY", cls="preview-label"), Td(f"{fmt.format(qty_val)} {sell_by_label}", cls="preview-val")),
-            ]
-            # Weight: show only if editable (sell_by=pieces) - hidden when sell_by is weight (same as QTY)
-            if editable_weight:
-                rows.append(_row("Weight", fmt.format(weight_val) if weight_val is not None else "0", f"{prefix}_weight", editable=True))
-            # Pieces: show only if editable (sell_by=weight) - hidden when sell_by is pieces (same as QTY)
-            if editable_pieces:
-                rows.append(_row("Pieces", str(int(pieces_val)) if pieces_val is not None else "0", f"{prefix}_pieces", editable=True))
-            return rows
+        def _qty_td(val: float) -> FT:
+            return Td(f"{fmt.format(val)} {sell_by_label}", cls="sp-td")
 
-        # sell_by is weight → pieces is editable (not auto-calculable from qty alone)
-        # sell_by is pieces → weight is editable
-        child_weight_editable = not is_weight
-        child_pieces_editable = is_weight
-        mother_weight_editable = not is_weight
-        mother_pieces_editable = is_weight
+        def _editable_td(name: str, val: str) -> FT:
+            return Td(Input(type="number", name=name, value=val, step="any",
+                            cls="form-input form-input--xs sp-input"), cls="sp-td")
 
-        mother_rows = _parcel_rows(
-            "mother",
+        def _parcel_row(label: str, sku_cell: FT, qty_val: float, weight_val, pieces_val,
+                        weight_name: str | None, pieces_name: str | None) -> FT:
+            cells = [Td(label, cls="sp-row-label"), sku_cell, _qty_td(qty_val)]
+            if show_weight:
+                w = fmt.format(weight_val) if weight_val is not None else "0"
+                cells.append(_editable_td(weight_name, w) if weight_name else Td(w, cls="sp-td"))
+            if show_pieces:
+                p = str(int(pieces_val)) if pieces_val is not None else "0"
+                cells.append(_editable_td(pieces_name, p) if pieces_name else Td(p, cls="sp-td"))
+            return Tr(*cells)
+
+        mother_row = _parcel_row(
+            "Mother",
+            Td(preview["parent_sku"], cls="sp-td sp-sku"),
             preview["parent_qty_remaining"],
             preview.get("parent_weight_remaining"),
             preview.get("parent_pieces_remaining"),
-            editable_weight=mother_weight_editable,
-            editable_pieces=mother_pieces_editable,
+            weight_name="mother_weight" if show_weight else None,
+            pieces_name="mother_pieces" if show_pieces else None,
         )
-        child_rows = _parcel_rows(
-            "child",
+        child_row = _parcel_row(
+            "Child",
+            Td(Input(type="text", name="child_sku", value=preview["child_sku"],
+                     cls="form-input sp-sku-input"), cls="sp-td"),
             preview["child_qty"],
             preview.get("child_weight_default"),
             preview.get("child_pieces_default"),
-            editable_weight=child_weight_editable,
-            editable_pieces=child_pieces_editable,
+            weight_name="child_weight" if show_weight else None,
+            pieces_name="child_pieces" if show_pieces else None,
         )
 
         return Form(
             Input(type="hidden", name="entity_id", value=entity_id),
             Input(type="hidden", name="split_qty", value=str(qty)),
-            P("Preview", cls="preview-heading"),
             Table(
-                Tbody(
-                    Tr(Td(Strong("Updated Mother Parcel"), colspan="2", cls="preview-section-header")),
-                    Tr(Td("SKU", cls="preview-label"), Td(preview["parent_sku"], cls="preview-val")),
-                    *mother_rows,
-                    Tr(Td(Strong("New Child Parcel"), colspan="2", cls="preview-section-header")),
-                    Tr(Td("SKU", cls="preview-label"),
-                       Td(Input(type="text", name="child_sku", value=preview["child_sku"],
-                                cls="form-input preview-input--sku"), cls="preview-val")),
-                    *child_rows,
-                ),
-                cls="preview-table",
+                Thead(Tr(*headers)),
+                Tbody(mother_row, child_row),
+                cls="split-preview-table",
             ),
-            Button(t("inv.split"), type="submit", cls="btn btn--primary btn--sm", style="margin-top:8px"),
+            Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
             hx_post="/api/items/bulk/split",
             hx_target="#bulk-action-result",
             hx_swap="outerHTML",
@@ -1393,6 +1384,7 @@ function celerpPrintLabel(entityId, templateId) {
             id="bulk-split-preview-form",
         )
 
+    @app.post("/api/items/bulk/split")
     async def bulk_item_split(request: Request):
         token = _token(request)
         if not token:
