@@ -2290,6 +2290,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     units_map: full unit dict keyed by name, used to check unit_type for derivation.
     """
     from ui.components.table import paired_display_cell, display_cell
+    from celerp.services.units import format_qty
     schema_keys = {f["key"] for f in schema}
     renderers: dict = {}
     _umap = units_map or {}
@@ -2306,11 +2307,15 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             sec_opts = paired_options.get(secondary)
             sec_type = "select" if sec_opts else sec_def.get("type", "text")
             def _make(pri=primary, sec=secondary, pt=pri_def.get("type", "number"),
-                      st=sec_type, po=pri_def.get("options"), so=sec_opts):
-                def renderer(entity_id: str, row: dict):
+                      st=sec_type, po=pri_def.get("options"), so=sec_opts, _um=_umap):
+                def renderer(entity_id: str, row: dict, _umap=_um):
+                    # Format primary numeric value using its unit's decimal precision
+                    raw_pri = row.get(pri, "")
+                    unit_for_pri = row.get(sec, "") if pri in ("quantity", "weight") else None
+                    fmt_pri = format_qty(raw_pri, unit_for_pri, _umap) if pt == "number" else raw_pri
                     return paired_display_cell(
                         entity_id=entity_id,
-                        primary_field=pri, primary_value=row.get(pri, ""),
+                        primary_field=pri, primary_value=fmt_pri,
                         secondary_field=sec, secondary_value=row.get(sec, ""),
                         primary_type=pt, secondary_type=st,
                         primary_options=po, secondary_options=so,
@@ -2326,14 +2331,17 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             sell_by = row.get("sell_by") or ""
             if is_weight_unit(sell_by, _umap):
                 qty_val = row.get("quantity", "")
+                fmt = format_qty(qty_val, sell_by, _umap)
+                decimals = _umap.get(sell_by, {}).get("decimals", "")
                 return Td(
                     Span(
-                        f"{qty_val} {sell_by}" if qty_val not in ("", None) else EMPTY,
+                        f"{fmt} {sell_by}" if fmt not in ("", None) else EMPTY,
                         title="Derived from Qty column",
                         cls="cell-derived",
                     ),
                     cls="cell",
                     data_col="weight",
+                    data_decimals=str(decimals),
                 )
             # Not a weight unit - use paired cell (weight + weight_unit) or plain editable
             if _paired:
@@ -2347,14 +2355,17 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             sell_by = row.get("sell_by") or ""
             if is_pieces_unit(sell_by, _umap):
                 qty_val = row.get("quantity", "")
+                fmt = format_qty(qty_val, sell_by, _umap)
+                decimals = _umap.get(sell_by, {}).get("decimals", "")
                 return Td(
                     Span(
-                        str(qty_val) if qty_val not in ("", None) else EMPTY,
+                        fmt if fmt not in ("", None) else EMPTY,
                         title="Derived from Qty column",
                         cls="cell-derived",
                     ),
                     cls="cell",
                     data_col="pieces",
+                    data_decimals=str(decimals),
                 )
             return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=True)
         renderers["pieces"] = _pieces_renderer

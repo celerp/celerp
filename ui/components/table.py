@@ -1036,17 +1036,26 @@ function sendToTypeChanged(docType){
     if(!qtyTd){return;}
     var primSpan=qtyTd.querySelector('.paired-primary');
     var secSpan=qtyTd.querySelector('.paired-secondary');
-    var newQty=primSpan?primSpan.textContent.trim():qtyTd.textContent.trim();
+    // Use the raw numeric value from the paired-primary span for precise formatting
+    var rawQty=primSpan?primSpan.textContent.trim():qtyTd.textContent.trim();
     var newUnit=secSpan?secSpan.textContent.trim():'';
+    function fmtNum(val, decimals) {
+      var n=parseFloat(val);
+      if(isNaN(n)){return val||'--';}
+      if(decimals===''||decimals===null||decimals===undefined){return String(n);}
+      return n.toFixed(parseInt(decimals,10));
+    }
     tr.querySelectorAll('.cell-derived').forEach(function(span){
       var derivedTd=span.closest('td');
       if(!derivedTd){return;}
       var col=derivedTd.dataset.col;
+      var decimals=derivedTd.dataset.decimals;
+      var fmt=fmtNum(rawQty, decimals);
       if(col==='weight'){
-        span.textContent=(newQty&&newQty!=='--'&&newUnit&&newUnit!=='--')
-          ?newQty+'\u00a0'+newUnit:(newQty||'--');
+        span.textContent=(rawQty&&rawQty!=='--'&&newUnit&&newUnit!=='--')
+          ?fmt+'\u00a0'+newUnit:(fmt||'--');
       } else if(col==='pieces'){
-        span.textContent=newQty||'--';
+        span.textContent=fmt||'--';
       }
     });
   });

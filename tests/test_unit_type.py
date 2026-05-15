@@ -318,3 +318,65 @@ class TestInventoryCellRenderers:
         td = renderers["weight"]("item:1", row)
         # Should not crash and should not derive
         assert td is not None
+
+
+# ── format_qty ────────────────────────────────────────────────────────────────
+
+class TestFormatQty:
+    def _map(self, name, decimals, unit_type="quantity"):
+        return {name: {"name": name, "decimals": decimals, "unit_type": unit_type}}
+
+    def test_pieces_unit_no_decimals(self):
+        from celerp.services.units import format_qty
+        umap = self._map("piece", 0, "pieces")
+        assert format_qty(3.0, "piece", umap) == "3"
+
+    def test_pieces_unit_rounds_float_input(self):
+        from celerp.services.units import format_qty
+        umap = self._map("piece", 0, "pieces")
+        assert format_qty(5.0, "piece", umap) == "5"
+
+    def test_carat_two_decimals(self):
+        from celerp.services.units import format_qty
+        umap = self._map("carat", 2, "weight")
+        assert format_qty(63.22, "carat", umap) == "63.22"
+
+    def test_carat_pads_to_two_decimals(self):
+        from celerp.services.units import format_qty
+        umap = self._map("carat", 2, "weight")
+        assert format_qty(5.0, "carat", umap) == "5.00"
+
+    def test_kg_three_decimals(self):
+        from celerp.services.units import format_qty
+        umap = self._map("kg", 3, "weight")
+        assert format_qty(1.5, "kg", umap) == "1.500"
+
+    def test_unknown_unit_strips_trailing_zeros(self):
+        from celerp.services.units import format_qty
+        assert format_qty(3.0, "unknown", {}) == "3"
+
+    def test_unknown_unit_preserves_significant_decimals(self):
+        from celerp.services.units import format_qty
+        assert format_qty(3.14, "unknown", {}) == "3.14"
+
+    def test_none_value_returns_empty_string(self):
+        from celerp.services.units import format_qty
+        assert format_qty(None, "piece", {}) == ""
+
+    def test_empty_string_value_returns_empty_string(self):
+        from celerp.services.units import format_qty
+        assert format_qty("", "piece", {}) == ""
+
+    def test_non_numeric_value_returns_as_string(self):
+        from celerp.services.units import format_qty
+        assert format_qty("abc", "piece", {}) == "abc"
+
+    def test_none_unit_falls_back_gracefully(self):
+        from celerp.services.units import format_qty
+        result = format_qty(5.0, None, {})
+        assert result == "5"
+
+    def test_string_numeric_input(self):
+        from celerp.services.units import format_qty
+        umap = self._map("piece", 0, "pieces")
+        assert format_qty("7.0", "piece", umap) == "7"

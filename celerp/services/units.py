@@ -87,3 +87,24 @@ def validate_line_quantity(qty: float, sell_by: str | None, unit_map: dict[str, 
         return
     validate_positive(qty, label=label)
     validate_quantity(qty, unit_map[sell_by]["decimals"], label=label)
+
+
+def format_qty(value, unit_name: str | None, unit_map: dict[str, dict]) -> str:
+    """Format a quantity value according to its unit's decimal precision.
+
+    Returns a string with exactly `decimals` decimal places for known units,
+    or a plain str() conversion for unknown/absent units.
+    Falls back to str() if value is not numeric.
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        f = float(value)
+    except (ValueError, TypeError):
+        return str(value)
+    if unit_name and unit_name in unit_map:
+        decimals = unit_map[unit_name].get("decimals", None)
+        if decimals is not None:
+            return f"{f:.{decimals}f}"
+    # Unknown unit: strip trailing zeros but keep at least one decimal if non-integer
+    return f"{f:g}"
