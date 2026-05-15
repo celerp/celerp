@@ -3499,9 +3499,9 @@ async function submitSplit() {
   }
 }
 function loadSplitModal(btn) {
-  var checked = document.querySelector('.row-checkbox:checked');
+  var checked = document.querySelector('.row-select:checked');
   if (!checked) return;
-  var entityId = checked.dataset.entityId || (checked.closest('tr') && checked.closest('tr').dataset.entityId);
+  var entityId = checked.dataset.entityId || checked.value;
   if (!entityId) return;
   htmx.ajax('GET', '/api/inventory/' + entityId + '/split-modal', {
     target: '#split-modal-container',
