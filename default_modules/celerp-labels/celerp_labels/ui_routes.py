@@ -1177,7 +1177,7 @@ def setup_ui_routes(app) -> None:
                 if r.status_code == 200:
                     return r.json().get("items", [])
         except Exception as exc:
-            log.warning("Could not fetch label templates: %s", exc)
+            log.debug("Could not fetch label templates: %s", exc)
         return []
 
     async def _seed_presets_if_empty(request: Request) -> list[dict]:
@@ -1197,7 +1197,7 @@ def setup_ui_routes(app) -> None:
                         headers={"Authorization": f"Bearer {token}"},
                     )
         except Exception as exc:
-            log.warning("Could not seed preset label templates: %s", exc)
+            log.debug("Could not seed preset label templates: %s", exc)
         return await _fetch_templates(request)
 
     async def _fetch_extra_fields(request: Request) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
@@ -1458,7 +1458,7 @@ def setup_ui_routes(app) -> None:
                 if r.status_code == 200:
                     item_data = r.json()
         except Exception as exc:
-            log.warning("Could not fetch item %s for label print: %s", entity_id, exc)
+            log.debug("Could not fetch item %s for label print: %s", entity_id, exc)
         template: dict | None = None
         if template_id:
             templates = await _fetch_templates(request)
