@@ -102,6 +102,7 @@ def _parse_params(request: Request) -> dict:
     cols = q.getlist("cols") or [c for c in q.get("cols", "").split(",") if c]
     return {
         "q": q.get("q", ""),
+        "skus": q.get("skus", ""),  # comma-separated exact SKU filter
         "page": max(1, page),
         "status": q.get("status", ""),
         "category": q.get("category", ""),
@@ -115,7 +116,7 @@ def _parse_params(request: Request) -> dict:
 
 def _base_state(p: dict, include_page: bool = False) -> dict:
     state = {}
-    for k in ("q", "status", "category", "inventory_type", "sort", "dir"):
+    for k in ("q", "skus", "status", "category", "inventory_type", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
     if p.get("per_page") and p["per_page"] != _DEFAULT_PER_PAGE:
@@ -149,6 +150,8 @@ async def _inventory_content(
         params: dict = {"limit": p["per_page"], "offset": (p["page"] - 1) * p["per_page"]}
         if p["q"]:
             params["q"] = p["q"]
+        if p.get("skus"):
+            params["skus"] = p["skus"]
         if p["status"]:
             params["status"] = p["status"]
         if p["category"]:
@@ -1391,7 +1394,7 @@ function celerpPrintLabel(entityId, templateId) {
                      oninput="bulkSplitSkuChanged(this)"), cls="sp-td"),
             Td(Input(type="number", name="child_qty", value=child_qty_val, step="any", min="0.001",
                      cls="form-input form-input--xs sp-input",
-                     oninput="bulkSplitChildQtyChanged(this)"), cls="sp-td"),
+                     onchange="bulkSplitChildQtyChanged(this)"), cls="sp-td"),
             preview.get("child_weight_default"),
             preview.get("child_pieces_default"),
             weight_name="child_weight" if show_weight else None,
@@ -1468,7 +1471,8 @@ function celerpPrintLabel(entityId, templateId) {
         if child_weight is not None:
             child["weight"] = child_weight
         if child_pieces is not None:
-            child["pieces"] = child_pieces
+            # pieces lives in attributes on the item
+            child["attributes"] = {"pieces": child_pieces}
 
         try:
             await api.split_item(token, eid, [child], mother_weight=mother_weight, mother_pieces=mother_pieces)
@@ -1477,9 +1481,11 @@ function celerpPrintLabel(entityId, templateId) {
 
         from urllib.parse import quote
         remaining_qty = current_qty - split_qty
+        # Filter to exactly the two parcels by their SKUs
+        exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
             f"Split: {orig_sku} ({remaining_qty}) + {child_sku} ({split_qty}).",
-            f"?q={quote(orig_sku)}&status=all",
+            f"?skus={exact_skus}&status=all",
         )
 
     # ── Send-to search (HTMX dropdown) ───────────────────────────────────

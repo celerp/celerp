@@ -120,6 +120,7 @@ class TransferBody(BaseModel):
 class SplitChild(BaseModel):
     sku: str
     quantity: float
+    weight: float | None = None
     attributes: dict = Field(default_factory=dict)
 
 
@@ -177,6 +178,7 @@ async def list_items(
     offset: int = 0,
     q: str | None = None,
     sku: str | None = None,
+    skus: str | None = None,  # comma-separated exact SKU list
     barcode: str | None = None,
     status: str | None = None,
     category: str | None = None,
@@ -225,6 +227,10 @@ async def list_items(
 
     if sku:
         result = [r for r in result if str(r.get("sku", "")) == sku]
+
+    if skus:
+        sku_set = {s.strip() for s in skus.split(",") if s.strip()}
+        result = [r for r in result if str(r.get("sku", "")) in sku_set]
 
     if barcode:
         result = [r for r in result if str(r.get("barcode", "")) == barcode]
@@ -904,6 +910,11 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             "created_at": now_iso,
             "updated_at": now_iso,
         }
+        if child.weight is not None:
+            child_data["weight"] = child.weight
+        elif parent.state.get("weight") is not None:
+            # proportional default if not overridden
+            child_data["weight"] = round(child.quantity / parent_qty * float(parent.state["weight"]), 6)
         if parent_category:
             child_data["category"] = parent_category
         if parent_location_id:

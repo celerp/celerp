@@ -888,3 +888,72 @@ async def test_inventory_list_filter_by_inventory_type(client):
     items = r.json()["items"]
     assert len(items) == 2
     assert all(i.get("inventory_type") == "service" for i in items)
+
+
+@pytest.mark.asyncio
+async def test_split_child_pieces_attribute_stored(client):
+    """When sell_by is weight (carat), pieces on child must come from attributes.pieces in the split payload."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Parent: sell_by=carat (weight unit) with 3 pieces
+    r = await client.post("/items", json={
+        "sku": "GEM-W-001", "name": "Rough Stone", "quantity": 10.0,
+        "sell_by": "carat", "attributes": {"pieces": 3},
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    # Split: child gets explicit pieces=1 via attributes
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "GEM-W-001.1", "quantity": 3.0, "attributes": {"pieces": 1}}],
+    }, headers=h)
+    assert r.status_code == 200
+    child_id = r.json()["children"][0]["id"]
+
+    child = (await client.get(f"/items/{child_id}", headers=h)).json()
+    assert child["sku"] == "GEM-W-001.1"
+    assert float(child["quantity"]) == 3.0
+    # pieces must be 1 (the override), not proportional (10%)
+    # attributes are flattened to top-level in the GET response
+    assert int(child.get("pieces", -1)) == 1
+
+
+@pytest.mark.asyncio
+async def test_split_child_weight_stored(client):
+    """When sell_by is pieces (piece), weight on child must be set from SplitChild.weight."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Parent: sell_by=piece (pieces unit) with a physical weight
+    r = await client.post("/items", json={
+        "sku": "GEM-P-001", "name": "Cut Stones", "quantity": 5.0,
+        "sell_by": "piece", "weight": 25.0,
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    # Split: child gets explicit weight=7.5
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "GEM-P-001.1", "quantity": 2.0, "weight": 7.5}],
+    }, headers=h)
+    assert r.status_code == 200
+    child_id = r.json()["children"][0]["id"]
+
+    child = (await client.get(f"/items/{child_id}", headers=h)).json()
+    assert child["sku"] == "GEM-P-001.1"
+    assert float(child["quantity"]) == 2.0
+    # weight must be 7.5 (explicit override), not proportional (10.0)
+    assert abs(float(child.get("weight", 0)) - 7.5) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_inventory_list_filter_by_skus(client):
+    """GET /items?skus=A,B must return exactly those two items by exact SKU match."""
+    _, h = await _reg_items(client, "SkusFilterCo")
+    await client.post("/items", headers=h, json={"name": "Alpha", "sku": "SKUS-A", "sell_by": "piece", "quantity": 1})
+    await client.post("/items", headers=h, json={"name": "Beta", "sku": "SKUS-B", "sell_by": "piece", "quantity": 1})
+    await client.post("/items", headers=h, json={"name": "Gamma", "sku": "SKUS-C", "sell_by": "piece", "quantity": 1})
+    r = await client.get("/items?skus=SKUS-A,SKUS-B", headers=h)
+    assert r.status_code == 200
+    items = r.json()["items"]
+    skus = {i["sku"] for i in items}
+    assert skus == {"SKUS-A", "SKUS-B"}
