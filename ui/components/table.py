@@ -479,9 +479,12 @@ def data_table(
                   cls="sort-link"),
                 cls=f"col-{key}", data_key=key, draggable="true",
                 title="Drag to reorder columns",
+                **({f"data_secondary_of": f.get("secondary_of")} if f.get("secondary_of") else {}),
             )
+        sec_of = f.get("secondary_of")
         return Th(f["label"], cls=f"col-{key}", data_key=key, draggable="true",
-                   title="Drag to reorder columns")
+                   title="Drag to reorder columns",
+                   **({f"data_secondary_of": sec_of} if sec_of else {}))
 
     checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
     header = Thead(Tr(
@@ -688,11 +691,18 @@ def data_table(
       e.preventDefault();
       th.classList.remove('col-drag-over');
       if (!dragKey || dragKey === th.dataset.key) return;
-      // Move TH
+      // Move TH (and its secondary sibling, if any)
       var thead_tr = table.querySelector('thead tr');
       var srcTh = thead_tr.querySelector('th[data-key="' + dragKey + '"]');
       if (!srcTh) return;
+      // Find secondary TH that belongs to the dragged primary
+      var secTh = thead_tr.querySelector('th[data-secondary-of="' + dragKey + '"]');
       thead_tr.insertBefore(srcTh, th);
+      // Secondary always lands immediately after primary
+      if (secTh) {{
+        var afterSrc = srcTh.nextSibling;
+        if (afterSrc !== secTh) thead_tr.insertBefore(secTh, afterSrc);
+      }}
       // Re-order body cells to match header
       var allThs = Array.from(thead_tr.children);
       table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
