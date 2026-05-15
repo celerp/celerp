@@ -821,6 +821,7 @@ async def balance_sheet(
         lines = []
         # Collect all leaf balances first
         leaf_lines: list[dict] = []
+        seen_codes: set[str] = set()
         for code in sorted(balances):
             acc = account_map.get(code)
             if not acc or acc.account_type not in types:
@@ -828,15 +829,33 @@ async def balance_sheet(
             net = balances[code]
             amount = float(-net) if credit_normal else float(net)
             leaf_lines.append({"code": code, "name": acc.name, "account_type": acc.account_type, "amount": amount, "parent_code": acc.parent_code})
+            seen_codes.add(code)
+
+        # Also include child accounts that exist in account_map but have zero balance,
+        # so parent accounts with sub-accounts always expand correctly.
+        parent_codes_in_balance = {l["code"] for l in leaf_lines}
+        for acc in sorted(accounts, key=lambda a: a.code):
+            if acc.code in seen_codes:
+                continue
+            if acc.account_type not in types:
+                continue
+            if acc.parent_code in parent_codes_in_balance:
+                leaf_lines.append({"code": acc.code, "name": acc.name, "account_type": acc.account_type, "amount": 0.0, "parent_code": acc.parent_code})
+                seen_codes.add(acc.code)
+        leaf_lines.sort(key=lambda l: l["code"])
 
         # For accounts that have children in the result set, replace with parent + indented children.
-        # Currently applies to 1130 (Inventory) which has 1130-P and 1130-OB sub-accounts.
         child_codes = {l["code"] for l in leaf_lines if l.get("parent_code") and any(l2["code"] == l["parent_code"] for l2 in leaf_lines)}
         for leaf in leaf_lines:
             code = leaf["code"]
             children = [l for l in leaf_lines if l.get("parent_code") == code]
             if children:
-                # Parent: show computed roll-up total (sum of children)
+                # Roll parent's own JE balance (from pre-sub-account JEs) into the first
+                # "purchased" child (1130-P), then display parent as sum of children.
+                parent_own = leaf["amount"]
+                if parent_own != 0.0:
+                    purchased = next((c for c in children if c["code"].endswith("-P")), children[0])
+                    purchased["amount"] += parent_own
                 parent_total = sum(c["amount"] for c in children)
                 lines.append({"code": code, "name": leaf["name"], "account_type": leaf["account_type"], "amount": parent_total, "is_parent": True})
                 for child in children:
