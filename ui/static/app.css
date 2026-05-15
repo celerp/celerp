@@ -1229,9 +1229,14 @@ a:hover { text-decoration: underline; }
 @media (min-width: 900px) { .vert-two-panel { grid-template-columns: 2fr 1fr; } }
 .vert-library-panel { min-width: 0; }
 .vert-applied-panel { min-width: 0; }
-.vert-group { margin-bottom: 20px; }
-.vert-group-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 6px; padding: 0; }
+.vert-group { margin-bottom: 12px; border: 1px solid var(--c-border); border-radius: 6px; overflow: hidden; }
+.vert-group > summary.vert-group-heading { font-size: 13px; font-weight: 600; color: var(--c-text2); text-transform: uppercase; letter-spacing: 0.04em; margin: 0; padding: 8px 12px; cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; user-select: none; }
+.vert-group > summary.vert-group-heading::before { content: "▶"; font-size: 10px; transition: transform 0.15s; }
+.vert-group[open] > summary.vert-group-heading::before { transform: rotate(90deg); }
+.vert-group > .data-table { margin: 0; border-top: 1px solid var(--c-border); border-radius: 0; }
 .vert-cat-table td { padding: 6px 8px; font-size: 14px; }
+.vert-cat-table .cell--action { width: 80px; text-align: right; }
+.vert-cat-table .th--action { width: 80px; text-align: right; }
 
 /* ── Activating / module-load spinner ── */
 .activating-body { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px 0; }

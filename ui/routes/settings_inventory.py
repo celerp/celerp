@@ -320,16 +320,16 @@ def _categories_tab(
                             hx_swap="outerHTML",
                             hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
                         ),
-                        cls="cell",
+                        cls="cell cell--action",
                     ),
                     cls="data-row vert-cat-row",
                     data_name=cdisplay.lower(),
                 ))
             group_sections.append(
-                Div(
-                    H4(_TAG_LABELS.get(tag, tag), cls="vert-group-heading"),
+                Details(
+                    Summary(_TAG_LABELS.get(tag, tag), cls="vert-group-heading"),
                     Table(
-                        Thead(Tr(Th(t("th.category")), Th(""))),
+                        Thead(Tr(Th(t("th.category")), Th("", cls="th--action"))),
                         Tbody(*rows),
                         cls="data-table vert-cat-table",
                     ),
