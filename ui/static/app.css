@@ -1462,6 +1462,16 @@ a:hover { text-decoration: underline; }
 .modal-panel { background: var(--c-bg); border: 1px solid var(--c-border); border-radius: var(--radius); padding: var(--sp-lg); margin-top: var(--sp-md); box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
 .modal-panel h3 { margin-top: 0; }
 
+/* ── Bulk split inline preview ─────────────────────────────────────────── */
+.preview-heading { font-weight: 600; font-size: 0.8rem; color: var(--c-text2); text-transform: uppercase; letter-spacing: 0.04em; margin: 8px 0 4px; }
+.preview-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; margin-bottom: 4px; }
+.preview-table td { padding: 2px 6px; vertical-align: middle; }
+.preview-label { color: var(--c-text2); white-space: nowrap; width: 70px; }
+.preview-val { font-weight: 500; }
+.preview-section-header td { padding-top: 6px; padding-bottom: 2px; font-size: 0.78rem; color: var(--c-text2); }
+.preview-input { width: 90px !important; padding: 2px 6px !important; font-size: 0.82rem !important; height: auto !important; }
+.form-input--xs { width: 90px; padding: 2px 6px; font-size: 0.82rem; height: auto; }
+
 /* ── Contact detail: two-column layout ────────────────────────────────── */
 .detail-layout { display: flex; gap: 2rem; }
 .detail-col-left { flex: 3; min-width: 0; }

@@ -25,6 +25,42 @@ from celerp.services.units import is_weight_unit, is_pieces_unit
 
 _DEFAULT_PER_PAGE = 50
 
+_BULK_SPLIT_JS = """
+var _bulkSplitTimer = null;
+function bulkSplitQtyChanged(input) {
+  clearTimeout(_bulkSplitTimer);
+  var qty = parseFloat(input.value);
+  var preview = document.getElementById('bulk-split-preview');
+  if (!preview) return;
+  if (!qty || qty <= 0) { preview.innerHTML = ''; return; }
+  var checked = document.querySelector('.row-select:checked');
+  var entityId = checked ? (checked.dataset.entityId || checked.value) : '';
+  if (!entityId) return;
+  var childSkuForm = document.getElementById('bulk-split-preview-form');
+  var childSku = childSkuForm ? (childSkuForm.querySelector('[name="child_sku"]') || {}).value || '' : '';
+  _bulkSplitTimer = setTimeout(function() {
+    var url = '/api/items/bulk/split-preview?entity_id=' + encodeURIComponent(entityId)
+      + '&qty=' + encodeURIComponent(qty)
+      + (childSku ? '&child_sku=' + encodeURIComponent(childSku) : '');
+    htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
+      .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
+  }, 400);
+}
+function bulkSplitSubmit(formEl) {
+  // Inject selected entity_id if not already present from preview form hidden input
+  var existing = formEl.querySelector('input[name="entity_id"]');
+  if (!existing || !existing.value) {
+    var checked = document.querySelector('.row-select:checked');
+    var entityId = checked ? (checked.dataset.entityId || checked.value) : '';
+    if (!existing) {
+      var inp = document.createElement('input'); inp.type = 'hidden'; inp.name = 'entity_id'; inp.value = entityId;
+      formEl.appendChild(inp);
+    } else { existing.value = entityId; }
+  }
+  return true;
+}
+"""
+
 
 
 
@@ -196,6 +232,7 @@ def setup_routes(app):
                 A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm"),
             ),
             content,
+            Script(_BULK_SPLIT_JS),
             title="Inventory - Celerp",
             nav_active="inventory",
             lang=lang,
@@ -1255,15 +1292,121 @@ function celerpPrintLabel(entityId, templateId) {
         return f"{prefix}{max_suffix + 1}"
 
     @app.post("/api/items/bulk/split")
+    @app.get("/api/items/bulk/split-preview")
+    async def bulk_split_preview(request: Request):
+        """HTMX fragment: preview for bulk split (inline in toolbar, no modal)."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        entity_id = request.query_params.get("entity_id", "").strip()
+        qty_raw = request.query_params.get("qty", "").strip()
+        child_sku_param = request.query_params.get("child_sku", "").strip() or None
+        if not entity_id or not qty_raw:
+            return Div()
+        try:
+            qty = float(qty_raw)
+        except ValueError:
+            return Div(P(t("inv.invalid_split_quantity"), cls="flash flash--warning"))
+        if qty <= 0:
+            return Div()
+        try:
+            preview = await api.split_preview(token, entity_id, qty, child_sku_param)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"))
+
+        sell_by_label = preview.get("sell_by_label", preview.get("sell_by", ""))
+        decimals = preview.get("unit_decimals", 0)
+        fmt = f"{{:.{decimals}f}}"
+        is_weight = preview.get("is_weight_unit", False)
+
+        # Determine editable field: weight editable if sell_by is pieces; pieces editable if sell_by is weight
+        has_weight = "parent_weight" in preview
+        has_pieces = "parent_pieces" in preview
+
+        def _row(label: str, value: str, field_name: str | None = None, editable: bool = False, readonly_val: str | None = None) -> FT:
+            if editable and field_name:
+                return Tr(
+                    Td(label, cls="preview-label"),
+                    Td(Input(type="number", name=field_name, value=value, step="any",
+                             cls="form-input form-input--xs preview-input"), cls="preview-val"),
+                )
+            return Tr(Td(label, cls="preview-label"), Td(value or "\u2014", cls="preview-val"))
+
+        def _parcel_rows(prefix: str, qty_val: float, weight_val, pieces_val, editable_weight: bool, editable_pieces: bool) -> list:
+            rows = [
+                Tr(Td(f"QTY", cls="preview-label"), Td(f"{fmt.format(qty_val)} {sell_by_label}", cls="preview-val")),
+            ]
+            if has_weight:
+                w = fmt.format(weight_val) if weight_val is not None else ""
+                rows.append(_row("Weight", w, f"{prefix}_weight", editable=editable_weight))
+            if has_pieces:
+                p = str(int(pieces_val)) if pieces_val is not None else ""
+                rows.append(_row("Pieces", p, f"{prefix}_pieces", editable=editable_pieces))
+            return rows
+
+        # sell_by is weight → pieces is editable (not auto-calculable from qty alone)
+        # sell_by is pieces → weight is editable
+        child_weight_editable = not is_weight
+        child_pieces_editable = is_weight
+        mother_weight_editable = not is_weight
+        mother_pieces_editable = is_weight
+
+        mother_rows = _parcel_rows(
+            "mother",
+            preview["parent_qty_remaining"],
+            preview.get("parent_weight_remaining"),
+            preview.get("parent_pieces_remaining"),
+            editable_weight=mother_weight_editable,
+            editable_pieces=mother_pieces_editable,
+        )
+        child_rows = _parcel_rows(
+            "child",
+            preview["child_qty"],
+            preview.get("child_weight_default"),
+            preview.get("child_pieces_default"),
+            editable_weight=child_weight_editable,
+            editable_pieces=child_pieces_editable,
+        )
+
+        return Form(
+            Input(type="hidden", name="entity_id", value=entity_id),
+            Input(type="hidden", name="split_qty", value=str(qty)),
+            P("Preview", cls="preview-heading"),
+            Table(
+                Tbody(
+                    Tr(Td(Strong("Updated Mother Parcel"), colspan="2", cls="preview-section-header")),
+                    Tr(Td("SKU", cls="preview-label"), Td(preview["parent_sku"], cls="preview-val")),
+                    *mother_rows,
+                    Tr(Td(Strong("New Child Parcel"), colspan="2", cls="preview-section-header")),
+                    Tr(Td("SKU", cls="preview-label"),
+                       Td(Input(type="text", name="child_sku", value=preview["child_sku"],
+                                cls="form-input form-input--xs preview-input"), cls="preview-val")),
+                    *child_rows,
+                ),
+                cls="preview-table",
+            ),
+            Button(t("inv.split"), type="submit", cls="btn btn--primary btn--sm", style="margin-top:8px"),
+            hx_post="/api/items/bulk/split",
+            hx_target="#bulk-action-result",
+            hx_swap="outerHTML",
+            onsubmit="bulkSplitSubmit(this)",
+            id="bulk-split-preview-form",
+        )
+
     async def bulk_item_split(request: Request):
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
-        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
-        if len(entity_ids) != 1:
-            return Div(P(t("inv.select_exactly_1_item_to_split"), cls="flash flash--warning"), id="bulk-action-result")
-        eid = entity_ids[0]
+
+        # Accept entity_id from form (preview form path) or from selected checkboxes
+        eid = str(form.get("entity_id", "")).strip()
+        if not eid:
+            entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+            if len(entity_ids) != 1:
+                return Div(P(t("inv.select_exactly_1_item_to_split"), cls="flash flash--warning"), id="bulk-action-result")
+            eid = entity_ids[0]
+
         split_qty_raw = str(form.get("split_qty", "")).strip()
         try:
             split_qty = float(split_qty_raw)
@@ -1271,26 +1414,51 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(t("inv.invalid_split_quantity"), cls="flash flash--warning"), id="bulk-action-result")
         if split_qty <= 0:
             return Div(P(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--warning"), id="bulk-action-result")
+
         try:
             item = await api.get_item(token, eid)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+
         current_qty = float(item.get("quantity", 0) or 0)
         if split_qty >= current_qty:
             return Div(P(f"Split quantity must be less than current quantity ({current_qty}).", cls="flash flash--warning"), id="bulk-action-result")
+
         orig_sku = str(item.get("sku", "") or "")
-        new_sku = await _next_split_sku(token, orig_sku)
+
+        # Child SKU: from preview form or auto-generate
+        child_sku_input = str(form.get("child_sku", "")).strip()
+        child_sku = child_sku_input if child_sku_input else await _next_split_sku(token, orig_sku)
+
+        # Optional weight/pieces overrides from preview form
+        def _opt_float(key: str) -> float | None:
+            raw = str(form.get(key, "")).strip()
+            try:
+                return float(raw) if raw else None
+            except ValueError:
+                return None
+
+        child_weight = _opt_float("child_weight")
+        child_pieces = _opt_float("child_pieces")
+        mother_weight = _opt_float("mother_weight")
+        mother_pieces = _opt_float("mother_pieces")
+
+        child: dict = {"sku": child_sku, "quantity": split_qty}
+        if child_weight is not None:
+            child["weight"] = child_weight
+        if child_pieces is not None:
+            child["pieces"] = child_pieces
+
         try:
-            await api.split_item(token, eid, [
-                {"sku": new_sku, "quantity": split_qty},
-            ])
+            await api.split_item(token, eid, [child], mother_weight=mother_weight, mother_pieces=mother_pieces)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+
         from urllib.parse import quote
         remaining_qty = current_qty - split_qty
         return _bulk_destructive_success(
-            f"Split: {orig_sku} ({remaining_qty}) + {new_sku} ({split_qty}).",
-            f"?q={quote(orig_sku)}",
+            f"Split: {orig_sku} ({remaining_qty}) + {child_sku} ({split_qty}).",
+            f"?q={quote(orig_sku)}&status=all",
         )
 
     # ── Send-to search (HTMX dropdown) ───────────────────────────────────
@@ -1672,6 +1840,35 @@ function celerpPrintLabel(entityId, templateId) {
         redirect = f"/inventory?q={quote(orig_sku)}" if orig_sku else f"/inventory/{entity_id}"
         return Response("", status_code=204, headers={"HX-Redirect": redirect})
 
+    @app.post("/api/items/{entity_id}/split-inline")
+    async def item_split_inline(request: Request, entity_id: str):
+        """Simple split from detail page: single child, auto-SKU, redirect to filtered inventory."""
+        from urllib.parse import quote as _quote
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        split_qty_raw = str(form.get("split_qty", "")).strip()
+        child_sku_input = str(form.get("child_sku", "")).strip()
+        try:
+            split_qty = float(split_qty_raw)
+        except (ValueError, TypeError):
+            return Span(t("inv.invalid_split_quantity"), cls="flash flash--error", id="item-action-error")
+        if split_qty <= 0:
+            return Span(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--error", id="item-action-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
+        orig_sku = str(item.get("sku", "") or "")
+        child_sku = child_sku_input if child_sku_input else await _next_split_sku(token, orig_sku)
+        try:
+            await api.split_item(token, entity_id, [{"sku": child_sku, "quantity": split_qty}])
+        except APIError as e:
+            return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
+        redirect = f"/inventory?q={_quote(orig_sku)}&status=all" if orig_sku else "/inventory"
+        return Response("", status_code=204, headers={"HX-Redirect": redirect})
+
     @app.post("/api/items/merge")
     async def item_merge(request: Request):
         token = _token(request)
@@ -1727,12 +1924,24 @@ function celerpPrintLabel(entityId, templateId) {
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         new_sku = str(form.get("new_sku", "")).strip()
-        if not new_sku:
-            return Div(Span(t("error.new_sku_required"), cls="flash flash--error"), id="item-action-error")
         try:
             source = await api.get_item(token, entity_id)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        if not new_sku:
+            orig = str(source.get("sku", "") or "")
+            # Auto-generate: {sku}-copy, -copy2, -copy3 ...
+            candidate = f"{orig}-copy"
+            try:
+                resp = await api.list_items(token, {"q": orig, "limit": 100, "status": "all"})
+                existing_skus = {str(it.get("sku", "")) for it in (resp.get("items", []) if isinstance(resp, dict) else resp)}
+            except Exception:
+                existing_skus = set()
+            n = 2
+            while candidate in existing_skus:
+                candidate = f"{orig}-copy{n}"
+                n += 1
+            new_sku = candidate
 
         # Build create payload from source — carry all fields except id, status, location_name
         _SKIP = {"id", "status", "location_name", "created_at", "updated_at"}
@@ -1912,17 +2121,18 @@ def _bulk_context_templates(
         id="tpl-transfer",
     )
 
-    # Split: qty input + split button
+    # Split: qty input + live HTMX preview + split button
     split_tpl = Template(
-        Form(
-            Input(type="number", name="split_qty", placeholder="Quantity to split off",
-                  step="any", min="0.001", cls="form-input form-input--sm", required=True),
-            Button(t("inv.split"), type="submit", cls="btn btn--primary btn--sm"),
-            hx_post="/api/items/bulk/split",
-            hx_target="#bulk-action-result",
-            hx_swap="outerHTML",
-            onsubmit="submitBulkAction(this)",
-            cls="display-contents",
+        Div(
+            Input(
+                type="number", name="split_qty", id="bulk-split-qty",
+                placeholder="Quantity to split off",
+                step="any", min="0.001",
+                cls="form-input form-input--sm",
+                oninput="bulkSplitQtyChanged(this)",
+            ),
+            Div(id="bulk-split-preview"),
+            id="bulk-split-form",
         ),
         id="tpl-split",
     )
@@ -3219,17 +3429,20 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
 
     # 2x2 compact action cards
     allow_splitting = item.get("allow_splitting", True)
+    sell_by = item.get("sell_by") or "piece"
     if allow_splitting:
         split_card = Div(
             Form(
                 Strong(t("inv.u2702_split"), cls="action-card-title"),
                 Div(
-                    Input(type="text", name="parts", placeholder="e.g. 3,2,1", cls="form-input form-input--sm",
-                          title=f"Comma-separated quantities (current: {current_qty})"),
+                    Input(type="number", name="split_qty", placeholder=f"{sell_by.capitalize()} to split off",
+                          step="any", min="0.001", cls="form-input form-input--sm", required=True),
+                    Input(type="text", name="child_sku", placeholder="Child SKU (auto)",
+                          cls="form-input form-input--sm"),
                     Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
                     cls="action-card-row",
                 ),
-                hx_post=f"/api/items/{entity_id}/split",
+                hx_post=f"/api/items/{entity_id}/split-inline",
                 hx_target="#item-action-error",
                 hx_swap="outerHTML",
             ),
@@ -3246,7 +3459,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         Form(
             Strong(t("inv.u0001f4cb_duplicate"), cls="action-card-title"),
             Div(
-                Input(type="text", name="new_sku", placeholder="New SKU", cls="form-input form-input--sm", required=True),
+                Input(type="text", name="new_sku", placeholder="New SKU (optional)", cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
                 cls="action-card-row",
             ),

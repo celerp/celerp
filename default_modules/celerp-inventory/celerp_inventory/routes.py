@@ -125,6 +125,8 @@ class SplitChild(BaseModel):
 
 class SplitBody(BaseModel):
     children: list[SplitChild]
+    mother_weight: float | None = None   # optional override for parent weight after split
+    mother_pieces: float | None = None   # optional override for parent pieces after split
     idempotency_key: str | None = None
 
 
@@ -881,6 +883,28 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
+
+    # Apply mother parcel overrides (weight / pieces) if provided
+    if payload.mother_weight is not None or payload.mother_pieces is not None:
+        updated_attrs = dict(parent_attrs)
+        if payload.mother_pieces is not None:
+            updated_attrs["pieces"] = payload.mother_pieces
+        patch_data: dict = {"attributes": updated_attrs}
+        if payload.mother_weight is not None:
+            patch_data["weight"] = payload.mother_weight
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.updated",
+            data=patch_data,
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
 
     # If parent quantity is now 0, mark as sold
     if new_parent_qty == 0:

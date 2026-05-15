@@ -1230,9 +1230,22 @@ async def create_item(token: str, data: dict) -> dict:
         return _raise(await c.post("/items", json=data)).json()
 
 
-async def split_item(token: str, entity_id: str, children: list[dict]) -> dict:
+async def split_item(token: str, entity_id: str, children: list[dict], mother_weight: float | None = None, mother_pieces: float | None = None) -> dict:
+    body: dict = {"children": children}
+    if mother_weight is not None:
+        body["mother_weight"] = mother_weight
+    if mother_pieces is not None:
+        body["mother_pieces"] = mother_pieces
     async with _client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/split", json={"children": children})).json()
+        return _raise(await c.post(f"/items/{entity_id}/split", json=body)).json()
+
+
+async def split_preview(token: str, entity_id: str, qty: float, child_sku: str | None = None) -> dict:
+    params: dict = {"qty": qty}
+    if child_sku:
+        params["child_sku"] = child_sku
+    async with _client(token) as c:
+        return _raise(await c.get(f"/items/{entity_id}/split-preview", params=params)).json()
 
 
 async def merge_items(
