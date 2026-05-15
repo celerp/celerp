@@ -1323,25 +1323,23 @@ function celerpPrintLabel(entityId, templateId) {
         has_weight = "parent_weight" in preview
         has_pieces = "parent_pieces" in preview
 
-        def _row(label: str, value: str, field_name: str | None = None, editable: bool = False, readonly_val: str | None = None) -> FT:
+        def _row(label: str, value: str, field_name: str | None = None, editable: bool = False) -> FT:
             if editable and field_name:
                 return Tr(
                     Td(label, cls="preview-label"),
                     Td(Input(type="number", name=field_name, value=value, step="any",
                              cls="form-input form-input--xs preview-input"), cls="preview-val"),
                 )
-            return Tr(Td(label, cls="preview-label"), Td(value or "\u2014", cls="preview-val"))
+            return Tr(Td(label, cls="preview-label"), Td(value if value else "\u2014", cls="preview-val"))
 
         def _parcel_rows(prefix: str, qty_val: float, weight_val, pieces_val, editable_weight: bool, editable_pieces: bool) -> list:
             rows = [
-                Tr(Td(f"QTY", cls="preview-label"), Td(f"{fmt.format(qty_val)} {sell_by_label}", cls="preview-val")),
+                Tr(Td("QTY", cls="preview-label"), Td(f"{fmt.format(qty_val)} {sell_by_label}", cls="preview-val")),
+                # Weight: always shown; editable when sell_by is pieces (not weight)
+                _row("Weight", fmt.format(weight_val) if weight_val is not None else "0", f"{prefix}_weight", editable=editable_weight),
+                # Pieces: always shown; editable when sell_by is weight
+                _row("Pieces", str(int(pieces_val)) if pieces_val is not None else "0", f"{prefix}_pieces", editable=editable_pieces),
             ]
-            if has_weight:
-                w = fmt.format(weight_val) if weight_val is not None else ""
-                rows.append(_row("Weight", w, f"{prefix}_weight", editable=editable_weight))
-            if has_pieces:
-                p = str(int(pieces_val)) if pieces_val is not None else ""
-                rows.append(_row("Pieces", p, f"{prefix}_pieces", editable=editable_pieces))
             return rows
 
         # sell_by is weight → pieces is editable (not auto-calculable from qty alone)
@@ -1380,7 +1378,7 @@ function celerpPrintLabel(entityId, templateId) {
                     Tr(Td(Strong("New Child Parcel"), colspan="2", cls="preview-section-header")),
                     Tr(Td("SKU", cls="preview-label"),
                        Td(Input(type="text", name="child_sku", value=preview["child_sku"],
-                                cls="form-input form-input--xs preview-input"), cls="preview-val")),
+                                cls="form-input preview-input--sku"), cls="preview-val")),
                     *child_rows,
                 ),
                 cls="preview-table",
