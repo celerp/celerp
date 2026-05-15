@@ -481,8 +481,15 @@ async def delete_location(
 
 @router.get("/me/users")
 async def list_users(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    rows = (await session.execute(select(User).where(User.company_id == company_id))).scalars().all()
-    items = [{"id": str(u.id), "email": u.email, "name": u.name, "role": u.role, "is_active": u.is_active} for u in rows]
+    from celerp.models.accounting import UserCompany
+    rows = (
+        await session.execute(
+            select(User, UserCompany.role).join(UserCompany, UserCompany.user_id == User.id).where(
+                UserCompany.company_id == company_id
+            )
+        )
+    ).all()
+    items = [{"id": str(u.id), "email": u.email, "name": u.name, "role": role, "is_active": u.is_active} for u, role in rows]
     return {"items": items, "total": len(items)}
 
 
@@ -498,18 +505,35 @@ async def create_user(
     if payload.role not in ROLE_LEVELS:
         raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
 
+    # Check if user with this email already exists globally; if so, just link them.
+    existing_user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
+    if existing_user:
+        # Verify not already a member of this company
+        existing_link = (await session.execute(
+            select(UserCompany).where(UserCompany.user_id == existing_user.id, UserCompany.company_id == company_id)
+        )).scalar_one_or_none()
+        if existing_link:
+            raise HTTPException(status_code=400, detail="User already a member of this company")
+        link = UserCompany(id=uuid.uuid4(), user_id=existing_user.id, company_id=company_id, role=payload.role)
+        session.add(link)
+        try:
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            logger.error("create_user link failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=400, detail=f"User creation failed: {e}") from e
+        return {"id": str(existing_user.id)}
+
     user = User(
         id=uuid.uuid4(),
-        company_id=company_id,
         email=payload.email,
         name=payload.name,
-        role=payload.role,
         auth_hash=hash_password(payload.password),
         is_active=True,
     )
     session.add(user)
     try:
-        await session.flush()  # persist user first (Postgres FK enforcement)
+        await session.flush()  # persist user first so FK on user_companies is satisfied
         link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company_id, role=payload.role)
         session.add(link)
         await session.commit()
@@ -528,8 +552,14 @@ async def patch_user(
     _=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp.models.accounting import UserCompany
+    from sqlalchemy import func as _func
+
     user = await session.get(User, user_id)
-    if not user or user.company_id != company_id:
+    link = (await session.execute(
+        select(UserCompany).where(UserCompany.user_id == user_id, UserCompany.company_id == company_id)
+    )).scalar_one_or_none()
+    if not user or not link:
         raise HTTPException(status_code=404, detail="User not found")
     if payload.name is not None:
         user.name = payload.name
@@ -537,22 +567,21 @@ async def patch_user(
         if payload.role not in ROLE_LEVELS:
             raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
         # Guard: cannot demote the last active owner
-        old_level = ROLE_LEVELS.get(user.role, 0)
+        old_level = ROLE_LEVELS.get(link.role, 0)
         new_level = ROLE_LEVELS.get(payload.role, 0)
         if old_level >= ROLE_LEVELS["owner"] and new_level < ROLE_LEVELS["owner"]:
-            from sqlalchemy import func as _func
             owner_count = (
                 await session.execute(
                     select(_func.count()).where(
-                        User.company_id == company_id,
-                        User.role == "owner",
-                        User.is_active.is_(True),
+                        UserCompany.company_id == company_id,
+                        UserCompany.role == "owner",
+                        UserCompany.is_active.is_(True),
                     )
                 )
             ).scalar()
             if owner_count <= 1:
                 raise HTTPException(status_code=400, detail="Cannot demote the last owner. Assign another owner first.")
-        user.role = payload.role
+        link.role = payload.role
     if payload.is_active is not None:
         user.is_active = payload.is_active
     if payload.password is not None:
