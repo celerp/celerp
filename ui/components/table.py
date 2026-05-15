@@ -1017,30 +1017,38 @@ function sendToTypeChanged(docType){
       if(tid==='inventory-content'||tid==='data-table'){
         CelerpSelection.syncCheckboxes();updateBulkToolbar();
       }
-      // Sync derived cells (weight/pieces) when qty cell swaps
-      var td=e.detail.target;
-      if(td&&td.dataset&&td.dataset.col==='quantity'){
-        var tr=td.closest('tr');
-        if(tr){
-          // Read new primary value from the paired-primary span, or plain td text
-          var primSpan=td.querySelector('.paired-primary');
-          var newQty=primSpan?primSpan.textContent.trim():td.textContent.trim();
-          // Read secondary (unit) from paired-secondary span
-          var secSpan=td.querySelector('.paired-secondary');
-          var newUnit=secSpan?secSpan.textContent.trim():'';
-          // Update all .cell-derived spans in this row
-          tr.querySelectorAll('.cell-derived').forEach(function(span){
-            var derivedTd=span.closest('td');
-            var col=derivedTd?derivedTd.dataset.col:'';
-            if(col==='weight'){
-              span.textContent=newQty&&newUnit?newQty+'\u00a0'+newUnit:(newQty||'--');
-            } else if(col==='pieces'){
-              span.textContent=newQty||'--';
-            }
-          });
-        }
-      }
     }
+  });
+  // Sync derived cells (weight/pieces) after a quantity PATCH.
+  // Use htmx:afterRequest (fires before swap) to get the requestConfig path reliably,
+  // then re-query the live DOM after the swap completes via htmx:afterSettle.
+  document.body.addEventListener('htmx:afterSettle',function(e){
+    var path=(e.detail.requestConfig&&e.detail.requestConfig.path)||
+             (e.detail.pathInfo&&e.detail.pathInfo.requestPath)||'';
+    if(!path){return;}
+    var m=path.match(/\/api\/items\/([^/]+)\/field\/quantity/);
+    if(!m){return;}
+    var eid=m[1];
+    var safeId=eid.replace(/:/g,'-');
+    var tr=document.getElementById('row-'+safeId);
+    if(!tr){return;}
+    var qtyTd=tr.querySelector('[data-col="quantity"]');
+    if(!qtyTd){return;}
+    var primSpan=qtyTd.querySelector('.paired-primary');
+    var secSpan=qtyTd.querySelector('.paired-secondary');
+    var newQty=primSpan?primSpan.textContent.trim():qtyTd.textContent.trim();
+    var newUnit=secSpan?secSpan.textContent.trim():'';
+    tr.querySelectorAll('.cell-derived').forEach(function(span){
+      var derivedTd=span.closest('td');
+      if(!derivedTd){return;}
+      var col=derivedTd.dataset.col;
+      if(col==='weight'){
+        span.textContent=(newQty&&newQty!=='--'&&newUnit&&newUnit!=='--')
+          ?newQty+'\u00a0'+newUnit:(newQty||'--');
+      } else if(col==='pieces'){
+        span.textContent=newQty||'--';
+      }
+    });
   });
   CelerpSelection.syncCheckboxes();
   updateBulkToolbar();
