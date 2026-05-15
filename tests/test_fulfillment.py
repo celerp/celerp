@@ -222,7 +222,7 @@ async def auth(session, _setup_ids):
     cid = _setup_ids["company_id"]
     uid = _setup_ids["user_id"]
     session.add(Company(id=cid, name="TestCo", slug="testco", settings={"currency": "USD"}))
-    session.add(User(id=uid, company_id=cid, email="admin@test.co", name="Admin", auth_hash="x", role="admin", is_active=True))
+    session.add(User(id=uid, email="admin@test.co", name="Admin", auth_hash="x", is_active=True))
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await session.commit()
     token, _ = create_access_token(subject=str(uid), company_id=str(cid), role="admin")

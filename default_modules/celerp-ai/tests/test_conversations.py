@@ -59,7 +59,7 @@ async def company(session) -> Company:
 
 @pytest_asyncio.fixture
 async def user(session, company) -> User:
-    u = User(company_id=company.id, email="conv@test.com", name="Test", role="owner")
+    u = User(email="conv@test.com", name="Test")
     session.add(u)
     await session.commit()
     await session.refresh(u)
@@ -68,7 +68,7 @@ async def user(session, company) -> User:
 
 @pytest_asyncio.fixture
 async def user_b(session, company) -> User:
-    u = User(company_id=company.id, email="other@test.com", name="Other", role="user")
+    u = User(email="other@test.com", name="Other")
     session.add(u)
     await session.commit()
     await session.refresh(u)
@@ -86,7 +86,7 @@ async def company_b(session) -> Company:
 
 @pytest_asyncio.fixture
 async def user_b_co(session, company_b) -> User:
-    u = User(company_id=company_b.id, email="bo@other.com", name="Bo", role="owner")
+    u = User(email="bo@other.com", name="Bo")
     session.add(u)
     await session.commit()
     await session.refresh(u)

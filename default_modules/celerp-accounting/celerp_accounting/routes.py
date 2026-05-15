@@ -264,112 +264,6 @@ async def seed_chart_endpoint(
     return {"added": added, "already_existed": len(existing_codes)}
 
 
-class OpeningInventoryPayload(BaseModel):
-    amount: float  # total cost basis of pre-existing inventory
-    date: str  # ISO date string (YYYY-MM-DD), used as JE timestamp
-
-
-@router.post("/opening-inventory")
-async def record_opening_inventory(
-    payload: OpeningInventoryPayload,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Record a one-time opening balance JE for pre-existing inventory.
-
-    Debits 1130-OB (Inventory - Opening Balance) and credits 3200 (Retained Earnings).
-    Idempotent: uses a fixed idempotency key so duplicate calls are ignored.
-    """
-    from celerp.models.ledger import LedgerEntry
-    idempotency_key = f"opening-inventory:{company_id}"
-    existing = (await session.execute(
-        select(LedgerEntry).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.idempotency_key == idempotency_key,
-        )
-    )).scalar_one_or_none()
-    if existing:
-        raise HTTPException(status_code=409, detail="Opening inventory balance already recorded. Delete the existing journal entry to re-record.")
-
-    if payload.amount <= 0:
-        raise HTTPException(status_code=400, detail="Amount must be positive.")
-
-    from celerp.services.je_keys import je_entity_id
-    entity_id = je_entity_id("opening-inventory", str(company_id))
-    ts = f"{payload.date}T00:00:00+00:00"
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="journal_entry",
-        event_type="AccJournalEntryCreated",
-        data={
-            "description": "Opening Balance: Inventory",
-            "status": "posted",
-            "ts": ts,
-            "entries": [
-                {"account": "1130-OB", "debit": payload.amount, "credit": 0},
-                {"account": "3200",    "debit": 0, "credit": payload.amount},
-            ],
-        },
-        source="manual",
-        idempotency_key=idempotency_key,
-    )
-    await session.commit()
-    return {"ok": True, "entity_id": entity_id}
-
-
-@router.delete("/opening-inventory")
-async def delete_opening_inventory(
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Remove the opening inventory JE (allows re-recording with corrected amount)."""
-    from celerp.models.ledger import LedgerEntry
-    from celerp.models.projections import Projection
-    idempotency_key = f"opening-inventory:{company_id}"
-    entry = (await session.execute(
-        select(LedgerEntry).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.idempotency_key == idempotency_key,
-        )
-    )).scalar_one_or_none()
-    if not entry:
-        raise HTTPException(status_code=404, detail="No opening inventory balance recorded.")
-    proj = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_id == entry.entity_id,
-        )
-    )).scalar_one_or_none()
-    if proj:
-        await session.delete(proj)
-    await session.delete(entry)
-    await session.commit()
-    return {"ok": True}
-
-
-@router.get("/opening-inventory")
-async def get_opening_inventory(
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Return the current opening inventory JE if recorded."""
-    from celerp.models.ledger import LedgerEntry
-    idempotency_key = f"opening-inventory:{company_id}"
-    entry = (await session.execute(
-        select(LedgerEntry).where(
-            LedgerEntry.company_id == company_id,
-            LedgerEntry.idempotency_key == idempotency_key,
-        )
-    )).scalar_one_or_none()
-    if not entry:
-        return {"recorded": False}
-    entries = entry.data.get("entries", [])
-    amount = next((e["debit"] for e in entries if e.get("account") == "1130-OB"), 0.0)
-    return {"recorded": True, "amount": amount, "date": (entry.data.get("ts") or "")[:10], "entity_id": entry.entity_id}
-
-
 @router.post("/accounts")
 async def create_account(
     payload: AccountCreate,
@@ -812,10 +706,15 @@ async def profit_and_loss(
 @router.get("/balance-sheet")
 async def balance_sheet(
     as_of: str | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Balance sheet as of a given date (default: all posted entries to date)."""
+    from celerp.services.auto_je import upsert_opening_inventory_je
+    await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
+
     rows = (
         await session.execute(
             select(Projection).where(

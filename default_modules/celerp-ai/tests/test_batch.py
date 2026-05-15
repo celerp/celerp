@@ -74,7 +74,7 @@ async def company(session) -> Company:
 
 @pytest_asyncio.fixture
 async def user(session, company) -> User:
-    u = User(company_id=company.id, email="batch@test.com", name="Test", role="owner")
+    u = User(email="batch@test.com", name="Test")
     session.add(u)
     await session.commit()
     await session.refresh(u)
