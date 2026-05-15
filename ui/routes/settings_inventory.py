@@ -235,22 +235,22 @@ def _categories_tab(
         applied_rows = [
             Tr(
                 Td(name, cls="cell"),
-                Td(str(len(cat_schemas.get(name, []))), cls="cell"),
+                Td(str(len(cat_schemas.get(name, []))), cls="cell cell--center your-cats-fields"),
                 Td(
                     A(t("settings.edit"),
                       href=f"/settings/inventory?tab=categories&cat={_q(name, safe='')}",
                       cls="btn btn--secondary btn--xs"),
                     # TODO: add Remove button once DELETE /settings/verticals/remove-category endpoint exists
-                    cls="cell cell--action",
+                    cls="cell cell--action your-cats-action",
                 ),
                 cls="data-row",
             )
             for name in sorted(applied_names)
         ]
         your_cats_body = Table(
-            Thead(Tr(Th(t("th.category")), Th("Fields"), Th("", cls="th--action"))),
+            Thead(Tr(Th(t("th.category")), Th("Fields", cls="th--center your-cats-fields"), Th("", cls="th--action your-cats-action"))),
             Tbody(*applied_rows),
-            cls="data-table",
+            cls="data-table your-cats-table",
         )
     else:
         your_cats_body = P(t("settings.no_categories_applied"), cls="settings-hint")
