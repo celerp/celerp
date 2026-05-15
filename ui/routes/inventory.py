@@ -96,9 +96,14 @@ async def _inventory_content(
         if p["sort"]:
             params["sort"] = p["sort"]
             params["dir"] = p["dir"]
-        items = (await api.list_items(token, params)).get("items", [])
+        items_resp, units_resp = await asyncio.gather(
+            api.list_items(token, params),
+            api.get_units(token),
+        )
+        items = items_resp.get("items", [])
+        unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
     except APIError:
-        valuation, items = {}, []
+        valuation, items, unit_names = {}, [], []
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -134,7 +139,8 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(eff_schema),
+            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names),
+            hidden_fields=set(_PAIRED_TABLE.values()),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
         Div(id="modal-container"),
@@ -1014,6 +1020,14 @@ function celerpPrintLabel(entityId, templateId) {
             return P(f"Error: {e.detail}", cls="cell-error")
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
+        # Override sell_by → searchable select from company units
+        if field == "sell_by":
+            try:
+                unit_names = [u["name"] for u in await api.get_units(token) if u.get("name")]
+            except Exception:
+                unit_names = []
+            if unit_names:
+                cell_type, options, allow_custom = "select", unit_names, True
         from ui.components.table import editable_cell
         restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
@@ -2247,21 +2261,29 @@ def _inventory_type_tabs(p: dict) -> FT:
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit"}
 
 
-def _inventory_cell_renderers(schema: list[dict]) -> dict:
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None) -> dict:
     """Build cell_renderers dict for paired columns (quantity+sell_by, weight+weight_unit).
 
     Only registers a renderer for a primary if its secondary exists in schema.
+    unit_names: company unit names used as sell_by dropdown options.
     """
     from ui.components.table import paired_display_cell
     schema_keys = {f["key"] for f in schema}
     renderers: dict = {}
+    # sell_by options: company units (searchable select); fallback to text if no units
+    sell_by_opts = unit_names or None
+    paired_options: dict[str, list[str] | None] = {
+        "sell_by": sell_by_opts,
+        "weight_unit": _UNIVERSAL_FIELD_OPTIONS.get("weight_unit"),
+    }
     for primary, secondary in _PAIRED_TABLE.items():
         if primary in schema_keys and secondary in schema_keys:
             pri_def = next((f for f in schema if f["key"] == primary), {})
             sec_def = next((f for f in schema if f["key"] == secondary), {})
+            sec_opts = paired_options.get(secondary)
+            sec_type = "select" if sec_opts else sec_def.get("type", "text")
             def _make(pri=primary, sec=secondary, pt=pri_def.get("type", "number"),
-                      st=sec_def.get("type", "text"),
-                      po=pri_def.get("options"), so=sec_def.get("options")):
+                      st=sec_type, po=pri_def.get("options"), so=sec_opts):
                 def renderer(entity_id: str, row: dict):
                     return paired_display_cell(
                         entity_id=entity_id,

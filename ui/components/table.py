@@ -465,6 +465,7 @@ def data_table(
     edit_url_tpl: str | None = None,
     delete_url_tpl: str | None = None,
     cell_renderers: dict | None = None,
+    hidden_fields: set | None = None,
 ) -> FT:
     """
     Dynamic spreadsheet table. Headers from schema (never hardcoded), rows from API.
@@ -494,7 +495,9 @@ def data_table(
         ordered = [f for key in show_cols for f in schema if f["key"] == key]
         rest = [f for f in schema if f["key"] not in show_cols]
         visible = ordered + rest
-
+    # Drop fields that are rendered inside another cell (paired secondaries etc.)
+    if hidden_fields:
+        visible = [f for f in visible if f["key"] not in hidden_fields]
     if not rows:
         if q and q.strip():
             return Div(
