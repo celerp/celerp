@@ -203,8 +203,8 @@ def paired_display_cell(
     """
     pri_edit = f"/api/items/{entity_id}/field/{primary_field}/paired-edit?peer={secondary_field}"
     sec_edit = f"/api/items/{entity_id}/field/{secondary_field}/paired-edit?peer={primary_field}"
-    pri_disp = str(primary_value) if primary_value is not None else EMPTY
-    sec_disp = str(secondary_value) if secondary_value is not None else EMPTY
+    pri_disp = str(primary_value) if primary_value not in (None, "") else EMPTY
+    sec_disp = str(secondary_value) if secondary_value not in (None, "") else EMPTY
     return Td(
         Span(
             pri_disp,
@@ -280,6 +280,7 @@ def editable_cell(
             )
         else:
             input_el = Select(
+                *([] if display_val else [Option("", value="", disabled=True, selected=True)]),
                 *[Option(o, value=o, selected=(o == display_val)) for o in options],
                 name="value",
                 **swap,
@@ -639,9 +640,12 @@ def data_table(
     }});
   }} else {{
     // Merge: columns not in stored prefs get their schema default
+    // Force-hide any column whose schema default is false (catches renamed/merged columns in old prefs)
     ths.forEach(function(th) {{
       if (!(th.dataset.key in prefs)) {{
         prefs[th.dataset.key] = SCHEMA_DEFAULTS[th.dataset.key] !== false;
+      }} else if (SCHEMA_DEFAULTS[th.dataset.key] === false) {{
+        prefs[th.dataset.key] = false;
       }}
     }});
   }}

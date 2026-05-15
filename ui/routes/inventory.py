@@ -2313,12 +2313,16 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
 
     # JS: localStorage key matches data_table's PAGE_KEY for inventory
+    paired_secondaries_js = _json.dumps(list(_PAIRED_TABLE.values()))
+
     col_mgr_js = f"""
 (function() {{
   var LS_VIS_KEY = 'celerp_cols_inventory';
   var LS_ORDER_KEY = 'celerp_col_order_inventory';
   var CAT_PREF = '{cat_pref}';
   var ALL_COLS = {col_data_js};
+  // Keys that are now merged into their primary column - strip from saved prefs
+  var MERGED_SECONDARIES = {paired_secondaries_js};
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
@@ -2495,10 +2499,15 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   }});
 
   // Init: apply localStorage state on page load
+  // Strip merged secondary keys from any saved prefs (migration for users who had them as separate columns)
   var storedVis = loadVis();
-  if (storedVis) applyVisToTable(storedVis);
+  if (storedVis) {{
+    MERGED_SECONDARIES.forEach(function(k) {{ delete storedVis[k]; }});
+    applyVisToTable(storedVis);
+  }}
   var storedOrder = loadOrder();
   if (storedOrder) {{
+    storedOrder = storedOrder.filter(function(k) {{ return MERGED_SECONDARIES.indexOf(k) === -1; }});
     applyOrderToPicker(storedOrder);
     applyOrderToTable(storedOrder);
   }}
