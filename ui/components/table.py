@@ -230,6 +230,49 @@ def paired_display_cell(
     )
 
 
+def purchase_display_cell(
+    entity_id: str,
+    pu_val,
+    cf_val,
+    sb_val,
+) -> FT:
+    """Cell showing purchase_unit → cf_val sell_by (tertiary read-only).
+
+    purchase_unit and purchase_conversion_factor are dbl-click editable;
+    sell_by is read-only in this column (edit via the Qty column).
+    """
+    pu_edit = f"/api/items/{entity_id}/field/purchase_unit/paired-edit"
+    cf_edit = f"/api/items/{entity_id}/field/purchase_conversion_factor/paired-edit"
+    pu_disp = str(pu_val) if pu_val not in (None, "") else EMPTY
+    cf_disp = str(cf_val) if cf_val not in (None, "") else EMPTY
+    sb_disp = str(sb_val) if sb_val not in (None, "") else EMPTY
+    return Td(
+        Span(
+            pu_disp,
+            cls="paired-primary",
+            title="Double-click to edit",
+            hx_get=pu_edit,
+            hx_target="closest td",
+            hx_swap="outerHTML",
+            hx_trigger="dblclick",
+        ),
+        Span(" → ", cls="paired-sep", title="Purchasing unit conversion to stock unit"),
+        Span(
+            cf_disp,
+            cls="paired-secondary",
+            title="Double-click to edit",
+            hx_get=cf_edit,
+            hx_target="closest td",
+            hx_swap="outerHTML",
+            hx_trigger="dblclick",
+        ),
+        Span(" ", cls="paired-sep"),
+        Span(sb_disp, cls="paired-tertiary cell-readonly"),
+        cls="cell cell--paired",
+        data_col="purchase_unit",
+    )
+
+
 def editable_cell(
     entity_id: str,
     field: str,

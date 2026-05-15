@@ -115,5 +115,9 @@ def test_field_schema_includes_purchasing_fields():
 
     for f in DEFAULT_ITEM_SCHEMA:
         if f["key"].startswith("purchase_"):
-            assert f["show_in_table"] is False, f"{f['key']} should be hidden in table"
+            # purchase_unit is shown in table (merged with conversion_factor as a triple cell)
+            if f["key"] == "purchase_unit":
+                assert f["show_in_table"] is True, "purchase_unit should be visible (triple cell)"
+            else:
+                assert f["show_in_table"] is False, f"{f['key']} should be hidden in table"
             assert f["editable"] is True, f"{f['key']} should be editable"

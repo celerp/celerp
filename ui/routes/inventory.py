@@ -930,7 +930,9 @@ function celerpPrintLabel(entityId, templateId) {
                             editable=f_def.get("editable", True) if f_def else True)
 
     _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
-                                      "weight": "weight_unit", "weight_unit": "weight"}
+                                      "weight": "weight_unit", "weight_unit": "weight",
+                                      "purchase_unit": "purchase_conversion_factor",
+                                      "purchase_conversion_factor": "purchase_unit"}
 
     @app.patch("/api/items/{entity_id}/field/{field}")
     async def field_patch(request: Request, entity_id: str, field: str):
@@ -982,15 +984,24 @@ function celerpPrintLabel(entityId, templateId) {
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True)
 
-    # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit) ─────────
+    # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit, purchase_unit+purchase_conversion_factor) ─────────
 
     async def _paired_display(token: str, entity_id: str, field: str):
-        """Return a paired_display_cell TD for the pair containing `field`."""
-        from ui.components.table import paired_display_cell
+        """Return a display cell TD for the pair/triple containing `field`."""
         schema, item, cat_schemas, locs = await asyncio.gather(
             api.get_item_schema(token), api.get_item(token, entity_id),
             api.get_all_category_schemas(token), api.get_locations(token),
         )
+        # Purchase triple: purchase_unit + purchase_conversion_factor + sell_by (read-only)
+        if field in ("purchase_unit", "purchase_conversion_factor"):
+            from ui.components.table import purchase_display_cell
+            return purchase_display_cell(
+                entity_id=entity_id,
+                pu_val=item.get("purchase_unit", ""),
+                cf_val=item.get("purchase_conversion_factor", ""),
+                sb_val=item.get("sell_by", ""),
+            )
+        from ui.components.table import paired_display_cell
         locations = locs.get("items", [])
         peer = _PAIRED_FIELDS[field]
         # Determine which is primary (qty/weight) vs secondary (unit)
@@ -1022,15 +1033,19 @@ function celerpPrintLabel(entityId, templateId) {
             return P(f"Error: {e.detail}", cls="cell-error")
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
-        # Override sell_by → searchable select from company units
-        if field == "sell_by":
+        # Field-specific overrides
+        if field in ("sell_by", "purchase_unit"):
+            # Unit dropdown with add-new option
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
             except Exception:
-                unit_names, units_resp = [], []
-            if unit_names:
-                cell_type, options, allow_custom = "select", unit_names, True
+                unit_names = []
+            options = [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")]
+            cell_type, allow_custom = "select", True
+        elif field == "purchase_conversion_factor":
+            # Plain number input
+            cell_type = "number"
         elif field in ("weight", "pieces"):
             # Derived fields: block editing when sell_by qualifies
             try:
@@ -2277,16 +2292,20 @@ def _inventory_type_tabs(p: dict) -> FT:
         for it, label in _TABS
     ]
     return Div(*tabs, cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
-_PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit"}
+_PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "purchase_unit": "purchase_conversion_factor"}
 
 
 def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None) -> dict:
-    """Build cell_renderers dict for paired columns (quantity+sell_by, weight+weight_unit).
+    """Build cell_renderers dict for paired/triple columns.
 
-    Also registers derived renderers for weight (when sell_by is a weight unit) and
-    pieces (when sell_by is a pieces unit) - both derived from qty at render time.
+    Handles:
+    - quantity+sell_by paired cell
+    - weight+weight_unit paired cell
+    - purchase_unit+purchase_conversion_factor+sell_by triple cell
+    - weight derived from qty when sell_by is a weight unit
+    - pieces derived from qty when sell_by is a pieces unit
 
-    unit_names: company unit names used as sell_by dropdown options.
+    unit_names: company unit names used as sell_by/purchase_unit dropdown options.
     units_map: full unit dict keyed by name, used to check unit_type for derivation.
     """
     from ui.components.table import paired_display_cell, display_cell
@@ -2322,6 +2341,19 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     )
                 return renderer
             renderers[primary] = _make()
+
+    # purchase_unit triple renderer: overrides the generic paired renderer from _PAIRED_TABLE loop
+    # Shows: purchase_unit → conversion_factor sell_by (sell_by read-only from item)
+    if "purchase_unit" in schema_keys:
+        def _purchase_renderer(entity_id: str, row: dict) -> FT:
+            from ui.components.table import purchase_display_cell
+            return purchase_display_cell(
+                entity_id=entity_id,
+                pu_val=row.get("purchase_unit", ""),
+                cf_val=row.get("purchase_conversion_factor", ""),
+                sb_val=row.get("sell_by", ""),
+            )
+        renderers["purchase_unit"] = _purchase_renderer
 
     # Derived cell renderers for weight and pieces
     # weight: derived from qty when sell_by is a weight unit; falls back to paired cell

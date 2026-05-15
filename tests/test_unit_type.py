@@ -380,3 +380,145 @@ class TestFormatQty:
         from celerp.services.units import format_qty
         umap = self._map("piece", 0, "pieces")
         assert format_qty("7.0", "piece", umap) == "7"
+
+
+# ── purchase_display_cell ─────────────────────────────────────────────────────
+
+class TestPurchaseDisplayCell:
+    def test_renders_purchase_unit_and_conversion_factor(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        # Should contain the purchase unit value
+        assert "Case" in html
+
+    def test_renders_conversion_factor(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "12" in html
+
+    def test_renders_sell_by_suffix(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "Piece" in html
+
+    def test_arrow_has_title(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "Purchasing unit conversion to stock unit" in html
+
+    def test_sell_by_not_editable_on_dblclick(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        # sell_by span should NOT have hx-get with sell_by/paired-edit
+        assert "sell_by/paired-edit" not in html
+
+    def test_purchase_unit_is_editable(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "purchase_unit/paired-edit" in html
+
+    def test_conversion_factor_is_editable(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "purchase_conversion_factor/paired-edit" in html
+
+    def test_data_col_is_purchase_unit(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert 'data-col="purchase_unit"' in html
+
+
+# ── _PAIRED_TABLE includes purchase_unit ─────────────────────────────────────
+
+class TestPairedTablePurchase:
+    def test_purchase_unit_in_paired_table(self):
+        from ui.routes.inventory import _PAIRED_TABLE
+        assert "purchase_unit" in _PAIRED_TABLE
+
+    def test_purchase_conversion_factor_is_secondary(self):
+        from ui.routes.inventory import _PAIRED_TABLE
+        assert _PAIRED_TABLE["purchase_unit"] == "purchase_conversion_factor"
+
+    def test_purchase_unit_show_in_table(self):
+        from celerp.services.field_schema import _BASE_FIELDS
+        pu = next(f for f in _BASE_FIELDS if f["key"] == "purchase_unit")
+        assert pu["show_in_table"] is True
+
+    def test_purchase_conversion_factor_hidden(self):
+        from celerp.services.field_schema import _BASE_FIELDS
+        pcf = next(f for f in _BASE_FIELDS if f["key"] == "purchase_conversion_factor")
+        assert pcf["show_in_table"] is False
+
+
+# ── searchable_select add-new option ─────────────────────────────────────────
+
+class TestSearchableSelectAddNew:
+    def test_new_option_renders_combobox_option_new_class(self):
+        from ui.components.table import searchable_select
+        result = searchable_select(
+            name="sell_by",
+            options=[("piece", "piece"), ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
+            value="",
+        )
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "combobox-option--new" in html
+
+    def test_new_option_value_contains_redirect_url(self):
+        from ui.components.table import searchable_select
+        result = searchable_select(
+            name="sell_by",
+            options=[("piece", "piece"), ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
+            value="",
+        )
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "__new__:/settings/inventory?tab=units" in html
+
+    def test_initcombobox_redirect_js_present(self):
+        import inspect
+        from ui.components import shell
+        src = inspect.getsource(shell)
+        assert "__new__:" in src
+        assert "window.location" in src
+
+
+# ── _inventory_cell_renderers purchase_unit renderer ────────────────────────
+
+class TestInventoryCellRenderersPurchase:
+    def _schema(self):
+        return [
+            {"key": "purchase_unit", "type": "text", "show_in_table": True},
+            {"key": "purchase_conversion_factor", "type": "number", "show_in_table": False},
+            {"key": "sell_by", "type": "text", "show_in_table": False},
+            {"key": "quantity", "type": "number", "show_in_table": True},
+        ]
+
+    def test_purchase_unit_renderer_present(self):
+        from ui.routes.inventory import _inventory_cell_renderers
+        renderers = _inventory_cell_renderers(self._schema(), unit_names=["piece"])
+        assert "purchase_unit" in renderers
+
+    def test_purchase_unit_renderer_returns_purchase_display_cell(self):
+        from ui.routes.inventory import _inventory_cell_renderers
+        renderers = _inventory_cell_renderers(self._schema(), unit_names=["piece"])
+        renderer = renderers["purchase_unit"]
+        row = {"purchase_unit": "Case", "purchase_conversion_factor": 12, "sell_by": "piece"}
+        result = renderer("item-1", row)
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "Case" in html
+        assert "12" in html
+        assert "piece" in html
+        assert 'data-col="purchase_unit"' in html
+
+    def test_purchase_conversion_factor_not_in_renderers(self):
+        from ui.routes.inventory import _inventory_cell_renderers
+        renderers = _inventory_cell_renderers(self._schema(), unit_names=["piece"])
+        # purchase_conversion_factor is secondary (hidden), should not have its own renderer
+        assert "purchase_conversion_factor" not in renderers
