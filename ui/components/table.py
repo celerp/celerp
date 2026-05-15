@@ -1303,6 +1303,16 @@ def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> F
 
 
 def search_bar(placeholder: str = "Search...", target: str = "#data-table", url: str = "") -> FT:
+    # Enter key → insert comma (for barcode scanner multi-scan: each scan ends with Enter,
+    # becoming a comma-separated OR query without submitting the form).
+    enter_js = (
+        "if(event.key==='Enter'){"
+        "event.preventDefault();"
+        "var v=this.value,end=this.selectionEnd;"
+        "if(v.length&&v[v.length-1]!==','){"
+        "this.value=v+',';"
+        "} }"
+    )
     return Input(
         type="search",
         name="q",
@@ -1315,6 +1325,7 @@ def search_bar(placeholder: str = "Search...", target: str = "#data-table", url:
         hx_include="this",
         cls="search-input",
         id="search-input",
+        onkeydown=enter_js,
     )
 
 

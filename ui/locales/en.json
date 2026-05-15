@@ -784,7 +784,7 @@
   "msg.restart_required": "Restart required for module changes to take effect.",
   "msg.rows_ready": "rows ready",
   "msg.schema_hint": "Global columns shown for all items. Order matches display order.",
-  "msg.search_inventory_placeholder": "Search SKU, name, description...",
+  "msg.search_inventory_placeholder": "Search SKU, name, barcode… (comma or Enter = OR)",
   "msg.search_placeholder": "Search items, contacts, docs…",
   "msg.search_timezone_placeholder": "Search timezone or UTC offset…",
   "msg.secure_remote_access": "Secure remote access",

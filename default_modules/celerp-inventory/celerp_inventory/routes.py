@@ -236,27 +236,26 @@ async def list_items(
         result = [r for r in result if str(r.get("barcode", "")) == barcode]
 
     if q:
-        q_lower = q.lower()
-        # Core fields to search explicitly
+        # Support comma-separated OR queries (e.g. from barcode scanner multi-scan)
+        terms = [t.strip().lower() for t in q.split(",") if t.strip()]
         _SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
-        # Keys that are never useful to search (IDs, numbers, booleans)
         _SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
                                  "weight", "pieces", "status", "created_at", "updated_at"})
-        def _item_matches(r: dict) -> bool:
+        def _item_matches_term(r: dict, term: str) -> bool:
             for field in _SEARCH_FIELDS:
-                if q_lower in str(r.get(field, "")).lower():
+                if term in str(r.get(field, "")).lower():
                     return True
-            # Search nested attributes dict (for items not yet fully flattened)
             for v in (r.get("attributes") or {}).values():
-                if q_lower in str(v).lower():
+                if term in str(v).lower():
                     return True
-            # Search all string values in the flattened item (covers flattened attributes)
             for k, v in r.items():
                 if k in _SKIP_KEYS or k in _SEARCH_FIELDS or k.endswith("_price"):
                     continue
-                if isinstance(v, str) and q_lower in v.lower():
+                if isinstance(v, str) and term in v.lower():
                     return True
             return False
+        def _item_matches(r: dict) -> bool:
+            return any(_item_matches_term(r, term) for term in terms)
         result = [r for r in result if _item_matches(r)]
 
     # Apply visible_to_roles filtering from company field schema
