@@ -1017,6 +1017,29 @@ function sendToTypeChanged(docType){
       if(tid==='inventory-content'||tid==='data-table'){
         CelerpSelection.syncCheckboxes();updateBulkToolbar();
       }
+      // Sync derived cells (weight/pieces) when qty cell swaps
+      var td=e.detail.target;
+      if(td&&td.dataset&&td.dataset.col==='quantity'){
+        var tr=td.closest('tr');
+        if(tr){
+          // Read new primary value from the paired-primary span, or plain td text
+          var primSpan=td.querySelector('.paired-primary');
+          var newQty=primSpan?primSpan.textContent.trim():td.textContent.trim();
+          // Read secondary (unit) from paired-secondary span
+          var secSpan=td.querySelector('.paired-secondary');
+          var newUnit=secSpan?secSpan.textContent.trim():'';
+          // Update all .cell-derived spans in this row
+          tr.querySelectorAll('.cell-derived').forEach(function(span){
+            var derivedTd=span.closest('td');
+            var col=derivedTd?derivedTd.dataset.col:'';
+            if(col==='weight'){
+              span.textContent=newQty&&newUnit?newQty+'\u00a0'+newUnit:(newQty||'--');
+            } else if(col==='pieces'){
+              span.textContent=newQty||'--';
+            }
+          });
+        }
+      }
     }
   });
   CelerpSelection.syncCheckboxes();
