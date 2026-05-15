@@ -184,6 +184,52 @@ def searchable_select(
     )
 
 
+def paired_display_cell(
+    entity_id: str,
+    primary_field: str,
+    primary_value,
+    secondary_field: str,
+    secondary_value,
+    primary_type: str = "text",
+    secondary_type: str = "text",
+    primary_options: list[str] | None = None,
+    secondary_options: list[str] | None = None,
+) -> FT:
+    """Combined cell showing two separately dbl-click-editable values in one TD.
+
+    Used for quantity+sell_by and weight+weight_unit so they share a column.
+    Each span is independently double-click-to-edit via the paired-edit endpoint,
+    which returns an editable_cell whose restore_url points back to paired-display.
+    """
+    pri_edit = f"/api/items/{entity_id}/field/{primary_field}/paired-edit?peer={secondary_field}"
+    sec_edit = f"/api/items/{entity_id}/field/{secondary_field}/paired-edit?peer={primary_field}"
+    pri_disp = str(primary_value) if primary_value is not None else EMPTY
+    sec_disp = str(secondary_value) if secondary_value is not None else EMPTY
+    return Td(
+        Span(
+            pri_disp,
+            cls="paired-primary",
+            title="Double-click to edit",
+            hx_get=pri_edit,
+            hx_target="closest td",
+            hx_swap="outerHTML",
+            hx_trigger="dblclick",
+        ),
+        Span(" ", cls="paired-sep"),
+        Span(
+            sec_disp,
+            cls="paired-secondary",
+            title="Double-click to edit",
+            hx_get=sec_edit,
+            hx_target="closest td",
+            hx_swap="outerHTML",
+            hx_trigger="dblclick",
+        ),
+        cls=f"cell cell--paired",
+        data_col=primary_field,
+    )
+
+
 def editable_cell(
     entity_id: str,
     field: str,
@@ -191,11 +237,12 @@ def editable_cell(
     cell_type: str = "text",
     options: list[str] | None = None,
     allow_custom: bool = False,
+    restore_url: str | None = None,
 ) -> FT:
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell."""
     display_val = str(value) if value is not None else ""
     patch_url = f"/api/items/{entity_id}/field/{field}"
-    restore_url = f"/api/items/{entity_id}/field/{field}/display"
+    restore_url = restore_url or f"/api/items/{entity_id}/field/{field}/display"
     swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
@@ -416,6 +463,7 @@ def data_table(
     auto_hide_empty: bool = True,
     edit_url_tpl: str | None = None,
     delete_url_tpl: str | None = None,
+    cell_renderers: dict | None = None,
 ) -> FT:
     """
     Dynamic spreadsheet table. Headers from schema (never hardcoded), rows from API.
@@ -522,17 +570,21 @@ def data_table(
                ), cls="col-checkbox")] if show_checkboxes else []
         return Tr(
             *checkbox_td,
-            *[display_cell(
-                entity_id=entity_id,
-                field=f["key"],
-                value=row.get(f["key"], ""),
-                cell_type=f.get("type", "text"),
-                options=f.get("options"),
-                editable=f.get("editable", True),
-                currency=currency,
-                link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
-                edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
-            ) for f in visible],
+            *[
+                cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
+                else display_cell(
+                    entity_id=entity_id,
+                    field=f["key"],
+                    value=row.get(f["key"], ""),
+                    cell_type=f.get("type", "text"),
+                    options=f.get("options"),
+                    editable=f.get("editable", True),
+                    currency=currency,
+                    link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
+                    edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
+                )
+                for f in visible
+            ],
             *action_cell,
             id=f"row-{safe_id}",
             cls="data-row",

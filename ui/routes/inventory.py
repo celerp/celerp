@@ -134,6 +134,7 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
+            cell_renderers=_inventory_cell_renderers(eff_schema),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
         Div(id="modal-container"),
@@ -920,6 +921,9 @@ function celerpPrintLabel(entityId, templateId) {
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True)
 
+    _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
+                                      "weight": "weight_unit", "weight_unit": "weight"}
+
     @app.patch("/api/items/{entity_id}/field/{field}")
     async def field_patch(request: Request, entity_id: str, field: str):
         token = _token(request)
@@ -959,10 +963,75 @@ function celerpPrintLabel(entityId, templateId) {
 
         locations = locs_data.get("items", [])
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
+        # Paired fields: return the combined paired cell after save
+        if field in _PAIRED_FIELDS:
+            try:
+                return await _paired_display(token, entity_id, field)
+            except Exception:
+                pass  # fall through to single display_cell on error
         from ui.components.table import display_cell
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True)
+
+    # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit) ─────────
+
+    async def _paired_display(token: str, entity_id: str, field: str):
+        """Return a paired_display_cell TD for the pair containing `field`."""
+        from ui.components.table import paired_display_cell
+        schema, item, cat_schemas, locs = await asyncio.gather(
+            api.get_item_schema(token), api.get_item(token, entity_id),
+            api.get_all_category_schemas(token), api.get_locations(token),
+        )
+        locations = locs.get("items", [])
+        peer = _PAIRED_FIELDS[field]
+        # Determine which is primary (qty/weight) vs secondary (unit)
+        primary, secondary = (field, peer) if field not in ("sell_by", "weight_unit") else (peer, field)
+        pri_def, pri_type, pri_opts, _ = _resolve_field_def(primary, schema, cat_schemas, item, locations)
+        sec_def, sec_type, sec_opts, _ = _resolve_field_def(secondary, schema, cat_schemas, item, locations)
+        return paired_display_cell(
+            entity_id=entity_id,
+            primary_field=primary, primary_value=item.get(primary, ""),
+            secondary_field=secondary, secondary_value=item.get(secondary, ""),
+            primary_type=pri_type, secondary_type=sec_type,
+            primary_options=pri_opts, secondary_options=sec_opts,
+        )
+
+    @app.get("/api/items/{entity_id}/field/{field}/paired-edit")
+    async def field_paired_edit_cell(request: Request, entity_id: str, field: str):
+        """Return editable_cell for `field` with restore_url → paired-display."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if field not in _PAIRED_FIELDS:
+            return P("Not a paired field", cls="cell-error")
+        try:
+            schema, item, cat_schemas, locs = await asyncio.gather(
+                api.get_item_schema(token), api.get_item(token, entity_id),
+                api.get_all_category_schemas(token), api.get_locations(token),
+            )
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
+        locations = locs.get("items", [])
+        f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
+        from ui.components.table import editable_cell
+        restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
+        return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
+                             cell_type=cell_type, options=options, allow_custom=allow_custom,
+                             restore_url=restore_url)
+
+    @app.get("/api/items/{entity_id}/field/{field}/paired-display")
+    async def field_paired_display_cell(request: Request, entity_id: str, field: str):
+        """Restore paired cell to display state (ESC or after save)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if field not in _PAIRED_FIELDS:
+            return P("Not a paired field", cls="cell-error")
+        try:
+            return await _paired_display(token, entity_id, field)
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
@@ -2175,270 +2244,35 @@ def _inventory_type_tabs(p: dict) -> FT:
         for it, label in _TABS
     ]
     return Div(*tabs, cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
-    """Column manager dropdown with immediate JS toggle + localStorage + drag-and-drop reorder.
+_PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit"}
 
-    Server-side pref save is preserved for cross-device sync (background fetch).
-    Client-side: checkboxes immediately show/hide columns and persist to localStorage.
+
+def _inventory_cell_renderers(schema: list[dict]) -> dict:
+    """Build cell_renderers dict for paired columns (quantity+sell_by, weight+weight_unit).
+
+    Only registers a renderer for a primary if its secondary exists in schema.
     """
-    import json as _json
-    selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
-    cat_pref = active_cat or "__all__"
-    # JS data for all columns (key, label, visible)
-    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema]
-    col_data_js = _json.dumps(col_data)
-    selected_js = _json.dumps(sorted(selected))
-    # Hidden inputs for fallback server save (category, status, sort etc.)
-    hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
-    hidden_state["_cat_pref"] = cat_pref
-
-    # Build checkbox list for initial render
-    checkboxes = [
-        Label(
-            Input(
-                type="checkbox",
-                name="cols",
-                value=f.get("key"),
-                checked=f.get("key") in selected,
-                id=f"col-chk-{f.get('key', '')}",
-            ),
-            Span(f.get("label", f.get("key"))),
-            cls="column-option",
-            draggable="true",
-            data_col=f.get("key", ""),
-        )
-        for f in schema
-    ]
-
-    hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
-
-    # JS: localStorage key matches data_table's PAGE_KEY for inventory
-    col_mgr_js = f"""
-(function() {{
-  var LS_VIS_KEY = 'celerp_cols_inventory';
-  var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = '{cat_pref}';
-  var ALL_COLS = {col_data_js};
-  var btn = document.getElementById('col-mgr-btn');
-  var menu = document.getElementById('col-mgr-menu');
-  if (!btn || !menu) return;
-
-  // Load visibility from localStorage
-  function loadVis() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveVis(prefs) {{
-    localStorage.setItem(LS_VIS_KEY, JSON.stringify(prefs));
-  }}
-
-  // Load order from localStorage
-  function loadOrder() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveOrder(order) {{
-    localStorage.setItem(LS_ORDER_KEY, JSON.stringify(order));
-  }}
-
-  // Apply column visibility to the data table
-  function applyVisToTable(prefs) {{
-    var table = document.getElementById('data-table');
-    if (!table) return;
-    var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
-    var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th) {{
-      var key = th.dataset.key;
-      var colIdx = Array.from(th.parentNode.children).indexOf(th);
-      var show = prefs[key] !== false;
-      th.style.display = show ? '' : 'none';
-      rows.forEach(function(tr) {{
-        var td = tr.querySelector('[data-col="' + key + '"]');
-        if (td) td.style.display = show ? '' : 'none';
-      }});
-    }});
-  }}
-
-  // Sync checkboxes in menu to match localStorage
-  function syncCheckboxes() {{
-    var prefs = loadVis() || {{}};
-    menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {{
-      cb.checked = prefs[cb.value] !== false;
-    }});
-  }}
-
-  // Apply column order to table (move TH and TD columns)
-  function applyOrderToTable(order) {{
-    if (!order || !order.length) return;
-    var table = document.getElementById('data-table');
-    if (!table) return;
-    var thead_tr = table.querySelector('thead tr');
-    if (!thead_tr) return;
-    var actionsTh = thead_tr.querySelector('.col-actions');
-    // Move TH elements into order (before actions column)
-    order.forEach(function(key) {{
-      var th = thead_tr.querySelector('th[data-key="' + key + '"]');
-      if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
-    }});
-    // Re-order tbody cells to match header using data-col attribute
-    var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
-    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
-      var cells = Array.from(tr.children);
-      var checkboxTd = cells[0];
-      var actionsTd = cells[cells.length - 1];
-      var dataCells = allThs.map(function(th) {{
-        return cells.find(function(td) {{ return td.dataset.col === th.dataset.key; }});
-      }}).filter(Boolean);
-      [checkboxTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
-        if (td) tr.appendChild(td);
-      }});
-    }});
-  }}
-
-  // Mirror the picker label order to match a given key array (picker is source of truth)
-  function applyOrderToPicker(order) {{
-    if (!order || !order.length) return;
-    var labels = menu.querySelectorAll('label[data-col]');
-    if (!labels.length) return;
-    var parent = labels[0].parentNode;
-    // Move labels into the declared order; unmentioned keys stay at end
-    order.forEach(function(key) {{
-      var lbl = menu.querySelector('label[data-col="' + key + '"]');
-      if (lbl) parent.appendChild(lbl);
-    }});
-  }}
-
-  // Get current picker order (label DOM order = source of truth)
-  function pickerOrder() {{
-    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
-  }}
-
-  // Save cols to server (background, no page reload)
-  function saveToServer(visibleKeys) {{
-    var form = new FormData();
-    visibleKeys.forEach(function(k) {{ form.append('cols', k); }});
-    Object.entries({_json.dumps(hidden_state)}).forEach(function(kv) {{
-      form.append(kv[0], kv[1]);
-    }});
-    fetch('/inventory/columns', {{method:'POST', body:form}}).catch(function(){{}});
-  }}
-
-  // Toggle open/close
-  btn.addEventListener('click', function(e) {{
-    e.stopPropagation();
-    var isOpen = menu.style.display !== 'none';
-    menu.style.display = isOpen ? 'none' : '';
-    if (!isOpen) syncCheckboxes();
-  }});
-
-  // Close on outside click
-  document.addEventListener('click', function(e) {{
-    if (!btn.contains(e.target) && !menu.contains(e.target)) {{
-      menu.style.display = 'none';
-    }}
-  }});
-
-  // Checkbox change: immediate column toggle + re-apply order so new column
-  // appears at its picker position rather than at the DOM end of the table.
-  menu.addEventListener('change', function(e) {{
-    if (e.target.type !== 'checkbox') return;
-    var key = e.target.value;
-    var prefs = loadVis() || {{}};
-    // Init prefs from current state if empty
-    if (!Object.keys(prefs).length) {{
-      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {_json.dumps(sorted(selected))} .indexOf(c.key) !== -1; }});
-    }}
-    prefs[key] = e.target.checked;
-    saveVis(prefs);
-    applyVisToTable(prefs);
-    // Re-apply picker order so the newly-visible column lands in the right slot
-    applyOrderToTable(pickerOrder());
-    // Save visible keys to server
-    var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
-    saveToServer(visibleKeys);
-  }});
-
-  // Drag-and-drop reordering within column manager menu
-  var dragSrc = null;
-  menu.querySelectorAll('label[draggable]').forEach(function(lbl) {{
-    lbl.addEventListener('dragstart', function(e) {{
-      dragSrc = lbl;
-      e.dataTransfer.effectAllowed = 'move';
-      lbl.style.opacity = '0.5';
-    }});
-    lbl.addEventListener('dragend', function() {{
-      lbl.style.opacity = '';
-      dragSrc = null;
-    }});
-    lbl.addEventListener('dragover', function(e) {{
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-    }});
-    lbl.addEventListener('drop', function(e) {{
-      e.preventDefault();
-      if (!dragSrc || dragSrc === lbl) return;
-      // Swap in picker DOM
-      var parent = lbl.parentNode;
-      var srcNext = dragSrc.nextSibling;
-      parent.insertBefore(dragSrc, lbl);
-      if (srcNext) parent.insertBefore(lbl, srcNext); else parent.appendChild(lbl);
-      dragSrc.style.opacity = '';
-      // Persist new order and apply to table
-      var newOrder = pickerOrder();
-      saveOrder(newOrder);
-      applyOrderToTable(newOrder);
-    }});
-  }});
-
-  // Listen for table-header drag reorder (fired by data_table.py drag handler)
-  document.addEventListener('celerp:col-reorder', function(e) {{
-    if (!e.detail || !e.detail.order) return;
-    applyOrderToPicker(e.detail.order);
-  }});
-
-  // Init: apply localStorage state on page load
-  var storedVis = loadVis();
-  if (storedVis) applyVisToTable(storedVis);
-  var storedOrder = loadOrder();
-  if (storedOrder) {{
-    applyOrderToPicker(storedOrder);
-    applyOrderToTable(storedOrder);
-  }}
-
-  // Keep menu closed unless keep_open is set
-  {'menu.style.display = "";' if keep_open else 'menu.style.display = "none";'}
-}})();
-"""
-
-    return Div(
-        Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
-        Div(
-            *checkboxes,
-            Button(
-                t("btn.reset_columns"),
-                id="col-mgr-reset",
-                cls="btn btn--sm btn--ghost col-mgr-reset-btn",
-                type="button",
-                onclick=(
-                    f"localStorage.removeItem('celerp_cols_inventory');"
-                    f"localStorage.removeItem('celerp_col_order_inventory');"
-                    f"localStorage.removeItem('celerp_col_widths_inventory');"
-                    f"fetch('/inventory/columns',{{method:'POST',body:new FormData()}});"
-                    f"location.reload();"
-                ),
-                title=t("btn.reset_columns_title"),
-            ),
-            Form(
-                *hidden_inputs,
-                id="col-mgr-form",
-                style="display:none",
-            ),
-            cls="column-menu",
-            id="col-mgr-menu",
-            style="display:none" if not keep_open else "",
-        ),
-        Script(col_mgr_js),
-        cls="column-manager",
-        id="col-mgr-details",
-    )
-
+    from ui.components.table import paired_display_cell
+    schema_keys = {f["key"] for f in schema}
+    renderers: dict = {}
+    for primary, secondary in _PAIRED_TABLE.items():
+        if primary in schema_keys and secondary in schema_keys:
+            pri_def = next((f for f in schema if f["key"] == primary), {})
+            sec_def = next((f for f in schema if f["key"] == secondary), {})
+            def _make(pri=primary, sec=secondary, pt=pri_def.get("type", "number"),
+                      st=sec_def.get("type", "text"),
+                      po=pri_def.get("options"), so=sec_def.get("options")):
+                def renderer(entity_id: str, row: dict):
+                    return paired_display_cell(
+                        entity_id=entity_id,
+                        primary_field=pri, primary_value=row.get(pri, ""),
+                        secondary_field=sec, secondary_value=row.get(sec, ""),
+                        primary_type=pt, secondary_type=st,
+                        primary_options=po, secondary_options=so,
+                    )
+                return renderer
+            renderers[primary] = _make()
+    return renderers
 
 
 def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:
