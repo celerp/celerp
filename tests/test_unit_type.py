@@ -522,3 +522,53 @@ class TestInventoryCellRenderersPurchase:
         renderers = _inventory_cell_renderers(self._schema(), unit_names=["piece"])
         # purchase_conversion_factor is secondary (hidden), should not have its own renderer
         assert "purchase_conversion_factor" not in renderers
+
+
+# ── Item creation defaults ────────────────────────────────────────────────────
+
+class TestItemCreationDefaults:
+    def _project(self, data: dict) -> dict:
+        from celerp_inventory.projections import apply_item_event
+        return apply_item_event({}, "item.created", data)
+
+    def test_purchase_unit_defaults_to_sell_by(self):
+        state = self._project({"sku": "A1", "name": "Widget", "sell_by": "piece"})
+        assert state["purchase_unit"] == "piece"
+
+    def test_purchase_conversion_factor_defaults_to_1(self):
+        state = self._project({"sku": "A1", "name": "Widget", "sell_by": "piece"})
+        assert state["purchase_conversion_factor"] == 1
+
+    def test_explicit_purchase_unit_not_overridden(self):
+        state = self._project({"sku": "A1", "name": "Widget", "sell_by": "piece", "purchase_unit": "case"})
+        assert state["purchase_unit"] == "case"
+
+    def test_explicit_conversion_factor_not_overridden(self):
+        state = self._project({"sku": "A1", "name": "Widget", "sell_by": "piece", "purchase_conversion_factor": 12})
+        assert state["purchase_conversion_factor"] == 12
+
+    def test_no_sell_by_leaves_purchase_unit_unset(self):
+        state = self._project({"sku": "A1", "name": "Widget"})
+        assert state.get("purchase_unit") is None
+
+
+# ── Receiving with conversion factor / styling ───────────────────────────────
+
+class TestPurchaseConversionFactor:
+    def test_paired_tertiary_css_present(self):
+        css_path = "/mnt/storage/agent_storage/celerp/ui/static/app.css"
+        css = open(css_path).read()
+        assert ".paired-tertiary" in css
+        assert "font-style: italic" in css.split(".paired-tertiary")[1].split("}")[0]
+
+    def test_purchase_display_cell_tertiary_has_class(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "Piece")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "paired-tertiary" in html
+
+    def test_purchase_display_cell_tertiary_shows_sell_by(self):
+        from ui.components.table import purchase_display_cell
+        result = purchase_display_cell("item-1", "Case", 12, "kg")
+        html = result.__html__() if hasattr(result, '__html__') else str(result)
+        assert "kg" in html

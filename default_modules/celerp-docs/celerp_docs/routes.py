@@ -1522,6 +1522,30 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         if li.get("sku")
     }
     unit_map = await _get_unit_map(session, company_id)
+    # Build purchase_conversion_factor lookups: item_id → factor, sku → factor (default 1)
+    all_item_rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )
+    ).scalars().all()
+    item_conversion_map: dict[str, float] = {
+        r.entity_id: float(r.state.get("purchase_conversion_factor") or 1)
+        for r in all_item_rows
+    }
+    sku_conversion_map: dict[str, float] = {
+        str(r.state.get("sku") or "").strip(): float(r.state.get("purchase_conversion_factor") or 1)
+        for r in all_item_rows
+        if r.state.get("sku")
+    }
+    # doc line conversion factors override sku_conversion_map (user may have set them on the PO)
+    doc_line_conversion: dict[str, float] = {
+        str(li.get("sku") or "").strip(): float(li.get("purchase_conversion_factor") or 1)
+        for li in (row.state.get("line_items") or [])
+        if li.get("sku")
+    }
     for it in payload.received_items:
         sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
@@ -1531,7 +1555,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
             if item is None:
                 raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
-            new_qty = float(item.state.get("quantity", 0) or 0) + float(it.quantity_received)
+            conversion = item_conversion_map.get(it.item_id, 1)
+            stock_qty_received = float(it.quantity_received) * conversion
+            new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
             await emit_event(
                 session, company_id=company_id, entity_id=it.item_id, entity_type="item", event_type="item.quantity.adjusted",
                 data={"new_qty": new_qty, **({"consignment_flag": "in"} if is_consignment else {})},
@@ -1545,17 +1571,12 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 raise HTTPException(status_code=422, detail="sku and name required when creating received item")
 
             # Copy attributes from an existing item with same SKU (best-effort enrichment)
-            sku_ref_row = await session.execute(
-                select(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_type == "item",
-                )
+            # Reuse all_item_rows already fetched above - no extra DB query needed
+            sku_ref: dict = next(
+                (r.state for r in all_item_rows
+                 if str(r.state.get("sku") or "").strip() == it.sku.strip()),
+                {},
             )
-            sku_ref: dict = {}
-            for ref_proj in sku_ref_row.scalars().all():
-                if str(ref_proj.state.get("sku") or "").strip() == it.sku.strip():
-                    sku_ref = ref_proj.state
-                    break
 
             # Bill line item: explicit user-set fields take highest priority over sku_ref
             doc_line: dict = next(
@@ -1583,11 +1604,14 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 _v = _doc_val or _payload_val
                 if _v:
                     item_data[_f] = _v
+            # Resolve conversion factor: doc line overrides sku_ref
+            sku_key = it.sku.strip() if it.sku else ""
+            conversion = doc_line_conversion.get(sku_key) or sku_conversion_map.get(sku_key) or 1
             # Payload values always take precedence for the fields below
             item_data.update({
                 "sku": it.sku,
                 "name": it.name,
-                "quantity": it.quantity_received,
+                "quantity": float(it.quantity_received) * conversion,
                 "location_id": payload.location_id,
             })
             if it.cost_price is not None:
