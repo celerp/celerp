@@ -296,6 +296,7 @@ def _categories_tab(
             group_sections.append(
                 Details(
                     Summary(
+                        Span("▶", cls="vert-group-arrow"),
                         Span(_TAG_LABELS.get(tag, tag), cls="vert-group-label"),
                         *(
                             [Form(
