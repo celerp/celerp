@@ -3167,41 +3167,72 @@ def _item_detail_tabs(
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None) -> FT:
-    """Render dynamic pricing form with one input per price list."""
+    """Render dynamic pricing form: unit price + linked total (back-calculates unit price from total)."""
     from ui.routes.documents import resolve_price as _resolve_price
+    qty = float(item.get("quantity") or 0)
+    sell_by = str(item.get("sell_by") or "unit")
+    has_qty = qty > 0
+
     rows = []
     for pl in price_lists:
         pl_name = pl.get("name", "")
-        # Conventional key (e.g. "retail_price" for "Retail")
         conventional_key = f"{pl_name.lower()}_price"
-        # Use the conventional key as input name so it matches item state
         price_val = _resolve_price(item, pl_name)
+        unit_val = f"{price_val:.2f}" if price_val else ""
+        total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
+        # JS IDs scoped per price list
+        unit_id = f"unit_{conventional_key}"
+        total_id = f"total_{conventional_key}"
         rows.append(Tr(
             Td(pl_name, cls="detail-label"),
             Td(
                 Input(
-                    type="number",
-                    name=conventional_key,
-                    value=str(price_val) if price_val else "",
-                    step="0.01",
-                    min="0",
-                    placeholder="—",
+                    type="number", name=conventional_key, id=unit_id,
+                    value=unit_val, step="0.01", min="0", placeholder="—",
                     cls="form-input",
+                    oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
+                )
+            ),
+            Td(
+                Input(
+                    type="number", id=total_id,
+                    value=total_val, step="0.01", min="0", placeholder="—",
+                    cls="form-input",
+                    disabled=not has_qty,
+                    oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
                 )
             ),
         ))
+
+    cur_sym = currency or ""
+    unit_hdr = f"Unit price ({cur_sym} / {sell_by})" if cur_sym else f"Unit price / {sell_by}"
+    total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else f"Total (no stock)"
+
     return Div(
         H3(t("page.pricing"), cls="section-title"),
+        Script("""
+function syncPricingTotal(unitId, totalId, qty) {
+  var u = parseFloat(document.getElementById(unitId).value);
+  var tEl = document.getElementById(totalId);
+  tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(2);
+}
+function syncPricingUnit(unitId, totalId, qty) {
+  if (!qty) return;
+  var total = parseFloat(document.getElementById(totalId).value);
+  var uEl = document.getElementById(unitId);
+  uEl.value = isNaN(total) ? '' : (total / qty).toFixed(2);
+}
+"""),
         Form(
             Table(
-                Thead(Tr(Th(t("th.price_list")), Th(t("th.price")))),
+                Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
                 Tbody(*rows),
                 cls="detail-table",
             ),
             Button(t("btn.save_prices"), type="submit", cls="btn btn--primary mt-sm"),
             hx_post=f"/api/items/{entity_id}/price",
             hx_swap="none",
-            hx_on__after_request=f"window.location.reload()",
+            hx_on__after_request="window.location.reload()",
         ),
         cls="detail-card",
     )
