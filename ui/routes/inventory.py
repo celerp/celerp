@@ -107,7 +107,7 @@ async def _inventory_content(
     total_scoped = valuation.get("total_scoped_count", sum(category_counts.values()))
     count_by_status = valuation.get("count_by_status", {})
     active_cat = p.get("category", "")
-    eff_schema = _annotate_pairs(_effective_schema(schema, cat_schemas, active_cat))
+    eff_schema = _effective_schema(schema, cat_schemas, active_cat)
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
     extra_params = urlencode(_base_state(p))
     total_items = valuation.get("item_count", 0)
@@ -168,7 +168,7 @@ def setup_routes(app):
         lang = get_lang(request)
         vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
         active_cat = p.get("category", "")
-        eff_schema = _annotate_pairs(_effective_schema(schema, cat_schemas, active_cat))
+        eff_schema = _effective_schema(schema, cat_schemas, active_cat)
         visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
 
         content = await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=lang)
@@ -2182,24 +2182,6 @@ _PAIRED_COLS: dict[str, str] = {
     "quantity": "sell_by",
     "weight":   "weight_unit",
 }
-
-_SECONDARY_OF: dict[str, str] = {v: k for k, v in _PAIRED_COLS.items()}
-
-
-def _annotate_pairs(schema: list[dict]) -> list[dict]:
-    """Return a copy of schema with `secondary_of` set on secondary fields.
-
-    Used so data_table can emit ``data-secondary-of`` on TH elements, enabling
-    the drag-and-drop JS to move paired columns together as a unit.
-    """
-    result = []
-    for f in schema:
-        primary = _SECONDARY_OF.get(f.get("key", ""))
-        if primary:
-            result.append({**f, "secondary_of": primary})
-        else:
-            result.append(f)
-    return result
 
 
 def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:
