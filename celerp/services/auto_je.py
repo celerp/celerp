@@ -604,12 +604,18 @@ async def upsert_opening_inventory_je(
         )
     ).scalars().all()
 
+    # Inactive statuses: items no longer owned. Must match get_valuation()'s filter.
+    _INACTIVE = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "disposed"})
+
     catalog_total = _Dec("0")
     for row in item_rows:
         s = row.state
-        if s.get("is_archived"):
+        status = str(s.get("status") or "").lower()
+        if status in _INACTIVE:
             continue
-        if s.get("inventory_type") == "consignment":
+        if s.get("consignment_flag") == "in" or row.consignment_flag == "in":
+            continue
+        if (s.get("inventory_type") or "stocked") != "stocked":
             continue
         tc = s.get("total_cost")
         if tc is not None:

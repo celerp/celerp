@@ -594,3 +594,48 @@ async def test_ledger_debit_normal_account_balance(client):
     assert len(lines) == 2
     assert lines[0]["balance"] == pytest.approx(400.0)
     assert lines[1]["balance"] == pytest.approx(300.0)
+
+
+@pytest.mark.asyncio
+async def test_opening_inventory_je_excludes_inactive_items(client):
+    """Regression: upsert_opening_inventory_je() included sold/disposed items in catalog_total.
+
+    Strategy: load balance sheet before and after marking an item sold.
+    The OB JE amount should decrease by exactly that item's cost (200).
+    """
+    tok = await _reg(client)
+    auth = _h(tok)
+
+    r1 = await client.post("/items", headers=auth, json={
+        "sku": "OB-ACTIVE", "name": "Active Item", "quantity": 1,
+        "sell_by": "piece", "cost_price": 100.0,
+    })
+    assert r1.status_code == 200
+    r2 = await client.post("/items", headers=auth, json={
+        "sku": "OB-SOLD", "name": "Sold Item", "quantity": 1,
+        "sell_by": "piece", "cost_price": 200.0,
+    })
+    assert r2.status_code == 200
+    sold_id = r2.json()["id"]
+
+    # Load balance sheet BEFORE selling - record OB JE amount
+    assert (await client.get("/accounting/balance-sheet", headers=auth)).status_code == 200
+    r_led1 = await client.get("/accounting/ledger/1130-OB", headers=auth)
+    assert r_led1.status_code == 200
+    ob_before = sum(float(ln.get("debit", 0) or 0) for ln in r_led1.json()["lines"])
+
+    # Mark second item as sold
+    rp = await client.patch(f"/items/{sold_id}", headers=auth, json={
+        "fields_changed": {"status": {"old": "available", "new": "sold"}}
+    })
+    assert rp.status_code == 200
+
+    # Load balance sheet AFTER selling - OB JE must be recalculated
+    assert (await client.get("/accounting/balance-sheet", headers=auth)).status_code == 200
+    r_led2 = await client.get("/accounting/ledger/1130-OB", headers=auth)
+    assert r_led2.status_code == 200
+    ob_after = sum(float(ln.get("debit", 0) or 0) for ln in r_led2.json()["lines"])
+
+    # OB JE must decrease by exactly the sold item's cost (200)
+    assert ob_before - ob_after == pytest.approx(200.0, abs=0.02), \
+        f"OB JE should drop by 200 after selling item; before={ob_before}, after={ob_after}"
