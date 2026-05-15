@@ -1335,11 +1335,13 @@ function celerpPrintLabel(entityId, templateId) {
         def _parcel_rows(prefix: str, qty_val: float, weight_val, pieces_val, editable_weight: bool, editable_pieces: bool) -> list:
             rows = [
                 Tr(Td("QTY", cls="preview-label"), Td(f"{fmt.format(qty_val)} {sell_by_label}", cls="preview-val")),
-                # Weight: always shown; editable when sell_by is pieces (not weight)
-                _row("Weight", fmt.format(weight_val) if weight_val is not None else "0", f"{prefix}_weight", editable=editable_weight),
-                # Pieces: always shown; editable when sell_by is weight
-                _row("Pieces", str(int(pieces_val)) if pieces_val is not None else "0", f"{prefix}_pieces", editable=editable_pieces),
             ]
+            # Weight: show only if editable (sell_by=pieces) - hidden when sell_by is weight (same as QTY)
+            if editable_weight:
+                rows.append(_row("Weight", fmt.format(weight_val) if weight_val is not None else "0", f"{prefix}_weight", editable=True))
+            # Pieces: show only if editable (sell_by=weight) - hidden when sell_by is pieces (same as QTY)
+            if editable_pieces:
+                rows.append(_row("Pieces", str(int(pieces_val)) if pieces_val is not None else "0", f"{prefix}_pieces", editable=True))
             return rows
 
         # sell_by is weight → pieces is editable (not auto-calculable from qty alone)

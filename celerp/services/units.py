@@ -15,14 +15,14 @@ from fastapi import HTTPException
 # Units sold by weight/volume/length allow fractional quantities.
 # "piece" (decimals=0) enforces positive integers.
 DEFAULT_UNITS: list[dict] = [
-    {"name": "piece",  "label": "Piece",          "decimals": 0},
-    {"name": "carat",  "label": "Carat (ct)",      "decimals": 2},
-    {"name": "gram",   "label": "Gram (g)",         "decimals": 2},
-    {"name": "kg",     "label": "Kilogram (kg)",    "decimals": 3},
-    {"name": "oz",     "label": "Ounce (oz)",       "decimals": 2},
-    {"name": "lb",     "label": "Pound (lb)",       "decimals": 2},
-    {"name": "liter",  "label": "Liter (L)",        "decimals": 2},
-    {"name": "meter",  "label": "Meter (m)",        "decimals": 2},
+    {"name": "piece",  "label": "Piece",          "decimals": 0, "unit_type": "pieces"},
+    {"name": "carat",  "label": "Carat (ct)",      "decimals": 2, "unit_type": "weight"},
+    {"name": "gram",   "label": "Gram (g)",         "decimals": 2, "unit_type": "weight"},
+    {"name": "kg",     "label": "Kilogram (kg)",    "decimals": 3, "unit_type": "weight"},
+    {"name": "oz",     "label": "Ounce (oz)",       "decimals": 2, "unit_type": "weight"},
+    {"name": "lb",     "label": "Pound (lb)",       "decimals": 2, "unit_type": "weight"},
+    {"name": "liter",  "label": "Liter (L)",        "decimals": 2, "unit_type": "quantity"},
+    {"name": "meter",  "label": "Meter (m)",        "decimals": 2, "unit_type": "quantity"},
 ]
 
 # sell_by values that represent services - quantity precision is not enforced.
