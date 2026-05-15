@@ -38,12 +38,17 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
     ar_outstanding = sum(float(d.state.get("amount_outstanding", 0) or 0) for d in ar_docs)
     ap_outstanding = sum(float(d.state.get("amount_outstanding", d.state.get("total", 0)) or 0) for d in docs if d.state.get("doc_type") == "purchase_order" and d.state.get("status") not in {"void", "draft"})
 
-    # Inventory: stocked items only, excluding consignment_in.
-    # Cost uses total_cost (pre-computed qty*unit_cost) for accuracy.
+    # Inventory: delegate entirely to the canonical valuation endpoint.
+    # This is the single source of truth for item counts and price totals.
+    from celerp_inventory.routes import get_valuation as _get_valuation
+    valuation = await _get_valuation(company_id=company_id, session=session)
+    total_value_cost = valuation["cost_total"]
+    total_value_retail = valuation["retail_total"]
+    active_item_count_inv = valuation["active_item_count"]
+
+    # For KPI sub-fields that need per-item access, re-use already-loaded items list.
     _CONSIGNMENT_IN = "in"
     _INACTIVE_STATUSES = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "disposed"})
-    total_value_cost = 0.0
-    total_value_retail = 0.0
     active_items = []
     for i in items:
         s = i.state
@@ -55,14 +60,6 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
         if status in _INACTIVE_STATUSES:
             continue
         active_items.append(i)
-        qty = float(s.get("quantity") or 0)
-        # Cost: prefer total_cost (pre-computed), fall back to cost_price * qty
-        tc = s.get("total_cost")
-        if tc is not None:
-            total_value_cost += float(tc)
-        else:
-            total_value_cost += float(s.get("cost_price") or 0) * qty
-        total_value_retail += float(s.get("retail_price") or 0) * qty
 
     # Revenue: filter to current month / year using issue_date or finalized_at
     def _doc_month(d: "Projection") -> str:
@@ -76,7 +73,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
 
     return {
         "inventory": {
-            "total_items": len(active_items),
+            "total_items": active_item_count_inv,
             "total_value_cost": total_value_cost,
             "total_value_retail": total_value_retail,
             "items_expiring_30d": 0,
