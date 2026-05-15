@@ -53,7 +53,7 @@ from ui.routes.settings_general import _section_breadcrumb
 def _inventory_tabs(active: str, lang: str = "en") -> FT:
     tabs: list[tuple[str, str]] = [
         ("locations", t("settings.tab_locations", lang)),
-        ("category-library", "Category Library"),
+        ("categories", t("settings.tab_categories", lang)),
         ("units", "Units"),
         ("bulk-attach", t("settings.tab_bulk_attach", lang)),
         ("import-history", t("settings.tab_import_history", lang)),
@@ -144,113 +144,169 @@ def _units_tab(units: list[dict]) -> FT:
     )
 
 
-def _category_library_tab(
+def _categories_tab(
     cat_schemas: dict,
     vert_categories: list[dict],
     vert_presets: list[dict],
+    cat: str = "",
 ) -> FT:
-    """Category Library tab - unified schema+verticals UX.
+    """Categories settings tab - 3-section layout.
 
-    Layout:
-    1. Applied schemas at top (with field count, Edit, Remove buttons)
-    2. Preset selector: dropdown + Apply Preset button
-    3. Add from library: category list grouped by vertical tag
-    4. Default fields link at bottom
+    When `cat` is set and present in cat_schemas: renders the field editor.
+    Otherwise: renders the library view (Your Categories + Quick Setup + Browse Library).
     """
+    from urllib.parse import quote as _q
+    from collections import defaultdict as _dd
+
     applied_names = set(cat_schemas.keys())
 
-    # ── 1. Applied schemas ────────────────────────────────────────────
-    if applied_names:
-        schema_cards = []
-        for name in sorted(applied_names):
-            fields = cat_schemas.get(name, [])
-            n_fields = len(fields)
-            from urllib.parse import quote as _q
-            schema_cards.append(
-                Div(
-                    Div(
-                        Strong(name, cls="schema-card-name"),
-                        Span(
-                            f"{n_fields} field{'s' if n_fields != 1 else ''}",
-                            cls="settings-hint ml-sm",
-                        ),
-                        cls="schema-card-info",
-                    ),
-                    Div(
-                        A(t("settings.edit"),
-                            href=f"/settings/inventory?tab=category-library&cat={_q(name, safe='')}",
-                            cls="btn btn--secondary btn--xs",
-                        ),
-                        Button(t("btn.remove"),
-                            cls="btn btn--danger btn--xs ml-xs",
-                            hx_delete=f"/settings/cat-schema/{_q(name, safe='')}/schema",
-                            hx_confirm=f"Remove '{name}' category schema? All associated attribute data will be lost.",
-                            hx_swap="none",
-                            hx_on__after_request="window.location.href='/settings/inventory?tab=category-library'",
-                        ),
-                        cls="schema-card-actions",
-                    ),
-                    cls="schema-card",
-                )
+    # ── Field editor mode ─────────────────────────────────────────────
+    if cat:
+        if cat not in cat_schemas:
+            return Div(
+                P(f"Category '{cat}' not found.", cls="error-banner"),
+                A(t("settings.cat_fields_back"), href="/settings/inventory?tab=categories",
+                  cls="btn btn--secondary"),
+                cls="settings-card",
             )
-        applied_section = Div(
-            H3(t("page.applied_schemas"), cls="settings-section-title"),
-            P(t("inv.these_category_schemas_are_active_on_your_inventor"), cls="settings-hint"),
-            *schema_cards,
-            cls="mb-xl",
+
+        enc = _q(cat, safe="")
+        sorted_fields = _load_cat_schema_sorted(cat_schemas[cat])
+
+        def _cat_row(idx: int, f: dict) -> FT:
+            return Tr(
+                _cat_schema_display_cell(cat, idx, "position", f),
+                _cat_schema_display_cell(cat, idx, "key", f),
+                _cat_schema_display_cell(cat, idx, "label", f),
+                _cat_schema_display_cell(cat, idx, "type", f),
+                _cat_schema_display_cell(cat, idx, "required", f),
+                _cat_schema_display_cell(cat, idx, "editable", f),
+                _cat_schema_display_cell(cat, idx, "show_in_table", f),
+                _cat_schema_display_cell(cat, idx, "options", f),
+                Td(
+                    Button("✕", cls="btn btn--danger btn--xs",
+                           hx_delete=f"/settings/cat-schema/{enc}/{idx}",
+                           hx_confirm=f"Delete field '{f.get('key', idx)}'?",
+                           hx_swap="none",
+                           hx_on__after_request=f"window.location.href='/settings/inventory?tab=categories&cat={enc}'"),
+                    cls="cell",
+                ),
+                cls="data-row",
+            )
+
+        add_row = Tr(
+            Td(colspan="9", cls="p-sm", children=[
+                Button(t("btn.add_field"), cls="btn btn--secondary btn--xs",
+                       hx_post=f"/settings/cat-schema/{enc}/add",
+                       hx_swap="none",
+                       hx_on__after_request=f"window.location.href='/settings/inventory?tab=categories&cat={enc}'"),
+            ]),
+        )
+
+        return Div(
+            Div(
+                A(t("settings.cat_fields_back"), href="/settings/inventory?tab=categories",
+                  cls="btn btn--secondary btn--xs"),
+                cls="mb-md",
+            ),
+            H3(f"{cat} Fields", cls="settings-section-title"),
+            P(f"Attribute fields for the '{cat}' category. Click a cell to edit.", cls="settings-hint"),
+            Table(
+                Thead(Tr(Th("#"), Th(t("th.key")), Th(t("th.label")), Th(t("th.doc_type")),
+                         Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")),
+                         Th(t("th.options")), Th(""))),
+                Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_fields)], add_row),
+                cls="data-table",
+            ),
+            cls="settings-card",
+        )
+
+    # ── Library view ──────────────────────────────────────────────────
+
+    # Shared result div targeted by both Quick Setup and Browse Library
+    result_div = Div(id="verticals-apply-result")
+
+    # ── Section A: Your Categories ────────────────────────────────────
+    if applied_names:
+        applied_rows = [
+            Tr(
+                Td(name, cls="cell"),
+                Td(str(len(cat_schemas.get(name, []))), cls="cell"),
+                Td(
+                    A(t("settings.edit"),
+                      href=f"/settings/inventory?tab=categories&cat={_q(name, safe='')}",
+                      cls="btn btn--secondary btn--xs"),
+                    # TODO: add Remove button once DELETE /settings/verticals/remove-category endpoint exists
+                    cls="cell",
+                ),
+                cls="data-row",
+            )
+            for name in sorted(applied_names)
+        ]
+        your_cats_body = Table(
+            Thead(Tr(Th(t("th.category")), Th("Fields"), Th(""))),
+            Tbody(*applied_rows),
+            cls="data-table",
         )
     else:
-        applied_section = Div(
-            H3(t("page.applied_schemas"), cls="settings-section-title"),
-            P(t("inv.no_category_schemas_applied_yet_use_the_options_be"), cls="settings-hint"),
-            cls="mb-xl",
-        )
+        your_cats_body = P(t("settings.no_categories_applied"), cls="settings-hint")
 
-    # ── Check if we are in "edit" mode for a specific category ────────
-    # (Rendered separately by the page handler — this function handles list view only)
+    section_a = Div(
+        H3(t("settings.your_categories"), cls="settings-section-title"),
+        P(t("settings.categories_hint"), cls="settings-hint"),
+        your_cats_body,
+        cls="mb-xl",
+    )
 
-    # ── 2. Preset selector ────────────────────────────────────────────
-    if vert_presets:
-        preset_opts = [Option(t("inv._select_a_preset"), value="", disabled=True, selected=True)]
-        for p in vert_presets:
-            pname = p.get("name", "")
-            pdisplay = p.get("display_name", pname)
-            n_cats = len(p.get("categories", []))
-            preset_opts.append(Option(f"{pdisplay} ({n_cats} categories)", value=pname))
-        preset_section = Div(
-            H3(t("page.apply_a_preset"), cls="settings-section-title"),
-            P(t("inv.seeds_all_category_schemas_for_a_business_vertical"), cls="settings-hint"),
+    # ── Section B: Quick Setup ────────────────────────────────────────
+    preset_cards = []
+    for p in vert_presets:
+        pname = p.get("name", "")
+        pdisplay = p.get("display_name", pname)
+        n_cats = len(p.get("categories", []))
+        preset_cards.append(
             Div(
+                Div(
+                    Strong(pdisplay, cls="vert-preset-name"),
+                    Span(f"{n_cats} categories", cls="vert-preset-count"),
+                    cls="vert-preset-info",
+                ),
                 Form(
-                    Select(*preset_opts, name="vertical", cls="preset-selector-select"),
-                    Button(t("btn.apply_preset"), type="submit", cls="btn btn--primary"),
+                    Input(type="hidden", name="vertical", value=pname),
+                    Button(t("btn.apply_preset"), type="submit", cls="btn btn--secondary btn--xs"),
                     hx_post="/settings/verticals/apply-preset",
                     hx_target="#verticals-apply-result",
                     hx_swap="outerHTML",
-                    cls="preset-selector",
+                    hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
                 ),
-                Div(id="verticals-apply-result"),
-            ),
-            cls="mb-xl",
+                cls="vert-preset-card",
+            )
         )
-    else:
-        preset_section = ""
 
-    # ── 3. Add from library ───────────────────────────────────────────
+    section_b = Details(
+        Summary(t("settings.quick_setup")),
+        Div(
+            P(t("settings.quick_setup_hint"), cls="settings-hint"),
+            Div(*preset_cards, cls="vert-preset-strip") if preset_cards else P("No presets available.", cls="settings-hint"),
+        ),
+        open=(len(applied_names) == 0),
+        cls="cat-section-details",
+    )
+
+    # ── Section C: Browse & Add Categories ───────────────────────────
     if vert_categories:
-        from collections import defaultdict as _dd
         groups: dict[str, list[dict]] = _dd(list)
-        for cat in sorted(vert_categories, key=lambda c: c.get("display_name", "")):
-            tag = (cat.get("vertical_tags") or ["other"])[0]
-            groups[tag].append(cat)
+        for vc in sorted(vert_categories, key=lambda c: c.get("display_name", "")):
+            tag = (vc.get("vertical_tags") or ["other"])[0]
+            groups[tag].append(vc)
 
         group_sections = []
         for tag in sorted(groups.keys(), key=lambda t_: _TAG_LABELS.get(t_, t_)):
             cats_in_group = groups[tag]
             rows = []
-            for cat in cats_in_group:
-                cname = cat.get("name", "")
-                cdisplay = cat.get("display_name", cname)
+            for vc in cats_in_group:
+                cname = vc.get("name", "")
+                cdisplay = vc.get("display_name", cname)
                 already = cdisplay in applied_names or cname in applied_names
                 rows.append(Tr(
                     Td(cdisplay, cls="cell"),
@@ -262,10 +318,12 @@ def _category_library_tab(
                             hx_post="/settings/verticals/apply-category",
                             hx_target="#verticals-apply-result",
                             hx_swap="outerHTML",
+                            hx_on__after_request="window.location.href='/settings/inventory?tab=categories'",
                         ),
                         cls="cell",
                     ),
-                    cls="data-row",
+                    cls="data-row vert-cat-row",
+                    data_name=cdisplay.lower(),
                 ))
             group_sections.append(
                 Div(
@@ -279,107 +337,37 @@ def _category_library_tab(
                 )
             )
 
-        library_section = Div(
-            H3(t("page.add_from_library"), cls="settings-section-title"),
-            P(
-                "Add individual category schemas to your inventory. "
-                "Each category enriches items with type-specific attributes.",
-                cls="settings-hint",
-            ),
-            Div(id="verticals-apply-result"),
+        browse_content = Div(
+            P(t("settings.browse_library_hint"), cls="settings-hint"),
+            Input(type="text", id="cat-search", placeholder="Search categories...",
+                  oninput="filterCats(this.value)", cls="form-input form-input--sm",
+                  style="max-width:280px;margin-bottom:12px"),
             *group_sections,
-            cls="mb-xl",
+            Script("""function filterCats(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('.vert-cat-row').forEach(function(row) {
+    row.style.display = row.dataset.name.includes(q) ? '' : 'none';
+  });
+  document.querySelectorAll('.vert-group').forEach(function(g) {
+    var vis = Array.from(g.querySelectorAll('.vert-cat-row')).some(r => r.style.display !== 'none');
+    g.style.display = vis ? '' : 'none';
+  });
+}"""),
         )
     else:
-        library_section = ""
+        browse_content = Div(P("No categories available in the library.", cls="settings-hint"))
 
-    # ── 4. Default fields link ────────────────────────────────────────
-    default_fields_section = Div(
-        H3(t("page.default_item_fields"), cls="settings-section-title"),
-        P(t("inv.edit_the_global_fields_shown_for_all_items_regardl"), cls="settings-hint"),
-        A(t("inv.edit_default_fields"), href="/settings/inventory?tab=category-library&cat=__global__",
-          cls="btn btn--secondary"),
-        cls="mt-sm",
+    section_c = Details(
+        Summary(t("settings.browse_library")),
+        browse_content,
+        cls="cat-section-details",
     )
 
     return Div(
-        applied_section,
-        preset_section,
-        library_section,
-        default_fields_section,
-        cls="settings-card",
-    )
-
-
-def _category_edit_tab(category: str, cat_schemas: dict) -> FT:
-    """Inline schema editor for a specific category (or __global__ for default fields)."""
-    from urllib.parse import quote as _q
-
-    if category == "__global__":
-        # Redirect to legacy schema tab - global schema lives in settings/general flow
-        return Div(
-            P(t("inv.global_default_item_fields_are_managed_in_the_item"), cls="settings-hint"),
-            A(t("btn._back_to_category_library"), href="/settings/inventory?tab=category-library",
-              cls="btn btn--secondary"),
-            cls="settings-card",
-        )
-
-    if category not in cat_schemas:
-        return Div(
-            P(f"Category '{category}' not found.", cls="error-banner"),
-            A(t("btn._back_to_category_library"), href="/settings/inventory?tab=category-library",
-              cls="btn btn--secondary"),
-            cls="settings-card",
-        )
-
-    enc = _q(category, safe="")
-    fields_raw = cat_schemas[category]
-    sorted_fields = _load_cat_schema_sorted(fields_raw)
-
-    def _cat_row(idx: int, f: dict) -> FT:
-        return Tr(
-            _cat_schema_display_cell(category, idx, "position", f),
-            _cat_schema_display_cell(category, idx, "key", f),
-            _cat_schema_display_cell(category, idx, "label", f),
-            _cat_schema_display_cell(category, idx, "type", f),
-            _cat_schema_display_cell(category, idx, "required", f),
-            _cat_schema_display_cell(category, idx, "editable", f),
-            _cat_schema_display_cell(category, idx, "show_in_table", f),
-            _cat_schema_display_cell(category, idx, "options", f),
-            Td(
-                Button("✕", cls="btn btn--danger btn--xs",
-                       hx_delete=f"/settings/cat-schema/{enc}/{idx}",
-                       hx_confirm=f"Delete field '{f.get('key', idx)}'?",
-                       hx_swap="none",
-                       hx_on__after_request=f"window.location.href='/settings/inventory?tab=category-library&cat={enc}'"),
-                cls="cell",
-            ),
-            cls="data-row",
-        )
-
-    add_row = Tr(
-        Td(colspan="9", cls="p-sm", children=[
-            Button(t("btn.add_field"), cls="btn btn--secondary btn--xs",
-                   hx_post=f"/settings/cat-schema/{enc}/add",
-                   hx_swap="none",
-                   hx_on__after_request=f"window.location.href='/settings/inventory?tab=category-library&cat={enc}'"),
-        ]),
-    )
-
-    return Div(
-        Div(
-            A(t("btn._back_to_category_library"), href="/settings/inventory?tab=category-library",
-              cls="btn btn--secondary btn--xs"),
-            cls="mb-md",
-        ),
-        H3(f"Edit: {category}", cls="settings-section-title"),
-        P(f"Attribute fields for the '{category}' category. Click a cell to edit.", cls="settings-hint"),
-        Table(
-            Thead(Tr(Th("#"), Th(t("th.key")), Th(t("th.label")), Th(t("th.doc_type")), Th(t("th.required")),
-                     Th(t("th.editable")), Th(t("th.show_in_table")), Th(t("th.options")), Th(""))),
-            Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_fields)], add_row),
-            cls="data-table",
-        ),
+        result_div,
+        section_a,
+        section_b,
+        section_c,
         cls="settings-card",
     )
 
@@ -396,11 +384,18 @@ def setup_routes(app):
         tab = request.query_params.get("tab", "locations")
         cat = request.query_params.get("cat", "")
 
+        # Backward-compat redirects for old tab names
+        if tab in {"category-library", "verticals", "schema"}:
+            dest = "/settings/inventory?tab=categories"
+            if cat:
+                dest += f"&cat={cat}"
+            return RedirectResponse(dest, status_code=302)
+
         try:
             locations = (await api.get_locations(token)).get("items", [])
             import_batches = (await api.list_import_batches(token)).get("batches", [])
             cat_schemas = await api.get_all_category_schemas(token)
-            if tab == "category-library" and not cat:
+            if tab == "categories" and not cat:
                 vert_categories = await api.list_verticals_categories(token)
                 vert_presets = await api.list_verticals_presets(token)
             else:
@@ -417,11 +412,8 @@ def setup_routes(app):
 
         if tab == "locations":
             content = _locations_tab(locations, lang=lang)
-        elif tab == "category-library":
-            if cat:
-                content = _category_edit_tab(cat, cat_schemas)
-            else:
-                content = _category_library_tab(cat_schemas, vert_categories, vert_presets)
+        elif tab == "categories":
+            content = _categories_tab(cat_schemas, vert_categories, vert_presets, cat)
         elif tab == "units":
             content = _units_tab(units)
         elif tab == "bulk-attach":

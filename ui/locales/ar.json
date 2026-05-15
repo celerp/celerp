@@ -1226,5 +1226,14 @@
   "th.version": "إصدار",
   "th.weight": "وزن",
   "th.when": "متى",
-  "th.wholesale": "بالجملة"
+  "th.wholesale": "بالجملة",
+  "settings.tab_categories": "Categories",
+  "settings.your_categories": "Your Categories",
+  "settings.quick_setup": "Quick Setup",
+  "settings.browse_library": "Browse Library",
+  "settings.no_categories_applied": "No categories applied yet. Use Quick Setup below to get started.",
+  "settings.categories_hint": "Category schemas add type-specific fields to your inventory items.",
+  "settings.quick_setup_hint": "Apply a full industry vertical to add all relevant categories at once.",
+  "settings.browse_library_hint": "Add individual categories to your inventory.",
+  "settings.cat_fields_back": "← Back to Categories"
 }
