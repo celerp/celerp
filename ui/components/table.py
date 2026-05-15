@@ -1326,6 +1326,7 @@ def search_bar(placeholder: str = "Search...", target: str = "#data-table", url:
         cls="search-input",
         id="search-input",
         onkeydown=enter_js,
+        title="Use a comma (or Enter) for OR — e.g. scan multiple barcodes one after another",
     )
 
 

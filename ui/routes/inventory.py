@@ -2626,7 +2626,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                         title="Derived from Qty column",
                         cls="cell-derived",
                     ),
-                    cls="cell",
+                    cls="cell cell--number",
                     data_col="weight",
                     data_decimals=str(decimals),
                 )
@@ -2650,7 +2650,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                         title="Derived from Qty column",
                         cls="cell-derived",
                     ),
-                    cls="cell",
+                    cls="cell cell--number",
                     data_col="pieces",
                     data_decimals=str(decimals),
                 )
