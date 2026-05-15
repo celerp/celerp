@@ -3254,7 +3254,7 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "
         Table(
             Tbody(*[
                 Tr(
-                    Td(f.get("label", f.get("key")), cls="detail-label"),
+                    Td(f.get("label", f.get("key")), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
                     display_cell(
                         entity_id=entity_id,
                         field=f.get("key", ""),

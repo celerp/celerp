@@ -473,6 +473,26 @@ a:hover { text-decoration: underline; }
 .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .detail-table td { padding: 8px 14px; border-bottom: 1px solid var(--c-border); }
 .detail-table tr:last-child td { border-bottom: none; }
+.detail-table .cell--number,
+.detail-table .cell-number,
+.detail-table .cell-money { text-align: left; font-family: inherit; }
+.field-tooltip {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--c-bg3);
+    border: 1px solid var(--c-border);
+    color: var(--c-text2);
+    font-size: 10px;
+    font-weight: 600;
+    cursor: help;
+    margin-left: 4px;
+    vertical-align: middle;
+    line-height: 1;
+}
 .detail-label { color: var(--c-text2); width: 160px; font-weight: 500; }
 
 /* ─── Doc detail ──────────────────────────────────────────────────────── */
