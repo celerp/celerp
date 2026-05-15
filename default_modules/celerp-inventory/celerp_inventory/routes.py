@@ -740,6 +740,84 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
     return {"event_id": entry.id}
 
 
+@router.get("/{entity_id}/split-preview")
+async def split_preview(
+    entity_id: str,
+    qty: float,
+    child_sku: str | None = None,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if parent is None or not parent.state.get("is_available", True):
+        raise HTTPException(status_code=404, detail="Item not found or unavailable")
+
+    parent_qty = float(parent.state.get("quantity") or 0)
+    if qty <= 0 or qty >= parent_qty:
+        raise HTTPException(status_code=422, detail="qty must be > 0 and < parent quantity")
+
+    parent_sku = parent.state.get("sku", "")
+    parent_sell_by = parent.state.get("sell_by") or "piece"
+    parent_weight_raw = parent.state.get("weight")
+    parent_weight = float(parent_weight_raw) if parent_weight_raw is not None else None
+    parent_attrs = parent.state.get("attributes") or {}
+    parent_pieces_raw = parent_attrs.get("pieces")
+    parent_pieces = float(parent_pieces_raw) if parent_pieces_raw is not None else None
+
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
+    unit_cfg = unit_map.get(parent_sell_by) or {}
+    decimals = unit_cfg.get("decimals", 0)
+    is_weight = unit_cfg.get("unit_type") == "weight"
+    sell_by_label = unit_cfg.get("label", parent_sell_by)
+
+    if not child_sku:
+        prefix = f"{parent_sku}."
+        existing_res = await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )
+        all_items = existing_res.scalars().all()
+        max_suffix = 0
+        for it in all_items:
+            sku = str(it.state.get("sku", "") or "")
+            if sku.startswith(prefix) and "." not in sku[len(prefix):]:
+                try:
+                    max_suffix = max(max_suffix, int(sku[len(prefix):]))
+                except ValueError:
+                    pass
+        child_sku = f"{prefix}{max_suffix + 1}"
+
+    result: dict = {
+        "parent_sku": parent_sku,
+        "parent_name": parent.state.get("name", parent_sku),
+        "parent_qty": parent_qty,
+        "parent_qty_remaining": round(parent_qty - qty, decimals),
+        "child_sku": child_sku,
+        "child_qty": qty,
+        "sell_by": parent_sell_by,
+        "sell_by_label": sell_by_label,
+        "unit_decimals": decimals,
+        "is_weight_unit": is_weight,
+    }
+
+    if parent_weight is not None:
+        child_weight_default = round(qty / parent_qty * parent_weight, decimals)
+        result["parent_weight"] = parent_weight
+        result["parent_weight_remaining"] = round(parent_weight - child_weight_default, decimals)
+        result["child_weight_default"] = child_weight_default
+
+    if parent_pieces is not None:
+        child_pieces_default = int(qty / parent_qty * parent_pieces)
+        result["parent_pieces"] = parent_pieces
+        result["parent_pieces_remaining"] = parent_pieces - child_pieces_default
+        result["child_pieces_default"] = child_pieces_default
+
+    return result
+
+
 @router.post("/{entity_id}/split")
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent
