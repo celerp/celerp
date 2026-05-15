@@ -146,6 +146,7 @@ def _units_tab(units: list[dict]) -> FT:
 
 def _categories_tab(
     cat_schemas: dict,
+    cat_schemas_company: dict,
     vert_categories: list[dict],
     vert_presets: list[dict],
     cat: str = "",
@@ -158,7 +159,7 @@ def _categories_tab(
     from urllib.parse import quote as _q
     from collections import defaultdict as _dd
 
-    applied_names = set(cat_schemas.keys())
+    applied_names = set(cat_schemas_company.keys())
 
     # ── Field editor mode ─────────────────────────────────────────────
     if cat:
@@ -379,6 +380,7 @@ def setup_routes(app):
             locations = (await api.get_locations(token)).get("items", [])
             import_batches = (await api.list_import_batches(token)).get("batches", [])
             cat_schemas = await api.get_all_category_schemas(token)
+            cat_schemas_company = await api.get_company_category_schemas(token)  # company-only, no module defaults
             if tab == "categories" and not cat:
                 vert_categories = await api.list_verticals_categories(token)
                 vert_presets = await api.list_verticals_presets(token)
@@ -388,7 +390,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            locations, import_batches, cat_schemas = [], [], {}
+            locations, import_batches, cat_schemas, cat_schemas_company = [], [], {}, {}
             vert_categories, vert_presets = [], []
             units = []
 
@@ -397,7 +399,7 @@ def setup_routes(app):
         if tab == "locations":
             content = _locations_tab(locations, lang=lang)
         elif tab == "categories":
-            content = _categories_tab(cat_schemas, vert_categories, vert_presets, cat)
+            content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat)
         elif tab == "units":
             content = _units_tab(units)
         elif tab == "bulk-attach":

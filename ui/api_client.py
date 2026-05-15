@@ -220,6 +220,12 @@ async def get_all_category_schemas(token: str) -> dict:
         return _raise(await c.get("/companies/me/category-schemas")).json()
 
 
+async def get_company_category_schemas(token: str) -> dict:
+    """Return only company-applied schemas (no module defaults). Used to determine which categories the user explicitly applied."""
+    async with _client(token) as c:
+        return _raise(await c.get("/companies/me/company-category-schemas")).json()
+
+
 async def get_category_schema(token: str, category: str) -> list[dict]:
     async with _client(token) as c:
         return _raise(await c.get(f"/companies/me/category-schema/{category}")).json()

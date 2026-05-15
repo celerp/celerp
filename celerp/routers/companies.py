@@ -672,6 +672,15 @@ async def patch_category_schema(
     return {"ok": True, "category": category, "field_count": len(payload.fields)}
 
 
+@router.get("/me/company-category-schemas")
+async def get_company_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    """Return only company-level category schemas (no module defaults). Used to determine which categories the user explicitly applied."""
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return dict(company.settings.get("category_schemas") or {})
+
+
 @router.get("/me/category-schemas")
 async def get_all_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Return all category schemas keyed by category name.
