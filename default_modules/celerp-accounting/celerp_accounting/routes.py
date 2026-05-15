@@ -10,7 +10,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -609,7 +609,24 @@ async def account_ledger(
             ref = dr.state.get("ref_id") or dr.state.get("doc_number") or dr.entity_id
             doc_ref_map[dr.entity_id] = ref
 
-    # Filter to lines that touch this account, apply date filter
+    # If this account has a parent that has sub-accounts, also include entries posted
+    # directly to the parent (legacy JEs from before the sub-account split).
+    # This ensures e.g. 1130-P ledger shows old 1130 entries alongside new 1130-P entries.
+    parent_legacy_codes: set[str] = set()
+    if account and account.parent_code:
+        sibling_count = (
+            await session.execute(
+                select(func.count()).select_from(Account).where(
+                    Account.company_id == company_id,
+                    Account.parent_code == account.parent_code,
+                )
+            )
+        ).scalar()
+        if sibling_count and sibling_count > 1:
+            parent_legacy_codes.add(account.parent_code)
+    match_codes = {account_code} | parent_legacy_codes
+
+    # Filter to lines that touch this account (or its legacy parent), apply date filter
     lines = []
     for row in je_rows:
         state = row.state
@@ -622,7 +639,7 @@ async def account_ledger(
         if date_to and ts > date_to:
             continue
         for entry in state.get("entries", []):
-            if entry.get("account") != account_code:
+            if entry.get("account") not in match_codes:
                 continue
             lines.append({
                 "date": ts,

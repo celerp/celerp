@@ -680,7 +680,13 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
                 name_cell = Td(Strong(label))
             elif is_child:
                 label = f"{code} {l.get('name', '')}".strip()
-                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style="padding-left:2rem")
+                amount = l.get("amount", 0)
+                if amount == 0 and code.endswith("-OB"):
+                    # No opening balance JE recorded yet - link to where you can record it
+                    ob_href = "/settings/accounting?tab=opening-balance"
+                    name_cell = Td(A(label, href=ob_href, cls="drilldown-link", title="No opening balance recorded. Click to set one."), style="padding-left:2rem")
+                else:
+                    name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style="padding-left:2rem")
             elif code and not synthetic:
                 label = f"{code} {l.get('name', '')}".strip()
                 name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"))
