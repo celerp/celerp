@@ -196,7 +196,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
 
     po_je = await _find_je(client, token, "doc.received", po_id)
     po_entries = po_je["data"]["entries"]
-    assert {x["account"] for x in po_entries} == {"1130", "2110"}
+    assert {x["account"] for x in po_entries} == {"1130-P", "2110"}
     _assert_balanced(po_entries)
     assert po_id in po_je["data"]["memo"]
 

@@ -1797,6 +1797,21 @@ async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:
         return _raise(await c.post("/accounting/close-year", json={"fiscal_year_end": fiscal_year_end})).json()
 
 
+async def get_opening_inventory(token: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.get("/accounting/opening-inventory")).json()
+
+
+async def record_opening_inventory(token: str, amount: float, date: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post("/accounting/opening-inventory", json={"amount": amount, "date": date})).json()
+
+
+async def delete_opening_inventory(token: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.delete("/accounting/opening-inventory")).json()
+
+
 async def bulk_delete_contacts(token: str, contact_ids: list) -> dict:
     async with _client(token) as c:
         return _raise(await c.post("/crm/contacts/bulk/delete", json={"contact_ids": contact_ids})).json()

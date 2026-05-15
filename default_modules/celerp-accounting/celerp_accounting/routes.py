@@ -31,6 +31,8 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "1110", "name": "Cash and Cash Equivalents", "account_type": "asset", "parent_code": "1100"},
     {"code": "1120", "name": "Accounts Receivable", "account_type": "asset", "parent_code": "1100"},
     {"code": "1130", "name": "Inventory", "account_type": "asset", "parent_code": "1100"},
+    {"code": "1130-P", "name": "Inventory - Purchased", "account_type": "asset", "parent_code": "1130"},
+    {"code": "1130-OB", "name": "Inventory - Opening Balance", "account_type": "asset", "parent_code": "1130"},
     {"code": "1140", "name": "Prepaid Expenses", "account_type": "asset", "parent_code": "1100"},
     {"code": "1150", "name": "VAT Receivable (Input VAT)", "account_type": "asset", "parent_code": "1100"},
     {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000"},
@@ -260,6 +262,112 @@ async def seed_chart_endpoint(
 
     await session.commit()
     return {"added": added, "already_existed": len(existing_codes)}
+
+
+class OpeningInventoryPayload(BaseModel):
+    amount: float  # total cost basis of pre-existing inventory
+    date: str  # ISO date string (YYYY-MM-DD), used as JE timestamp
+
+
+@router.post("/opening-inventory")
+async def record_opening_inventory(
+    payload: OpeningInventoryPayload,
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Record a one-time opening balance JE for pre-existing inventory.
+
+    Debits 1130-OB (Inventory - Opening Balance) and credits 3200 (Retained Earnings).
+    Idempotent: uses a fixed idempotency key so duplicate calls are ignored.
+    """
+    from celerp.models.ledger import LedgerEntry
+    idempotency_key = f"opening-inventory:{company_id}"
+    existing = (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key == idempotency_key,
+        )
+    )).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=409, detail="Opening inventory balance already recorded. Delete the existing journal entry to re-record.")
+
+    if payload.amount <= 0:
+        raise HTTPException(status_code=400, detail="Amount must be positive.")
+
+    from celerp.services.je_keys import je_entity_id
+    entity_id = je_entity_id("opening-inventory", str(company_id))
+    ts = f"{payload.date}T00:00:00+00:00"
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="journal_entry",
+        event_type="AccJournalEntryCreated",
+        data={
+            "description": "Opening Balance: Inventory",
+            "status": "posted",
+            "ts": ts,
+            "entries": [
+                {"account": "1130-OB", "debit": payload.amount, "credit": 0},
+                {"account": "3200",    "debit": 0, "credit": payload.amount},
+            ],
+        },
+        source="manual",
+        idempotency_key=idempotency_key,
+    )
+    await session.commit()
+    return {"ok": True, "entity_id": entity_id}
+
+
+@router.delete("/opening-inventory")
+async def delete_opening_inventory(
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Remove the opening inventory JE (allows re-recording with corrected amount)."""
+    from celerp.models.ledger import LedgerEntry
+    from celerp.models.projections import Projection
+    idempotency_key = f"opening-inventory:{company_id}"
+    entry = (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key == idempotency_key,
+        )
+    )).scalar_one_or_none()
+    if not entry:
+        raise HTTPException(status_code=404, detail="No opening inventory balance recorded.")
+    proj = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_id == entry.entity_id,
+        )
+    )).scalar_one_or_none()
+    if proj:
+        await session.delete(proj)
+    await session.delete(entry)
+    await session.commit()
+    return {"ok": True}
+
+
+@router.get("/opening-inventory")
+async def get_opening_inventory(
+    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Return the current opening inventory JE if recorded."""
+    from celerp.models.ledger import LedgerEntry
+    idempotency_key = f"opening-inventory:{company_id}"
+    entry = (await session.execute(
+        select(LedgerEntry).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key == idempotency_key,
+        )
+    )).scalar_one_or_none()
+    if not entry:
+        return {"recorded": False}
+    entries = entry.data.get("entries", [])
+    amount = next((e["debit"] for e in entries if e.get("account") == "1130-OB"), 0.0)
+    return {"recorded": True, "amount": amount, "date": (entry.data.get("ts") or "")[:10], "entity_id": entry.entity_id}
 
 
 @router.post("/accounts")
@@ -711,59 +819,37 @@ async def balance_sheet(
 
     def _section(types: list[str], credit_normal: bool) -> tuple[list[dict], float]:
         lines = []
+        # Collect all leaf balances first
+        leaf_lines: list[dict] = []
         for code in sorted(balances):
             acc = account_map.get(code)
             if not acc or acc.account_type not in types:
                 continue
             net = balances[code]
             amount = float(-net) if credit_normal else float(net)
-            lines.append({"code": code, "name": acc.name, "account_type": acc.account_type, "amount": amount})
-        total = sum(l["amount"] for l in lines)
+            leaf_lines.append({"code": code, "name": acc.name, "account_type": acc.account_type, "amount": amount, "parent_code": acc.parent_code})
+
+        # For accounts that have children in the result set, replace with parent + indented children.
+        # Currently applies to 1130 (Inventory) which has 1130-P and 1130-OB sub-accounts.
+        child_codes = {l["code"] for l in leaf_lines if l.get("parent_code") and any(l2["code"] == l["parent_code"] for l2 in leaf_lines)}
+        for leaf in leaf_lines:
+            code = leaf["code"]
+            children = [l for l in leaf_lines if l.get("parent_code") == code]
+            if children:
+                # Parent: show computed roll-up total (sum of children)
+                parent_total = sum(c["amount"] for c in children)
+                lines.append({"code": code, "name": leaf["name"], "account_type": leaf["account_type"], "amount": parent_total, "is_parent": True})
+                for child in children:
+                    lines.append({**child, "is_child": True})
+            elif code not in child_codes:
+                lines.append(leaf)
+
+        total = sum(l["amount"] for l in lines if not l.get("is_child"))
         return lines, total
 
     asset_lines, total_assets = _section(["asset"], credit_normal=False)
     liability_lines, total_liabilities = _section(["liability"], credit_normal=True)
     equity_lines, total_equity = _section(["equity"], credit_normal=True)
-
-    # Compute opening inventory balance: catalog cost basis not yet entered via JEs.
-    # This is inventory that exists in the system but has no purchase documentation.
-    # It's a synthetic line (not a real account) that reconciles accounting to physical reality.
-    je_inventory_balance = float(balances.get("1130", Decimal(0)))
-    inventory_rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-            )
-        )
-    ).scalars().all()
-    catalog_cost_total = Decimal(0)
-    for ir in inventory_rows:
-        st = ir.state
-        if ir.consignment_flag == "in" or st.get("consignment_flag") == "in":
-            continue
-        if (st.get("inventory_type") or "stocked") != "stocked":
-            continue
-        row_status = str(st.get("status") or "").lower()
-        if row_status in ("disposed", "expired", "consumed", "archived", "deactivated"):
-            continue
-        tc = st.get("total_cost")
-        if tc is not None:
-            catalog_cost_total += Decimal(str(tc))
-    opening_inventory = float(catalog_cost_total) - je_inventory_balance
-    opening_inventory_line: dict | None = None
-    if abs(opening_inventory) >= 0.01:
-        opening_inventory_line = {
-            "code": "1130-opening",
-            "name": "Opening Balance: Inventory",
-            "account_type": "asset",
-            "amount": opening_inventory,
-            "synthetic": True,
-            "tooltip": "Inventory in the catalog without purchase documentation. Does not affect your ledger.",
-            "href": "/inventory",
-        }
-        asset_lines.append(opening_inventory_line)
-        total_assets += opening_inventory
 
     # Retained earnings = net income (all revenue - COGS - expenses) accumulated to date.
     # This equals Assets - Liabilities - explicit Equity by the accounting equation.

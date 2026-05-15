@@ -665,27 +665,34 @@ def _balance_sheet_view(data: dict, currency: str | None = None, as_of: str = ""
         rows = []
         for l in lines:
             code = l.get("code", "")
-            label = f"{code} {l.get('name', '')}".strip() if not l.get("synthetic") else l.get("name", "")
             synthetic = l.get("synthetic", False)
+            is_parent = l.get("is_parent", False)
+            is_child = l.get("is_child", False)
 
             if synthetic and l.get("href_pnl"):
-                # Retained Earnings: link to P&L page
+                label = l.get("name", "")
                 name_cell = Td(
                     A(label, href=_pnl_href(), cls="drilldown-link"),
                     title="Net income accumulated from P&L. Click to see the calculation.",
                 )
-            elif synthetic and l.get("href"):
-                # Opening Balance: Inventory - link to inventory page with tooltip
-                name_cell = Td(
-                    A(label, href=l["href"], cls="drilldown-link"),
-                    title=l.get("tooltip", ""),
-                )
+            elif is_parent:
+                label = f"{code} {l.get('name', '')}".strip()
+                name_cell = Td(Strong(label))
+            elif is_child:
+                label = f"{code} {l.get('name', '')}".strip()
+                name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"), style="padding-left:2rem")
             elif code and not synthetic:
+                label = f"{code} {l.get('name', '')}".strip()
                 name_cell = Td(A(label, href=_ledger_href(code), cls="drilldown-link"))
             else:
-                name_cell = Td(label)
+                name_cell = Td(l.get("name", ""))
 
+            amount_style = "padding-left:2rem" if is_child else ""
             rows.append(Tr(
+                name_cell,
+                Td(fmt_money(l.get('amount', 0), currency) if not is_parent else "", cls="cell--number", style=amount_style),
+                Td(fmt_money(l.get('amount', 0), currency) if is_parent else "", cls="cell--number"),
+            ) if is_parent else Tr(
                 name_cell,
                 Td(fmt_money(l.get('amount', 0), currency), cls="cell--number"),
             ))

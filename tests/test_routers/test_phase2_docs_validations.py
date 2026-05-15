@@ -173,4 +173,4 @@ async def test_po_receive_creates_inventory_or_adjusts_and_je(client):
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     po_je = next(e for e in ledger if po_id in (e["data"].get("memo") or ""))
     codes = {x["account"] for x in po_je["data"]["entries"]}
-    assert codes == {"1130", "2110"}
+    assert codes == {"1130-P", "2110"}

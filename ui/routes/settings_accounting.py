@@ -30,7 +30,7 @@ _BANK_TYPES = [
 
 
 def _accounting_settings_tabs(active: str) -> FT:
-    tabs = [("bank-accounts", "Bank Accounts"), ("chart", "Chart of Accounts"), ("rules", "Reconciliation Rules"), ("period-lock", "Period Lock")]
+    tabs = [("bank-accounts", "Bank Accounts"), ("chart", "Chart of Accounts"), ("rules", "Reconciliation Rules"), ("period-lock", "Period Lock"), ("opening-balance", "Opening Balance")]
     return Div(
         *[
             A(label, href=f"/settings/accounting?tab={key}",
@@ -162,7 +162,73 @@ def _period_lock_tab(lock_data: dict) -> FT:
     )
 
 
-def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
+def _opening_balance_tab(ob_data: dict) -> FT:
+    """Settings tab for recording/editing the opening inventory balance JE."""
+    recorded = ob_data.get("recorded", False)
+    amount = ob_data.get("amount", "")
+    date_val = ob_data.get("date", "")
+    entity_id = ob_data.get("entity_id", "")
+
+    if recorded:
+        status_block = Div(
+            P(
+                "Opening inventory balance recorded: ",
+                Strong(f"฿{amount:,.2f}" if isinstance(amount, (int, float)) else str(amount)),
+                f" on {date_val}.",
+                cls="success-banner",
+            ),
+            P(
+                A("View journal entry", href=f"/accounting/journal-entries/{entity_id}", cls="link") if entity_id else "",
+            ),
+        )
+        delete_btn = Form(
+            Button("Remove & Re-record", type="submit", cls="btn btn--danger btn--sm",
+                   onclick="return confirm('Remove the opening inventory JE? This will affect your balance sheet.')"),
+            hx_delete="/settings/accounting/opening-balance",
+            hx_target="#opening-balance-content",
+            hx_swap="outerHTML",
+        )
+        return Div(
+            H3("Opening Inventory Balance", cls="section-title"),
+            P("Record the cost basis of inventory that existed before you started using Celerp. "
+              "This creates a journal entry: Debit 1130-OB (Inventory - Opening Balance), Credit 3200 (Retained Earnings).",
+              cls="help-text"),
+            status_block,
+            delete_btn,
+            id="opening-balance-content",
+            cls="settings-card",
+        )
+
+    form = Form(
+        Div(
+            Label("Total inventory cost basis (฿)", For="ob_amount"),
+            Input(type="number", name="amount", id="ob_amount", placeholder="8500.00", step="0.01", min="0.01", required=True,
+                  value=str(amount) if amount else ""),
+            cls="form-group",
+        ),
+        Div(
+            Label("Date (as of when this inventory existed)", For="ob_date"),
+            Input(type="date", name="date", id="ob_date", required=True, value=date_val),
+            cls="form-group",
+        ),
+        Button("Record Opening Balance", type="submit", cls="btn btn--primary"),
+        hx_post="/settings/accounting/opening-balance",
+        hx_target="#opening-balance-content",
+        hx_swap="outerHTML",
+    )
+    return Div(
+        H3("Opening Inventory Balance", cls="section-title"),
+        P("Record the cost basis of inventory that existed before you started using Celerp. "
+          "This creates a journal entry: Debit 1130-OB (Inventory - Opening Balance), Credit 3200 (Retained Earnings).",
+          cls="help-text"),
+        P("No opening balance recorded yet.", cls="empty-state"),
+        form,
+        id="opening-balance-content",
+        cls="settings-card",
+    )
+
+
+
     bank_options = [Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"]) for b in banks]
     _bank_opt, _bank_js = add_new_option("+ Add new bank account", "/settings/accounting?tab=bank-accounts")
     _MATCH_TYPES = [("contains", "Contains"), ("exact", "Exact"), ("starts_with", "Starts with")]
@@ -338,6 +404,12 @@ def setup_routes(app):
             except Exception:
                 lock_data = {}
             content = _period_lock_tab(lock_data)
+        elif tab == "opening-balance":
+            try:
+                ob_data = await api.get_opening_inventory(token)
+            except Exception:
+                ob_data = {}
+            content = _opening_balance_tab(ob_data)
         else:
             content = _bank_accounts_tab(banks)
             tab = "bank-accounts"
@@ -649,3 +721,37 @@ def setup_routes(app):
         except APIError as e:
             return Div(P(str(e.detail), cls="error-banner"), id="chart-content")
         return Div(_chart_table(chart), id="chart-content")
+
+    @app.post("/settings/accounting/opening-balance")
+    async def post_opening_balance(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        try:
+            amount = float((form.get("amount") or "0").strip())
+            date_val = (form.get("date") or "").strip()
+            if not date_val:
+                raise ValueError("Date is required")
+            await api.record_opening_inventory(token, amount, date_val)
+            ob_data = await api.get_opening_inventory(token)
+        except APIError as e:
+            return Div(
+                P(str(e.detail), cls="error-banner"),
+                _opening_balance_tab({}),
+                id="opening-balance-content",
+            )
+        except ValueError as e:
+            return Div(P(str(e), cls="error-banner"), _opening_balance_tab({}), id="opening-balance-content")
+        return _opening_balance_tab(ob_data)
+
+    @app.delete("/settings/accounting/opening-balance")
+    async def delete_opening_balance(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await api.delete_opening_inventory(token)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="error-banner"), _opening_balance_tab({}), id="opening-balance-content")
+        return _opening_balance_tab({"recorded": False})

@@ -1044,7 +1044,7 @@ async def test_acct_po_receive_creates_inventory_debit(client):
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if po_id in (e["data"].get("memo") or "") and "received" in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
-    inv_debit = next((x for x in entries if x["account"] == "1130" and float(x.get("debit", 0) or 0) > 0), None)
+    inv_debit = next((x for x in entries if x["account"] == "1130-P" and float(x.get("debit", 0) or 0) > 0), None)
     assert inv_debit is not None
 
 
