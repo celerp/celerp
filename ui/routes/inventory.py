@@ -849,6 +849,42 @@ def setup_routes(app):
             request=request,
         )
 
+    @app.get("/api/inventory/{entity_id}/split-modal")
+    async def inventory_split_modal(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            item, units = await asyncio.gather(
+                api.get_item(token, entity_id),
+                api.get_units(token),
+            )
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--error"))
+        return _split_modal(entity_id, item, units)
+
+    @app.get("/api/inventory/{entity_id}/split-preview-fragment")
+    async def inventory_split_preview_fragment(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        qty_raw = request.query_params.get("qty", "").strip()
+        child_sku = request.query_params.get("child_sku", "").strip() or None
+        if not qty_raw:
+            return Div()
+        try:
+            qty = float(qty_raw)
+        except ValueError:
+            return Div(P("Invalid quantity", cls="flash flash--error"))
+        params: dict = {"qty": qty}
+        if child_sku:
+            params["child_sku"] = child_sku
+        try:
+            preview = await api.get_split_preview(token, entity_id, qty, child_sku)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"))
+        return _split_preview_fragment(entity_id, preview)
+
     @app.get("/api/items/{entity_id}/label-templates")
     async def item_label_templates(request: Request, entity_id: str):
         """Return label template dropdown options for the print button."""
@@ -1727,12 +1763,27 @@ function celerpPrintLabel(entityId, templateId) {
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         new_sku = str(form.get("new_sku", "")).strip()
-        if not new_sku:
-            return Div(Span(t("error.new_sku_required"), cls="flash flash--error"), id="item-action-error")
         try:
             source = await api.get_item(token, entity_id)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        if not new_sku:
+            source_sku = str(source.get("sku", "") or "")
+            # Auto-generate: try {source_sku}-copy, then -copy2, -copy3 ...
+            candidate = f"{source_sku}-copy"
+            for attempt in range(1, 11):
+                try:
+                    resp = await api.list_items(token, {"q": candidate, "status": "all", "limit": 10})
+                    items = resp.get("items", []) if isinstance(resp, dict) else resp
+                    if not any(str(i.get("sku", "")) == candidate for i in items):
+                        new_sku = candidate
+                        break
+                except Exception:
+                    new_sku = candidate
+                    break
+                candidate = f"{source_sku}-copy{attempt + 1}"
+            else:
+                new_sku = f"{source_sku}-copy"
 
         # Build create payload from source — carry all fields except id, status, location_name
         _SKIP = {"id", "status", "location_name", "created_at", "updated_at"}
@@ -1872,6 +1923,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
         # Context area - swapped by JS based on action selection
         Div(id="bulk-context", cls="bulk-context"),
         Div(id="bulk-action-result"),
+        Div(id="split-modal-container"),
         # Hidden templates for context area content
         _bulk_context_templates(loc_opts, _loc_opt, _loc_js, send_to_opts, get_slot("bulk_action"), p or {}, total_items),
         id="bulk-toolbar",
@@ -1912,18 +1964,10 @@ def _bulk_context_templates(
         id="tpl-transfer",
     )
 
-    # Split: qty input + split button
+    # Split: modal trigger button
     split_tpl = Template(
-        Form(
-            Input(type="number", name="split_qty", placeholder="Quantity to split off",
-                  step="any", min="0.001", cls="form-input form-input--sm", required=True),
-            Button(t("inv.split"), type="submit", cls="btn btn--primary btn--sm"),
-            hx_post="/api/items/bulk/split",
-            hx_target="#bulk-action-result",
-            hx_swap="outerHTML",
-            onsubmit="submitBulkAction(this)",
-            cls="display-contents",
-        ),
+        Button("✂ " + t("inv.split"), cls="btn btn--primary btn--sm",
+               onclick="loadSplitModal(this)"),
         id="tpl-split",
     )
 
@@ -3221,18 +3265,12 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
     allow_splitting = item.get("allow_splitting", True)
     if allow_splitting:
         split_card = Div(
-            Form(
-                Strong(t("inv.u2702_split"), cls="action-card-title"),
-                Div(
-                    Input(type="text", name="parts", placeholder="e.g. 3,2,1", cls="form-input form-input--sm",
-                          title=f"Comma-separated quantities (current: {current_qty})"),
-                    Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
-                    cls="action-card-row",
-                ),
-                hx_post=f"/api/items/{entity_id}/split",
-                hx_target="#item-action-error",
-                hx_swap="outerHTML",
-            ),
+            Strong(t("inv.u2702_split"), cls="action-card-title"),
+            Button(t("inv.split"), cls="btn btn--primary btn--xs",
+                   hx_get=f"/api/inventory/{entity_id}/split-modal",
+                   hx_target="#split-modal-container",
+                   hx_swap="innerHTML",
+                   hx_on__after_request="openSplitModal()"),
             cls="action-card",
         )
     else:
@@ -3246,7 +3284,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         Form(
             Strong(t("inv.u0001f4cb_duplicate"), cls="action-card-title"),
             Div(
-                Input(type="text", name="new_sku", placeholder="New SKU", cls="form-input form-input--sm", required=True),
+                Input(type="text", name="new_sku", placeholder="New SKU (optional)", cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
                 cls="action-card-row",
             ),
@@ -3339,6 +3377,276 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         ),
         P(t("inv.to_merge_items_select_multiple_from_the_inventory"), cls="form-hint"),
         *([Div(*module_item_actions, cls="actions-group", style="margin-top:0.5rem")] if module_item_actions else []),
+        Div(id="split-modal-container"),
         cls="detail-card",
     )
 
+
+
+# ---------------------------------------------------------------------------
+# Split Modal helpers
+# ---------------------------------------------------------------------------
+
+def _split_child_row(idx: int, entity_id: str, unit_label: str, decimals: int) -> FT:
+    step = "0.01" if decimals > 0 else "1"
+    htmx_attrs: dict = {}
+    if idx == 0:
+        htmx_attrs = {
+            "hx_get": f"/api/inventory/{entity_id}/split-preview-fragment",
+            "hx_target": "#split-preview-area",
+            "hx_swap": "innerHTML",
+            "hx_trigger": "input changed delay:400ms",
+            "hx_include": "[name='child_sku_0'],[name='qty_0']",
+        }
+    return Div(
+        Input(type="number", name=f"qty_{idx}", placeholder=f"{unit_label} to split off",
+              step=step, min="0", cls="form-input form-input--sm split-qty-input",
+              data_idx=str(idx), oninput="validateSplitForm()",
+              **htmx_attrs),
+        Input(type="text", name=f"child_sku_{idx}", placeholder="Child SKU (auto)",
+              cls="form-input form-input--sm split-sku-input"),
+        *([] if idx == 0 else [
+            Button("×", type="button", cls="btn btn--ghost btn--xs",
+                   onclick=f"removeSplitRow({idx})")
+        ]),
+        cls="split-row", id=f"split-row-{idx}",
+    )
+
+
+_SPLIT_MODAL_JS = """
+function openSplitModal() {
+  document.getElementById('split-modal').style.display = 'flex';
+}
+function closeSplitModal() {
+  document.getElementById('split-modal').style.display = 'none';
+  document.getElementById('split-preview-area').innerHTML = '';
+  document.getElementById('split-submit-btn').disabled = true;
+}
+var splitRowCount = 1;
+function addSplitRow() {
+  var idx = splitRowCount++;
+  var container = document.getElementById('split-child-rows');
+  var row = document.createElement('div');
+  row.className = 'split-row';
+  row.id = 'split-row-' + idx;
+  var unitLabel = container.dataset.unitLabel || 'units';
+  var step = (parseInt(container.dataset.decimals) > 0) ? '0.01' : '1';
+  row.innerHTML =
+    '<input type="number" name="qty_' + idx + '" placeholder="' + unitLabel + ' to split off"' +
+    ' step="' + step + '" min="0" class="form-input form-input--sm split-qty-input"' +
+    ' oninput="validateSplitForm()">' +
+    '<input type="text" name="child_sku_' + idx + '" placeholder="Child SKU (auto)"' +
+    ' class="form-input form-input--sm split-sku-input">' +
+    '<button type="button" class="btn btn--ghost btn--xs" onclick="removeSplitRow(' + idx + ')">×</button>';
+  container.appendChild(row);
+  validateSplitForm();
+}
+function removeSplitRow(idx) {
+  var el = document.getElementById('split-row-' + idx);
+  if (el) el.remove();
+  validateSplitForm();
+}
+function validateSplitForm() {
+  var qtys = document.querySelectorAll('.split-qty-input');
+  var allFilled = Array.from(qtys).every(function(i){ return parseFloat(i.value) > 0; });
+  document.getElementById('split-submit-btn').disabled = !allFilled;
+  if (qtys.length > 1) {
+    document.getElementById('split-preview-area').innerHTML =
+      '<p class="text-muted" style="margin-top:8px">Multiple parcels - review quantities above before splitting.</p>';
+  }
+}
+async function submitSplit() {
+  var entityId = document.getElementById('split-modal').dataset.entityId;
+  var rows = document.querySelectorAll('.split-row');
+  var children = [];
+  for (var i = 0; i < rows.length; i++) {
+    var row = rows[i];
+    var idx = row.id.replace('split-row-', '');
+    var qtyEl = row.querySelector('[name="qty_' + idx + '"]');
+    var skuEl = row.querySelector('[name="child_sku_' + idx + '"]');
+    var qty = qtyEl ? parseFloat(qtyEl.value) : 0;
+    var sku = skuEl ? skuEl.value.trim() : '';
+    if (!qty || qty <= 0) continue;
+    var child = {quantity: qty};
+    if (sku) child.sku = sku;
+    if (rows.length === 1) {
+      var weightEl = document.querySelector('[name="child_weight_hidden"]');
+      var piecesEl = document.querySelector('[name="child_pieces_hidden"]');
+      var hiddenSkuEl = document.querySelector('[name="child_sku_hidden"]');
+      if (weightEl && weightEl.value) child.weight = parseFloat(weightEl.value);
+      if (piecesEl && piecesEl.value) child.pieces = parseFloat(piecesEl.value);
+      if (!child.sku && hiddenSkuEl && hiddenSkuEl.value) child.sku = hiddenSkuEl.value;
+    }
+    if (!child.sku) child.sku = '__auto__';
+    children.push(child);
+  }
+  if (!children.length) return;
+  var resp = await fetch('/api/items/' + entityId + '/split', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({children: children})
+  });
+  if (resp.ok) {
+    closeSplitModal();
+    window.location.reload();
+  } else {
+    var data = await resp.json().catch(function(){ return {}; });
+    document.getElementById('split-preview-area').innerHTML =
+      '<p class="flash flash--error">' + (data.detail || 'Split failed') + '</p>';
+  }
+}
+function loadSplitModal(btn) {
+  var checked = document.querySelector('.row-checkbox:checked');
+  if (!checked) return;
+  var entityId = checked.dataset.entityId || (checked.closest('tr') && checked.closest('tr').dataset.entityId);
+  if (!entityId) return;
+  htmx.ajax('GET', '/api/inventory/' + entityId + '/split-modal', {
+    target: '#split-modal-container',
+    swap: 'innerHTML'
+  }).then(function(){ openSplitModal(); });
+}
+"""
+
+
+def _split_modal(entity_id: str, item: dict, units: list[dict]) -> FT:
+    unit_map = {u["name"]: u for u in units}
+    sell_by = item.get("sell_by") or "piece"
+    unit_cfg = unit_map.get(sell_by) or {}
+    decimals = unit_cfg.get("decimals", 0)
+    unit_label = unit_cfg.get("label", sell_by)
+    qty = item.get("quantity", 0)
+    item_name = item.get("name", item.get("sku", "Item"))
+
+    return Div(
+        Div(
+            # Header
+            Div(
+                Div(
+                    H3(f"✂ Split {item_name}", style="margin:0 0 4px"),
+                    P(f"Current: {qty} {unit_label}", style="margin:0;color:#64748b;font-size:0.875rem"),
+                    cls="modal-header-info",
+                ),
+                Button("×", type="button", cls="btn btn--ghost modal-close-btn",
+                       onclick="closeSplitModal()"),
+                cls="modal-header",
+            ),
+            # Body
+            Div(
+                Div(
+                    _split_child_row(0, entity_id, unit_label, decimals),
+                    id="split-child-rows",
+                    data_unit_label=unit_label,
+                    data_decimals=str(decimals),
+                ),
+                Button("+ Add another parcel", type="button",
+                       cls="btn btn--secondary btn--sm",
+                       style="margin-top:8px",
+                       onclick="addSplitRow()"),
+                Div(id="split-preview-area", style="margin-top:16px"),
+                cls="modal-body",
+            ),
+            # Footer
+            Div(
+                Button("Split", id="split-submit-btn", type="button",
+                       cls="btn btn--primary", disabled=True,
+                       onclick="submitSplit()"),
+                Button("Cancel", type="button", cls="btn btn--secondary",
+                       onclick="closeSplitModal()"),
+                cls="modal-footer",
+            ),
+            cls="modal-box",
+        ),
+        Script(_SPLIT_MODAL_JS),
+        id="split-modal",
+        cls="modal-overlay",
+        style="display:none",
+        data_entity_id=entity_id,
+    )
+
+
+def _split_preview_fragment(entity_id: str, preview: dict) -> FT:
+    decimals = preview.get("unit_decimals", 0)
+    sell_by_label = preview.get("sell_by_label", "")
+    is_weight = preview.get("is_weight_unit", False)
+
+    def _fmt(v) -> str:
+        if v is None:
+            return "-"
+        try:
+            return f"{float(v):.{decimals}f}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    # Mother parcel rows
+    mother_rows = [
+        ("SKU", preview.get("parent_sku", "-")),
+        ("Qty", f"{_fmt(preview.get('parent_qty_remaining'))} {sell_by_label}"),
+    ]
+    if preview.get("parent_weight") is not None:
+        mother_rows.append(("Weight", f"{_fmt(preview.get('parent_weight_remaining'))} {sell_by_label if is_weight else 'g'}"))
+    if preview.get("parent_pieces") is not None:
+        mother_rows.append(("Pieces", str(int(preview.get("parent_pieces_remaining", 0)))))
+
+    child_sku_val = preview.get("child_sku", "")
+    child_qty = preview.get("child_qty", 0)
+    child_weight_default = preview.get("child_weight_default")
+    child_pieces_default = preview.get("child_pieces_default")
+
+    # Child parcel rows
+    child_rows_els = [
+        Tr(Td("SKU"), Td(
+            Input(type="text", name="child_sku_0", value=child_sku_val,
+                  cls="form-input split-sku-input",
+                  hx_get=f"/api/inventory/{entity_id}/split-preview-fragment",
+                  hx_target="#split-preview-area",
+                  hx_swap="innerHTML",
+                  hx_trigger="input changed delay:400ms",
+                  hx_include="[name='qty_0'],[name='child_sku_0']"),
+            Input(type="hidden", name="child_sku_hidden", value=child_sku_val),
+        )),
+        Tr(Td("Qty"), Td(f"{_fmt(child_qty)} {sell_by_label}")),
+    ]
+
+    if child_weight_default is not None:
+        if is_weight:
+            child_rows_els.append(Tr(Td("Weight"), Td(f"{_fmt(child_weight_default)} {sell_by_label}",
+                                                       Input(type="hidden", name="child_weight_hidden",
+                                                             value=str(child_weight_default)))))
+        else:
+            child_rows_els.append(Tr(Td("Weight"), Td(
+                Input(type="number", name="child_weight_edit", value=str(child_weight_default),
+                      step="0.01", cls="form-input",
+                      oninput="document.querySelector('[name=child_weight_hidden]').value=this.value"),
+                Input(type="hidden", name="child_weight_hidden", value=str(child_weight_default)),
+            )))
+
+    if child_pieces_default is not None:
+        if not is_weight:
+            child_rows_els.append(Tr(Td("Pieces"), Td(str(int(child_pieces_default)),
+                                                        Input(type="hidden", name="child_pieces_hidden",
+                                                              value=str(child_pieces_default)))))
+        else:
+            child_rows_els.append(Tr(Td("Pieces"), Td(
+                Input(type="number", name="child_pieces_edit", value=str(int(child_pieces_default)),
+                      step="1", cls="form-input",
+                      oninput="document.querySelector('[name=child_pieces_hidden]').value=this.value"),
+                Input(type="hidden", name="child_pieces_hidden", value=str(child_pieces_default)),
+            )))
+
+    return Div(
+        H4("Preview", style="font-size:0.875rem;font-weight:600;color:#475569;margin:0 0 12px;text-transform:uppercase;letter-spacing:0.05em"),
+        Div(
+            Div(
+                Span("Mother (remaining)", cls="parcel-label"),
+                Table(Tbody(*[Tr(Td(r[0]), Td(r[1])) for r in mother_rows]), cls="preview-table"),
+                cls="preview-parcel preview-parcel--mother",
+            ),
+            Div(
+                Span("Child (new)", cls="parcel-label"),
+                Table(Tbody(*child_rows_els), cls="preview-table"),
+                cls="preview-parcel preview-parcel--child",
+            ),
+            cls="preview-parcels",
+        ),
+        cls="split-preview",
+    )

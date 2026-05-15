@@ -396,6 +396,15 @@ async def get_item(token: str, entity_id: str) -> dict:
         return _raise(await c.get(f"/items/{entity_id}")).json()
 
 
+async def get_split_preview(token: str, entity_id: str, qty: float, child_sku: str | None = None) -> dict:
+    """GET /items/{entity_id}/split-preview → preview dict."""
+    params: dict = {"qty": qty}
+    if child_sku:
+        params["child_sku"] = child_sku
+    async with _client(token) as c:
+        return _raise(await c.get(f"/items/{entity_id}/split-preview", params=params)).json()
+
+
 async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
     """Patch item fields. Pass a flat {field: value} dict; wraps into {field: {old, new}} format.
 
