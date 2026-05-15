@@ -2175,270 +2175,13 @@ def _inventory_type_tabs(p: dict) -> FT:
         for it, label in _TABS
     ]
     return Div(*tabs, cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
-    """Column manager dropdown with immediate JS toggle + localStorage + drag-and-drop reorder.
 
-    Server-side pref save is preserved for cross-device sync (background fetch).
-    Client-side: checkboxes immediately show/hide columns and persist to localStorage.
-    """
-    import json as _json
-    selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
-    cat_pref = active_cat or "__all__"
-    # JS data for all columns (key, label, visible)
-    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema]
-    col_data_js = _json.dumps(col_data)
-    selected_js = _json.dumps(sorted(selected))
-    # Hidden inputs for fallback server save (category, status, sort etc.)
-    hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
-    hidden_state["_cat_pref"] = cat_pref
-
-    # Build checkbox list for initial render
-    checkboxes = [
-        Label(
-            Input(
-                type="checkbox",
-                name="cols",
-                value=f.get("key"),
-                checked=f.get("key") in selected,
-                id=f"col-chk-{f.get('key', '')}",
-            ),
-            Span(f.get("label", f.get("key"))),
-            cls="column-option",
-            draggable="true",
-            data_col=f.get("key", ""),
-        )
-        for f in schema
-    ]
-
-    hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
-
-    # JS: localStorage key matches data_table's PAGE_KEY for inventory
-    col_mgr_js = f"""
-(function() {{
-  var LS_VIS_KEY = 'celerp_cols_inventory';
-  var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = '{cat_pref}';
-  var ALL_COLS = {col_data_js};
-  var btn = document.getElementById('col-mgr-btn');
-  var menu = document.getElementById('col-mgr-menu');
-  if (!btn || !menu) return;
-
-  // Load visibility from localStorage
-  function loadVis() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveVis(prefs) {{
-    localStorage.setItem(LS_VIS_KEY, JSON.stringify(prefs));
-  }}
-
-  // Load order from localStorage
-  function loadOrder() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveOrder(order) {{
-    localStorage.setItem(LS_ORDER_KEY, JSON.stringify(order));
-  }}
-
-  // Apply column visibility to the data table
-  function applyVisToTable(prefs) {{
-    var table = document.getElementById('data-table');
-    if (!table) return;
-    var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
-    var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th) {{
-      var key = th.dataset.key;
-      var colIdx = Array.from(th.parentNode.children).indexOf(th);
-      var show = prefs[key] !== false;
-      th.style.display = show ? '' : 'none';
-      rows.forEach(function(tr) {{
-        var td = tr.querySelector('[data-col="' + key + '"]');
-        if (td) td.style.display = show ? '' : 'none';
-      }});
-    }});
-  }}
-
-  // Sync checkboxes in menu to match localStorage
-  function syncCheckboxes() {{
-    var prefs = loadVis() || {{}};
-    menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {{
-      cb.checked = prefs[cb.value] !== false;
-    }});
-  }}
-
-  // Apply column order to table (move TH and TD columns)
-  function applyOrderToTable(order) {{
-    if (!order || !order.length) return;
-    var table = document.getElementById('data-table');
-    if (!table) return;
-    var thead_tr = table.querySelector('thead tr');
-    if (!thead_tr) return;
-    var actionsTh = thead_tr.querySelector('.col-actions');
-    // Move TH elements into order (before actions column)
-    order.forEach(function(key) {{
-      var th = thead_tr.querySelector('th[data-key="' + key + '"]');
-      if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
-    }});
-    // Re-order tbody cells to match header using data-col attribute
-    var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
-    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
-      var cells = Array.from(tr.children);
-      var checkboxTd = cells[0];
-      var actionsTd = cells[cells.length - 1];
-      var dataCells = allThs.map(function(th) {{
-        return cells.find(function(td) {{ return td.dataset.col === th.dataset.key; }});
-      }}).filter(Boolean);
-      [checkboxTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
-        if (td) tr.appendChild(td);
-      }});
-    }});
-  }}
-
-  // Mirror the picker label order to match a given key array (picker is source of truth)
-  function applyOrderToPicker(order) {{
-    if (!order || !order.length) return;
-    var labels = menu.querySelectorAll('label[data-col]');
-    if (!labels.length) return;
-    var parent = labels[0].parentNode;
-    // Move labels into the declared order; unmentioned keys stay at end
-    order.forEach(function(key) {{
-      var lbl = menu.querySelector('label[data-col="' + key + '"]');
-      if (lbl) parent.appendChild(lbl);
-    }});
-  }}
-
-  // Get current picker order (label DOM order = source of truth)
-  function pickerOrder() {{
-    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
-  }}
-
-  // Save cols to server (background, no page reload)
-  function saveToServer(visibleKeys) {{
-    var form = new FormData();
-    visibleKeys.forEach(function(k) {{ form.append('cols', k); }});
-    Object.entries({_json.dumps(hidden_state)}).forEach(function(kv) {{
-      form.append(kv[0], kv[1]);
-    }});
-    fetch('/inventory/columns', {{method:'POST', body:form}}).catch(function(){{}});
-  }}
-
-  // Toggle open/close
-  btn.addEventListener('click', function(e) {{
-    e.stopPropagation();
-    var isOpen = menu.style.display !== 'none';
-    menu.style.display = isOpen ? 'none' : '';
-    if (!isOpen) syncCheckboxes();
-  }});
-
-  // Close on outside click
-  document.addEventListener('click', function(e) {{
-    if (!btn.contains(e.target) && !menu.contains(e.target)) {{
-      menu.style.display = 'none';
-    }}
-  }});
-
-  // Checkbox change: immediate column toggle + re-apply order so new column
-  // appears at its picker position rather than at the DOM end of the table.
-  menu.addEventListener('change', function(e) {{
-    if (e.target.type !== 'checkbox') return;
-    var key = e.target.value;
-    var prefs = loadVis() || {{}};
-    // Init prefs from current state if empty
-    if (!Object.keys(prefs).length) {{
-      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {_json.dumps(sorted(selected))} .indexOf(c.key) !== -1; }});
-    }}
-    prefs[key] = e.target.checked;
-    saveVis(prefs);
-    applyVisToTable(prefs);
-    // Re-apply picker order so the newly-visible column lands in the right slot
-    applyOrderToTable(pickerOrder());
-    // Save visible keys to server
-    var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
-    saveToServer(visibleKeys);
-  }});
-
-  // Drag-and-drop reordering within column manager menu
-  var dragSrc = null;
-  menu.querySelectorAll('label[draggable]').forEach(function(lbl) {{
-    lbl.addEventListener('dragstart', function(e) {{
-      dragSrc = lbl;
-      e.dataTransfer.effectAllowed = 'move';
-      lbl.style.opacity = '0.5';
-    }});
-    lbl.addEventListener('dragend', function() {{
-      lbl.style.opacity = '';
-      dragSrc = null;
-    }});
-    lbl.addEventListener('dragover', function(e) {{
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-    }});
-    lbl.addEventListener('drop', function(e) {{
-      e.preventDefault();
-      if (!dragSrc || dragSrc === lbl) return;
-      // Swap in picker DOM
-      var parent = lbl.parentNode;
-      var srcNext = dragSrc.nextSibling;
-      parent.insertBefore(dragSrc, lbl);
-      if (srcNext) parent.insertBefore(lbl, srcNext); else parent.appendChild(lbl);
-      dragSrc.style.opacity = '';
-      // Persist new order and apply to table
-      var newOrder = pickerOrder();
-      saveOrder(newOrder);
-      applyOrderToTable(newOrder);
-    }});
-  }});
-
-  // Listen for table-header drag reorder (fired by data_table.py drag handler)
-  document.addEventListener('celerp:col-reorder', function(e) {{
-    if (!e.detail || !e.detail.order) return;
-    applyOrderToPicker(e.detail.order);
-  }});
-
-  // Init: apply localStorage state on page load
-  var storedVis = loadVis();
-  if (storedVis) applyVisToTable(storedVis);
-  var storedOrder = loadOrder();
-  if (storedOrder) {{
-    applyOrderToPicker(storedOrder);
-    applyOrderToTable(storedOrder);
-  }}
-
-  // Keep menu closed unless keep_open is set
-  {'menu.style.display = "";' if keep_open else 'menu.style.display = "none";'}
-}})();
-"""
-
-    return Div(
-        Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
-        Div(
-            *checkboxes,
-            Button(
-                t("btn.reset_columns"),
-                id="col-mgr-reset",
-                cls="btn btn--sm btn--ghost col-mgr-reset-btn",
-                type="button",
-                onclick=(
-                    f"localStorage.removeItem('celerp_cols_inventory');"
-                    f"localStorage.removeItem('celerp_col_order_inventory');"
-                    f"localStorage.removeItem('celerp_col_widths_inventory');"
-                    f"fetch('/inventory/columns',{{method:'POST',body:new FormData()}});"
-                    f"location.reload();"
-                ),
-                title=t("btn.reset_columns_title"),
-            ),
-            Form(
-                *hidden_inputs,
-                id="col-mgr-form",
-                style="display:none",
-            ),
-            cls="column-menu",
-            id="col-mgr-menu",
-            style="display:none" if not keep_open else "",
-        ),
-        Script(col_mgr_js),
-        cls="column-manager",
-        id="col-mgr-details",
-    )
-
+# Columns that must always appear adjacent and act as a single toggle/drag unit.
+# Key = primary (shown in picker), value = secondary (hidden from picker, follows primary).
+_PAIRED_COLS: dict[str, str] = {
+    "quantity": "sell_by",
+    "weight":   "weight_unit",
+}
 
 
 def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:
@@ -2450,15 +2193,28 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     import json as _json
     selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
     cat_pref = active_cat or "__all__"
-    # JS data for all columns (key, label, visible)
+    # Secondaries are hidden from the picker (they follow their primary silently)
+    _secondaries = set(_PAIRED_COLS.values())
+    # JS data: all columns including secondaries (needed for table show/hide/order ops)
     col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema]
     col_data_js = _json.dumps(col_data)
+    paired_cols_js = _json.dumps(_PAIRED_COLS)
     selected_js = _json.dumps(sorted(selected))
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
     hidden_state["_cat_pref"] = cat_pref
 
-    # Build checkbox list for initial render
+    def _label_for(f: dict) -> str:
+        key = f.get("key", "")
+        base = f.get("label", key)
+        sec_key = _PAIRED_COLS.get(key)
+        if sec_key:
+            sec_field = next((x for x in schema if x.get("key") == sec_key), None)
+            sec_label = sec_field.get("label", sec_key) if sec_field else sec_key
+            return f"{base} + {sec_label}"
+        return base
+
+    # Build checkbox list - secondaries omitted (they follow their primary)
     checkboxes = [
         Label(
             Input(
@@ -2468,12 +2224,13 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                 checked=f.get("key") in selected,
                 id=f"col-chk-{f.get('key', '')}",
             ),
-            Span(f.get("label", f.get("key"))),
+            Span(_label_for(f)),
             cls="column-option",
             draggable="true",
             data_col=f.get("key", ""),
         )
         for f in schema
+        if f.get("key", "") not in _secondaries
     ]
 
     hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
@@ -2485,6 +2242,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   var LS_ORDER_KEY = 'celerp_col_order_inventory';
   var CAT_PREF = '{cat_pref}';
   var ALL_COLS = {col_data_js};
+  var PAIRED_COLS = {paired_cols_js};  // primary -> secondary mapping
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
@@ -2513,8 +2271,9 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
     ths.forEach(function(th) {{
       var key = th.dataset.key;
-      var colIdx = Array.from(th.parentNode.children).indexOf(th);
-      var show = prefs[key] !== false;
+      // Secondary follows its primary's visibility
+      var primaryKey = Object.keys(PAIRED_COLS).find(function(p) {{ return PAIRED_COLS[p] === key; }});
+      var show = primaryKey ? prefs[primaryKey] !== false : prefs[key] !== false;
       th.style.display = show ? '' : 'none';
       rows.forEach(function(tr) {{
         var td = tr.querySelector('[data-col="' + key + '"]');
@@ -2531,16 +2290,28 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     }});
   }}
 
+  // Expand a key array: after each primary, insert its secondary immediately after
+  function expandWithSecondaries(order) {{
+    var result = [];
+    order.forEach(function(key) {{
+      result.push(key);
+      var sec = PAIRED_COLS[key];
+      if (sec) result.push(sec);
+    }});
+    return result;
+  }}
+
   // Apply column order to table (move TH and TD columns)
   function applyOrderToTable(order) {{
     if (!order || !order.length) return;
+    var expanded = expandWithSecondaries(order);
     var table = document.getElementById('data-table');
     if (!table) return;
     var thead_tr = table.querySelector('thead tr');
     if (!thead_tr) return;
     var actionsTh = thead_tr.querySelector('.col-actions');
     // Move TH elements into order (before actions column)
-    order.forEach(function(key) {{
+    expanded.forEach(function(key) {{
       var th = thead_tr.querySelector('th[data-key="' + key + '"]');
       if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
     }});
@@ -2560,19 +2331,21 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   }}
 
   // Mirror the picker label order to match a given key array (picker is source of truth)
+  // order may contain secondaries - skip them (picker only shows primaries)
   function applyOrderToPicker(order) {{
     if (!order || !order.length) return;
+    var secondaries = Object.values(PAIRED_COLS);
     var labels = menu.querySelectorAll('label[data-col]');
     if (!labels.length) return;
     var parent = labels[0].parentNode;
-    // Move labels into the declared order; unmentioned keys stay at end
     order.forEach(function(key) {{
+      if (secondaries.indexOf(key) !== -1) return;  // skip secondaries
       var lbl = menu.querySelector('label[data-col="' + key + '"]');
       if (lbl) parent.appendChild(lbl);
     }});
   }}
 
-  // Get current picker order (label DOM order = source of truth)
+  // Get current picker order (label DOM order = source of truth, primaries only)
   function pickerOrder() {{
     return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
   }}
@@ -2613,11 +2386,14 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
       ALL_COLS.forEach(function(c) {{ prefs[c.key] = {_json.dumps(sorted(selected))} .indexOf(c.key) !== -1; }});
     }}
     prefs[key] = e.target.checked;
+    // Secondary always mirrors its primary
+    var sec = PAIRED_COLS[key];
+    if (sec) prefs[sec] = e.target.checked;
     saveVis(prefs);
     applyVisToTable(prefs);
     // Re-apply picker order so the newly-visible column lands in the right slot
     applyOrderToTable(pickerOrder());
-    // Save visible keys to server
+    // Save visible keys to server (include secondaries so server prefs stay in sync)
     var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
     saveToServer(visibleKeys);
   }});
@@ -3217,15 +2993,31 @@ def _resolve_visible_cols(
     """Determine visible column list for the current view.
 
     Priority: URL ?cols= override > saved pref for this view > schema defaults.
+    Secondaries are always injected immediately after their primary.
     """
+    def _inject_secondaries(cols: list[str]) -> list[str]:
+        """After each primary, insert its secondary if not already present."""
+        result: list[str] = []
+        for key in cols:
+            result.append(key)
+            sec = _PAIRED_COLS.get(key)
+            if sec and sec not in result:
+                result.append(sec)
+        # Also include any secondary whose primary IS in cols (handles prefs saved before pairing)
+        for pri, sec in _PAIRED_COLS.items():
+            if pri in result and sec not in result:
+                result.insert(result.index(pri) + 1, sec)
+        return result
+
     if url_cols:
-        return url_cols
+        return _inject_secondaries(url_cols)
     pref_key = active_cat if active_cat else "__all__"
     saved = col_prefs.get(pref_key)
     if saved:
-        return saved
+        return _inject_secondaries(saved)
     # Default: fields where show_in_table is True
-    return [f["key"] for f in eff_schema if f.get("show_in_table", True)]
+    base = [f["key"] for f in eff_schema if f.get("show_in_table", True)]
+    return _inject_secondaries(base)
 
 
 # ---------------------------------------------------------------------------
