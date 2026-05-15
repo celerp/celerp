@@ -258,6 +258,9 @@ a:hover { text-decoration: underline; }
 }
 .form-input:focus { outline: none; border-color: var(--c-accent); }
 .form-card { display: flex; flex-direction: column; gap: 16px; max-width: 560px; }
+.input-with-prefix { display: flex; align-items: center; gap: 0; }
+.input-with-prefix .input-prefix { background: var(--c-bg2); border: 1px solid var(--c-border); border-right: none; border-radius: var(--radius) 0 0 var(--radius); padding: 8px 8px; font-size: 13px; color: var(--c-text2); white-space: nowrap; line-height: 1; }
+.input-with-prefix .form-input { border-radius: 0 var(--radius) var(--radius) 0; }
 
 /* ─── Flash messages ──────────────────────────────────────────────────── */
 .flash { padding: 8px 12px; border-radius: var(--radius); font-size: 12px; }

@@ -3183,23 +3183,32 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         # JS IDs scoped per price list
         unit_id = f"unit_{conventional_key}"
         total_id = f"total_{conventional_key}"
+        cur_prefix = Span(cur_sym, cls="input-prefix") if cur_sym else ""
         rows.append(Tr(
             Td(pl_name, cls="detail-label"),
             Td(
-                Input(
-                    type="number", name=conventional_key, id=unit_id,
-                    value=unit_val, step="0.01", min="0", placeholder="—",
-                    cls="form-input",
-                    oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
+                Div(
+                    cur_prefix,
+                    Input(
+                        type="number", name=conventional_key, id=unit_id,
+                        value=unit_val, step="0.01", min="0", placeholder="—",
+                        cls="form-input",
+                        oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
+                    ),
+                    cls="input-with-prefix",
                 )
             ),
             Td(
-                Input(
-                    type="number", id=total_id,
-                    value=total_val, step="0.01", min="0", placeholder="—",
-                    cls="form-input",
-                    disabled=not has_qty,
-                    oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
+                Div(
+                    cur_prefix,
+                    Input(
+                        type="number", id=total_id,
+                        value=total_val, step="0.01", min="0", placeholder="—",
+                        cls="form-input",
+                        disabled=not has_qty,
+                        oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
+                    ),
+                    cls="input-with-prefix",
                 )
             ),
         ))
