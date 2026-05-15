@@ -658,7 +658,9 @@ async def upsert_opening_inventory_je(
                 break
 
     if abs(needed - current_amount) < 0.01:
-        return  # already correct, nothing to do
+        # Amount is correct - but also void+repost if the JE is missing a ts (dateless legacy)
+        if not (ob_proj and ob_proj.state.get("status") == "posted" and not ob_proj.state.get("ts")):
+            return  # already correct and has a date, nothing to do
 
     # Void the existing OB JE if posted (amount changed or gap closed)
     if ob_proj and ob_proj.state.get("status") == "posted":
@@ -680,18 +682,20 @@ async def upsert_opening_inventory_je(
     if needed < 0.01:
         return  # gap closed, no new JE needed
 
+    from datetime import date as _date
+    today = str(_date.today())
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
         je_id=ob_je_id,
-        idem_create=f"opening-inv:{company_id}:c:{needed}",
-        idem_posted=f"opening-inv:{company_id}:p:{needed}",
+        idem_create=f"opening-inv:{company_id}:c:{needed}:{today}",
+        idem_posted=f"opening-inv:{company_id}:p:{needed}:{today}",
         memo="Opening inventory balance (pre-system stock)",
         entries=[
             {"account": "1130-OB", "debit": needed, "credit": 0.0},
             {"account": "3200",    "debit": 0.0,    "credit": needed},
         ],
         metadata_={"trigger": "opening_inventory.auto"},
-        ts=None,
+        ts=today,
     )
