@@ -27,27 +27,52 @@ _DEFAULT_PER_PAGE = 50
 
 _BULK_SPLIT_JS = """
 var _bulkSplitTimer = null;
-function bulkSplitQtyChanged(input) {
+function bulkSplitAutoLoad() {
+  var checked = document.querySelector('.row-select:checked');
+  if (!checked) return;
+  var entityId = checked.dataset.entityId || checked.value;
+  if (!entityId) return;
+  var url = '/api/items/bulk/split-preview?entity_id=' + encodeURIComponent(entityId) + '&qty=0';
+  htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
+    .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
+}
+function bulkSplitChildQtyChanged(input) {
   clearTimeout(_bulkSplitTimer);
   var qty = parseFloat(input.value);
   var preview = document.getElementById('bulk-split-preview');
   if (!preview) return;
-  if (!qty || qty <= 0) { preview.innerHTML = ''; return; }
   var checked = document.querySelector('.row-select:checked');
   var entityId = checked ? (checked.dataset.entityId || checked.value) : '';
   if (!entityId) return;
-  var childSkuForm = document.getElementById('bulk-split-preview-form');
-  var childSku = childSkuForm ? (childSkuForm.querySelector('[name="child_sku"]') || {}).value || '' : '';
+  var childSkuInput = preview.querySelector('[name="child_sku"]');
+  var childSku = childSkuInput ? childSkuInput.value || '' : '';
+  var safeQty = (qty && qty > 0) ? qty : 0;
   _bulkSplitTimer = setTimeout(function() {
     var url = '/api/items/bulk/split-preview?entity_id=' + encodeURIComponent(entityId)
-      + '&qty=' + encodeURIComponent(qty)
+      + '&qty=' + encodeURIComponent(safeQty)
       + (childSku ? '&child_sku=' + encodeURIComponent(childSku) : '');
     htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
       .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
   }, 400);
 }
+function bulkSplitSkuChanged(input) {
+  clearTimeout(_bulkSplitTimer);
+  var preview = document.getElementById('bulk-split-preview');
+  if (!preview) return;
+  var qtyInput = preview.querySelector('[name="child_qty"]');
+  var qty = qtyInput ? (parseFloat(qtyInput.value) || 0) : 0;
+  var checked = document.querySelector('.row-select:checked');
+  var entityId = checked ? (checked.dataset.entityId || checked.value) : '';
+  if (!entityId) return;
+  _bulkSplitTimer = setTimeout(function() {
+    var url = '/api/items/bulk/split-preview?entity_id=' + encodeURIComponent(entityId)
+      + '&qty=' + encodeURIComponent(qty)
+      + '&child_sku=' + encodeURIComponent(input.value || '');
+    htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
+      .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
+  }, 400);
+}
 function bulkSplitSubmit(formEl) {
-  // Inject selected entity_id if not already present from preview form hidden input
   var existing = formEl.querySelector('input[name="entity_id"]');
   if (!existing || !existing.value) {
     var checked = document.querySelector('.row-select:checked');
@@ -1300,14 +1325,14 @@ function celerpPrintLabel(entityId, templateId) {
         entity_id = request.query_params.get("entity_id", "").strip()
         qty_raw = request.query_params.get("qty", "").strip()
         child_sku_param = request.query_params.get("child_sku", "").strip() or None
-        if not entity_id or not qty_raw:
+        if not entity_id:
             return Div()
         try:
-            qty = float(qty_raw)
+            qty = float(qty_raw) if qty_raw else 0.0
         except ValueError:
-            return Div(P(t("inv.invalid_split_quantity"), cls="flash flash--warning"))
-        if qty <= 0:
-            return Div()
+            qty = 0.0
+        if qty < 0:
+            qty = 0.0
         try:
             preview = await api.split_preview(token, entity_id, qty, child_sku_param)
         except APIError as e:
@@ -1318,50 +1343,55 @@ function celerpPrintLabel(entityId, templateId) {
         fmt = f"{{:.{decimals}f}}"
         is_weight = preview.get("is_weight_unit", False)
 
-        # sell_by=weight → Pieces editable, Weight hidden (same as QTY)
-        # sell_by=pieces → Weight editable, Pieces hidden (same as QTY)
-        show_pieces = is_weight    # pieces column shown when sell_by is weight
-        show_weight = not is_weight  # weight column shown when sell_by is pieces
+        # sell_by=weight → show Pieces column; sell_by=pieces → show Weight column
+        show_pieces = is_weight
+        show_weight = not is_weight
 
-        # Build column headers
-        headers = [Th(""), Th("SKU", cls="sp-th"), Th("QTY", cls="sp-th")]
+        headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY ({sell_by_label})", cls="sp-th")]
         if show_weight:
             headers.append(Th("Weight", cls="sp-th"))
         if show_pieces:
             headers.append(Th("Pieces", cls="sp-th"))
 
-        def _qty_td(val: float) -> FT:
-            return Td(f"{fmt.format(val)} {sell_by_label}", cls="sp-td")
+        def _static_td(val: str) -> FT:
+            return Td(val, cls="sp-td")
 
-        def _editable_td(name: str, val: str) -> FT:
-            return Td(Input(type="number", name=name, value=val, step="any",
-                            cls="form-input form-input--xs sp-input"), cls="sp-td")
+        def _editable_td(name: str, val: str, extra_attrs: dict | None = None) -> FT:
+            kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
+            if extra_attrs:
+                kwargs.update(extra_attrs)
+            return Td(Input(**kwargs), cls="sp-td")
 
-        def _parcel_row(label: str, sku_cell: FT, qty_val: float, weight_val, pieces_val,
+        def _parcel_row(label: str, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
                         weight_name: str | None, pieces_name: str | None) -> FT:
-            cells = [Td(label, cls="sp-row-label"), sku_cell, _qty_td(qty_val)]
+            cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
             if show_weight:
                 w = fmt.format(weight_val) if weight_val is not None else "0"
-                cells.append(_editable_td(weight_name, w) if weight_name else Td(w, cls="sp-td"))
+                cells.append(_editable_td(weight_name, w) if weight_name else _static_td(w))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
-                cells.append(_editable_td(pieces_name, p) if pieces_name else Td(p, cls="sp-td"))
+                cells.append(_editable_td(pieces_name, p) if pieces_name else _static_td(p))
             return Tr(*cells)
 
+        mother_qty_remaining = preview.get("parent_qty_remaining", preview.get("parent_qty", 0))
         mother_row = _parcel_row(
             "Mother",
-            Td(preview["parent_sku"], cls="sp-td sp-sku"),
-            preview["parent_qty_remaining"],
+            _static_td(preview["parent_sku"]),
+            _static_td(fmt.format(mother_qty_remaining)),
             preview.get("parent_weight_remaining"),
             preview.get("parent_pieces_remaining"),
             weight_name="mother_weight" if show_weight else None,
             pieces_name="mother_pieces" if show_pieces else None,
         )
+        child_qty_val = fmt.format(preview["child_qty"]) if qty > 0 else "0"
         child_row = _parcel_row(
             "Child",
             Td(Input(type="text", name="child_sku", value=preview["child_sku"],
-                     cls="form-input sp-sku-input"), cls="sp-td"),
-            preview["child_qty"],
+                     cls="form-input sp-sku-input",
+                     oninput="bulkSplitSkuChanged(this)"), cls="sp-td"),
+            Td(Input(type="number", name="child_qty", value=child_qty_val, step="any", min="0.001",
+                     cls="form-input form-input--xs sp-input",
+                     oninput="bulkSplitChildQtyChanged(this)"), cls="sp-td"),
             preview.get("child_weight_default"),
             preview.get("child_pieces_default"),
             weight_name="child_weight" if show_weight else None,
@@ -1370,7 +1400,6 @@ function celerpPrintLabel(entityId, templateId) {
 
         return Form(
             Input(type="hidden", name="entity_id", value=entity_id),
-            Input(type="hidden", name="split_qty", value=str(qty)),
             Table(
                 Thead(Tr(*headers)),
                 Tbody(mother_row, child_row),
@@ -1399,7 +1428,7 @@ function celerpPrintLabel(entityId, templateId) {
                 return Div(P(t("inv.select_exactly_1_item_to_split"), cls="flash flash--warning"), id="bulk-action-result")
             eid = entity_ids[0]
 
-        split_qty_raw = str(form.get("split_qty", "")).strip()
+        split_qty_raw = str(form.get("child_qty", "") or form.get("split_qty", "")).strip()
         try:
             split_qty = float(split_qty_raw)
         except (ValueError, TypeError):
@@ -2113,16 +2142,9 @@ def _bulk_context_templates(
         id="tpl-transfer",
     )
 
-    # Split: qty input + live HTMX preview + split button
+    # Split: auto-loads preview on action select; child QTY editable in preview table
     split_tpl = Template(
         Div(
-            Input(
-                type="number", name="split_qty", id="bulk-split-qty",
-                placeholder="Quantity to split off",
-                step="any", min="0.001",
-                cls="form-input form-input--sm",
-                oninput="bulkSplitQtyChanged(this)",
-            ),
             Div(id="bulk-split-preview"),
             id="bulk-split-form",
         ),

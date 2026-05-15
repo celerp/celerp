@@ -919,15 +919,11 @@ function bulkActionChanged(action){
   if(action==='merge'&&n<2){alert('Select at least 2 items to merge.');return;}
   var clone=tpl.content.cloneNode(true);
   ctx.appendChild(clone);
-  // Split: update placeholder with dynamic unit label from selected row
+  // Split: auto-load preview immediately; no qty input needed
   if(action==='split'){
-    var checked=document.querySelector('.row-select:checked');
-    if(checked){
-      var sellBy=checked.dataset.sellBy||'piece';
-      var label=sellBy.charAt(0).toUpperCase()+sellBy.slice(1);
-      var qtyInput=ctx.querySelector('#bulk-split-qty');
-      if(qtyInput) qtyInput.placeholder=label+' to split off';
-    }
+    if(window.htmx) htmx.process(ctx);
+    if(typeof bulkSplitAutoLoad==='function') bulkSplitAutoLoad();
+    return;
   }
   // Merge: populate target dropdown with selected items
   if(action==='merge') _populateMergeTargets();

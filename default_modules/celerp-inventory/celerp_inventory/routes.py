@@ -753,8 +753,8 @@ async def split_preview(
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
     parent_qty = float(parent.state.get("quantity") or 0)
-    if qty <= 0 or qty >= parent_qty:
-        raise HTTPException(status_code=422, detail="qty must be > 0 and < parent quantity")
+    if qty < 0 or qty >= parent_qty:
+        raise HTTPException(status_code=422, detail="qty must be >= 0 and < parent quantity")
 
     parent_sku = parent.state.get("sku", "")
     parent_sell_by = parent.state.get("sell_by") or "piece"
@@ -964,19 +964,20 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
     # Apply mother parcel overrides (weight / pieces) if provided
     if payload.mother_weight is not None or payload.mother_pieces is not None:
-        updated_attrs = dict(parent_attrs)
-        if payload.mother_pieces is not None:
-            updated_attrs["pieces"] = payload.mother_pieces
-        patch_data: dict = {"attributes": updated_attrs}
+        fields_changed: dict[str, dict] = {}
         if payload.mother_weight is not None:
-            patch_data["weight"] = payload.mother_weight
+            fields_changed["weight"] = {"old": parent.state.get("weight"), "new": payload.mother_weight}
+        if payload.mother_pieces is not None:
+            new_attrs = dict(parent_attrs)
+            new_attrs["pieces"] = payload.mother_pieces
+            fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
         await emit_event(
             session,
             company_id=company_id,
             entity_id=entity_id,
             entity_type="item",
             event_type="item.updated",
-            data=patch_data,
+            data={"fields_changed": fields_changed},
             actor_id=user.id,
             location_id=None,
             source="api",
