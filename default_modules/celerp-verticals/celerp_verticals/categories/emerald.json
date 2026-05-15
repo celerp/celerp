@@ -25,13 +25,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "carat",
-      "label": "Carat",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "pieces",
       "label": "Pieces",
       "type": "number",
@@ -123,7 +116,7 @@
       "type": "select",
       "options": [
         "GRS",
-        "Gübelin",
+        "G\u00fcbelin",
         "SSEF",
         "GIA",
         "AGL",

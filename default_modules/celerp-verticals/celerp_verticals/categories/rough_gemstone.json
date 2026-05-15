@@ -58,22 +58,8 @@
       "visible_to_roles": []
     },
     {
-      "key": "weight_g",
-      "label": "Weight (g)",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "pieces",
       "label": "Pieces",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
-      "key": "carat",
-      "label": "Carat",
       "type": "number",
       "options": [],
       "visible_to_roles": []

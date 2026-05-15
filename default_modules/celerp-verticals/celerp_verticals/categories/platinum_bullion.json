@@ -28,20 +28,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "weight_troy_oz",
-      "label": "Weight (troy oz)",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
-      "key": "weight_g",
-      "label": "Weight (g)",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "purity",
       "label": "Purity",
       "type": "select",
@@ -88,5 +74,5 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "gram"
+  "default_sell_by": "piece"
 }

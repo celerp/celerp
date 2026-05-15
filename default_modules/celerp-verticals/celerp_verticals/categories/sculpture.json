@@ -35,15 +35,8 @@
     },
     {
       "key": "dimensions_cm",
-      "label": "Dimensions H×W×D (cm)",
+      "label": "Dimensions H\u00d7W\u00d7D (cm)",
       "type": "text",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
-      "key": "weight_kg",
-      "label": "Weight (kg)",
-      "type": "number",
       "options": [],
       "visible_to_roles": []
     },
