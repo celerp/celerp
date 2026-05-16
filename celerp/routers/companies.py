@@ -485,12 +485,12 @@ async def list_users(company_id=Depends(get_current_company_id), session: AsyncS
     from celerp.models.accounting import UserCompany
     rows = (
         await session.execute(
-            select(User, UserCompany.role).join(UserCompany, UserCompany.user_id == User.id).where(
+            select(User, UserCompany.role, UserCompany.is_active).join(UserCompany, UserCompany.user_id == User.id).where(
                 UserCompany.company_id == company_id
             )
         )
     ).all()
-    items = [{"id": str(u.id), "email": u.email, "name": u.name, "role": role, "is_active": u.is_active} for u, role in rows]
+    items = [{"id": str(u.id), "email": u.email, "name": u.name, "role": role, "is_active": uc_active} for u, role, uc_active in rows]
     return {"items": items, "total": len(items)}
 
 
@@ -584,7 +584,7 @@ async def patch_user(
                 raise HTTPException(status_code=400, detail="Cannot demote the last owner. Assign another owner first.")
         link.role = payload.role
     if payload.is_active is not None:
-        user.is_active = payload.is_active
+        link.is_active = payload.is_active
     if payload.password is not None:
         user.auth_hash = hash_password(payload.password)
     await session.commit()

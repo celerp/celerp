@@ -2534,7 +2534,10 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en",
             ) for key, label in prefs],
             cls="detail-table",
         ),
-        H3(t("page.danger_zone"), cls="settings-section-title settings-section-title--danger"),
+        *(
+            [H3(t("page.danger_zone"), cls="settings-section-title settings-section-title--danger")]
+            if is_owner else []
+        ),
         *(
             [
                 Div(

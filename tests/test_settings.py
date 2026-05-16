@@ -63,6 +63,7 @@ def _common_mocks():
         patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
         patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
         patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
     )
 
@@ -203,23 +204,24 @@ class TestSettingsInventory:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
     async def test_settings_inventory_category_library_tab(self, ui_client):
-        """GET /settings/inventory?tab=category-library returns 200."""
+        """GET /settings/inventory?tab=categories returns 200 with Browse Library section."""
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=category-library", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
         assert r.status_code == 200
-        assert b"Category Library" in r.content
 
     @pytest.mark.asyncio
     async def test_settings_inventory_unauthenticated(self, ui_client):

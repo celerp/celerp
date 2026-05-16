@@ -1068,6 +1068,9 @@ function sendToTypeChanged(docType){
       }
     }
   });
+  // Guard: register body-level htmx handlers only once per page load
+  if(!window.__celerpHtmxHandlers){
+    window.__celerpHtmxHandlers=true;
   // Sync derived cells (weight/pieces) after a quantity PATCH.
   // Use htmx:afterRequest (fires before swap) to get the requestConfig path reliably,
   // then re-query the live DOM after the swap completes via htmx:afterSettle.
@@ -1108,6 +1111,7 @@ function sendToTypeChanged(docType){
       }
     });
   });
+  } // end if(!window.__celerpHtmxHandlers)
   CelerpSelection.syncCheckboxes();
   updateBulkToolbar();
 })();

@@ -653,7 +653,10 @@ async def upsert_opening_inventory_je(
                 je_backed -= _Dec(str(entry.get("credit") or 0))
 
     gap = catalog_total - je_backed
-    needed = float(round_money(gap, "THB")) if gap >= _Dec("0.01") else 0.0
+    from celerp.models.accounting import Company as _Company
+    company_obj = await session.get(_Company, company_id)
+    base_currency = (company_obj.settings or {}).get("currency", "USD") if company_obj else "USD"
+    needed = float(round_money(gap, base_currency)) if gap >= _Dec("0.01") else 0.0
 
     # Current OB JE amount (0 if not posted)
     current_amount = 0.0

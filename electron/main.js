@@ -597,10 +597,10 @@ function setupAppMenu() {
 
   // Wire menu clicks to the same handlers as the IPC calls
   ipcMain.on("_uninstall-keep-data-menu", () => {
-    ipcMain.emit("_trigger-uninstall-keep-data");
+    _doUninstallKeepData();
   });
   ipcMain.on("_uninstall-delete-data-menu", () => {
-    ipcMain.emit("_trigger-uninstall-delete-data");
+    _doUninstallDeleteData();
   });
 }
 

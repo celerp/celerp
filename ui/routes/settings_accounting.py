@@ -162,8 +162,7 @@ def _period_lock_tab(lock_data: dict) -> FT:
     )
 
 
-
-
+def _rules_tab(rules: list[dict], banks: list[dict]) -> FT:
     bank_options = [Option(f"{b['bank_name']} {b.get('account_number', '')}", value=b["id"]) for b in banks]
     _bank_opt, _bank_js = add_new_option("+ Add new bank account", "/settings/accounting?tab=bank-accounts")
     _MATCH_TYPES = [("contains", "Contains"), ("exact", "Exact"), ("starts_with", "Starts with")]
