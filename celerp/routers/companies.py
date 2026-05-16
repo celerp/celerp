@@ -1570,10 +1570,16 @@ async def deactivate_company(
     Does not delete any data. All records (ledger, documents, users) are preserved.
     Use POST /me/reactivate to restore.
     """
+    import time as _time
+    import re as _re2
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.is_active = False
+    # Free the slug so the user can re-create a company with the same name later.
+    # Strip any previous deactivated suffix first (idempotent), then append new one.
+    base_slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)
+    company.slug = f"{base_slug}-deactivated-{int(_time.time())}"
     await session.commit()
     return {"ok": True, "company_id": str(company_id), "is_active": False}
 
@@ -1584,10 +1590,13 @@ async def reactivate_company(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Reactivate a previously deactivated company. Admin only."""
+    import re as _re2
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.is_active = True
+    # Restore slug to its original form (strip deactivated suffix).
+    company.slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)
     await session.commit()
     return {"ok": True, "company_id": str(company_id), "is_active": True}
 

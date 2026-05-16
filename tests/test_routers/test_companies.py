@@ -199,3 +199,55 @@ async def test_create_company_seeds_head_office_location(client):
     assert "Head Office" in names, f"Expected Head Office location seeded, got: {names}"
     default_locs = [loc for loc in locs if loc.get("is_default")]
     assert default_locs, "Expected a default location to exist"
+
+
+@pytest.mark.asyncio
+async def test_deactivate_frees_slug_for_recreate(client):
+    """Deactivating a company must free its slug so a new company with the same name can be created."""
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "Gems Co", "email": "owner@gemsco.com", "name": "Owner", "password": "pw"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Deactivate the company
+    r2 = await client.delete("/companies/me", headers=headers)
+    assert r2.status_code == 200, r2.text
+
+    # Create a new company with the same name - must succeed (slug freed)
+    r3 = await client.post("/companies", json={"name": "Gems Co"}, headers=headers)
+    assert r3.status_code == 200, f"Expected 200 after deactivation freed slug, got {r3.status_code}: {r3.text}"
+
+    # Verify the new company is active
+    new_token = r3.json()["access_token"]
+    r4 = await client.get("/companies/me", headers={"Authorization": f"Bearer {new_token}"})
+    assert r4.json()["name"] == "Gems Co"
+
+
+@pytest.mark.asyncio
+async def test_reactivate_restores_slug(client):
+    """Reactivating a company must strip the -deactivated-{ts} suffix from the slug."""
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "SlugTest Co", "email": "owner@slugtest.com", "name": "Owner", "password": "pw"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r2 = await client.get("/companies/me", headers=headers)
+    original_slug = r2.json()["slug"]
+
+    # Deactivate - slug gains suffix
+    await client.delete("/companies/me", headers=headers)
+
+    # Reactivate - slug should be restored
+    r3 = await client.post("/companies/me/reactivate", headers=headers)
+    assert r3.status_code == 200, r3.text
+
+    r4 = await client.get("/companies/me", headers=headers)
+    assert r4.json()["slug"] == original_slug, (
+        f"Expected slug restored to '{original_slug}', got '{r4.json()['slug']}'"
+    )
