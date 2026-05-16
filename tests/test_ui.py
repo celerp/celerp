@@ -506,6 +506,7 @@ class TestSearchPartials:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -527,6 +528,7 @@ class TestSearchPartials:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -547,6 +549,7 @@ class TestSearchPartials:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -902,6 +905,7 @@ class TestInventoryPage:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1282,6 +1286,7 @@ class TestSettingsPage:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -1299,6 +1304,7 @@ class TestSettingsPage:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=vert_cats)),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -1318,6 +1324,7 @@ class TestTableComponent:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1366,6 +1373,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1384,6 +1392,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1401,6 +1410,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1417,6 +1427,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1449,6 +1460,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1471,6 +1483,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1492,6 +1505,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1519,6 +1533,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1844,6 +1859,7 @@ class TestSettingsInlineEditValidation:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
         assert r.status_code == 200
@@ -1873,6 +1889,7 @@ class TestSettingsInlineEditValidation:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
         assert r.status_code == 200
@@ -2147,6 +2164,7 @@ class TestSettingsPolish:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -2230,6 +2248,7 @@ class TestPhase2DeepPolish:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -2436,6 +2455,7 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get("/settings/inventory", cookies=_authed())
         assert r.status_code == 200
@@ -2472,7 +2492,8 @@ class TestCollapsibleSidebar:
         with patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"category_counts": {}, "count_by_status": {"sold": 1}, "item_count": 1})), \
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
-             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
@@ -2488,7 +2509,8 @@ class TestCollapsibleSidebar:
         with patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"category_counts": {}, "count_by_status": {"archived": 1}, "item_count": 1})), \
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
-             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
@@ -3443,6 +3465,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3464,6 +3487,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3480,6 +3504,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3496,6 +3521,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3512,6 +3538,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3583,6 +3610,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3674,6 +3702,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3733,6 +3762,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -4207,6 +4237,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -4223,6 +4254,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -4239,6 +4271,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -4257,6 +4290,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -4277,6 +4311,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=consigned_item)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -4296,6 +4331,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=consigned_out)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -4644,6 +4680,7 @@ class TestInventoryBulkActions:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4663,6 +4700,7 @@ class TestInventoryBulkActions:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4864,6 +4902,7 @@ class TestBulkActionsPhase1to5:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4883,6 +4922,7 @@ class TestBulkActionsPhase1to5:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4914,6 +4954,7 @@ class TestBulkActionsPhase1to5:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -7716,6 +7757,7 @@ class TestModuleSlotInjection:
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
@@ -8104,6 +8146,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -8130,6 +8173,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -8148,6 +8192,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
         ):
             r2 = await ui_client.get("/api/items/item:abc1/field/location_name/edit", cookies=_authed())
@@ -8177,6 +8222,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -8198,6 +8244,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
             r = await ui_client.get("/api/items/item:abc1/field/location_name/edit", cookies=_authed())
@@ -8214,6 +8261,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
         ):
             r = await ui_client.get("/api/items/item:abc1/field/location_name/display", cookies=_authed())

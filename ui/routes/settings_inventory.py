@@ -390,11 +390,15 @@ def setup_routes(app):
             locations = (await api.get_locations(token)).get("items", [])
             import_batches = (await api.list_import_batches(token)).get("batches", [])
             cat_schemas = await api.get_all_category_schemas(token)
-            cat_schemas_company = await api.get_company_category_schemas(token)  # company-only, no module defaults
-            if tab == "categories" and not cat:
-                vert_categories = await api.list_verticals_categories(token)
-                vert_presets = await api.list_verticals_presets(token)
+            if tab == "categories":
+                cat_schemas_company = await api.get_company_category_schemas(token)
+                if not cat:
+                    vert_categories = await api.list_verticals_categories(token)
+                    vert_presets = await api.list_verticals_presets(token)
+                else:
+                    vert_categories, vert_presets = [], []
             else:
+                cat_schemas_company = {}
                 vert_categories, vert_presets = [], []
             units = await api.get_units(token) if tab == "units" else []
         except APIError as e:
