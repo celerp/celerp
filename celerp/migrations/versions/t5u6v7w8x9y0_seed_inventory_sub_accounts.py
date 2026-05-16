@@ -33,6 +33,17 @@ _NEW_ACCOUNTS = [
 
 def upgrade() -> None:
     conn = op.get_bind()
+    # Guard: accounts table may not exist yet on fresh installs (created by
+    # celerp-accounting module migration which runs after core migrations).
+    table_exists = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = 'accounts'"
+        )
+    ).fetchone()
+    if not table_exists:
+        return  # Nothing to backfill on fresh install
+
     # Get all company IDs that have a 1130 account but not yet the sub-accounts
     companies = conn.execute(
         sa.text(
