@@ -1010,3 +1010,70 @@ async def test_split_preview_weight_uses_weight_unit_decimals(client):
     assert abs(preview["child_weight_default"] - 0.5) < 0.01, (
         f"Expected child_weight_default≈0.5, got {preview['child_weight_default']}"
     )
+
+
+@pytest.mark.asyncio
+async def test_merge_sums_weight(client):
+    """Merged item weight must equal the sum of all source item weights."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    ra = await client.post("/items", json={
+        "sku": "WGT-MERGE-A", "name": "Stone A", "quantity": 2, "sell_by": "gram",
+        "weight": 3.0, "weight_unit": "gram",
+    }, headers=h)
+    assert ra.status_code == 200
+    id_a = ra.json()["id"]
+
+    rb = await client.post("/items", json={
+        "sku": "WGT-MERGE-B", "name": "Stone B", "quantity": 3, "sell_by": "gram",
+        "weight": 2.0, "weight_unit": "gram",
+    }, headers=h)
+    assert rb.status_code == 200
+    id_b = rb.json()["id"]
+
+    rm = await client.post("/items/merge", json={
+        "source_entity_ids": [id_a, id_b], "target_sku_from": id_a,
+    }, headers=h)
+    assert rm.status_code == 200
+    merged_id = rm.json()["id"]
+
+    rg = await client.get(f"/items/{merged_id}", headers=h)
+    assert rg.status_code == 200
+    state = rg.json()
+    assert abs(float(state.get("weight", 0)) - 5.0) < 0.01, (
+        f"Expected weight=5.0, got {state.get('weight')}"
+    )
+    assert state.get("weight_unit") == "gram"
+
+
+@pytest.mark.asyncio
+async def test_attachment_stored_under_data_dir(client):
+    """Uploaded attachment URL must point to a file under settings.data_dir, not CWD."""
+    from celerp.config import settings
+
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "ATT-DATADIR-001", "name": "Cert Item", "quantity": 1, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+
+    fake_pdf = b"%PDF-1.4 fake"
+    ru = await client.post(
+        f"/items/{item_id}/attachments?attachment_type=certificate",
+        files={"file": ("cert.pdf", fake_pdf, "application/pdf")},
+        headers=h,
+    )
+    assert ru.status_code == 200
+    att = ru.json()
+    url = att["url"]
+    assert url.startswith("/static/attachments/"), f"URL must start with /static/attachments/, got {url!r}"
+
+    # File must exist under data_dir (not CWD)
+    rel = url.lstrip("/")  # "static/attachments/<co>/<id>.pdf"
+    expected_path = settings.data_dir / rel
+    assert expected_path.exists(), (
+        f"File not found at {expected_path}. data_dir={settings.data_dir}. "
+        "LocalBackend is likely writing to CWD instead of data_dir."
+    )

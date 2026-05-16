@@ -30,20 +30,20 @@ var _bulkSplitTimer = null;
 function splitRecalcMother(input) {
   var form = input.closest('form');
   if (!form) return;
-  var isWeight    = input.name === 'child_weight';
-  var partnerName = isWeight ? 'mother_weight' : 'mother_pieces';
-  var parentTotal = parseFloat(
-    isWeight ? (form.dataset.parentWeight || '0')
-             : (form.dataset.parentPieces  || '0')
-  );
-  var childVal  = parseFloat(input.value) || 0;
-  var remainder = Math.max(0, parentTotal - childVal);
-  var partner   = form.querySelector('[name="' + partnerName + '"]');
-  if (!partner) return;
-  var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
-  partner.value = isWeight
-    ? remainder.toFixed(decimals)
-    : String(Math.round(remainder));
+  if (input.name === 'child_weight') {
+    var parentWeight = parseFloat(form.dataset.parentWeight || '0');
+    var childW = parseFloat(input.value) || 0;
+    var remW = Math.max(0, parentWeight - childW);
+    var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
+    var mw = form.querySelector('[name="mother_weight"]');
+    if (mw) mw.value = remW.toFixed(decimals);
+  } else if (input.name === 'child_pieces') {
+    var parentPieces = parseFloat(form.dataset.parentPieces || '0');
+    var childP = parseFloat(input.value) || 0;
+    var remP = Math.max(0, parentPieces - childP);
+    var mp = form.querySelector('[name="mother_pieces"]');
+    if (mp) mp.value = String(Math.round(remP));
+  }
 }
 function bulkSplitAutoLoad() {
   var checked = document.querySelector('.row-select:checked');

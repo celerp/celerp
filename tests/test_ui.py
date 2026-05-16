@@ -5140,6 +5140,52 @@ class TestBulkActionsPhase1to5:
         assert b"splitRecalcMother" in r.content
         assert b"savedEdits" in r.content
 
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_child_pieces_has_oninput(self, ui_client):
+        """child_pieces input must have splitRecalcMother; mother_weight must be absent
+        when item has pieces but no weight."""
+        preview = {
+            "parent_sku": "BOX-001", "parent_name": "Box", "parent_qty": 20.0,
+            "parent_qty_remaining": 15.0, "child_sku": "BOX-001.1", "child_qty": 5.0,
+            "sell_by": "piece", "sell_by_label": "pc", "unit_decimals": 0,
+            "weight_decimals": 2,
+            "is_weight_unit": False, "has_weight": False, "has_pieces": True,
+            "parent_pieces": 40, "parent_pieces_remaining": 30,
+            "child_pieces_default": 10,
+        }
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A5&qty=5",
+                cookies=_authed(),
+            )
+        html = r.text
+        assert 'name="child_pieces"' in html
+        assert "splitRecalcMother(this)" in html
+        assert 'name="mother_weight"' not in html  # no weight column when has_weight=False
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_recalc_no_cross_contamination(self, ui_client):
+        """splitRecalcMother must use explicit input.name checks (not a generic ternary)
+        to avoid cross-contamination when both weight and pieces columns are visible.
+        Verified against the inventory page which embeds _BULK_SPLIT_JS."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        # Explicit name checks must be present (not a ternary isWeight pattern)
+        assert "input.name === 'child_weight'" in html
+        assert "input.name === 'child_pieces'" in html
+
 
 class TestBulkSelectionClear:
     """Regression: after destructive bulk actions (merge/delete/expire/archive/transfer),

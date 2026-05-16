@@ -1100,6 +1100,8 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Compute defaults.
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
+    weights = [float(p.state["weight"]) for p in source_projections if p.state.get("weight") is not None]
+    total_weight = sum(weights) if weights else None
     total_cost_qty = sum(
         float(p.state.get("quantity") or 0)
         for p in source_projections
@@ -1185,6 +1187,11 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         if val is not None:
             create_data[field] = str(val) if field == "location_id" else val
 
+    if total_weight is not None:
+        create_data["weight"] = total_weight
+    weight_unit = target_state.get("weight_unit")
+    if weight_unit:
+        create_data["weight_unit"] = weight_unit
     # Create the new merged item.
     raw_loc = target_state.get("location_id")
     emit_location_id = uuid.UUID(str(raw_loc)) if raw_loc else None
