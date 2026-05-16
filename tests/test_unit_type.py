@@ -556,8 +556,9 @@ class TestItemCreationDefaults:
 
 class TestPurchaseConversionFactor:
     def test_paired_tertiary_css_present(self):
-        css_path = "/mnt/storage/agent_storage/celerp/ui/static/app.css"
-        css = open(css_path).read()
+        from pathlib import Path
+        css_path = Path(__file__).resolve().parents[1] / "ui" / "static" / "app.css"
+        css = css_path.read_text()
         assert ".paired-tertiary" in css
         assert "font-style: italic" in css.split(".paired-tertiary")[1].split("}")[0]
 
