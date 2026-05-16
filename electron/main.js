@@ -646,6 +646,62 @@ async function _doUninstallDeleteData() {
   }
 }
 
+/**
+ * Show an error to the user. Strips verbose Alembic INFO/DEBUG noise so only
+ * the actual failure is visible. Uses a scrollable BrowserWindow instead of
+ * the native showErrorBox (which clips on macOS with no scroll).
+ */
+function showError(title, rawMessage) {
+  // Strip alembic INFO/DEBUG lines — keep WARNING/ERROR and anything after them.
+  const lines = String(rawMessage).split("\n");
+  const filtered = lines.filter((l) => !/^\s*(INFO|DEBUG)\s+\[/.test(l));
+  // If filtering left nothing meaningful, fall back to raw (avoid blank dialog).
+  const message = filtered.join("\n").trim() || rawMessage;
+
+  // Short messages: native box is fine (no clipping risk).
+  if (message.length < 400 && !message.includes("\n")) {
+    dialog.showErrorBox(title, message);
+    return;
+  }
+
+  // Long messages: scrollable BrowserWindow.
+  const errWin = new BrowserWindow({
+    width: 720,
+    height: 480,
+    minWidth: 480,
+    minHeight: 280,
+    resizable: true,
+    title,
+    alwaysOnTop: true,
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+  const escaped = message
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #1e1e1e; color: #f0f0f0;
+         display: flex; flex-direction: column; height: 100vh; }
+  h2 { padding: 14px 16px 10px; font-size: 15px; background: #c0392b;
+       color: #fff; flex-shrink: 0; }
+  pre { flex: 1; overflow: auto; padding: 14px 16px; font-size: 12px;
+        font-family: "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap;
+        word-break: break-word; }
+  footer { padding: 10px 16px; background: #2a2a2a; flex-shrink: 0; text-align: right; }
+  button { padding: 6px 20px; background: #c0392b; color: #fff; border: none;
+           border-radius: 4px; font-size: 13px; cursor: pointer; }
+  button:hover { background: #a93226; }
+</style></head><body>
+<h2>${title.replace(/</g, "&lt;")}</h2>
+<pre>${escaped}</pre>
+<footer><button onclick="window.close()">Close</button></footer>
+</body></html>`;
+  errWin.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -835,7 +891,7 @@ app.whenReady().then(async () => {
       // resolves to the same directory that Electron watches.
       sentinelPath: path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested"),
       onCrash: (err) => {
-        dialog.showErrorBox("Celerp crashed", err?.message ?? String(err));
+        showError("Celerp crashed", err?.message ?? String(err));
         app.quit();
       },
       onRestart: () => {
@@ -854,7 +910,7 @@ app.whenReady().then(async () => {
       setupAutoUpdater();
     }
   } catch (err) {
-    dialog.showErrorBox("Celerp failed to start", err?.message ?? String(err));
+    showError("Celerp failed to start", err?.message ?? String(err));
     app.quit();
   }
 });
