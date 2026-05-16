@@ -623,7 +623,12 @@ async function _doUninstallKeepData() {
 }
 
 async function _doUninstallDeleteData() {
-  const dataPath = app.getPath("userData");
+  // Delete only DATA_DIR (celerp-data subdirectory), not the full userData dir.
+  // Electron holds open handles on Cache/Code Cache/Network/Persistent State inside
+  // userData throughout the process lifetime; deleting userData itself leaves those
+  // dirs behind on macOS. DATA_DIR is everything Celerp owns (postgres, modules,
+  // config, JWT secret) and is safe to remove while the process is still running.
+  const dataPath = DATA_DIR;
   const { response } = await dialog.showMessageBox(mainWindow, {
     type: "warning",
     buttons: ["Cancel", "Delete Data & Quit"],
@@ -634,7 +639,7 @@ async function _doUninstallDeleteData() {
     detail:
       "This will permanently delete:\n\n" +
       `• ${dataPath}\n\n` +
-      "This includes your database, configuration, and all business data. " +
+      "This includes your database, configuration, modules, and all business data. " +
       "This cannot be undone.\n\n" +
       "After quitting, drag Celerp from Applications to Trash to complete removal.",
   });

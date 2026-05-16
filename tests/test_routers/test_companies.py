@@ -251,3 +251,36 @@ async def test_reactivate_restores_slug(client):
     assert r4.json()["slug"] == original_slug, (
         f"Expected slug restored to '{original_slug}', got '{r4.json()['slug']}'"
     )
+
+
+@pytest.mark.asyncio
+async def test_create_company_token_has_owner_role_and_email(client):
+    """POST /companies must return a JWT with role=owner and email set.
+
+    Bug: create_access_token was called with role='admin' and no email,
+    causing the logout button and danger zone to disappear after creating
+    a company via the deactivation flow.
+    """
+    import base64
+    import json as _json
+
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "TokenTest", "email": "token@test.com", "name": "Tester", "password": "pw"},
+    )
+    assert r.status_code == 200, r.text
+    orig_token = r.json()["access_token"]
+
+    r2 = await client.post(
+        "/companies",
+        json={"name": "Second Co"},
+        headers={"Authorization": f"Bearer {orig_token}"},
+    )
+    assert r2.status_code == 200, r2.text
+    new_token = r2.json()["access_token"]
+
+    payload_b64 = new_token.split(".")[1]
+    claims = _json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
+
+    assert claims.get("role") == "owner", f"Expected role=owner, got {claims.get('role')!r}"
+    assert claims.get("email") == "token@test.com", f"Expected email in token, got {claims.get('email')!r}"

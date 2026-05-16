@@ -957,3 +957,56 @@ async def test_inventory_list_filter_by_skus(client):
     items = r.json()["items"]
     skus = {i["sku"] for i in items}
     assert skus == {"SKUS-A", "SKUS-B"}
+
+
+@pytest.mark.asyncio
+async def test_split_preview_reads_pieces_from_top_level_state(client):
+    """split-preview must return has_pieces=True when pieces is stored at top-level state.
+
+    Bug: preview read parent.state['attributes']['pieces'] but _flatten_item promotes
+    pieces to top-level. Correct read is parent.state.get('pieces').
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Create item with pieces stored in attributes (will be flattened to top-level by projection)
+    r = await client.post("/items", json={
+        "sku": "PREV-PIECES-001", "name": "Gem", "quantity": 10.0,
+        "sell_by": "carat", "attributes": {"pieces": 5},
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r2 = await client.get(f"/items/{parent_id}/split-preview?qty=3", headers=h)
+    assert r2.status_code == 200
+    preview = r2.json()
+
+    assert preview.get("has_pieces") is True, f"Expected has_pieces=True, got {preview}"
+    assert "child_pieces_default" in preview, f"Expected child_pieces_default in preview: {preview}"
+    assert preview["child_pieces_default"] == 1  # int(3/10 * 5) = 1
+
+
+@pytest.mark.asyncio
+async def test_split_preview_weight_uses_weight_unit_decimals(client):
+    """child_weight_default must be rounded to weight_unit decimals, not sell_by decimals.
+
+    Bug: when sell_by=piece (decimals=0), weight was rounded to 0 decimal places,
+    so 0.5g became 0.0.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "PREV-WDEC-001", "name": "Cut Stones", "quantity": 4.0,
+        "sell_by": "piece", "weight": 2.0, "weight_unit": "gram",
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    # Split off 1 piece: expected child_weight = 1/4 * 2.0 = 0.5g
+    r2 = await client.get(f"/items/{parent_id}/split-preview?qty=1", headers=h)
+    assert r2.status_code == 200
+    preview = r2.json()
+
+    assert preview.get("has_weight") is True, f"Expected has_weight=True: {preview}"
+    assert abs(preview["child_weight_default"] - 0.5) < 0.01, (
+        f"Expected child_weight_default≈0.5, got {preview['child_weight_default']}"
+    )

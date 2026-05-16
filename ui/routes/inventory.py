@@ -1354,12 +1354,13 @@ function celerpPrintLabel(entityId, templateId) {
 
         sell_by_label = preview.get("sell_by_label", preview.get("sell_by", ""))
         decimals = preview.get("unit_decimals", 0)
+        weight_decimals = preview.get("weight_decimals", 2)
         fmt = f"{{:.{decimals}f}}"
-        is_weight = preview.get("is_weight_unit", False)
+        wfmt = f"{{:.{weight_decimals}f}}"
 
-        # sell_by=weight → show Pieces column; sell_by=pieces → show Weight column
-        show_pieces = is_weight
-        show_weight = not is_weight
+        # Show weight/pieces columns only when the parent actually has those values.
+        show_weight = preview.get("has_weight", False)
+        show_pieces = preview.get("has_pieces", False)
 
         headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY ({sell_by_label})", cls="sp-th")]
         if show_weight:
@@ -1380,7 +1381,7 @@ function celerpPrintLabel(entityId, templateId) {
                         weight_name: str | None, pieces_name: str | None) -> FT:
             cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
             if show_weight:
-                w = fmt.format(weight_val) if weight_val is not None else "0"
+                w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
                 cells.append(_editable_td(weight_name, w) if weight_name else _static_td(w))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"

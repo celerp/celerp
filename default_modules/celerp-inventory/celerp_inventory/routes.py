@@ -781,9 +781,12 @@ async def split_preview(
     parent_sell_by = parent.state.get("sell_by") or "piece"
     parent_weight_raw = parent.state.get("weight")
     parent_weight = float(parent_weight_raw) if parent_weight_raw is not None else None
-    parent_attrs = parent.state.get("attributes") or {}
-    parent_pieces_raw = parent_attrs.get("pieces")
-    parent_pieces = float(parent_pieces_raw) if parent_pieces_raw is not None else None
+    # pieces may be stored in state["attributes"]["pieces"] (raw projection) or at
+    # top-level if already flattened. Check both; top-level takes precedence.
+    _pieces_raw = parent.state.get("pieces")
+    if _pieces_raw is None:
+        _pieces_raw = (parent.state.get("attributes") or {}).get("pieces")
+    parent_pieces = float(_pieces_raw) if _pieces_raw is not None else None
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -791,6 +794,11 @@ async def split_preview(
     decimals = unit_cfg.get("decimals", 0)
     is_weight = unit_cfg.get("unit_type") == "weight"
     sell_by_label = unit_cfg.get("label", parent_sell_by)
+
+    # Weight rounding uses the weight unit's own precision, independent of sell_by decimals.
+    parent_weight_unit = parent.state.get("weight_unit") or "gram"
+    weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
+    weight_decimals = weight_unit_cfg.get("decimals", 2)
 
     if not child_sku:
         prefix = f"{parent_sku}."
@@ -821,13 +829,16 @@ async def split_preview(
         "sell_by": parent_sell_by,
         "sell_by_label": sell_by_label,
         "unit_decimals": decimals,
+        "weight_decimals": weight_decimals,
         "is_weight_unit": is_weight,
+        "has_weight": parent_weight is not None,
+        "has_pieces": parent_pieces is not None,
     }
 
     if parent_weight is not None:
-        child_weight_default = round(qty / parent_qty * parent_weight, decimals)
+        child_weight_default = round(qty / parent_qty * parent_weight, weight_decimals)
         result["parent_weight"] = parent_weight
-        result["parent_weight_remaining"] = round(parent_weight - child_weight_default, decimals)
+        result["parent_weight_remaining"] = round(parent_weight - child_weight_default, weight_decimals)
         result["child_weight_default"] = child_weight_default
 
     if parent_pieces is not None:

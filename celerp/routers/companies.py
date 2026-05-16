@@ -257,14 +257,14 @@ async def create_company(
     from celerp.config import settings as _cfg
     from datetime import datetime, timedelta, timezone as _tz
     snonce = await _get_nonce(session, str(user.id))
-    access_token, token_jti = create_access_token(str(user.id), str(company.id), "admin", snonce=snonce)
+    access_token, token_jti = create_access_token(str(user.id), str(company.id), "owner", user.email, snonce=snonce)
     # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp
     capped_minutes = min(int(_cfg.access_token_expire_minutes), 24 * 60)
     expiry = datetime.now(_tz.utc) + timedelta(minutes=capped_minutes)
     await _reg_token(session, token_jti, str(user.id), expiry)
     return {
         "access_token": access_token,
-        "refresh_token": create_refresh_token(str(user.id), str(company.id), "admin"),
+        "refresh_token": create_refresh_token(str(user.id), str(company.id), "owner", user.email),
     }
 
 
