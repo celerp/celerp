@@ -1953,6 +1953,151 @@ def setup_routes(app):
             id="verticals-apply-result",
         )
 
+    # ── Category CRUD UI routes ─────────────────────────────────────────────
+
+    async def _applied_panel_html(token: str) -> FT:
+        """Re-render the applied-schemas panel for HTMX swap."""
+        try:
+            cat_schemas = await api.get_company_category_schemas(token)
+        except Exception:
+            cat_schemas = {}
+        applied_names = sorted(cat_schemas.keys())
+        return _verticals_applied_panel(applied_names)
+
+    @app.post("/settings/categories")
+    async def settings_category_create(request: Request):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        name = str(form.get("new_category_name", "")).strip()
+        if not name:
+            return P(t("settings.new_category_name") + " is required", cls="error-banner")
+        try:
+            await api.create_category(token, name)
+        except APIError as e:
+            return P(str(e.detail), cls="error-banner")
+        return Response("", status_code=204, headers={"HX-Redirect": "/settings/inventory?tab=categories"})
+
+    @app.delete("/settings/categories/{category_key}")
+    async def settings_category_delete(request: Request, category_key: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.delete_category(token, category_key)
+        except APIError as e:
+            detail = e.detail
+            if isinstance(detail, dict):
+                item_count = detail.get("item_count", "?")
+                msg = f"Can't delete - {item_count} item(s) use this category."
+            else:
+                msg = str(detail)
+            return Tr(
+                Td(category_key, cls="cell"),
+                Td(
+                    A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={category_key}", cls="auth-link"),
+                    cls="cell",
+                ),
+                Td(
+                    Button("✕", cls="btn btn--danger btn--xs",
+                           hx_delete=f"/settings/categories/{category_key}",
+                           hx_target="closest tr",
+                           hx_swap="outerHTML"),
+                    Span(msg, cls="error-inline"),
+                    cls="cell",
+                ),
+                cls="data-row",
+            )
+        return Response("", status_code=200)
+
+    @app.get("/settings/categories/{category_key}/edit")
+    async def settings_category_rename_form(request: Request, category_key: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        return Tr(
+            Td(
+                Form(
+                    Input(type="text", name="new_name", value=category_key,
+                          cls="form-input form-input--sm",
+                          autofocus=True),
+                    Button(t("btn.save"), type="submit", cls="btn btn--primary btn--xs"),
+                    Button(t("btn.cancel"), type="button", cls="btn btn--secondary btn--xs",
+                           hx_get=f"/settings/categories/{category_key}/cancel",
+                           hx_target="closest tr",
+                           hx_swap="outerHTML"),
+                    hx_patch=f"/settings/categories/{category_key}",
+                    hx_target="closest tr",
+                    hx_swap="outerHTML",
+                ),
+                cls="cell",
+            ),
+            Td("", cls="cell"),
+            Td("", cls="cell"),
+            cls="data-row",
+        )
+
+    @app.get("/settings/categories/{category_key}/cancel")
+    async def settings_category_rename_cancel(request: Request, category_key: str):
+        return Tr(
+            Td(
+                Span(category_key, cls="cat-name-display",
+                     hx_get=f"/settings/categories/{category_key}/edit",
+                     hx_target="closest tr",
+                     hx_swap="outerHTML"),
+                cls="cell",
+            ),
+            Td(
+                A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={category_key}", cls="auth-link"),
+                cls="cell",
+            ),
+            Td(
+                Button("✕", cls="btn btn--danger btn--xs",
+                       hx_delete=f"/settings/categories/{category_key}",
+                       hx_target="closest tr",
+                       hx_swap="outerHTML"),
+                cls="cell",
+            ),
+            cls="data-row",
+        )
+
+    @app.patch("/settings/categories/{category_key}")
+    async def settings_category_rename(request: Request, category_key: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        new_name = str(form.get("new_name", "")).strip()
+        if not new_name:
+            return P(t("settings.new_category_name") + " is required", cls="error-banner")
+        try:
+            await api.rename_category(token, category_key, new_name)
+        except APIError as e:
+            return P(str(e.detail), cls="error-banner")
+        import re as _re
+        new_key = _re.sub(r"[^a-z0-9]+", "_", new_name.lower()).strip("_")
+        return Tr(
+            Td(
+                Span(new_key, cls="cat-name-display",
+                     hx_get=f"/settings/categories/{new_key}/edit",
+                     hx_target="closest tr",
+                     hx_swap="outerHTML"),
+                cls="cell",
+            ),
+            Td(
+                A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={new_key}", cls="auth-link"),
+                cls="cell",
+            ),
+            Td(
+                Button("✕", cls="btn btn--danger btn--xs",
+                       hx_delete=f"/settings/categories/{new_key}",
+                       hx_target="closest tr",
+                       hx_swap="outerHTML"),
+                cls="cell",
+            ),
+            cls="data-row",
+        )
 
     # ── Company Address CRUD routes ─────────────────────────────────────────
 
@@ -2345,7 +2490,7 @@ def _settings_content(
         return _bulk_attach_tab()
     if tab == "modules":
         return _modules_tab(modules or [], modules_restart_pending)
-    if tab == "verticals":
+    if tab == "verticals" or tab == "categories":
         return _verticals_tab(vert_categories or [], vert_presets or [], cat_schemas or {})
     return P(t("msg.unknown_tab", lang), cls="error-banner")
 
@@ -3874,6 +4019,74 @@ def _modules_tab(modules: list[dict], restart_pending: bool = False) -> FT:
     )
 
 
+def _verticals_applied_panel(applied_names: list[str]) -> FT:
+    """Render the applied-schemas panel (reused by HTMX category CRUD routes)."""
+    if applied_names:
+        applied_rows = [
+            Tr(
+                Td(
+                    Span(name, cls="cat-name-display",
+                         hx_get=f"/settings/categories/{name}/edit",
+                         hx_target="closest tr",
+                         hx_swap="outerHTML"),
+                    cls="cell",
+                ),
+                Td(
+                    A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={name}", cls="auth-link"),
+                    cls="cell",
+                ),
+                Td(
+                    Button("✕", cls="btn btn--danger btn--xs",
+                           hx_delete=f"/settings/categories/{name}",
+                           hx_target="closest tr",
+                           hx_swap="outerHTML"),
+                    cls="cell",
+                ),
+                cls="data-row",
+            )
+            for name in sorted(applied_names)
+        ]
+        add_row = Tr(
+            Td(colspan="3", cls="cell",
+               children=[
+                   Form(
+                       Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
+                             cls="form-input form-input--sm"),
+                       Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                       hx_post="/settings/categories",
+                       hx_target="#vert-applied-panel",
+                       hx_swap="outerHTML",
+                       cls="cat-add-form",
+                   ),
+               ]),
+        )
+        applied_content = Table(
+            Thead(Tr(Th(t("th.schema")), Th(""), Th(""))),
+            Tbody(*applied_rows, add_row),
+            cls="data-table",
+        )
+    else:
+        applied_content = Div(
+            P(t("settings.no_category_schemas_applied_yet"), cls="settings-hint"),
+            Form(
+                Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
+                      cls="form-input form-input--sm"),
+                Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                hx_post="/settings/categories",
+                hx_target="#vert-applied-panel",
+                hx_swap="outerHTML",
+                cls="cat-add-form",
+            ),
+        )
+    return Div(
+        H3(t("page.applied_schemas"), cls="settings-section-title"),
+        P(t("settings.these_schemas_are_active_on_your_inventory"), cls="settings-hint"),
+        applied_content,
+        cls="vert-applied-panel mt-xl",
+        id="vert-applied-panel",
+    )
+
+
 def _verticals_tab(
     categories: list[dict],
     presets: list[dict],
@@ -4002,32 +4215,7 @@ def _verticals_tab(
     )
 
     # ── Applied schemas panel ─────────────────────────────────────────
-    if applied_names:
-        applied_rows = [
-            Tr(
-                Td(name, cls="cell"),
-                Td(
-                    A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={name}", cls="auth-link"),
-                    cls="cell",
-                ),
-                cls="data-row",
-            )
-            for name in sorted(applied_names)
-        ]
-        applied_content = Table(
-            Thead(Tr(Th(t("th.schema")), Th(""))),
-            Tbody(*applied_rows),
-            cls="data-table",
-        )
-    else:
-        applied_content = P(t("settings.no_category_schemas_applied_yet"), cls="settings-hint")
-
-    applied_panel = Div(
-        H3(t("page.applied_schemas"), cls="settings-section-title"),
-        P(t("settings.these_schemas_are_active_on_your_inventory"), cls="settings-hint"),
-        applied_content,
-        cls="vert-applied-panel mt-xl",
-    )
+    applied_panel = _verticals_applied_panel(applied_names)
 
     return Div(
         preset_strip,

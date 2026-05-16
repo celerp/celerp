@@ -58,8 +58,8 @@ function _bulkSplitSavedEdits() {
   var preview = document.getElementById('bulk-split-preview');
   if (!preview) return {};
   var saved = {};
-  preview.querySelectorAll('input[data-user-edited="1"]').forEach(function(el) {
-    saved[el.name] = el.value;
+  preview.querySelectorAll('input[type="number"]').forEach(function(el) {
+    if (el.name !== 'child_qty') saved[el.name] = el.value;
   });
   return saved;
 }

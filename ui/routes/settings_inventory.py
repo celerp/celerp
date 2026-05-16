@@ -234,32 +234,68 @@ def _categories_tab(
     if applied_names:
         applied_rows = [
             Tr(
-                Td(name, cls="cell"),
+                Td(
+                    Span(name, cls="cat-name-display",
+                         hx_get=f"/settings/categories/{_q(name, safe='')}/edit",
+                         hx_target="closest tr",
+                         hx_swap="outerHTML"),
+                    cls="cell",
+                ),
                 Td(str(len(cat_schemas.get(name, []))), cls="cell cell--center your-cats-fields"),
                 Td(
                     A(t("settings.edit"),
                       href=f"/settings/inventory?tab=categories&cat={_q(name, safe='')}",
                       cls="btn btn--secondary btn--xs"),
-                    # TODO: add Remove button once DELETE /settings/verticals/remove-category endpoint exists
+                    Button("✕", cls="btn btn--danger btn--xs",
+                           hx_delete=f"/settings/categories/{_q(name, safe='')}",
+                           hx_target="closest tr",
+                           hx_swap="outerHTML"),
                     cls="cell cell--action your-cats-action",
                 ),
                 cls="data-row",
             )
             for name in sorted(applied_names)
         ]
+        add_row = Tr(
+            Td(colspan="3", cls="cell", children=[
+                Form(
+                    Input(type="text", name="new_category_name",
+                          placeholder=t("settings.new_category_name"),
+                          cls="form-input form-input--sm"),
+                    Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                    hx_post="/settings/categories",
+                    hx_target="#your-cats-section",
+                    hx_swap="outerHTML",
+                    cls="cat-add-form",
+                ),
+            ]),
+        )
         your_cats_body = Table(
             Thead(Tr(Th(t("th.category")), Th("Fields", cls="th--center your-cats-fields"), Th("", cls="th--action your-cats-action"))),
-            Tbody(*applied_rows),
+            Tbody(*applied_rows, add_row),
             cls="data-table your-cats-table",
         )
     else:
-        your_cats_body = P(t("settings.no_categories_applied"), cls="settings-hint")
+        your_cats_body = Div(
+            P(t("settings.no_categories_applied"), cls="settings-hint"),
+            Form(
+                Input(type="text", name="new_category_name",
+                      placeholder=t("settings.new_category_name"),
+                      cls="form-input form-input--sm"),
+                Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                hx_post="/settings/categories",
+                hx_target="#your-cats-section",
+                hx_swap="outerHTML",
+                cls="cat-add-form",
+            ),
+        )
 
     section_a = Div(
         H3(t("settings.your_categories"), cls="settings-section-title"),
         P(t("settings.categories_hint"), cls="settings-hint"),
         your_cats_body,
         cls="mb-xl",
+        id="your-cats-section",
     )
 
     # ── Section C: Browse & Add Categories ───────────────────────────

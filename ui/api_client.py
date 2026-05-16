@@ -1799,6 +1799,24 @@ async def apply_vertical_category(token: str, name: str) -> dict:
         return _raise(await c.post("/companies/me/apply-category", params={"name": name})).json()
 
 
+async def create_category(token: str, name: str) -> dict:
+    """POST /companies/me/categories — create a new empty category."""
+    async with _client(token) as c:
+        return _raise(await c.post("/companies/me/categories", json={"name": name})).json()
+
+
+async def rename_category(token: str, category_key: str, new_name: str) -> dict:
+    """PATCH /companies/me/categories/{key} — rename category and update all item projections."""
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/companies/me/categories/{category_key}", json={"name": new_name})).json()
+
+
+async def delete_category(token: str, category_key: str) -> dict:
+    """DELETE /companies/me/categories/{key} — delete category (403 if items reference it)."""
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/companies/me/categories/{category_key}")).json()
+
+
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
 
 async def get_period_lock(token: str) -> dict:

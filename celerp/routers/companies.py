@@ -754,8 +754,125 @@ async def merge_category_schemas(
 
 
 # ---------------------------------------------------------------------------
-# Column visibility prefs - per-view (category or "__all__")
+# Category CRUD
 # ---------------------------------------------------------------------------
+
+def _slugify_category(name: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
+@router.post("/me/categories")
+async def create_category(
+    payload: dict,
+    company_id=Depends(get_current_company_id),
+    _=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name is required")
+    key = _slugify_category(name)
+    if not key:
+        raise HTTPException(status_code=422, detail="name produces an empty key")
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings or {})
+    cat_schemas = dict(settings.get("category_schemas") or {})
+    if key in cat_schemas:
+        raise HTTPException(status_code=409, detail=f"Category '{key}' already exists")
+    cat_schemas[key] = []
+    settings["category_schemas"] = cat_schemas
+    company.settings = settings
+    await session.commit()
+    return {"ok": True, "key": key}
+
+
+@router.patch("/me/categories/{category_key}")
+async def rename_category(
+    category_key: str,
+    payload: dict,
+    company_id=Depends(get_current_company_id),
+    _=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from celerp.models.projections import Projection
+    new_name = str(payload.get("name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail="name is required")
+    new_key = _slugify_category(new_name)
+    if not new_key:
+        raise HTTPException(status_code=422, detail="name produces an empty key")
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings or {})
+    cat_schemas = dict(settings.get("category_schemas") or {})
+    if category_key not in cat_schemas:
+        raise HTTPException(status_code=404, detail=f"Category '{category_key}' not found")
+    if new_key == category_key:
+        return {"ok": True, "items_updated": 0}
+    if new_key in cat_schemas:
+        raise HTTPException(status_code=409, detail=f"Category '{new_key}' already exists")
+    # Rename schema key
+    cat_schemas[new_key] = cat_schemas.pop(category_key)
+    settings["category_schemas"] = cat_schemas
+    company.settings = settings
+    # Bulk-update item projections
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    updated = 0
+    for row in rows:
+        if str(row.state.get("category") or "") == category_key:
+            new_state = dict(row.state)
+            new_state["category"] = new_key
+            row.state = new_state
+            updated += 1
+    await session.commit()
+    return {"ok": True, "items_updated": updated}
+
+
+@router.delete("/me/categories/{category_key}")
+async def delete_category(
+    category_key: str,
+    company_id=Depends(get_current_company_id),
+    _=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from celerp.models.projections import Projection
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings or {})
+    cat_schemas = dict(settings.get("category_schemas") or {})
+    if category_key not in cat_schemas:
+        raise HTTPException(status_code=404, detail=f"Category '{category_key}' not found")
+    # Count items referencing this category
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    item_count = sum(1 for r in rows if str(r.state.get("category") or "") == category_key)
+    if item_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": f"Cannot delete: {item_count} item(s) use this category.", "item_count": item_count},
+        )
+    cat_schemas.pop(category_key)
+    settings["category_schemas"] = cat_schemas
+    company.settings = settings
+    await session.commit()
+    return {"ok": True}
+
+
+
 
 @router.get("/me/column-prefs")
 async def get_column_prefs(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:

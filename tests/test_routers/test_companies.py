@@ -284,3 +284,83 @@ async def test_create_company_token_has_owner_role_and_email(client):
 
     assert claims.get("role") == "owner", f"Expected role=owner, got {claims.get('role')!r}"
     assert claims.get("email") == "token@test.com", f"Expected email in token, got {claims.get('email')!r}"
+
+
+# ── Category CRUD ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_category_success(client):
+    headers = await _headers(client)
+    r = await client.post("/companies/me/categories", json={"name": "Gold Rings"}, headers=headers)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["ok"] is True
+    assert data["key"] == "gold_rings"
+    # Verify it's in settings
+    r2 = await client.get("/companies/me/company-category-schemas", headers=headers)
+    assert "gold_rings" in r2.json()
+
+
+@pytest.mark.asyncio
+async def test_create_category_duplicate_409(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Gold Rings"}, headers=headers)
+    r = await client.post("/companies/me/categories", json={"name": "Gold Rings"}, headers=headers)
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_rename_category_updates_items(client):
+    """Rename must update category key in category_schemas AND in all item projections."""
+    headers = await _headers(client)
+    # Create category
+    await client.post("/companies/me/categories", json={"name": "Old Name"}, headers=headers)
+    # Create item referencing that category
+    r = await client.post(
+        "/items",
+        json={"name": "Test Item", "quantity": 1, "sell_by": "piece", "category": "old_name", "sku": "RENAME-TEST-001"},
+        headers=headers,
+    )
+    assert r.status_code in (200, 201), r.text
+    item_id = r.json()["id"]
+    # Rename
+    r2 = await client.patch(
+        "/companies/me/categories/old_name",
+        json={"name": "New Name"},
+        headers=headers,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["ok"] is True
+    assert r2.json()["items_updated"] >= 1
+    # Verify schema key updated
+    schemas = (await client.get("/companies/me/company-category-schemas", headers=headers)).json()
+    assert "new_name" in schemas
+    assert "old_name" not in schemas
+    # Verify item projection updated
+    r3 = await client.get(f"/items/{item_id}", headers=headers)
+    assert r3.json().get("category") == "new_name"
+
+
+@pytest.mark.asyncio
+async def test_delete_category_with_items_409(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Gems"}, headers=headers)
+    await client.post(
+        "/items",
+        json={"name": "Ruby", "quantity": 1, "sell_by": "piece", "category": "gems", "sku": "DELETE-TEST-001"},
+        headers=headers,
+    )
+    r = await client.delete("/companies/me/categories/gems", headers=headers)
+    assert r.status_code == 409
+    assert r.json()["detail"]["item_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_delete_category_empty_ok(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Empty Cat"}, headers=headers)
+    r = await client.delete("/companies/me/categories/empty_cat", headers=headers)
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    schemas = (await client.get("/companies/me/company-category-schemas", headers=headers)).json()
+    assert "empty_cat" not in schemas

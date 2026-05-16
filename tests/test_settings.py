@@ -326,3 +326,37 @@ class TestCompanyAddressesUI:
         call_args = patch_mock.call_args
         assert call_args[0][1] == "loc-123"
         assert call_args[0][2].get("is_default") is True
+
+
+class TestCategoriesCRUDUI:
+
+    @pytest.mark.asyncio
+    async def test_categories_tab_has_add_form(self, ui_client):
+        """Tab=categories must render an Add Category form with new_category_name input."""
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
+        assert r.status_code == 200
+        assert "new_category_name" in r.text
+
+    @pytest.mark.asyncio
+    async def test_categories_tab_rows_have_delete_button(self, ui_client):
+        """Applied categories table rows must have a delete affordance."""
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={"gems": []})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={"gems": []})),
+            patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
+        assert r.status_code == 200
+        # Delete affordance: either hx-delete or a delete button targeting /settings/categories/gems
+        assert "/settings/categories/gems" in r.text

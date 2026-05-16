@@ -5186,6 +5186,30 @@ class TestBulkActionsPhase1to5:
         assert "input.name === 'child_weight'" in html
         assert "input.name === 'child_pieces'" in html
 
+    async def test_bulk_split_save_edits_captures_all_number_inputs(self, ui_client):
+        """_bulkSplitSavedEdits must save all number inputs (not just data-user-edited),
+        so that proportionally-set weight/pieces values survive qty re-renders.
+        child_qty must be excluded to avoid restoring over the new qty value."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        # Must save all number inputs (not restricted to data-user-edited)
+        assert 'input[type="number"]' in html or "input[type='number']" in html
+        assert 'data-user-edited="1"' not in html.split("_bulkSplitSavedEdits")[1].split("}")[0]
+        # Must exclude child_qty from restore
+        assert "child_qty" in html.split("_bulkSplitSavedEdits")[1].split("_bulkSplitRestoreEdits")[0]
+
 
 class TestBulkSelectionClear:
     """Regression: after destructive bulk actions (merge/delete/expire/archive/transfer),
