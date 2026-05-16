@@ -2492,8 +2492,8 @@ class TestCollapsibleSidebar:
         with patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"category_counts": {}, "count_by_status": {"sold": 1}, "item_count": 1})), \
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
-             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
@@ -2509,8 +2509,8 @@ class TestCollapsibleSidebar:
         with patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"category_counts": {}, "count_by_status": {"archived": 1}, "item_count": 1})), \
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
-             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
