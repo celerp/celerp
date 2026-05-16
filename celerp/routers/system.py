@@ -239,16 +239,23 @@ async def import_system(
 
     # ── Create users (no auth_hash — require password reset) ─────────────────
     for u in company_data.get("users", []):
-        new_user = User(
-            id=uuid.uuid4(),
-            email=u["email"],
-            name=u["name"],
-            is_active=u.get("is_active", True),
-        )
-        session.add(new_user)
-        await session.flush()
-        link = UserCompany(id=uuid.uuid4(), user_id=new_user.id, company_id=company.id, role=u.get("role", "user"))
-        session.add(link)
+        existing_user = (await session.execute(select(User).where(User.email == u["email"]))).scalar_one_or_none()
+        if existing_user is None:
+            existing_user = User(
+                id=uuid.uuid4(),
+                email=u["email"],
+                name=u["name"],
+                is_active=u.get("is_active", True),
+            )
+            session.add(existing_user)
+            await session.flush()
+        # Link to company if not already linked
+        existing_link = (await session.execute(
+            select(UserCompany).where(UserCompany.user_id == existing_user.id, UserCompany.company_id == company.id)
+        )).scalar_one_or_none()
+        if existing_link is None:
+            link = UserCompany(id=uuid.uuid4(), user_id=existing_user.id, company_id=company.id, role=u.get("role", "user"))
+            session.add(link)
     await session.flush()
 
     # ── Replay ledger ─────────────────────────────────────────────────────────
