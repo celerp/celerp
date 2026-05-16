@@ -5047,6 +5047,99 @@ class TestBulkActionsPhase1to5:
         assert r.status_code == 200
         assert b"No items selected" in r.content
 
+    # ── Phase 4: bulk split preview - data attrs + oninput (4a + 4b) ─────
+
+    _SPLIT_PREVIEW_WEIGHT = {
+        "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
+        "parent_qty_remaining": 7.0, "child_sku": "GEM-001.1", "child_qty": 3.0,
+        "sell_by": "gram", "sell_by_label": "g", "unit_decimals": 2,
+        "weight_decimals": 4,
+        "is_weight_unit": True, "has_weight": True, "has_pieces": False,
+        "parent_weight": 5.0, "parent_weight_remaining": 3.5,
+        "child_weight_default": 1.5,
+    }
+    _SPLIT_PREVIEW_PIECES = {
+        "parent_sku": "BOX-001", "parent_name": "Box", "parent_qty": 20.0,
+        "parent_qty_remaining": 15.0, "child_sku": "BOX-001.1", "child_qty": 5.0,
+        "sell_by": "piece", "sell_by_label": "pc", "unit_decimals": 0,
+        "weight_decimals": 2,
+        "is_weight_unit": False, "has_weight": False, "has_pieces": True,
+        "parent_pieces": 40, "parent_pieces_remaining": 30,
+        "child_pieces_default": 10,
+    }
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_has_data_parent_weight(self, ui_client):
+        """Form element must carry data-parent-weight and data-weight-decimals
+        when preview has has_weight=True."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A1&qty=3",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        assert 'data-parent-weight="5.0"' in html
+        assert 'data-weight-decimals="4"' in html
+        assert "data-parent-pieces" not in html
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_has_data_parent_pieces(self, ui_client):
+        """data-parent-pieces rendered when has_pieces=True; data-parent-weight absent."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_PIECES)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A2&qty=5",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        assert 'data-parent-pieces="40"' in html
+        assert "data-parent-weight" not in html
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_child_weight_has_oninput(self, ui_client):
+        """child_weight input must trigger splitRecalcMother and mark userEdited."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A3&qty=3",
+                cookies=_authed(),
+            )
+        html = r.text
+        assert 'name="child_weight"' in html
+        assert "splitRecalcMother(this)" in html
+        assert "this.dataset.userEdited='1'" in html
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_mother_weight_no_recalc_oninput(self, ui_client):
+        """mother_weight input must NOT trigger splitRecalcMother (one-directional rule)."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A4&qty=3",
+                cookies=_authed(),
+            )
+        html = r.text
+        assert 'name="mother_weight"' in html
+        # splitRecalcMother must appear exactly once - on child_weight only
+        assert html.count("splitRecalcMother(this)") == 1
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_js_contains_new_functions(self, ui_client):
+        """splitRecalcMother and savedEdits symbols must be in the inventory page JS."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert b"splitRecalcMother" in r.content
+        assert b"savedEdits" in r.content
+
 
 class TestBulkSelectionClear:
     """Regression: after destructive bulk actions (merge/delete/expire/archive/transfer),

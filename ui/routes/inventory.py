@@ -27,6 +27,24 @@ _DEFAULT_PER_PAGE = 50
 
 _BULK_SPLIT_JS = """
 var _bulkSplitTimer = null;
+function splitRecalcMother(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var isWeight    = input.name === 'child_weight';
+  var partnerName = isWeight ? 'mother_weight' : 'mother_pieces';
+  var parentTotal = parseFloat(
+    isWeight ? (form.dataset.parentWeight || '0')
+             : (form.dataset.parentPieces  || '0')
+  );
+  var childVal  = parseFloat(input.value) || 0;
+  var remainder = Math.max(0, parentTotal - childVal);
+  var partner   = form.querySelector('[name="' + partnerName + '"]');
+  if (!partner) return;
+  var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
+  partner.value = isWeight
+    ? remainder.toFixed(decimals)
+    : String(Math.round(remainder));
+}
 function bulkSplitAutoLoad() {
   var checked = document.querySelector('.row-select:checked');
   if (!checked) return;
@@ -35,6 +53,21 @@ function bulkSplitAutoLoad() {
   var url = '/api/items/bulk/split-preview?entity_id=' + encodeURIComponent(entityId) + '&qty=0';
   htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
     .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
+}
+function _bulkSplitSavedEdits() {
+  var preview = document.getElementById('bulk-split-preview');
+  if (!preview) return {};
+  var saved = {};
+  preview.querySelectorAll('input[data-user-edited="1"]').forEach(function(el) {
+    saved[el.name] = el.value;
+  });
+  return saved;
+}
+function _bulkSplitRestoreEdits(saved) {
+  Object.keys(saved).forEach(function(name) {
+    var el = document.querySelector('#bulk-split-preview [name="' + name + '"]');
+    if (el) { el.value = saved[name]; el.dataset.userEdited = '1'; }
+  });
 }
 function bulkSplitChildQtyChanged(input) {
   clearTimeout(_bulkSplitTimer);
@@ -47,12 +80,16 @@ function bulkSplitChildQtyChanged(input) {
   var childSkuInput = preview.querySelector('[name="child_sku"]');
   var childSku = childSkuInput ? childSkuInput.value || '' : '';
   var safeQty = (qty && qty > 0) ? qty : 0;
+  var savedEdits = _bulkSplitSavedEdits();
   _bulkSplitTimer = setTimeout(function() {
     var url = '/api/items/bulk/split-preview?entity_id=' + encodeURIComponent(entityId)
       + '&qty=' + encodeURIComponent(safeQty)
       + (childSku ? '&child_sku=' + encodeURIComponent(childSku) : '');
     htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
-      .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
+      .then(function() {
+        if (window.htmx) htmx.process(document.getElementById('bulk-split-preview'));
+        _bulkSplitRestoreEdits(savedEdits);
+      });
   }, 400);
 }
 function bulkSplitSkuChanged(input) {
@@ -64,12 +101,16 @@ function bulkSplitSkuChanged(input) {
   var checked = document.querySelector('.row-select:checked');
   var entityId = checked ? (checked.dataset.entityId || checked.value) : '';
   if (!entityId) return;
+  var savedEdits = _bulkSplitSavedEdits();
   _bulkSplitTimer = setTimeout(function() {
     var url = '/api/items/bulk/split-preview?entity_id=' + encodeURIComponent(entityId)
       + '&qty=' + encodeURIComponent(qty)
       + '&child_sku=' + encodeURIComponent(input.value || '');
     htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
-      .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
+      .then(function() {
+        if (window.htmx) htmx.process(document.getElementById('bulk-split-preview'));
+        _bulkSplitRestoreEdits(savedEdits);
+      });
   }, 400);
 }
 function bulkSplitSubmit(formEl) {
@@ -1371,21 +1412,26 @@ function celerpPrintLabel(entityId, templateId) {
         def _static_td(val: str) -> FT:
             return Td(val, cls="sp-td")
 
-        def _editable_td(name: str, val: str, extra_attrs: dict | None = None) -> FT:
+        def _editable_td(name: str, val: str, oninput: str | None = None) -> FT:
             kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
-            if extra_attrs:
-                kwargs.update(extra_attrs)
+            if oninput:
+                kwargs["oninput"] = oninput
             return Td(Input(**kwargs), cls="sp-td")
 
+        _child_oninput = "splitRecalcMother(this); this.dataset.userEdited='1'"
+        _mother_oninput = "this.dataset.userEdited='1'"
+
         def _parcel_row(label: str, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
-                        weight_name: str | None, pieces_name: str | None) -> FT:
+                        weight_name: str | None, pieces_name: str | None, is_child: bool = False) -> FT:
             cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
             if show_weight:
                 w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
-                cells.append(_editable_td(weight_name, w) if weight_name else _static_td(w))
+                oi = _child_oninput if (weight_name and is_child) else (_mother_oninput if weight_name else None)
+                cells.append(_editable_td(weight_name, w, oninput=oi) if weight_name else _static_td(w))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
-                cells.append(_editable_td(pieces_name, p) if pieces_name else _static_td(p))
+                oi = _child_oninput if (pieces_name and is_child) else (_mother_oninput if pieces_name else None)
+                cells.append(_editable_td(pieces_name, p, oninput=oi) if pieces_name else _static_td(p))
             return Tr(*cells)
 
         mother_qty_remaining = preview.get("parent_qty_remaining", preview.get("parent_qty", 0))
@@ -1397,6 +1443,7 @@ function celerpPrintLabel(entityId, templateId) {
             preview.get("parent_pieces_remaining"),
             weight_name="mother_weight" if show_weight else None,
             pieces_name="mother_pieces" if show_pieces else None,
+            is_child=False,
         )
         child_qty_val = fmt.format(preview["child_qty"]) if qty > 0 else "0"
         child_row = _parcel_row(
@@ -1411,7 +1458,15 @@ function celerpPrintLabel(entityId, templateId) {
             preview.get("child_pieces_default"),
             weight_name="child_weight" if show_weight else None,
             pieces_name="child_pieces" if show_pieces else None,
+            is_child=True,
         )
+
+        # data-* attrs enable client-side mother recalc (4b) and edit restore after re-render (4a)
+        form_data: dict = {"data_weight_decimals": str(weight_decimals)}
+        if show_weight:
+            form_data["data_parent_weight"] = str(preview["parent_weight"])
+        if show_pieces:
+            form_data["data_parent_pieces"] = str(int(preview["parent_pieces"]))
 
         return Form(
             Input(type="hidden", name="entity_id", value=entity_id),
@@ -1426,6 +1481,7 @@ function celerpPrintLabel(entityId, templateId) {
             hx_swap="outerHTML",
             onsubmit="bulkSplitSubmit(this)",
             id="bulk-split-preview-form",
+            **form_data,
         )
 
     @app.post("/api/items/bulk/split")
