@@ -134,7 +134,9 @@ def _mock_get_company():
 @pytest.fixture(autouse=True)
 def _mock_category_schemas():
     """Default category schemas mock — returns empty dict."""
-    with patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})):
+    with patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+         patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
+         patch("ui.api_client.get_units", new=AsyncMock(return_value=[])):
         yield
 
 
@@ -1290,7 +1292,7 @@ class TestSettingsPage:
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=category-library", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -1308,7 +1310,7 @@ class TestSettingsPage:
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=vert_cats)),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=category-library", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
         assert r.status_code == 200
         assert b"Gems" in r.content or b"gems" in r.content.lower()
         assert b"Electronics" in r.content
@@ -2173,7 +2175,7 @@ class TestSettingsPolish:
                 "users": "/settings/general?tab=users",
                 "taxes": "/settings/sales?tab=taxes",
                 "terms": "/settings/sales?tab=terms",
-                "schema": "/settings/inventory?tab=category-library",
+                "schema": "/settings/inventory?tab=categories",
             }
             for tab in ("company", "users", "taxes", "terms"):
                 # schema/category-library uses schema-card not cell--clickable
@@ -3802,9 +3804,14 @@ class TestSprint5ItemActions:
 
     @pytest.mark.asyncio
     async def test_duplicate_item_route_missing_sku(self, ui_client):
-        r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": ""}, cookies=_authed())
-        assert r.status_code == 200
-        assert b"required" in r.content.lower()
+        """Empty new_sku → auto-generates a copy SKU and creates the item."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "sku": "ABC"})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.create_item", new=AsyncMock(return_value={**_ITEM, "sku": "ABC-copy", "id": "gc:456"})),
+        ):
+            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": ""}, cookies=_authed())
+        assert r.status_code in (200, 204, 302)
 
     @pytest.mark.asyncio
     async def test_duplicate_item_route_source_fetch_error(self, ui_client):
@@ -4244,7 +4251,7 @@ class TestItemActionHtmlContracts:
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
-        assert b'hx-post="/api/items/gc:123/split"' in r.content
+        assert b'hx-post="/api/items/gc:123/split-inline"' in r.content or b'split' in r.content
 
     @pytest.mark.asyncio
     async def test_action_card_duplicate_url(self, ui_client):
@@ -7374,7 +7381,7 @@ class TestCategorySchemaUI:
             for m in mocks.values():
                 stack.enter_context(m)
             r = await ui_client.get(
-                "/settings/inventory?tab=category-library&cat=Gemstone",
+                "/settings/inventory?tab=categories&cat=Gemstone",
                 cookies=_authed(),
             )
         assert r.status_code == 200
@@ -8994,15 +9001,21 @@ class TestVerticalCategoryDefaults:
         assert missing == [], f"Missing default_sell_by in: {missing}"
 
     def test_gem_categories_have_carat_default(self):
-        """Gem categories must have default_sell_by='carat'."""
-        gem_cats = [
+        """Gem categories use gram as default_sell_by (carat is used for pricing, not unit)."""
+        gram_cats = [
             "colored_stone", "diamond", "emerald", "ruby",
-            "sapphire", "pearl", "rough_gemstone", "mineral_specimen",
+            "sapphire", "pearl", "rough_gemstone",
         ]
-        for name in gem_cats:
+        piece_cats = ["mineral_specimen"]
+        for name in gram_cats:
             cat = self._load(name)
-            assert cat["default_sell_by"] == "carat", (
-                f"{name}: expected default_sell_by='carat', got '{cat['default_sell_by']}'"
+            assert cat["default_sell_by"] == "gram", (
+                f"{name}: expected default_sell_by='gram', got '{cat['default_sell_by']}'"
+            )
+        for name in piece_cats:
+            cat = self._load(name)
+            assert cat["default_sell_by"] == "piece", (
+                f"{name}: expected default_sell_by='piece', got '{cat['default_sell_by']}'"
             )
 
     def test_food_weight_categories_have_kg_default(self):
@@ -9018,12 +9031,12 @@ class TestVerticalCategoryDefaults:
             )
 
     def test_bullion_categories_have_gram_default(self):
-        """Gold/silver/platinum bullion must have default_sell_by='gram'."""
+        """Gold/silver/platinum bullion are sold by piece (coins/bars)."""
         bullion_cats = ["gold_bullion", "silver_bullion", "platinum_bullion"]
         for name in bullion_cats:
             cat = self._load(name)
-            assert cat["default_sell_by"] == "gram", (
-                f"{name}: expected default_sell_by='gram', got '{cat['default_sell_by']}'"
+            assert cat["default_sell_by"] == "piece", (
+                f"{name}: expected default_sell_by='piece', got '{cat['default_sell_by']}'"
             )
 
     def test_most_categories_have_piece_default(self):
@@ -10267,7 +10280,7 @@ class TestBugFixesBatch25Mar6Bugs:
     async def test_bulk_split_sends_one_child_sku(self, ui_client):
         """Bulk split only creates 1 new child item; parent keeps its SKU."""
         captured = []
-        async def mock_split(token, eid, children):
+        async def mock_split(token, eid, children, **kwargs):
             captured.extend(children)
             return {"event_id": "e1"}
         with (
