@@ -281,12 +281,17 @@ def editable_cell(
     options: list[str] | None = None,
     allow_custom: bool = False,
     restore_url: str | None = None,
+    label_map: dict | None = None,
 ) -> FT:
-    """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell."""
+    """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
+    label_map: optional {slug: display_name} - if set, select renders option labels from map."""
     display_val = str(value) if value is not None else ""
     patch_url = f"/api/items/{entity_id}/field/{field}"
     restore_url = restore_url or f"/api/items/{entity_id}/field/{field}/display"
     swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
+    # Apply label_map to options for selects
+    if options is not None and label_map:
+        options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
     escape_js = (
@@ -322,9 +327,10 @@ def editable_cell(
                 onkeydown=combobox_escape_js,
             )
         else:
+            _opt_items = [(o, o) if isinstance(o, str) else o for o in options]
             input_el = Select(
                 *([] if display_val else [Option("", value="", disabled=True, selected=True)]),
-                *[Option(o, value=o, selected=(o == display_val)) for o in options],
+                *[Option(lbl, value=val, selected=(val == display_val)) for val, lbl in _opt_items],
                 name="value",
                 **swap,
                 hx_trigger="change",
@@ -414,13 +420,16 @@ def display_cell(
     currency: str | None = None,
     link_href: str | None = None,
     edit_url: str | None = None,
+    label_map: dict | None = None,
 ) -> FT:
     """Read-only cell. Double-click-to-edit fires HTMX GET to fetch editable_cell.
     Image cells support drag-and-drop upload in addition to click.
     link_href: if set, renders cell value as a clickable hyperlink (e.g. SKU -> detail page).
     edit_url: custom HTMX GET URL for editing this cell. Overrides the default
-              ``/api/items/{entity_id}/field/{field}/edit`` pattern."""
-    inner = _display_val(value, cell_type, currency)
+              ``/api/items/{entity_id}/field/{field}/edit`` pattern.
+    label_map: optional {slug: display_name} dict - if set, display_val shows the mapped name."""
+    display_value = label_map.get(value, value) if label_map and value is not None else value
+    inner = _display_val(display_value, cell_type, currency)
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
 
     if not editable:

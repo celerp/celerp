@@ -16,7 +16,7 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
-from ui.api_client import APIError
+from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
 from ui.config import get_token as _token, API_BASE as _api_base
@@ -27,28 +27,29 @@ _DEFAULT_PER_PAGE = 50
 
 _BULK_SPLIT_JS = """
 var _bulkSplitTimer = null;
-function splitRecalcMother(input) {
+function splitRecalcMotherWeight(input) {
   var form = input.closest('form');
   if (!form) return;
   var parentWeight = parseFloat(form.dataset.parentWeight || '0');
   var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
-  if (input.name === 'child_weight' || input.name === 'mother_weight') {
-    var childWInput = form.querySelector('[name="child_weight"]');
-    var motherWInput = form.querySelector('[name="mother_weight"]');
-    var childEdited = childWInput && childWInput.dataset.userEdited === '1';
-    var motherEdited = motherWInput && motherWInput.dataset.userEdited === '1';
-    if (childEdited && !motherEdited && motherWInput) {
-      motherWInput.value = Math.max(0, parentWeight - (parseFloat(childWInput.value) || 0)).toFixed(decimals);
-    } else if (motherEdited && !childEdited && childWInput) {
-      childWInput.value = Math.max(0, parentWeight - (parseFloat(motherWInput.value) || 0)).toFixed(decimals);
-    }
-  } else if (input.name === 'child_pieces') {
-    var parentPieces = parseFloat(form.dataset.parentPieces || '0');
-    var childP = parseFloat(input.value) || 0;
-    var remP = Math.max(0, parentPieces - childP);
-    var mp = form.querySelector('.mother-pieces-display');
-    if (mp) mp.textContent = String(Math.round(remP));
+  var childWInput = form.querySelector('[name="child_weight"]');
+  var motherWInput = form.querySelector('[name="mother_weight"]');
+  var childEdited = childWInput && childWInput.dataset.userEdited === '1';
+  var motherEdited = motherWInput && motherWInput.dataset.userEdited === '1';
+  if (childEdited && !motherEdited && motherWInput) {
+    motherWInput.value = Math.max(0, parentWeight - (parseFloat(childWInput.value) || 0)).toFixed(decimals);
+  } else if (motherEdited && !childEdited && childWInput) {
+    childWInput.value = Math.max(0, parentWeight - (parseFloat(motherWInput.value) || 0)).toFixed(decimals);
   }
+}
+function splitRecalcMotherPieces(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var parentPieces = parseFloat(form.dataset.parentPieces || '0');
+  var childP = parseFloat(input.value) || 0;
+  var remP = Math.max(0, parentPieces - childP);
+  var mp = form.querySelector('.mother-pieces-display');
+  if (mp) mp.textContent = String(Math.round(remP));
 }
 function bulkSplitAutoLoad() {
   var checked = document.querySelector('.row-select:checked');
@@ -217,8 +218,12 @@ async def _inventory_content(
         items = items_resp.get("items", [])
         unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
         units_map: dict[str, dict] = {u["name"]: u for u in units_resp if u.get("name")}
+        try:
+            category_label_map: dict = await api.get_category_display_names(token)
+        except Exception:
+            category_label_map = {}
     except APIError:
-        valuation, items, unit_names, units_map = {}, [], [], {}
+        valuation, items, unit_names, units_map, category_label_map = {}, [], [], {}, {}
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -254,7 +259,7 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map),
+            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map),
             hidden_fields=set(_PAIRED_TABLE.values()),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
@@ -1016,8 +1021,15 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
+        label_map: dict | None = None
+        if field == "category":
+            try:
+                label_map = await api.get_category_display_names(token)
+            except Exception:
+                label_map = None
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
-                             cell_type=cell_type, options=options, allow_custom=allow_custom)
+                             cell_type=cell_type, options=options, allow_custom=allow_custom,
+                             label_map=label_map)
 
     @app.get("/api/items/{entity_id}/field/{field}/display")
     async def field_display_cell(request: Request, entity_id: str, field: str):
@@ -1037,9 +1049,16 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import display_cell
+        label_map: dict | None = None
+        if field == "category":
+            try:
+                label_map = await api.get_category_display_names(token)
+            except Exception:
+                label_map = None
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
-                            editable=f_def.get("editable", True) if f_def else True)
+                            editable=f_def.get("editable", True) if f_def else True,
+                            label_map=label_map)
 
     _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
                                       "weight": "weight_unit", "weight_unit": "weight",
@@ -1085,6 +1104,16 @@ function celerpPrintLabel(entityId, templateId) {
 
         locations = locs_data.get("items", [])
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
+        # Category change: trigger full row reload so attribute columns update
+        if field == "category":
+            safe_id = entity_id.replace(":", "-")
+            return Div(
+                hx_get=f"/api/items/{entity_id}/row",
+                hx_trigger="load",
+                hx_target=f"#row-{safe_id}",
+                hx_swap="outerHTML",
+                style="display:none",
+            )
         # Paired fields: return the combined paired cell after save
         if field in _PAIRED_FIELDS:
             try:
@@ -1092,11 +1121,65 @@ function celerpPrintLabel(entityId, templateId) {
             except Exception:
                 pass  # fall through to single display_cell on error
         from ui.components.table import display_cell
+        try:
+            label_map = await api.get_category_display_names(token) if field == "category" else None
+        except Exception:
+            label_map = None
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
-                            editable=f_def.get("editable", True) if f_def else True)
+                            editable=f_def.get("editable", True) if f_def else True,
+                            label_map=label_map)
 
     # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit, purchase_unit+purchase_conversion_factor) ─────────
+
+    @app.get("/api/items/{entity_id}/row")
+    async def item_row(request: Request, entity_id: str):
+        """Return the full <tr> for one item. Used after category change to reload attribute columns."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            schema, item, cat_schemas, loc_resp, units_resp = await asyncio.gather(
+                api.get_item_schema(token),
+                api.get_item(token, entity_id),
+                api.get_all_category_schemas(token),
+                api.get_locations(token),
+                api.get_units(token),
+            )
+        except APIError as e:
+            return Response(str(e.detail), status_code=500)
+        unit_names = [u["name"] for u in units_resp if u.get("name")]
+        units_map = {u["name"]: u for u in units_resp if u.get("name")}
+        try:
+            category_label_map = await api.get_category_display_names(token)
+        except Exception:
+            category_label_map = {}
+        active_cat = item.get("category", "")
+        eff_schema = _effective_schema(schema, cat_schemas, active_cat)
+        col_prefs: dict = {}
+        try:
+            col_prefs = await api.get_column_prefs(token)
+        except Exception:
+            pass
+        visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
+        cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map)
+        from ui.components.table import display_cell, EMPTY
+        safe_id = entity_id.replace(":", "-")
+        flat = _flatten_item_attrs(item)
+        visible = [f for f in eff_schema if f.get("key") in set(visible_cols)] if visible_cols else eff_schema
+        cells = [
+            cell_renderers[f["key"]](entity_id, flat) if f["key"] in cell_renderers
+            else display_cell(
+                entity_id=entity_id,
+                field=f["key"],
+                value=flat.get(f["key"], ""),
+                cell_type=f.get("type", "text"),
+                options=f.get("options"),
+                editable=f.get("editable", True),
+            )
+            for f in visible
+        ]
+        return Tr(*cells, id=f"row-{safe_id}", cls="data-row")
 
     async def _paired_display(token: str, entity_id: str, field: str):
         """Return a display cell TD for the pair/triple containing `field`."""
@@ -1431,21 +1514,22 @@ function celerpPrintLabel(entityId, templateId) {
                 kwargs["max"] = max
             return Td(Input(**kwargs), cls="sp-td")
 
-        _child_oninput = "splitRecalcMother(this); this.dataset.userEdited='1'"
-        _mother_oninput = "splitRecalcMother(this); this.dataset.userEdited='1'"
+        _child_weight_oninput = "splitRecalcMotherWeight(this); this.dataset.userEdited='1'"
+        _mother_weight_oninput = "splitRecalcMotherWeight(this); this.dataset.userEdited='1'"
+        _child_pieces_oninput = "splitRecalcMotherPieces(this); this.dataset.userEdited='1'"
 
         def _parcel_row(label: str, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
                         weight_name: str | None, pieces_name: str | None, is_child: bool = False) -> FT:
             cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
             if show_weight:
                 w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
-                oi = _child_oninput if (weight_name and is_child) else (_mother_oninput if weight_name else None)
+                oi = _child_weight_oninput if (weight_name and is_child) else (_mother_weight_oninput if weight_name else None)
                 cells.append(_editable_td(weight_name, w, oninput=oi) if weight_name else _static_td(w))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
                 if is_child and pieces_name:
                     pieces_max = str(int(preview["parent_pieces"]) - 1)
-                    cells.append(_editable_td(pieces_name, p, oninput=_child_oninput, max=pieces_max))
+                    cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, max=pieces_max))
                 else:
                     # Mother pieces: static display updated by JS
                     cells.append(Td(Span(p, cls="mother-pieces-display"), cls="sp-td"))
@@ -2629,7 +2713,7 @@ def _inventory_type_tabs(p: dict) -> FT:
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "purchase_unit": "purchase_conversion_factor"}
 
 
-def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None) -> dict:
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None) -> dict:
     """Build cell_renderers dict for paired/triple columns.
 
     Handles:
@@ -2735,6 +2819,14 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 )
             return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=True)
         renderers["pieces"] = _pieces_renderer
+
+    # Category renderer: shows display name instead of slug
+    if category_label_map:
+        _clm = category_label_map
+        def _cat_renderer(entity_id: str, row: dict, _lm=_clm) -> FT:
+            return display_cell(entity_id=entity_id, field="category", value=row.get("category", ""),
+                                cell_type="select", editable=True, label_map=_lm)
+        renderers["category"] = _cat_renderer
 
     return renderers
 

@@ -5100,7 +5100,7 @@ class TestBulkActionsPhase1to5:
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_weight_has_oninput(self, ui_client):
-        """child_weight input must trigger splitRecalcMother and mark userEdited."""
+        """child_weight input must trigger splitRecalcMotherWeight and mark userEdited."""
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A3&qty=3",
@@ -5108,12 +5108,12 @@ class TestBulkActionsPhase1to5:
             )
         html = r.text
         assert 'name="child_weight"' in html
-        assert "splitRecalcMother(this)" in html
+        assert "splitRecalcMotherWeight(this)" in html
         assert "this.dataset.userEdited='1'" in html
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_mother_weight_no_recalc_oninput(self, ui_client):
-        """Both mother_weight and child_weight must trigger splitRecalcMother (bidirectional)."""
+        """Both mother_weight and child_weight must trigger splitRecalcMotherWeight (bidirectional)."""
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A4&qty=3",
@@ -5121,8 +5121,8 @@ class TestBulkActionsPhase1to5:
             )
         html = r.text
         assert 'name="mother_weight"' in html
-        # splitRecalcMother must appear on both child_weight and mother_weight (bidirectional)
-        assert html.count("splitRecalcMother(this)") == 2
+        # splitRecalcMotherWeight must appear on both child_weight and mother_weight (bidirectional)
+        assert html.count("splitRecalcMotherWeight(this)") == 2
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_js_contains_new_functions(self, ui_client):
@@ -5162,7 +5162,7 @@ class TestBulkActionsPhase1to5:
             )
         html = r.text
         assert 'name="child_pieces"' in html
-        assert "splitRecalcMother(this)" in html
+        assert "splitRecalcMotherPieces(this)" in html
         assert 'name="mother_weight"' not in html  # no weight column when has_weight=False
 
     @pytest.mark.asyncio
@@ -5184,9 +5184,11 @@ class TestBulkActionsPhase1to5:
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
         html = r.text
-        # Explicit name checks must be present (not a ternary isWeight pattern)
-        assert "input.name === 'child_weight'" in html
-        assert "input.name === 'child_pieces'" in html
+        # Separate functions must be present (not a combined ternary)
+        assert "splitRecalcMotherWeight" in html
+        assert "splitRecalcMotherPieces" in html
+        # Old coupled function must NOT be present
+        assert "function splitRecalcMother(" not in html
 
     async def test_bulk_split_save_edits_captures_all_number_inputs(self, ui_client):
         """_bulkSplitSavedEdits must save all number inputs (not just data-user-edited),
@@ -11749,3 +11751,99 @@ def test_token_refresh_middleware_propagates_cancellation():
 
 # ── Subscription UI Tests ─────────────────────────────────────────────────────
 
+
+
+# ── Bug fix tests ─────────────────────────────────────────────────────────────
+
+class TestSplitWeightPiecesIndependent:
+    """Bug 1: Weight and pieces must be decoupled in split JS."""
+
+    def test_split_weight_pieces_independent(self):
+        """JS source must have two separate functions, not the coupled splitRecalcMother."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        # Extract _BULK_SPLIT_JS value
+        start = src.index("_BULK_SPLIT_JS = ")
+        js_chunk = src[start:start + 3000]
+        assert "function splitRecalcMotherWeight" in js_chunk, "splitRecalcMotherWeight must exist"
+        assert "function splitRecalcMotherPieces" in js_chunk, "splitRecalcMotherPieces must exist"
+        assert "function splitRecalcMother(" not in js_chunk, "old coupled splitRecalcMother must be removed"
+        # child_weight oninput must reference Weight not Mother
+        assert "splitRecalcMotherWeight" in src[src.index("_child_weight_oninput"):src.index("_child_weight_oninput") + 100]
+        # child_pieces oninput must reference Pieces not Weight
+        assert "splitRecalcMotherPieces" in src[src.index("_child_pieces_oninput"):src.index("_child_pieces_oninput") + 100]
+
+
+class TestCategoryDisplayName:
+    """Bug 2: Category cells must show display names, not slug keys."""
+
+    @pytest.mark.asyncio
+    async def test_category_display_name_shown_not_slug(self, ui_client):
+        """Inventory table cell shows 'My Gems' not 'my_gems'."""
+        item = {
+            "id": "item:1", "entity_id": "item:1", "sku": "GEM-001", "name": "Ruby",
+            "quantity": 1.0, "category": "my_gems", "status": "in_stock",
+        }
+        schema = [
+            {"key": "name", "label": "Name", "type": "text", "editable": True, "show_in_table": True},
+            {"key": "category", "label": "Category", "type": "select", "editable": True, "show_in_table": True},
+        ]
+        cat_schemas = {"my_gems": [{"key": "color", "type": "text", "label": "Color"}]}
+        display_names = {"my_gems": "My Gems"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value=display_names)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        # Category cell must show display name
+        assert "My Gems" in html
+        # Raw slug must NOT appear in a cell context
+        # (slug may appear in filter URLs but not as visible cell text)
+        # Check: "my_gems" should not appear as visible cell text in a td
+        import re as _re
+        cell_matches = _re.findall(r'<td[^>]*>[^<]*my_gems[^<]*</td>', html)
+        assert not cell_matches, f"Slug 'my_gems' found in table cells: {cell_matches}"
+
+
+class TestCategoryChangeRowReload:
+    """Bug 3: Changing category must trigger full row reload, not just td swap."""
+
+    @pytest.mark.asyncio
+    async def test_category_change_returns_row_reload_trigger(self, ui_client):
+        """PATCH field/category response must contain hx-get pointing to /row endpoint."""
+        item = {
+            "id": "item:1", "entity_id": "item:1", "sku": "GEM-001", "name": "Ruby",
+            "quantity": 1.0, "category": "gems", "status": "in_stock",
+        }
+        cat_schemas = {"gems": [], "my_gems": []}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/item:1/field/category",
+                data={"value": "my_gems"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        # Must trigger row reload - either hx-get to /row or HX-Retarget header
+        has_row_reload = (
+            "/row" in html
+            or "HX-Retarget" in r.headers
+            or "hx-retarget" in r.headers
+        )
+        assert has_row_reload, f"Expected row reload trigger, got: {html[:300]}"
