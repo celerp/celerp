@@ -5210,6 +5210,56 @@ class TestBulkActionsPhase1to5:
         # Must exclude child_qty from restore
         assert "child_qty" in html.split("_bulkSplitSavedEdits")[1].split("_bulkSplitRestoreEdits")[0]
 
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_child_qty_has_max_attr(self, ui_client):
+        """child_qty input must carry a max= attribute equal to parent_qty - 1 step."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_PIECES)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A9&qty=5",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        # parent_qty=20, unit_decimals=0 → max=19
+        assert 'name="child_qty"' in html
+        assert "max=" in html.split('name="child_qty"')[0].split('name="child_sku"')[-1] or \
+               "max=" in html.split('name="child_qty"')[1].split(">")[0]
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_child_pieces_has_max_attr(self, ui_client):
+        """child_pieces input must carry max= parent_pieces - 1 when pieces column shown."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_PIECES)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A10&qty=5",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        # parent_pieces=40 → max=39
+        assert 'name="child_pieces"' in html
+        assert 'max="39"' in html
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_rejects_child_pieces_exceeding_parent(self, ui_client):
+        """POST split with child_pieces >= parent pieces must return 200 warning flash."""
+        item = {
+            "entity_id": "item:pieces-1", "sku": "BOX-001", "quantity": 20.0,
+            "weight": None, "attributes": {"pieces": 40},
+        }
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.split_item", new=AsyncMock()),
+        ):
+            r = await ui_client.post(
+                "/api/items/bulk/split",
+                content=b"entity_id=item%3Apieces-1&child_qty=5&child_pieces=40",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert "flash--warning" in r.text
+        assert "pieces" in r.text.lower()
+
 
 class TestBulkSelectionClear:
     """Regression: after destructive bulk actions (merge/delete/expire/archive/transfer),

@@ -3255,14 +3255,14 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
             )
 
         add_row = Tr(
-            Td(colspan="9",
-               cls="p-sm",
-               children=[
-                   Button(t("btn.add_field"), cls="btn btn--secondary btn--xs",
-                          hx_post=f"/settings/cat-schema/{enc}/add",
-                          hx_swap="none",
-                          hx_on__after_request=f"window.location.href='/settings/inventory?tab=category-library&cat={cat_tab}'"),
-               ]),
+            Td(
+                Button(t("btn.add_field"), cls="btn btn--secondary btn--xs",
+                       hx_post=f"/settings/cat-schema/{enc}/add",
+                       hx_swap="none",
+                       hx_on__after_request=f"window.location.href='/settings/inventory?tab=category-library&cat={cat_tab}'"),
+                colspan="9",
+                cls="p-sm",
+            ),
         )
 
         return Div(
@@ -4047,18 +4047,18 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
             for name in sorted(applied_names)
         ]
         add_row = Tr(
-            Td(colspan="3", cls="cell",
-               children=[
-                   Form(
-                       Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
-                             cls="form-input form-input--sm"),
-                       Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
-                       hx_post="/settings/categories",
-                       hx_target="#vert-applied-panel",
-                       hx_swap="outerHTML",
-                       cls="cat-add-form",
-                   ),
-               ]),
+            Td(
+                Form(
+                    Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
+                          cls="form-input form-input--sm"),
+                    Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                    hx_post="/settings/categories",
+                    hx_target="#vert-applied-panel",
+                    hx_swap="outerHTML",
+                    cls="cat-add-form",
+                ),
+                colspan="3", cls="cell",
+            ),
         )
         applied_content = Table(
             Thead(Tr(Th(t("th.schema")), Th(""), Th(""))),

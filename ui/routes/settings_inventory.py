@@ -196,12 +196,13 @@ def _categories_tab(
             )
 
         add_row = Tr(
-            Td(colspan="9", cls="p-sm", children=[
+            Td(
                 Button(t("btn.add_field"), cls="btn btn--secondary btn--xs",
                        hx_post=f"/settings/cat-schema/{enc}/add",
                        hx_swap="none",
                        hx_on__after_request=f"window.location.href='/settings/inventory?tab=categories&cat={enc}'"),
-            ]),
+                colspan="9", cls="p-sm",
+            ),
         )
 
         return Div(
@@ -257,7 +258,7 @@ def _categories_tab(
             for name in sorted(applied_names)
         ]
         add_row = Tr(
-            Td(colspan="3", cls="cell", children=[
+            Td(
                 Form(
                     Input(type="text", name="new_category_name",
                           placeholder=t("settings.new_category_name"),
@@ -268,7 +269,8 @@ def _categories_tab(
                     hx_swap="outerHTML",
                     cls="cat-add-form",
                 ),
-            ]),
+                colspan="3", cls="cell",
+            ),
         )
         your_cats_body = Table(
             Thead(Tr(Th(t("th.category")), Th("Fields", cls="th--center your-cats-fields"), Th("", cls="th--action your-cats-action"))),

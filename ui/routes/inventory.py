@@ -1412,10 +1412,12 @@ function celerpPrintLabel(entityId, templateId) {
         def _static_td(val: str) -> FT:
             return Td(val, cls="sp-td")
 
-        def _editable_td(name: str, val: str, oninput: str | None = None) -> FT:
+        def _editable_td(name: str, val: str, oninput: str | None = None, max: str | None = None) -> FT:
             kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
             if oninput:
                 kwargs["oninput"] = oninput
+            if max is not None:
+                kwargs["max"] = max
             return Td(Input(**kwargs), cls="sp-td")
 
         _child_oninput = "splitRecalcMother(this); this.dataset.userEdited='1'"
@@ -1431,7 +1433,8 @@ function celerpPrintLabel(entityId, templateId) {
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
                 oi = _child_oninput if (pieces_name and is_child) else (_mother_oninput if pieces_name else None)
-                cells.append(_editable_td(pieces_name, p, oninput=oi) if pieces_name else _static_td(p))
+                pieces_max = str(int(preview["parent_pieces"]) - 1) if (pieces_name and is_child) else None
+                cells.append(_editable_td(pieces_name, p, oninput=oi, max=pieces_max) if pieces_name else _static_td(p))
             return Tr(*cells)
 
         mother_qty_remaining = preview.get("parent_qty_remaining", preview.get("parent_qty", 0))
@@ -1452,6 +1455,7 @@ function celerpPrintLabel(entityId, templateId) {
                      cls="form-input sp-sku-input",
                      oninput="bulkSplitSkuChanged(this)"), cls="sp-td"),
             Td(Input(type="number", name="child_qty", value=child_qty_val, step="any", min="0.001",
+                     max=fmt.format(preview["parent_qty"] - 10 ** -decimals if decimals > 0 else preview["parent_qty"] - 1),
                      cls="form-input form-input--xs sp-input",
                      onchange="bulkSplitChildQtyChanged(this)"), cls="sp-td"),
             preview.get("child_weight_default"),
@@ -1534,6 +1538,12 @@ function celerpPrintLabel(entityId, templateId) {
         child_pieces = _opt_float("child_pieces")
         mother_weight = _opt_float("mother_weight")
         mother_pieces = _opt_float("mother_pieces")
+
+        if child_pieces is not None:
+            parent_pieces_raw = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
+            parent_pieces_val = float(parent_pieces_raw) if parent_pieces_raw is not None else None
+            if parent_pieces_val is not None and child_pieces >= parent_pieces_val:
+                return Div(P(f"Child pieces ({int(child_pieces)}) must be less than parent pieces ({int(parent_pieces_val)}).", cls="flash flash--warning"), id="bulk-action-result")
 
         child: dict = {"sku": child_sku, "quantity": split_qty}
         if child_weight is not None:
