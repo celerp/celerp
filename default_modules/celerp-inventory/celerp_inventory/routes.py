@@ -126,7 +126,7 @@ class SplitChild(BaseModel):
 
 class SplitBody(BaseModel):
     children: list[SplitChild]
-    mother_weight: float | None = None   # optional override for parent weight after split
+    # mother_weight removed - computed server-side as parent_weight - sum(child weights)
     mother_pieces: float | None = None   # optional override for parent pieces after split
     idempotency_key: str | None = None
 
@@ -725,6 +725,12 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if new_inv_type not in VALID_INVENTORY_TYPES:
             raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
 
+    # Validate weight is non-negative
+    if "weight" in changed_keys:
+        new_weight = (payload.fields_changed["weight"] or {}).get("new")
+        if new_weight is not None and float(new_weight) < 0:
+            raise HTTPException(status_code=422, detail="Weight cannot be negative")
+
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -883,13 +889,21 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     unit_cfg = unit_map.get(parent_sell_by)
     decimals = unit_cfg["decimals"] if unit_cfg else 0
 
+    parent_weight_raw = parent.state.get("weight")
+    parent_weight: float | None = float(parent_weight_raw) if parent_weight_raw is not None else None
+    parent_weight_unit = parent.state.get("weight_unit") or "gram"
+    weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
+    weight_decimals = weight_unit_cfg.get("decimals", 2)
+
     children = payload.children
     if len(children) < 1:
         raise HTTPException(status_code=422, detail="Split requires at least 1 child")
 
-    # Validate each child quantity
+    # Validate each child quantity and weight
     for child in children:
         validate_quantity(child.quantity, decimals)
+        if child.weight is not None and child.weight < 0:
+            raise HTTPException(status_code=422, detail="Child weight cannot be negative")
 
     # Validate total <= parent qty
     total_child_qty = sum(c.quantity for c in children)
@@ -1012,16 +1026,21 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         metadata_={},
     )
 
-    # Apply mother parcel overrides: weight from payload, pieces computed server-side
+    # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
     if parent_pieces is not None:
         total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
         computed_mother_pieces = parent_pieces - total_child_pieces
 
-    if payload.mother_weight is not None or computed_mother_pieces is not None:
+    computed_mother_weight: float | None = None
+    if parent_weight is not None:
+        total_child_weight = sum(c.weight for c in payload.children if c.weight is not None)
+        computed_mother_weight = round(parent_weight - total_child_weight, weight_decimals)
+
+    if computed_mother_weight is not None or computed_mother_pieces is not None:
         fields_changed: dict[str, dict] = {}
-        if payload.mother_weight is not None:
-            fields_changed["weight"] = {"old": parent.state.get("weight"), "new": payload.mother_weight}
+        if computed_mother_weight is not None:
+            fields_changed["weight"] = {"old": parent.state.get("weight"), "new": computed_mother_weight}
         if computed_mother_pieces is not None:
             new_attrs = dict(parent_attrs)
             new_attrs["pieces"] = computed_mother_pieces

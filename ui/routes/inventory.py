@@ -32,21 +32,20 @@ function splitRecalcMotherWeight(input) {
   if (!form) return;
   var parentWeight = parseFloat(form.dataset.parentWeight || '0');
   var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
-  var childWInput = form.querySelector('[name="child_weight"]');
-  var motherWInput = form.querySelector('[name="mother_weight"]');
-  var childEdited = childWInput && childWInput.dataset.userEdited === '1';
-  var motherEdited = motherWInput && motherWInput.dataset.userEdited === '1';
-  if (childEdited && !motherEdited && motherWInput) {
-    motherWInput.value = Math.max(0, parentWeight - (parseFloat(childWInput.value) || 0)).toFixed(decimals);
-  } else if (motherEdited && !childEdited && childWInput) {
-    childWInput.value = Math.max(0, parentWeight - (parseFloat(motherWInput.value) || 0)).toFixed(decimals);
-  }
+  // Clamp child to [0, parentWeight]
+  var childVal = Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
+  input.value = childVal.toFixed(decimals);
+  var mw = form.querySelector('.mother-weight-display');
+  if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
 }
 function splitRecalcMotherPieces(input) {
   var form = input.closest('form');
   if (!form) return;
   var parentPieces = parseFloat(form.dataset.parentPieces || '0');
-  var childP = parseFloat(input.value) || 0;
+  var maxVal = Math.max(0, parentPieces - 1);
+  // Clamp immediately on input
+  var childP = Math.min(Math.max(0, parseFloat(input.value) || 0), maxVal);
+  input.value = String(Math.round(childP));
   var remP = Math.max(0, parentPieces - childP);
   var mp = form.querySelector('.mother-pieces-display');
   if (mp) mp.textContent = String(Math.round(remP));
@@ -1104,16 +1103,41 @@ function celerpPrintLabel(entityId, templateId) {
 
         locations = locs_data.get("items", [])
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
-        # Category change: trigger full row reload so attribute columns update
+        # Category change: context-aware response
         if field == "category":
             safe_id = entity_id.replace(":", "-")
-            return Div(
-                hx_get=f"/api/items/{entity_id}/row",
-                hx_trigger="load",
-                hx_target=f"#row-{safe_id}",
-                hx_swap="outerHTML",
-                style="display:none",
-            )
+            current_url = request.headers.get("hx-current-url", "")
+            if "/inventory/item:" in current_url:
+                # Detail page: return display cell + OOB reload of attributes section
+                try:
+                    label_map = await api.get_category_display_names(token)
+                except Exception:
+                    label_map = {}
+                f_def2, cell_type2, options2, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
+                from ui.components.table import display_cell
+                cat_cell = display_cell(
+                    entity_id=entity_id, field=field, value=item.get(field, ""),
+                    cell_type=cell_type2, options=options2,
+                    editable=f_def2.get("editable", True) if f_def2 else True,
+                    label_map=label_map,
+                )
+                oob_reload = Div(
+                    hx_get=f"/api/items/{entity_id}/attributes-section",
+                    hx_trigger="load",
+                    hx_swap="outerHTML",
+                    hx_swap_oob="true",
+                    id="item-attributes-section",
+                )
+                return cat_cell, oob_reload
+            else:
+                # List page: row reload
+                return Div(
+                    hx_get=f"/api/items/{entity_id}/row",
+                    hx_trigger="load",
+                    hx_target=f"#row-{safe_id}",
+                    hx_swap="outerHTML",
+                    style="display:none",
+                )
         # Paired fields: return the combined paired cell after save
         if field in _PAIRED_FIELDS:
             try:
@@ -1131,6 +1155,51 @@ function celerpPrintLabel(entityId, templateId) {
                             label_map=label_map)
 
     # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit, purchase_unit+purchase_conversion_factor) ─────────
+
+    @app.get("/api/items/{entity_id}/attributes-section")
+    async def item_attributes_section(request: Request, entity_id: str):
+        """Return the attributes detail-card for an item. Used by detail page after category change."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            schema, item, cat_schemas, price_lists = await asyncio.gather(
+                api.get_item_schema(token),
+                api.get_item(token, entity_id),
+                api.get_all_category_schemas(token),
+                api.get_price_lists(token),
+            )
+        except APIError as e:
+            return Response(str(e.detail), status_code=500)
+        # Build category options
+        cat_names = sorted(cat_schemas.keys())
+        schema = [
+            {**f, "type": "select", "options": cat_names} if f.get("key") == "category" else f
+            for f in schema
+        ]
+        # Merge category-specific fields
+        item_cat = item.get("category", "")
+        if item_cat and item_cat in cat_schemas:
+            global_keys = {f["key"] for f in schema}
+            extra = [f for f in cat_schemas[item_cat] if f["key"] not in global_keys]
+            schema = schema + extra
+        # Build pricing_keys to exclude from detail_fields
+        pl_names = {pl.get("name", "") for pl in price_lists}
+        pl_conventional = {f"{n.lower()}_price" for n in pl_names}
+        pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
+        core_keys = {"sku", "name", "status", "category", "quantity", "weight", "weight_unit", "sell_by", "allow_splitting", "barcode", "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor"}
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys]
+        right = [f for f in detail_fields if f.get("key") not in core_keys]
+        currency = None
+        try:
+            company = await api.get_company(token)
+            currency = company.get("currency")
+        except Exception:
+            pass
+        return Div(
+            _detail_table(entity_id, item, right, title="Attributes", currency=currency),
+            id="item-attributes-section",
+        )
 
     @app.get("/api/items/{entity_id}/row")
     async def item_row(request: Request, entity_id: str):
@@ -1506,16 +1575,17 @@ function celerpPrintLabel(entityId, templateId) {
         def _static_td(val: str) -> FT:
             return Td(val, cls="sp-td")
 
-        def _editable_td(name: str, val: str, oninput: str | None = None, max: str | None = None) -> FT:
+        def _editable_td(name: str, val: str, oninput: str | None = None, max: str | None = None, min: str | None = None) -> FT:
             kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
             if oninput:
                 kwargs["oninput"] = oninput
             if max is not None:
                 kwargs["max"] = max
+            if min is not None:
+                kwargs["min"] = min
             return Td(Input(**kwargs), cls="sp-td")
 
-        _child_weight_oninput = "splitRecalcMotherWeight(this); this.dataset.userEdited='1'"
-        _mother_weight_oninput = "splitRecalcMotherWeight(this); this.dataset.userEdited='1'"
+        _child_weight_oninput = "splitRecalcMotherWeight(this)"
         _child_pieces_oninput = "splitRecalcMotherPieces(this); this.dataset.userEdited='1'"
 
         def _parcel_row(label: str, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
@@ -1523,8 +1593,11 @@ function celerpPrintLabel(entityId, templateId) {
             cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
             if show_weight:
                 w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
-                oi = _child_weight_oninput if (weight_name and is_child) else (_mother_weight_oninput if weight_name else None)
-                cells.append(_editable_td(weight_name, w, oninput=oi) if weight_name else _static_td(w))
+                if weight_name and is_child:
+                    cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, min="0"))
+                else:
+                    # Mother: static display, updated by JS
+                    cells.append(Td(Span(w, cls="mother-weight-display"), cls="sp-td"))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
                 if is_child and pieces_name:
@@ -1542,7 +1615,7 @@ function celerpPrintLabel(entityId, templateId) {
             _static_td(fmt.format(mother_qty_remaining)),
             preview.get("parent_weight_remaining"),
             preview.get("parent_pieces_remaining"),
-            weight_name="mother_weight" if show_weight else None,
+            weight_name=None,  # mother weight is always static display
             pieces_name=None,  # mother_pieces is computed server-side; show as static display
             is_child=False,
         )
@@ -1634,7 +1707,6 @@ function celerpPrintLabel(entityId, templateId) {
 
         child_weight = _opt_float("child_weight")
         child_pieces = _opt_float("child_pieces")
-        mother_weight = _opt_float("mother_weight")
         mother_pieces = _opt_float("mother_pieces")
 
         if child_pieces is not None:
@@ -1651,7 +1723,7 @@ function celerpPrintLabel(entityId, templateId) {
             child["attributes"] = {"pieces": child_pieces}
 
         try:
-            await api.split_item(token, eid, [child], mother_weight=mother_weight, mother_pieces=mother_pieces)
+            await api.split_item(token, eid, [child], mother_pieces=mother_pieces)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
 
@@ -3326,7 +3398,10 @@ def _item_detail_tabs(
         right = [f for f in detail_fields if f.get("key") not in core_keys]
         panel = Div(
             _detail_table(entity_id, item, left, title="Core Details", currency=currency),
-            _detail_table(entity_id, item, right, title="Attributes", currency=currency) if right else "",
+            Div(
+                _detail_table(entity_id, item, right, title="Attributes", currency=currency),
+                id="item-attributes-section",
+            ) if right else Div(id="item-attributes-section"),
             cls="detail-grid",
         )
     return Div(

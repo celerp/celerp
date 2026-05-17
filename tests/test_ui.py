@@ -5100,7 +5100,7 @@ class TestBulkActionsPhase1to5:
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_weight_has_oninput(self, ui_client):
-        """child_weight input must trigger splitRecalcMotherWeight and mark userEdited."""
+        """child_weight input must trigger splitRecalcMotherWeight."""
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A3&qty=3",
@@ -5109,20 +5109,20 @@ class TestBulkActionsPhase1to5:
         html = r.text
         assert 'name="child_weight"' in html
         assert "splitRecalcMotherWeight(this)" in html
-        assert "this.dataset.userEdited='1'" in html
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_mother_weight_no_recalc_oninput(self, ui_client):
-        """Both mother_weight and child_weight must trigger splitRecalcMotherWeight (bidirectional)."""
+        """Mother weight must be static display (not editable input); child_weight triggers splitRecalcMotherWeight."""
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A4&qty=3",
                 cookies=_authed(),
             )
         html = r.text
-        assert 'name="mother_weight"' in html
-        # splitRecalcMotherWeight must appear on both child_weight and mother_weight (bidirectional)
-        assert html.count("splitRecalcMotherWeight(this)") == 2
+        assert 'name="mother_weight"' not in html, "mother_weight must not be an editable input"
+        assert "mother-weight-display" in html, "mother-weight-display span must be present"
+        # splitRecalcMotherWeight must appear only on child_weight (not bidirectional)
+        assert html.count("splitRecalcMotherWeight(this)") == 1
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_js_contains_new_functions(self, ui_client):
@@ -11847,3 +11847,97 @@ class TestCategoryChangeRowReload:
             or "hx-retarget" in r.headers
         )
         assert has_row_reload, f"Expected row reload trigger, got: {html[:300]}"
+
+
+class TestSplitMotherWeightStatic:
+    """Bug 3: Mother weight must be static display, not editable input."""
+
+    _SPLIT_PREVIEW_WEIGHT = {
+        "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
+        "parent_qty_remaining": 7.0, "child_sku": "GEM-001.1", "child_qty": 3.0,
+        "sell_by": "carat", "sell_by_label": "ct", "unit_decimals": 2,
+        "is_weight_unit": True, "has_weight": True, "has_pieces": False,
+        "parent_weight": 50.0, "parent_weight_remaining": 35.0,
+        "child_weight_default": 15.0, "weight_decimals": 2,
+    }
+
+    @pytest.mark.asyncio
+    async def test_split_mother_weight_is_static_not_input(self, ui_client):
+        """Mother weight must render as .mother-weight-display span, not an input."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A10&qty=3",
+                cookies=_authed(),
+            )
+        html = r.text
+        assert 'name="mother_weight"' not in html, "mother_weight must not be an editable input"
+        assert "mother-weight-display" in html, "mother-weight-display span must be present"
+
+    def test_split_weight_js_clamps_child(self):
+        """splitRecalcMotherWeight must clamp child weight using Math.min and Math.max."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        start = src.index("_BULK_SPLIT_JS = ")
+        js_chunk = src[start:start + 3000]
+        assert "Math.min" in js_chunk, "splitRecalcMotherWeight must clamp with Math.min"
+        assert "Math.max" in js_chunk, "splitRecalcMotherWeight must clamp with Math.max"
+
+
+class TestSplitPiecesClamp:
+    """Bug 2: splitRecalcMotherPieces must clamp input immediately."""
+
+    def test_split_pieces_js_clamps_on_input(self):
+        """splitRecalcMotherPieces must contain Math.min clamping."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        start = src.index("function splitRecalcMotherPieces")
+        end = src.index("}", start) + 1
+        # Find the full function body
+        depth = 0
+        i = src.index("{", start)
+        while i < len(src):
+            if src[i] == "{":
+                depth += 1
+            elif src[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+            i += 1
+        fn_body = src[start:end]
+        assert "Math.min" in fn_body, f"splitRecalcMotherPieces must clamp with Math.min, got: {fn_body}"
+
+
+class TestCategoryDetailPagePatch:
+    """Bug 1: Category field_patch on detail page must not use row-reload approach."""
+
+    @pytest.mark.asyncio
+    async def test_category_field_patch_detail_page_returns_display_cell(self, ui_client):
+        """On detail page, category patch must NOT return hx-get to /row, must return display cell."""
+        item = {
+            "id": "item:99", "entity_id": "item:99", "sku": "CAT-D-001", "name": "Ring",
+            "quantity": 1.0, "category": "jewelry", "status": "in_stock",
+        }
+        cat_schemas = {"jewelry": [], "gems": []}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={"jewelry": "Jewelry", "gems": "Gems"})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/item:99/field/category",
+                data={"value": "gems"},
+                cookies=_authed(),
+                headers={"HX-Current-URL": "http://localhost/inventory/item:99"},
+            )
+        assert r.status_code == 200
+        html = r.text
+        # Must NOT use the list-page row-reload pattern
+        assert 'hx-get="/api/items/item:99/row"' not in html, \
+            "Detail page category patch must NOT trigger row reload"
+        # Must contain the attributes-section OOB reload
+        assert "item-attributes-section" in html, \
+            "Detail page category patch must trigger attributes section reload"

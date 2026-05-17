@@ -1141,3 +1141,64 @@ async def test_split_item_mother_pieces_computed(client):
     state = rp.json()
     mother_pieces = state.get("pieces") or (state.get("attributes") or {}).get("pieces")
     assert int(mother_pieces) == 4, f"Expected mother_pieces=4, got {mother_pieces}"
+
+
+# ---------------------------------------------------------------------------
+# Bug 4: Negative weights rejected
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_patch_item_negative_weight_rejected(client):
+    """PATCH weight=-1 must return 422."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "NEG-W-001", "name": "Test", "quantity": 1.0, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+    r2 = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"weight": {"old": None, "new": -1}},
+    }, headers=h)
+    assert r2.status_code == 422, f"Expected 422, got {r2.status_code}: {r2.text}"
+
+
+@pytest.mark.asyncio
+async def test_split_negative_child_weight_rejected(client):
+    """Split with child weight=-1 must return 422."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "NEG-CW-001", "name": "Parent", "quantity": 10.0, "sell_by": "piece", "weight": 100.0,
+    }, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+    r2 = await client.post(f"/items/{item_id}/split", json={
+        "children": [{"sku": "NEG-CW-001.1", "quantity": 3.0, "weight": -1}],
+    }, headers=h)
+    assert r2.status_code == 422, f"Expected 422, got {r2.status_code}: {r2.text}"
+
+
+# ---------------------------------------------------------------------------
+# Bug 3: Weight conservation (mother weight computed server-side)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_split_mother_weight_computed_server_side(client):
+    """After split, parent weight = original_weight - child_weight (server-computed)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "MW-CS-001", "name": "Gem", "quantity": 10.0,
+        "sell_by": "carat", "weight": 50.0,
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "MW-CS-001.1", "quantity": 4.0, "weight": 20.0}],
+    }, headers=h)
+    assert r2.status_code == 200, f"Split failed: {r2.text}"
+    rp = await client.get(f"/items/{parent_id}", headers=h)
+    parent_state = rp.json()
+    assert abs(float(parent_state.get("weight", 0)) - 30.0) < 0.01, \
+        f"Expected mother weight=30.0, got {parent_state.get('weight')}"
