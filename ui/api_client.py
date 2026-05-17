@@ -1242,10 +1242,8 @@ async def create_item(token: str, data: dict) -> dict:
         return _raise(await c.post("/items", json=data)).json()
 
 
-async def split_item(token: str, entity_id: str, children: list[dict], mother_pieces: float | None = None) -> dict:
+async def split_item(token: str, entity_id: str, children: list[dict]) -> dict:
     body: dict = {"children": children}
-    if mother_pieces is not None:
-        body["mother_pieces"] = mother_pieces
     async with _client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/split", json=body)).json()
 

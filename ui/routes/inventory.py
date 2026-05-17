@@ -1671,7 +1671,6 @@ function celerpPrintLabel(entityId, templateId) {
 
         child_weight = _opt_float("child_weight")
         child_pieces = _opt_float("child_pieces")
-        mother_pieces = _opt_float("mother_pieces")
 
         if child_pieces is not None:
             parent_pieces_raw = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
@@ -1687,7 +1686,7 @@ function celerpPrintLabel(entityId, templateId) {
             child["attributes"] = {"pieces": child_pieces}
 
         try:
-            await api.split_item(token, eid, [child], mother_pieces=mother_pieces)
+            await api.split_item(token, eid, [child])
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
 
@@ -2054,22 +2053,7 @@ function celerpPrintLabel(entityId, templateId) {
                 for i, qty in enumerate(quantities, start=1):
                     children.append({"sku": f"{prefix}{max_suffix + i}", "quantity": qty})
             else:
-                # Legacy format: child_sku_N / child_qty_N pairs (children only, not parent)
-                children = []
-                idx = 0
-                while True:
-                    sku = str(form.get(f"child_sku_{idx}", "")).strip()
-                    qty_raw = str(form.get(f"child_qty_{idx}", "")).strip()
-                    if not sku and not qty_raw:
-                        break
-                    if sku and qty_raw:
-                        try:
-                            children.append({"sku": sku, "quantity": float(qty_raw)})
-                        except ValueError:
-                            return Div(Span(f"Invalid quantity for child {idx+1}", cls="flash flash--error"), id="item-action-error")
-                    idx += 1
-                if not children:
-                    return Div(Span(t("inv.enter_commaseparated_quantities_eg_321"), cls="flash flash--error"), id="item-action-error")
+                return Div(Span(t("inv.enter_commaseparated_quantities_eg_321"), cls="flash flash--error"), id="item-action-error")
         if len(children) < 1:
             return Div(Span(t("inv.enter_at_least_one_split_quantity"), cls="flash flash--error"), id="item-action-error")
         try:

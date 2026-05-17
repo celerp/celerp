@@ -126,8 +126,6 @@ class SplitChild(BaseModel):
 
 class SplitBody(BaseModel):
     children: list[SplitChild]
-    # mother_weight removed - computed server-side as parent_weight - sum(child weights)
-    mother_pieces: float | None = None   # optional override for parent pieces after split
     idempotency_key: str | None = None
 
 
@@ -795,7 +793,6 @@ async def split_preview(
     unit_map = {u["name"]: u for u in units}
     unit_cfg = unit_map.get(parent_sell_by) or {}
     decimals = unit_cfg.get("decimals", 0)
-    is_weight = unit_cfg.get("unit_type") == "weight"
     sell_by_label = unit_cfg.get("label", parent_sell_by)
 
     parent_weight_unit = parent.state.get("weight_unit") or "gram"
@@ -830,7 +827,6 @@ async def split_preview(
         "sell_by_label": sell_by_label,
         "unit_decimals": decimals,
         "weight_decimals": weight_decimals,
-        "is_weight_unit": is_weight,
         "has_weight": parent_weight is not None,
         "has_pieces": parent_pieces is not None,
         "cannot_split": (decimals == 0 and parent_qty <= 1),
@@ -951,9 +947,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         }
         if child.weight is not None:
             child_data["weight"] = child.weight
-        elif parent.state.get("weight") is not None:
-            # proportional default if not overridden
-            child_data["weight"] = round(child.quantity / parent_qty * float(parent.state["weight"]), 6)
         if parent_category:
             child_data["category"] = parent_category
         if parent_location_id:

@@ -365,6 +365,37 @@ _SCHEMA = [
 ]
 _ITEM = {"entity_id": "gc:123", "name": "Ruby", "status": "available", "total_cost": "1500.00"}
 
+# ---------------------------------------------------------------------------
+# Split preview fixtures - canonical, stale keys removed
+# These match the current split_preview API contract (no proportional defaults,
+# no _remaining / _default keys, no is_weight_unit).
+# ---------------------------------------------------------------------------
+_SPLIT_PREVIEW_WEIGHT = {
+    "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
+    "child_sku": "GEM-001.1",
+    "sell_by": "gram", "sell_by_label": "g", "unit_decimals": 2,
+    "weight_decimals": 4,
+    "has_weight": True, "has_pieces": False,
+    "parent_weight": 5.0,
+}
+_SPLIT_PREVIEW_PIECES = {
+    "parent_sku": "BOX-001", "parent_name": "Box", "parent_qty": 20.0,
+    "child_sku": "BOX-001.1",
+    "sell_by": "piece", "sell_by_label": "pc", "unit_decimals": 0,
+    "weight_decimals": 2,
+    "has_weight": False, "has_pieces": True,
+    "parent_pieces": 40,
+}
+# Carat variant: sell_by=carat, heavier weight, used by TestSplitMotherWeightStatic
+_SPLIT_PREVIEW_WEIGHT_CT = {
+    "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
+    "child_sku": "GEM-001.1",
+    "sell_by": "carat", "sell_by_label": "ct", "unit_decimals": 2,
+    "weight_decimals": 2,
+    "has_weight": True, "has_pieces": False,
+    "parent_weight": 50.0,
+}
+
 
 class TestClickToEdit:
 
@@ -3628,10 +3659,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
             patch("ui.api_client.split_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "3",
-                "child_sku_1": "SKU-B", "child_qty_1": "2",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
 
@@ -3643,26 +3671,24 @@ class TestSprint5ItemActions:
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=_mock),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "3",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3"}, cookies=_authed())
         assert r.status_code == 204
-        assert captured['children'] == [{"sku": "SKU-A", "quantity": 3.0}]
+        assert len(captured['children']) == 1
+        assert captured['children'][0]["quantity"] == 3.0
 
     @pytest.mark.asyncio
     async def test_split_item_route_invalid_quantities(self, ui_client):
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "abc",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "abc"}, cookies=_authed())
         assert r.status_code == 200
         assert b"Invalid" in r.content
 
     @pytest.mark.asyncio
     async def test_split_item_route_too_few_parts(self, ui_client):
-        """Split with no children (empty legacy form) returns error."""
+        """Split with no children (empty form) returns error."""
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
             r = await ui_client.post("/api/items/gc:123/split", data={}, cookies=_authed())
         assert r.status_code == 200
@@ -3673,12 +3699,10 @@ class TestSprint5ItemActions:
         from ui.api_client import APIError
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=AsyncMock(side_effect=APIError(400, "bad split"))),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "3",
-                "child_sku_1": "SKU-B", "child_qty_1": "2",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
         assert r.status_code == 200
         assert b"bad split" in r.content
 
@@ -4151,12 +4175,10 @@ class TestItemActionRouteCompleteness:
     async def test_split_redirects_to_filtered_view(self, ui_client):
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "3",
-                "child_sku_1": "SKU-B", "child_qty_1": "2",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
         assert "/inventory?q=PARENT-001" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
@@ -4167,16 +4189,12 @@ class TestItemActionRouteCompleteness:
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 20})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=_mock),
         ):
-            await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "A", "child_qty_0": "5",
-                "child_sku_1": "B", "child_qty_1": "3",
-                "child_sku_2": "C", "child_qty_2": "2",
-            }, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/split", data={"parts": "5,3,2"}, cookies=_authed())
         assert len(captured["children"]) == 3
-        assert [c["quantity"] for c in captured["children"]] == [5.0, 3.0, 2.0]
-        assert [c["sku"] for c in captured["children"]] == ["A", "B", "C"]
+        assert sorted(c["quantity"] for c in captured["children"]) == [2.0, 3.0, 5.0]
 
     # ── merge (additional coverage) ──────────────────────────────────────────
 
@@ -5051,30 +5069,12 @@ class TestBulkActionsPhase1to5:
 
     # ── Phase 4: bulk split preview - data attrs + oninput (4a + 4b) ─────
 
-    _SPLIT_PREVIEW_WEIGHT = {
-        "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
-        "parent_qty_remaining": 7.0, "child_sku": "GEM-001.1", "child_qty": 3.0,
-        "sell_by": "gram", "sell_by_label": "g", "unit_decimals": 2,
-        "weight_decimals": 4,
-        "is_weight_unit": True, "has_weight": True, "has_pieces": False,
-        "parent_weight": 5.0, "parent_weight_remaining": 3.5,
-        "child_weight_default": 1.5,
-    }
-    _SPLIT_PREVIEW_PIECES = {
-        "parent_sku": "BOX-001", "parent_name": "Box", "parent_qty": 20.0,
-        "parent_qty_remaining": 15.0, "child_sku": "BOX-001.1", "child_qty": 5.0,
-        "sell_by": "piece", "sell_by_label": "pc", "unit_decimals": 0,
-        "weight_decimals": 2,
-        "is_weight_unit": False, "has_weight": False, "has_pieces": True,
-        "parent_pieces": 40, "parent_pieces_remaining": 30,
-        "child_pieces_default": 10,
-    }
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_has_data_parent_weight(self, ui_client):
         """Form element must carry data-parent-weight and data-weight-decimals
         when preview has has_weight=True."""
-        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A1&qty=3",
                 cookies=_authed(),
@@ -5088,7 +5088,7 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_has_data_parent_pieces(self, ui_client):
         """data-parent-pieces rendered when has_pieces=True; data-parent-weight absent."""
-        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_PIECES)):
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A2&qty=5",
                 cookies=_authed(),
@@ -5101,7 +5101,7 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_weight_has_oninput(self, ui_client):
         """child_weight input must trigger splitRecalcMotherWeight."""
-        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A3&qty=3",
                 cookies=_authed(),
@@ -5113,7 +5113,7 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_mother_weight_no_recalc_oninput(self, ui_client):
         """Mother weight must be static display (not editable input); child_weight triggers splitRecalcMotherWeight."""
-        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A4&qty=3",
                 cookies=_authed(),
@@ -5147,16 +5147,7 @@ class TestBulkActionsPhase1to5:
     async def test_bulk_split_preview_child_pieces_has_oninput(self, ui_client):
         """child_pieces input must have splitRecalcMother; mother_weight must be absent
         when item has pieces but no weight."""
-        preview = {
-            "parent_sku": "BOX-001", "parent_name": "Box", "parent_qty": 20.0,
-            "parent_qty_remaining": 15.0, "child_sku": "BOX-001.1", "child_qty": 5.0,
-            "sell_by": "piece", "sell_by_label": "pc", "unit_decimals": 0,
-            "weight_decimals": 2,
-            "is_weight_unit": False, "has_weight": False, "has_pieces": True,
-            "parent_pieces": 40, "parent_pieces_remaining": 30,
-            "child_pieces_default": 10,
-        }
-        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)):
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A5&qty=5",
                 cookies=_authed(),
@@ -5218,7 +5209,7 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_qty_has_max_attr(self, ui_client):
         """child_qty input must carry a max= attribute equal to parent_qty - 1 step."""
-        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_PIECES)):
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A9&qty=5",
                 cookies=_authed(),
@@ -5233,7 +5224,7 @@ class TestBulkActionsPhase1to5:
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_pieces_has_max_attr(self, ui_client):
         """child_pieces input must carry max= parent_pieces - 1 when pieces column shown."""
-        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_PIECES)):
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A10&qty=5",
                 cookies=_authed(),
@@ -11853,19 +11844,10 @@ class TestCategoryChangeRowReload:
 class TestSplitMotherWeightStatic:
     """Bug 3: Mother weight must be static display, not editable input."""
 
-    _SPLIT_PREVIEW_WEIGHT = {
-        "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
-        "parent_qty_remaining": 7.0, "child_sku": "GEM-001.1", "child_qty": 3.0,
-        "sell_by": "carat", "sell_by_label": "ct", "unit_decimals": 2,
-        "is_weight_unit": True, "has_weight": True, "has_pieces": False,
-        "parent_weight": 50.0, "parent_weight_remaining": 35.0,
-        "child_weight_default": 15.0, "weight_decimals": 2,
-    }
-
     @pytest.mark.asyncio
     async def test_split_mother_weight_is_static_not_input(self, ui_client):
         """Mother weight must render as .mother-weight-display span, not an input."""
-        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT_CT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A10&qty=3",
                 cookies=_authed(),

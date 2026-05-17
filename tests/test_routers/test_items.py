@@ -1225,3 +1225,37 @@ async def test_split_preview_no_proportional_defaults(client):
     # These keys MUST be in the response
     assert "parent_weight" in data
     assert "parent_qty" in data
+
+
+@pytest.mark.asyncio
+async def test_split_omitting_child_weight_gives_child_no_weight(client):
+    """If child_weight is not supplied, child item must have no weight.
+
+    The backend must NOT assign a proportional fallback weight.
+    This guards against the evil fallback that was removed from routes.py.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "NO-CW-PARENT-001", "name": "Parent", "quantity": 10.0,
+        "sell_by": "piece", "weight": 100.0, "weight_unit": "gram",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "NO-CW-CHILD-001", "quantity": 3.0}],
+        # NOTE: no weight key supplied
+    }, headers=h)
+    assert r2.status_code == 200, f"Split failed: {r2.text}"
+    child_ids = r2.json().get("child_ids") or r2.json().get("children") or []
+    # Fetch all items matching child SKU
+    rc = await client.get("/items", params={"q": "NO-CW-CHILD-001", "status": "all"}, headers=h)
+    assert rc.status_code == 200
+    children = rc.json().get("items", [])
+    assert len(children) >= 1, "Child item not found after split"
+    child = children[0]
+    assert child.get("weight") is None, (
+        f"Child weight should be None when not supplied, got {child.get('weight')}. "
+        "Proportional fallback must be removed."
+    )
