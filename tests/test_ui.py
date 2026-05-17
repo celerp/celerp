@@ -1289,6 +1289,7 @@ class TestSettingsPage:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -1307,6 +1308,7 @@ class TestSettingsPage:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=vert_cats)),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -5111,7 +5113,7 @@ class TestBulkActionsPhase1to5:
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_mother_weight_no_recalc_oninput(self, ui_client):
-        """mother_weight input must NOT trigger splitRecalcMother (one-directional rule)."""
+        """Both mother_weight and child_weight must trigger splitRecalcMother (bidirectional)."""
         with patch("ui.api_client.split_preview", new=AsyncMock(return_value=self._SPLIT_PREVIEW_WEIGHT)):
             r = await ui_client.get(
                 "/api/items/bulk/split-preview?entity_id=item%3A4&qty=3",
@@ -5119,8 +5121,8 @@ class TestBulkActionsPhase1to5:
             )
         html = r.text
         assert 'name="mother_weight"' in html
-        # splitRecalcMother must appear exactly once - on child_weight only
-        assert html.count("splitRecalcMother(this)") == 1
+        # splitRecalcMother must appear on both child_weight and mother_weight (bidirectional)
+        assert html.count("splitRecalcMother(this)") == 2
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_js_contains_new_functions(self, ui_client):
@@ -7576,8 +7578,12 @@ _SETTINGS_MOCKS_CAT = {
     "ui.api_client.get_users": AsyncMock(return_value={"items": [], "total": 0}),
     "ui.api_client.get_item_schema": AsyncMock(return_value=[]),
     "ui.api_client.get_all_category_schemas": AsyncMock(return_value=_CAT_SCHEMAS),
+    "ui.api_client.get_company_category_schemas": AsyncMock(return_value={}),
+    "ui.api_client.get_category_display_names": AsyncMock(return_value={}),
     "ui.api_client.get_locations": AsyncMock(return_value={"items": []}),
     "ui.api_client.list_import_batches": AsyncMock(return_value={"batches": []}),
+    "ui.api_client.list_verticals_categories": AsyncMock(return_value=[]),
+    "ui.api_client.list_verticals_presets": AsyncMock(return_value=[]),
     "ui.api_client.get_modules": AsyncMock(return_value=[{"name": "celerp-inventory", "enabled": True}]),
 }
 

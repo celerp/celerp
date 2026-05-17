@@ -774,15 +774,10 @@ async def split_preview(
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
     parent_qty = float(parent.state.get("quantity") or 0)
-    if qty < 0 or qty >= parent_qty:
-        raise HTTPException(status_code=422, detail="qty must be >= 0 and < parent quantity")
-
     parent_sku = parent.state.get("sku", "")
     parent_sell_by = parent.state.get("sell_by") or "piece"
     parent_weight_raw = parent.state.get("weight")
     parent_weight = float(parent_weight_raw) if parent_weight_raw is not None else None
-    # pieces may be stored in state["attributes"]["pieces"] (raw projection) or at
-    # top-level if already flattened. Check both; top-level takes precedence.
     _pieces_raw = parent.state.get("pieces")
     if _pieces_raw is None:
         _pieces_raw = (parent.state.get("attributes") or {}).get("pieces")
@@ -792,6 +787,12 @@ async def split_preview(
     unit_map = {u["name"]: u for u in units}
     unit_cfg = unit_map.get(parent_sell_by) or {}
     decimals = unit_cfg.get("decimals", 0)
+    epsilon = 10 ** (-decimals) if decimals > 0 else 1
+    # Clamp qty instead of rejecting - allows previewing boundary values
+    if parent_qty <= 0:
+        raise HTTPException(status_code=422, detail="parent qty must be > 0")
+    qty = max(0.0, min(qty, parent_qty - epsilon))
+
     is_weight = unit_cfg.get("unit_type") == "weight"
     sell_by_label = unit_cfg.get("label", parent_sell_by)
 
@@ -833,6 +834,7 @@ async def split_preview(
         "is_weight_unit": is_weight,
         "has_weight": parent_weight is not None,
         "has_pieces": parent_pieces is not None,
+        "cannot_split": (decimals == 0 and parent_qty <= 1),
     }
 
     if parent_weight is not None:
@@ -896,6 +898,17 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             status_code=422,
             detail=f"Child quantities ({total_child_qty}) exceed or equal parent quantity ({parent_qty})",
         )
+
+    # Pieces conservation: if parent has pieces, validate and compute mother
+    _pieces_raw = parent.state.get("pieces") if "pieces" in parent.state else parent_attrs.get("pieces")
+    parent_pieces: int | None = int(_pieces_raw) if _pieces_raw is not None else None
+    if parent_pieces is not None:
+        total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
+        if total_child_pieces >= parent_pieces:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Total child pieces ({total_child_pieces}) must be less than parent pieces ({parent_pieces})",
+            )
 
     # Validate child SKU uniqueness within batch
     child_skus = [c.sku for c in children]
@@ -999,14 +1012,19 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         metadata_={},
     )
 
-    # Apply mother parcel overrides (weight / pieces) if provided
-    if payload.mother_weight is not None or payload.mother_pieces is not None:
+    # Apply mother parcel overrides: weight from payload, pieces computed server-side
+    computed_mother_pieces: int | None = None
+    if parent_pieces is not None:
+        total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
+        computed_mother_pieces = parent_pieces - total_child_pieces
+
+    if payload.mother_weight is not None or computed_mother_pieces is not None:
         fields_changed: dict[str, dict] = {}
         if payload.mother_weight is not None:
             fields_changed["weight"] = {"old": parent.state.get("weight"), "new": payload.mother_weight}
-        if payload.mother_pieces is not None:
+        if computed_mother_pieces is not None:
             new_attrs = dict(parent_attrs)
-            new_attrs["pieces"] = payload.mother_pieces
+            new_attrs["pieces"] = computed_mother_pieces
             fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
         await emit_event(
             session,

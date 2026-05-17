@@ -217,6 +217,7 @@ class TestSettingsInventory:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -338,6 +339,7 @@ class TestCategoriesCRUDUI:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -353,6 +355,7 @@ class TestCategoriesCRUDUI:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={"gems": []})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={"gems": []})),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -360,3 +363,17 @@ class TestCategoriesCRUDUI:
         assert r.status_code == 200
         # Delete affordance: either hx-delete or a delete button targeting /settings/categories/gems
         assert "/settings/categories/gems" in r.text
+
+
+class TestLocaleKeys:
+    def test_new_category_name_in_all_locales(self):
+        """settings.new_category_name must exist in all 11 locale files."""
+        import json
+        import os
+        locales_dir = os.path.join(os.path.dirname(__file__), "..", "ui", "locales")
+        langs = ["en", "ar", "de", "es", "fr", "id", "it", "ja", "pt", "th", "vi"]
+        for lang in langs:
+            path = os.path.join(locales_dir, f"{lang}.json")
+            with open(path) as f:
+                data = json.load(f)
+            assert "settings.new_category_name" in data, f"Missing settings.new_category_name in {lang}.json"

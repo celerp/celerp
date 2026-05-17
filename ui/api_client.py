@@ -226,6 +226,12 @@ async def get_company_category_schemas(token: str) -> dict:
         return _raise(await c.get("/companies/me/company-category-schemas")).json()
 
 
+async def get_category_display_names(token: str) -> dict:
+    """Return display names keyed by category slug."""
+    async with _client(token) as c:
+        return _raise(await c.get("/companies/me/category-display-names")).json()
+
+
 async def get_category_schema(token: str, category: str) -> list[dict]:
     async with _client(token) as c:
         return _raise(await c.get(f"/companies/me/category-schema/{category}")).json()

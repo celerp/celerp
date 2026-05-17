@@ -364,3 +364,31 @@ async def test_delete_category_empty_ok(client):
     assert r.json()["ok"] is True
     schemas = (await client.get("/companies/me/company-category-schemas", headers=headers)).json()
     assert "empty_cat" not in schemas
+
+
+@pytest.mark.asyncio
+async def test_create_category_stores_display_name(client):
+    headers = await _headers(client)
+    r = await client.post("/companies/me/categories", json={"name": "My Gems"}, headers=headers)
+    assert r.status_code == 200
+    dn = (await client.get("/companies/me/category-display-names", headers=headers)).json()
+    assert dn.get("my_gems") == "My Gems"
+
+
+@pytest.mark.asyncio
+async def test_delete_category_removes_display_name(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Delete Me"}, headers=headers)
+    await client.delete("/companies/me/categories/delete_me", headers=headers)
+    dn = (await client.get("/companies/me/category-display-names", headers=headers)).json()
+    assert "delete_me" not in dn
+
+
+@pytest.mark.asyncio
+async def test_rename_category_updates_display_name(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Before Rename"}, headers=headers)
+    await client.patch("/companies/me/categories/before_rename", json={"name": "After Rename"}, headers=headers)
+    dn = (await client.get("/companies/me/category-display-names", headers=headers)).json()
+    assert dn.get("after_rename") == "After Rename"
+    assert "before_rename" not in dn

@@ -681,6 +681,15 @@ async def get_company_category_schemas(company_id=Depends(get_current_company_id
     return dict(company.settings.get("category_schemas") or {})
 
 
+@router.get("/me/category-display-names")
+async def get_category_display_names(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    """Return display names keyed by category slug."""
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return dict(company.settings.get("category_display_names") or {})
+
+
 @router.get("/me/category-schemas")
 async def get_all_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Return all category schemas keyed by category name.
@@ -784,6 +793,9 @@ async def create_category(
         raise HTTPException(status_code=409, detail=f"Category '{key}' already exists")
     cat_schemas[key] = []
     settings["category_schemas"] = cat_schemas
+    display_names = dict(settings.get("category_display_names") or {})
+    display_names[key] = name
+    settings["category_display_names"] = display_names
     company.settings = settings
     await session.commit()
     return {"ok": True, "key": key}
@@ -818,6 +830,10 @@ async def rename_category(
     # Rename schema key
     cat_schemas[new_key] = cat_schemas.pop(category_key)
     settings["category_schemas"] = cat_schemas
+    display_names = dict(settings.get("category_display_names") or {})
+    display_names[new_key] = new_name
+    display_names.pop(category_key, None)
+    settings["category_display_names"] = display_names
     company.settings = settings
     # Bulk-update item projections
     rows = (await session.execute(
@@ -867,6 +883,9 @@ async def delete_category(
         )
     cat_schemas.pop(category_key)
     settings["category_schemas"] = cat_schemas
+    display_names = dict(settings.get("category_display_names") or {})
+    display_names.pop(category_key, None)
+    settings["category_display_names"] = display_names
     company.settings = settings
     await session.commit()
     return {"ok": True}

@@ -1077,3 +1077,67 @@ async def test_attachment_stored_under_data_dir(client):
         f"File not found at {expected_path}. data_dir={settings.data_dir}. "
         "LocalBackend is likely writing to CWD instead of data_dir."
     )
+
+
+@pytest.mark.asyncio
+async def test_split_preview_clamps_qty(client):
+    """split-preview must clamp qty to parent_qty - epsilon (never equal or exceed parent)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "CLAMP-001", "name": "Clamp Stone", "quantity": 5.0, "sell_by": "carat",
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    # Request qty equal to parent_qty - should be clamped
+    r2 = await client.get(f"/items/{parent_id}/split-preview?qty=5", headers=h)
+    assert r2.status_code == 200
+    preview = r2.json()
+    # child_qty must be strictly less than parent_qty
+    assert preview["child_qty"] < preview["parent_qty"], (
+        f"child_qty {preview['child_qty']} must be < parent_qty {preview['parent_qty']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_split_item_pieces_conservation(client):
+    """split must reject child_pieces >= parent_pieces."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "PIECE-CONS-001", "name": "Multi-stone", "quantity": 10.0,
+        "sell_by": "carat", "attributes": {"pieces": 5},
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+    child_sku = "PIECE-CONS-CHILD-001"
+    r2 = await client.post("/items", json={"sku": child_sku, "name": "placeholder", "quantity": 0, "sell_by": "carat"}, headers=h)
+    # child_pieces == parent_pieces should be rejected
+    rs = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": child_sku, "quantity": 3.0, "attributes": {"pieces": 5}}],
+    }, headers=h)
+    assert rs.status_code == 422, f"Expected 422 for child_pieces >= parent_pieces, got {rs.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_split_item_mother_pieces_computed(client):
+    """After split, mother pieces = parent_pieces - child_pieces (server-computed)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "MPIECE-001", "name": "Multi-pc", "quantity": 10.0,
+        "sell_by": "carat", "attributes": {"pieces": 6},
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+    child_sku = "MPIECE-CHILD-001"
+    rs = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": child_sku, "quantity": 3.0, "attributes": {"pieces": 2}}],
+    }, headers=h)
+    assert rs.status_code == 200, f"Split failed: {rs.text}"
+    # Mother should have 6 - 2 = 4 pieces
+    rp = await client.get(f"/items/{parent_id}", headers=h)
+    state = rp.json()
+    mother_pieces = state.get("pieces") or (state.get("attributes") or {}).get("pieces")
+    assert int(mother_pieces) == 4, f"Expected mother_pieces=4, got {mother_pieces}"

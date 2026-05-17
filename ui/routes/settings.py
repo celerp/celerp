@@ -30,6 +30,32 @@ def _check_role(request: Request, min_role: str = "admin") -> RedirectResponse |
     return None
 
 
+def _category_row(key: str, display_name: str, field_count: int) -> FT:
+    """Single category Tr for the Your Categories table."""
+    from urllib.parse import quote as _q
+    return Tr(
+        Td(
+            Span(display_name, cls="cat-name-display",
+                 hx_get=f"/settings/categories/{_q(key, safe='')}/edit",
+                 hx_target="closest tr",
+                 hx_swap="outerHTML"),
+            cls="cell",
+        ),
+        Td(str(field_count), cls="cell cell--center your-cats-fields"),
+        Td(
+            A(t("settings.edit"),
+              href=f"/settings/inventory?tab=categories&cat={_q(key, safe='')}",
+              cls="btn btn--secondary btn--xs"),
+            Button("x", cls="btn btn--danger btn--xs",
+                   hx_delete=f"/settings/categories/{_q(key, safe='')}",
+                   hx_target="closest tr",
+                   hx_swap="outerHTML"),
+            cls="cell cell--action your-cats-action",
+        ),
+        cls="data-row",
+    )
+
+
 # ── Constrained field options ────────────────────────────────────────────
 
 # IANA timezones - canonical names only (no deprecated aliases)
@@ -2040,27 +2066,21 @@ def setup_routes(app):
 
     @app.get("/settings/categories/{category_key}/cancel")
     async def settings_category_rename_cancel(request: Request, category_key: str):
-        return Tr(
-            Td(
-                Span(category_key, cls="cat-name-display",
-                     hx_get=f"/settings/categories/{category_key}/edit",
-                     hx_target="closest tr",
-                     hx_swap="outerHTML"),
-                cls="cell",
-            ),
-            Td(
-                A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={category_key}", cls="auth-link"),
-                cls="cell",
-            ),
-            Td(
-                Button("✕", cls="btn btn--danger btn--xs",
-                       hx_delete=f"/settings/categories/{category_key}",
-                       hx_target="closest tr",
-                       hx_swap="outerHTML"),
-                cls="cell",
-            ),
-            cls="data-row",
-        )
+        token = _token(request)
+        display_name = category_key
+        if token:
+            try:
+                dn_map = await api.get_category_display_names(token)
+                display_name = dn_map.get(category_key, category_key)
+            except Exception:
+                pass
+        schemas: dict = {}
+        if token:
+            try:
+                schemas = await api.get_company_category_schemas(token)
+            except Exception:
+                pass
+        return _category_row(category_key, display_name, len(schemas.get(category_key, [])))
 
     @app.patch("/settings/categories/{category_key}")
     async def settings_category_rename(request: Request, category_key: str):
@@ -2077,27 +2097,12 @@ def setup_routes(app):
             return P(str(e.detail), cls="error-banner")
         import re as _re
         new_key = _re.sub(r"[^a-z0-9]+", "_", new_name.lower()).strip("_")
-        return Tr(
-            Td(
-                Span(new_key, cls="cat-name-display",
-                     hx_get=f"/settings/categories/{new_key}/edit",
-                     hx_target="closest tr",
-                     hx_swap="outerHTML"),
-                cls="cell",
-            ),
-            Td(
-                A(t("settings.edit"), href=f"/settings/inventory?tab=category-library&cat={new_key}", cls="auth-link"),
-                cls="cell",
-            ),
-            Td(
-                Button("✕", cls="btn btn--danger btn--xs",
-                       hx_delete=f"/settings/categories/{new_key}",
-                       hx_target="closest tr",
-                       hx_swap="outerHTML"),
-                cls="cell",
-            ),
-            cls="data-row",
-        )
+        schemas: dict = {}
+        try:
+            schemas = await api.get_company_category_schemas(token)
+        except Exception:
+            pass
+        return _category_row(new_key, new_name, len(schemas.get(new_key, [])))
 
     # ── Company Address CRUD routes ─────────────────────────────────────────
 

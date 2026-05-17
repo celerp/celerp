@@ -157,6 +157,7 @@ def _settings_mocks():
         "ui.api_client.get_item_schema": AsyncMock(return_value=_SCHEMA),
         "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
         "ui.api_client.get_company_category_schemas": AsyncMock(return_value={}),
+        "ui.api_client.get_category_display_names": AsyncMock(return_value={}),
         "ui.api_client.get_column_prefs": AsyncMock(return_value={}),
         "ui.api_client.get_locations": AsyncMock(return_value={"items": _LOCATIONS, "total": len(_LOCATIONS)}),
         "ui.api_client.list_import_batches": AsyncMock(return_value={"batches": []}),

@@ -41,6 +41,7 @@ from ui.i18n import t, get_lang
 from ui.routes.settings import (
     _token,
     _check_role,
+    _category_row,
     _locations_tab,
     _import_history_tab,
     _bulk_attach_tab,
@@ -144,12 +145,15 @@ def _units_tab(units: list[dict]) -> FT:
     )
 
 
+
+
 def _categories_tab(
     cat_schemas: dict,
     cat_schemas_company: dict,
     vert_categories: list[dict],
     vert_presets: list[dict],
     cat: str = "",
+    cat_display_names: dict | None = None,
 ) -> FT:
     """Categories settings tab - 3-section layout.
 
@@ -232,29 +236,10 @@ def _categories_tab(
     # (kept for potential future use; actual tag→preset mapping is built in Section C)
 
     # ── Section A: Your Categories ────────────────────────────────────
+    _dn = cat_display_names or {}
     if applied_names:
         applied_rows = [
-            Tr(
-                Td(
-                    Span(name, cls="cat-name-display",
-                         hx_get=f"/settings/categories/{_q(name, safe='')}/edit",
-                         hx_target="closest tr",
-                         hx_swap="outerHTML"),
-                    cls="cell",
-                ),
-                Td(str(len(cat_schemas.get(name, []))), cls="cell cell--center your-cats-fields"),
-                Td(
-                    A(t("settings.edit"),
-                      href=f"/settings/inventory?tab=categories&cat={_q(name, safe='')}",
-                      cls="btn btn--secondary btn--xs"),
-                    Button("✕", cls="btn btn--danger btn--xs",
-                           hx_delete=f"/settings/categories/{_q(name, safe='')}",
-                           hx_target="closest tr",
-                           hx_swap="outerHTML"),
-                    cls="cell cell--action your-cats-action",
-                ),
-                cls="data-row",
-            )
+            _category_row(name, _dn.get(name, name), len(cat_schemas.get(name, [])))
             for name in sorted(applied_names)
         ]
         add_row = Tr(
@@ -430,6 +415,7 @@ def setup_routes(app):
             cat_schemas = await api.get_all_category_schemas(token)
             if tab == "categories":
                 cat_schemas_company = await api.get_company_category_schemas(token)
+                cat_display_names = await api.get_category_display_names(token)
                 if not cat:
                     vert_categories = await api.list_verticals_categories(token)
                     vert_presets = await api.list_verticals_presets(token)
@@ -437,12 +423,14 @@ def setup_routes(app):
                     vert_categories, vert_presets = [], []
             else:
                 cat_schemas_company = {}
+                cat_display_names = {}
                 vert_categories, vert_presets = [], []
             units = await api.get_units(token) if tab == "units" else []
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             locations, import_batches, cat_schemas, cat_schemas_company = [], [], {}, {}
+            cat_display_names = {}
             vert_categories, vert_presets = [], []
             units = []
 
@@ -451,7 +439,7 @@ def setup_routes(app):
         if tab == "locations":
             content = _locations_tab(locations, lang=lang)
         elif tab == "categories":
-            content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat)
+            content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat, cat_display_names)
         elif tab == "units":
             content = _units_tab(units)
         elif tab == "bulk-attach":

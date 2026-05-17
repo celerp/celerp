@@ -1004,6 +1004,7 @@
   "settings.must_be_a_number": "Harus berupa angka",
   "settings.name_required": "Nama diperlukan.",
   "settings.new_company_name_placeholder": "Company name",
+  "settings.new_category_name": "Nama kategori",
   "settings.new_password": "Kata Sandi Baru",
   "settings.new_user": "Pengguna Baru",
   "settings.next_db_backup": "Pencadangan DB berikutnya",
