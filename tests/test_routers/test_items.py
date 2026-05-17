@@ -1340,3 +1340,25 @@ async def test_transfer_item_updates_updated_at(client):
     assert after is not None, "updated_at must be set after transfer"
     assert after != before, f"updated_at must advance after transfer; before={before!r} after={after!r}"
     assert after_item.get("location_id") == loc2["id"], "location_id must reflect new location"
+
+
+@pytest.mark.asyncio
+async def test_bulk_transfer_updates_projection(client):
+    """Bulk transfer must update location_id on all selected items' projections."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc1 = (await client.post("/companies/me/locations", json={"name": "BT-Warehouse-A", "type": "warehouse"}, headers=h)).json()
+    loc2 = (await client.post("/companies/me/locations", json={"name": "BT-Warehouse-B", "type": "warehouse"}, headers=h)).json()
+
+    item1_id = (await client.post("/items", json={"sku": "BT-001", "name": "Bulk A", "quantity": 1.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+    item2_id = (await client.post("/items", json={"sku": "BT-002", "name": "Bulk B", "quantity": 2.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+
+    r = await client.post("/items/bulk/transfer", json={"entity_ids": [item1_id, item2_id], "to_location_id": loc2["id"]}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json().get("updated") == 2
+
+    for item_id in [item1_id, item2_id]:
+        item = (await client.get(f"/items/{item_id}", headers=h)).json()
+        assert item.get("location_id") == loc2["id"], (
+            f"Item {item_id} location_id must be {loc2['id']} after bulk transfer, got {item.get('location_id')!r}"
+        )

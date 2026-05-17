@@ -748,6 +748,148 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     return {"event_id": entry.id}
 
 
+class BulkStatusBody(BaseModel):
+    entity_ids: list[str]
+    status: str
+
+
+class BulkTransferBody(BaseModel):
+    entity_ids: list[str]
+    to_location_id: uuid.UUID
+
+
+class BulkDeleteBody(BaseModel):
+    entity_ids: list[str]
+
+
+@router.post("/bulk/status")
+async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    event_ids = []
+    for entity_id in payload.entity_ids:
+        entry = await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": payload.status},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+        event_ids.append(entry.id)
+    await session.commit()
+    return {"updated": len(event_ids), "event_ids": event_ids}
+
+
+@router.post("/bulk/transfer")
+async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    event_ids = []
+    for entity_id in payload.entity_ids:
+        entry = await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.transferred",
+            data={"to_location_id": str(payload.to_location_id), "updated_at": datetime.now(timezone.utc).isoformat()},
+            actor_id=user.id,
+            location_id=payload.to_location_id,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+        event_ids.append(entry.id)
+    await session.commit()
+    return {"updated": len(event_ids), "event_ids": event_ids}
+
+
+@router.post("/bulk/delete")
+async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    import sqlalchemy as _sa
+    from celerp.models.projections import Projection as _Proj
+    from celerp.models.ledger import LedgerEntry as _LE
+    # Hard delete: remove projection rows and all ledger events for these items.
+    # This is the correct behaviour for a user-initiated "Delete" action —
+    # the item should vanish from the catalog entirely, not just be marked disposed.
+    await session.execute(
+        _sa.delete(_Proj).where(
+            _Proj.company_id == company_id,
+            _Proj.entity_id.in_(payload.entity_ids),
+        )
+    )
+    await session.execute(
+        _sa.delete(_LE).where(
+            _LE.company_id == company_id,
+            _LE.entity_id.in_(payload.entity_ids),
+        )
+    )
+    await session.commit()
+    return {"deleted": len(payload.entity_ids)}
+
+
+class BulkExpireBody(BaseModel):
+    entity_ids: list[str]
+
+
+class BulkDisposeBody(BaseModel):
+    entity_ids: list[str]
+    reason: str | None = None
+
+
+@router.post("/bulk/expire")
+async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    for eid in payload.entity_ids:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=eid,
+            entity_type="item",
+            event_type="item.expired",
+            data={},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+    await session.commit()
+    return {"expired": len(payload.entity_ids)}
+
+
+@router.post("/bulk/dispose")
+async def bulk_dispose(payload: BulkDisposeBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    if not payload.entity_ids:
+        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
+    import sqlalchemy as _sa
+    from celerp.models.projections import Projection as _Proj
+    from celerp.models.ledger import LedgerEntry as _LE
+    await session.execute(
+        _sa.delete(_Proj).where(
+            _Proj.company_id == company_id,
+            _Proj.entity_id.in_(payload.entity_ids),
+        )
+    )
+    await session.execute(
+        _sa.delete(_LE).where(
+            _LE.company_id == company_id,
+            _LE.entity_id.in_(payload.entity_ids),
+        )
+    )
+    await session.commit()
+    return {"disposed": len(payload.entity_ids)}
+
+
 @router.post("/{entity_id}/transfer")
 async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     entry = await emit_event(
@@ -1296,148 +1438,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     await session.commit()
     return {"id": new_entity_id}
-
-
-class BulkStatusBody(BaseModel):
-    entity_ids: list[str]
-    status: str
-
-
-class BulkTransferBody(BaseModel):
-    entity_ids: list[str]
-    to_location_id: uuid.UUID
-
-
-class BulkDeleteBody(BaseModel):
-    entity_ids: list[str]
-
-
-@router.post("/bulk/status")
-async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    event_ids = []
-    for entity_id in payload.entity_ids:
-        entry = await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.status.set",
-            data={"new_status": payload.status},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
-        event_ids.append(entry.id)
-    await session.commit()
-    return {"updated": len(event_ids), "event_ids": event_ids}
-
-
-@router.post("/bulk/transfer")
-async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    event_ids = []
-    for entity_id in payload.entity_ids:
-        entry = await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.location.transferred",
-            data={"to_location_id": str(payload.to_location_id)},
-            actor_id=user.id,
-            location_id=payload.to_location_id,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
-        event_ids.append(entry.id)
-    await session.commit()
-    return {"updated": len(event_ids), "event_ids": event_ids}
-
-
-@router.post("/bulk/delete")
-async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    import sqlalchemy as _sa
-    from celerp.models.projections import Projection as _Proj
-    from celerp.models.ledger import LedgerEntry as _LE
-    # Hard delete: remove projection rows and all ledger events for these items.
-    # This is the correct behaviour for a user-initiated "Delete" action —
-    # the item should vanish from the catalog entirely, not just be marked disposed.
-    await session.execute(
-        _sa.delete(_Proj).where(
-            _Proj.company_id == company_id,
-            _Proj.entity_id.in_(payload.entity_ids),
-        )
-    )
-    await session.execute(
-        _sa.delete(_LE).where(
-            _LE.company_id == company_id,
-            _LE.entity_id.in_(payload.entity_ids),
-        )
-    )
-    await session.commit()
-    return {"deleted": len(payload.entity_ids)}
-
-
-class BulkExpireBody(BaseModel):
-    entity_ids: list[str]
-
-
-class BulkDisposeBody(BaseModel):
-    entity_ids: list[str]
-    reason: str | None = None
-
-
-@router.post("/bulk/expire")
-async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    for eid in payload.entity_ids:
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=eid,
-            entity_type="item",
-            event_type="item.expired",
-            data={},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
-    await session.commit()
-    return {"expired": len(payload.entity_ids)}
-
-
-@router.post("/bulk/dispose")
-async def bulk_dispose(payload: BulkDisposeBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    import sqlalchemy as _sa
-    from celerp.models.projections import Projection as _Proj
-    from celerp.models.ledger import LedgerEntry as _LE
-    await session.execute(
-        _sa.delete(_Proj).where(
-            _Proj.company_id == company_id,
-            _Proj.entity_id.in_(payload.entity_ids),
-        )
-    )
-    await session.execute(
-        _sa.delete(_LE).where(
-            _LE.company_id == company_id,
-            _LE.entity_id.in_(payload.entity_ids),
-        )
-    )
-    await session.commit()
-    return {"disposed": len(payload.entity_ids)}
 
 
 @router.post("/{entity_id}/adjust")
