@@ -11885,28 +11885,37 @@ class TestSplitMotherWeightStatic:
 
 
 class TestSplitPiecesClamp:
-    """Bug 2: splitRecalcMotherPieces must clamp input immediately."""
+    """Bug 2: pieces clamping must happen on blur (splitClampPieces), not on input."""
 
-    def test_split_pieces_js_clamps_on_input(self):
-        """splitRecalcMotherPieces must contain Math.min clamping."""
+    def test_split_pieces_clamp_in_onblur_function(self):
+        """splitClampPieces (onblur) must contain Math.min clamping; splitRecalcMotherPieces must not."""
         from pathlib import Path
         src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
-        start = src.index("function splitRecalcMotherPieces")
-        end = src.index("}", start) + 1
-        # Find the full function body
-        depth = 0
-        i = src.index("{", start)
-        while i < len(src):
-            if src[i] == "{":
-                depth += 1
-            elif src[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    end = i + 1
-                    break
-            i += 1
-        fn_body = src[start:end]
-        assert "Math.min" in fn_body, f"splitRecalcMotherPieces must clamp with Math.min, got: {fn_body}"
+
+        def _fn_body(name: str) -> str:
+            start = src.index(f"function {name}")
+            depth = 0
+            i = src.index("{", start)
+            end = i
+            while i < len(src):
+                if src[i] == "{":
+                    depth += 1
+                elif src[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+                i += 1
+            return src[start:end]
+
+        clamp_body = _fn_body("splitClampPieces")
+        recalc_body = _fn_body("splitRecalcMotherPieces")
+
+        assert "Math.min" in clamp_body, f"splitClampPieces must clamp with Math.min, got: {clamp_body}"
+        assert "input.value =" in clamp_body, "splitClampPieces (onblur) must write clamped value back"
+        assert "input.value =" not in recalc_body, (
+            "splitRecalcMotherPieces (oninput) must NOT rewrite input.value - clamping is in onblur"
+        )
 
 
 class TestCategoryDetailPagePatch:
@@ -11967,3 +11976,75 @@ def test_split_js_weight_pieces_independent():
     src = inspect.getsource(inv_mod)
     assert "splitRecalcMotherPieces" not in src.split("_child_weight_oninput")[1].split("\n")[0]
     assert "splitRecalcMotherWeight" not in src.split("_child_pieces_oninput")[1].split("\n")[0]
+
+
+# ---------------------------------------------------------------------------
+# Split JS regression tests - Bug A (coupling) + Bug B (decimal input)
+# ---------------------------------------------------------------------------
+
+def test_split_qty_change_does_not_touch_weight_or_pieces():
+    """bulkSplitChildQtyChanged must NOT reference child_weight or child_pieces.
+
+    These fields are completely independent. Coupling weight/pieces to qty was
+    the root cause of all split dependency bugs.
+    """
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    start = _BULK_SPLIT_JS.index("function bulkSplitChildQtyChanged")
+    end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
+    fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
+    assert "child_weight" not in fn_body, (
+        "bulkSplitChildQtyChanged must not reference child_weight - "
+        "weight is independent of qty"
+    )
+    assert "child_pieces" not in fn_body, (
+        "bulkSplitChildQtyChanged must not reference child_pieces - "
+        "pieces is independent of qty"
+    )
+    assert "userEdited" not in fn_body, (
+        "bulkSplitChildQtyChanged must not use userEdited guard - "
+        "remove the auto-fill entirely"
+    )
+
+
+def test_split_weight_oninput_does_not_rewrite_value():
+    """splitRecalcMotherWeight (oninput) must NOT rewrite input.value.
+
+    Rewriting input.value on every keystroke destroys decimal input:
+    typing '2.' immediately becomes '2.00', making it impossible to type '2.5'.
+    Only the mother display span should be updated on input.
+    Clamping of the child field belongs in an onblur handler.
+    """
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    start = _BULK_SPLIT_JS.index("function splitRecalcMotherWeight")
+    end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
+    fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
+    assert "input.value =" not in fn_body, (
+        "splitRecalcMotherWeight must not write to input.value - "
+        "this destroys decimal input in progress"
+    )
+
+
+def test_split_pieces_oninput_does_not_rewrite_value():
+    """splitRecalcMotherPieces (oninput) must NOT rewrite input.value.
+
+    Same reason as weight: rewriting on every keystroke breaks typing.
+    Clamping belongs in onblur.
+    """
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    start = _BULK_SPLIT_JS.index("function splitRecalcMotherPieces")
+    end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
+    fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
+    assert "input.value =" not in fn_body, (
+        "splitRecalcMotherPieces must not write to input.value - "
+        "clamping belongs in onblur"
+    )
+
+
+def test_split_weight_has_onblur_clamp():
+    """child_weight input must have an onblur attribute for clamping."""
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+    # The onblur handler must exist for child weight
+    assert "splitClampWeight" in src or "onblur" in src.split("child_weight")[1][:200], (
+        "child_weight input must have an onblur clamp handler"
+    )

@@ -31,6 +31,15 @@ function splitRecalcMotherWeight(input) {
   if (!form) return;
   var parentWeight = parseFloat(form.dataset.parentWeight || '0');
   var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
+  var childVal = parseFloat(input.value) || 0;
+  var mw = form.querySelector('.mother-weight-display');
+  if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+}
+function splitClampWeight(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var parentWeight = parseFloat(form.dataset.parentWeight || '0');
+  var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
   var childVal = Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
   input.value = childVal.toFixed(decimals);
   var mw = form.querySelector('.mother-weight-display');
@@ -40,12 +49,19 @@ function splitRecalcMotherPieces(input) {
   var form = input.closest('form');
   if (!form) return;
   var parentPieces = parseFloat(form.dataset.parentPieces || '0');
+  var childP = parseFloat(input.value) || 0;
+  var mp = form.querySelector('.mother-pieces-display');
+  if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
+}
+function splitClampPieces(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var parentPieces = parseFloat(form.dataset.parentPieces || '0');
   var maxVal = Math.max(0, parentPieces - 1);
   var childP = Math.min(Math.max(0, parseFloat(input.value) || 0), maxVal);
   input.value = String(Math.round(childP));
-  var remP = Math.max(0, parentPieces - childP);
   var mp = form.querySelector('.mother-pieces-display');
-  if (mp) mp.textContent = String(Math.round(remP));
+  if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
 }
 function bulkSplitAutoLoad() {
   var checked = document.querySelector('.row-select:checked');
@@ -66,21 +82,6 @@ function bulkSplitChildQtyChanged(input) {
   input.value = childQty.toFixed(decimals);
   var motherQtyDisplay = form.querySelector('.mother-qty-display');
   if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childQty).toFixed(decimals);
-  var childWeightInput = form.querySelector('[name="child_weight"]');
-  if (childWeightInput && !childWeightInput.dataset.userEdited) {
-    var parentWeight = parseFloat(form.dataset.parentWeight || '0');
-    var wDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
-    var childWeight = parentQty > 0 ? (childQty / parentQty * parentWeight) : 0;
-    childWeightInput.value = childWeight.toFixed(wDecimals);
-    splitRecalcMotherWeight(childWeightInput);
-  }
-  var childPiecesInput = form.querySelector('[name="child_pieces"]');
-  if (childPiecesInput && !childPiecesInput.dataset.userEdited) {
-    var parentPieces = parseFloat(form.dataset.parentPieces || '0');
-    var childPieces = parentQty > 0 ? Math.floor(childQty / parentQty * parentPieces) : 0;
-    childPiecesInput.value = String(childPieces);
-    splitRecalcMotherPieces(childPiecesInput);
-  }
 }
 function bulkSplitSkuChanged(input) {
   // SKU is a free-text field; no server call needed.
@@ -1532,18 +1533,22 @@ function celerpPrintLabel(entityId, templateId) {
         def _static_td(val: str) -> FT:
             return Td(val, cls="sp-td")
 
-        def _editable_td(name: str, val: str, oninput: str | None = None, max: str | None = None, min: str | None = None) -> FT:
+        def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None) -> FT:
             kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
             if oninput:
                 kwargs["oninput"] = oninput
+            if onblur:
+                kwargs["onblur"] = onblur
             if max is not None:
                 kwargs["max"] = max
             if min is not None:
                 kwargs["min"] = min
             return Td(Input(**kwargs), cls="sp-td")
 
-        _child_weight_oninput = "this.dataset.userEdited='1'; splitRecalcMotherWeight(this)"
-        _child_pieces_oninput = "this.dataset.userEdited='1'; splitRecalcMotherPieces(this)"
+        _child_weight_oninput = "splitRecalcMotherWeight(this)"
+        _child_weight_onblur = "splitClampWeight(this)"
+        _child_pieces_oninput = "splitRecalcMotherPieces(this)"
+        _child_pieces_onblur = "splitClampPieces(this)"
 
         def _parcel_row(label: str, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
                         weight_name: str | None, pieces_name: str | None, is_child: bool = False) -> FT:
@@ -1551,7 +1556,7 @@ function celerpPrintLabel(entityId, templateId) {
             if show_weight:
                 w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
                 if weight_name and is_child:
-                    cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput))
+                    cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur))
                 else:
                     # Mother: static display, updated by JS
                     cells.append(Td(Span(w, cls="mother-weight-display"), cls="sp-td"))
@@ -1559,7 +1564,7 @@ function celerpPrintLabel(entityId, templateId) {
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
                 if is_child and pieces_name:
                     pieces_max = str(int(preview["parent_pieces"]) - 1)
-                    cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, max=pieces_max))
+                    cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max))
                 else:
                     # Mother pieces: static display updated by JS
                     cells.append(Td(Span(p, cls="mother-pieces-display"), cls="sp-td"))
