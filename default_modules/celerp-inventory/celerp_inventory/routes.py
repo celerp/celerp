@@ -729,6 +729,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if new_weight is not None and float(new_weight) < 0:
             raise HTTPException(status_code=422, detail="Weight cannot be negative")
 
+    # Always stamp updated_at so the projection reflects the mutation time.
+    payload.fields_changed["updated_at"] = {"old": None, "new": datetime.now(timezone.utc).isoformat()}
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -754,7 +756,7 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
         entity_id=entity_id,
         entity_type="item",
         event_type="item.transferred",
-        data={"to_location_id": str(payload.to_location_id)},
+        data={"to_location_id": str(payload.to_location_id), "updated_at": datetime.now(timezone.utc).isoformat()},
         actor_id=user.id,
         location_id=payload.to_location_id,
         source="api",
@@ -955,6 +957,9 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             child_data["description"] = parent_description
         if parent_status:
             child_data["status"] = parent_status
+        parent_weight_unit = parent.state.get("weight_unit")
+        if parent_weight_unit:
+            child_data["weight_unit"] = parent_weight_unit
         if parent_tax_codes:
             child_data["tax_codes"] = parent_tax_codes
         if parent_expires_at:

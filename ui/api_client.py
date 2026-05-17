@@ -1195,7 +1195,7 @@ async def adjust_item(token: str, entity_id: str, new_qty: float) -> dict:
 
 async def transfer_item(token: str, entity_id: str, location_id: str) -> dict:
     async with _client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/transfer", json={"location_id": location_id})).json()
+        return _raise(await c.post(f"/items/{entity_id}/transfer", json={"to_location_id": location_id})).json()
 
 
 async def set_item_price(token: str, entity_id: str, price_type: str, new_price: float) -> dict:

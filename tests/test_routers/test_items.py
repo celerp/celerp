@@ -1259,3 +1259,84 @@ async def test_split_omitting_child_weight_gives_child_no_weight(client):
         f"Child weight should be None when not supplied, got {child.get('weight')}. "
         "Proportional fallback must be removed."
     )
+
+
+@pytest.mark.asyncio
+async def test_split_child_inherits_weight_unit(client):
+    """Child items created via split must inherit weight_unit from parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "WU-PARENT-001", "name": "Parent", "quantity": 10.0,
+        "sell_by": "piece", "weight": 50.0, "weight_unit": "carat",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "WU-CHILD-001", "quantity": 3.0, "weight": 15.0}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+    rc = await client.get("/items", params={"q": "WU-CHILD-001", "status": "all"}, headers=h)
+    assert rc.status_code == 200
+    children = rc.json().get("items", [])
+    assert len(children) >= 1, "Child item not found after split"
+    assert children[0].get("weight_unit") == "carat", (
+        f"Child must inherit weight_unit='carat' from parent, got {children[0].get('weight_unit')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_item_updates_updated_at(client):
+    """Patching any field must advance updated_at on the projection."""
+    import time
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "UPD-AT-001", "name": "Timestamp Test", "quantity": 5.0, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    before = (await client.get(f"/items/{item_id}", headers=h)).json().get("updated_at")
+
+    # Small sleep to ensure timestamp advances
+    time.sleep(0.05)
+
+    r2 = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"name": {"old": "Timestamp Test", "new": "Timestamp Test 2"}},
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    after = (await client.get(f"/items/{item_id}", headers=h)).json().get("updated_at")
+    assert after is not None, "updated_at must be set"
+    assert after != before, f"updated_at must advance after patch; before={before!r} after={after!r}"
+
+
+@pytest.mark.asyncio
+async def test_transfer_item_updates_updated_at(client):
+    """Transferring an item must advance updated_at on the projection."""
+    import time
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc1 = (await client.post("/companies/me/locations", json={"name": "Warehouse A", "type": "warehouse"}, headers=h)).json()
+    loc2 = (await client.post("/companies/me/locations", json={"name": "Warehouse B", "type": "warehouse"}, headers=h)).json()
+
+    r = await client.post("/items", json={
+        "sku": "TR-AT-001", "name": "Transfer Timestamp", "quantity": 3.0,
+        "sell_by": "piece", "location_id": loc1["id"],
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    before = (await client.get(f"/items/{item_id}", headers=h)).json().get("updated_at")
+    time.sleep(0.05)
+
+    r2 = await client.post(f"/items/{item_id}/transfer", json={"to_location_id": loc2["id"]}, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    after_item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    after = after_item.get("updated_at")
+    assert after is not None, "updated_at must be set after transfer"
+    assert after != before, f"updated_at must advance after transfer; before={before!r} after={after!r}"
+    assert after_item.get("location_id") == loc2["id"], "location_id must reflect new location"

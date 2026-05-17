@@ -76,6 +76,8 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = data["new_status"]
     elif event_type == "item.transferred":
         current["location_id"] = data["to_location_id"]
+        if "updated_at" in data:
+            current["updated_at"] = data["updated_at"]
     elif event_type == "item.quantity.adjusted":
         current["quantity"] = data["new_qty"]
     elif event_type in {"item.expired", "item.disposed"}:
