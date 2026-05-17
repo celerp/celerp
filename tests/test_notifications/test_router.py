@@ -86,10 +86,12 @@ async def test_list_notifications_with_data(auth_client, session):
     from sqlalchemy import select
 
     # Get user_id and company_id from the registered user
+    from celerp.models.accounting import UserCompany
     user = (await session.execute(select(User).where(User.email == "notif@test.com"))).scalars().first()
+    uc = (await session.execute(select(UserCompany).where(UserCompany.user_id == user.id))).scalars().first()
 
     n = Notification(
-        company_id=user.company_id, user_id=user.id,
+        company_id=uc.company_id, user_id=user.id,
         category="ai", title="Test", body="Body",
         priority="high",
     )
@@ -113,9 +115,11 @@ async def test_mark_read_success(auth_client, session):
     from celerp.models.company import User
     from sqlalchemy import select
 
+    from celerp.models.accounting import UserCompany
     user = (await session.execute(select(User).where(User.email == "notif@test.com"))).scalars().first()
+    uc = (await session.execute(select(UserCompany).where(UserCompany.user_id == user.id))).scalars().first()
     n = Notification(
-        company_id=user.company_id, user_id=user.id,
+        company_id=uc.company_id, user_id=user.id,
         category="ai", title="Read me", body="B",
     )
     session.add(n)
@@ -146,10 +150,12 @@ async def test_mark_all_read(auth_client, session):
     from celerp.models.company import User
     from sqlalchemy import select
 
+    from celerp.models.accounting import UserCompany
     user = (await session.execute(select(User).where(User.email == "notif@test.com"))).scalars().first()
+    uc = (await session.execute(select(UserCompany).where(UserCompany.user_id == user.id))).scalars().first()
     for i in range(3):
         session.add(Notification(
-            company_id=user.company_id, user_id=user.id,
+            company_id=uc.company_id, user_id=user.id,
             category="ai", title=f"N{i}", body="B",
         ))
     await session.commit()

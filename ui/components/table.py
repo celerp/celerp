@@ -184,6 +184,95 @@ def searchable_select(
     )
 
 
+def paired_display_cell(
+    entity_id: str,
+    primary_field: str,
+    primary_value,
+    secondary_field: str,
+    secondary_value,
+    primary_type: str = "text",
+    secondary_type: str = "text",
+    primary_options: list[str] | None = None,
+    secondary_options: list[str] | None = None,
+) -> FT:
+    """Combined cell showing two separately dbl-click-editable values in one TD.
+
+    Used for quantity+sell_by and weight+weight_unit so they share a column.
+    Each span is independently double-click-to-edit via the paired-edit endpoint,
+    which returns an editable_cell whose restore_url points back to paired-display.
+    """
+    pri_edit = f"/api/items/{entity_id}/field/{primary_field}/paired-edit?peer={secondary_field}"
+    sec_edit = f"/api/items/{entity_id}/field/{secondary_field}/paired-edit?peer={primary_field}"
+    pri_disp = str(primary_value) if primary_value not in (None, "") else EMPTY
+    sec_disp = str(secondary_value) if secondary_value not in (None, "") else EMPTY
+    return Td(
+        Span(
+            pri_disp,
+            cls="paired-primary",
+            title="Double-click to edit",
+            hx_get=pri_edit,
+            hx_target="closest td",
+            hx_swap="outerHTML",
+            hx_trigger="dblclick",
+        ),
+        Span(" ", cls="paired-sep"),
+        Span(
+            sec_disp,
+            cls="paired-secondary",
+            title="Double-click to edit",
+            hx_get=sec_edit,
+            hx_target="closest td",
+            hx_swap="outerHTML",
+            hx_trigger="dblclick",
+        ),
+        cls=f"cell cell--paired",
+        data_col=primary_field,
+    )
+
+
+def purchase_display_cell(
+    entity_id: str,
+    pu_val,
+    cf_val,
+    sb_val,
+) -> FT:
+    """Cell showing purchase_unit → cf_val sell_by (tertiary read-only).
+
+    purchase_unit and purchase_conversion_factor are dbl-click editable;
+    sell_by is read-only in this column (edit via the Qty column).
+    """
+    pu_edit = f"/api/items/{entity_id}/field/purchase_unit/paired-edit"
+    cf_edit = f"/api/items/{entity_id}/field/purchase_conversion_factor/paired-edit"
+    pu_disp = str(pu_val) if pu_val not in (None, "") else EMPTY
+    cf_disp = str(cf_val) if cf_val not in (None, "") else EMPTY
+    sb_disp = str(sb_val) if sb_val not in (None, "") else EMPTY
+    return Td(
+        Span(
+            pu_disp,
+            cls="paired-primary",
+            title="Double-click to edit",
+            hx_get=pu_edit,
+            hx_target="closest td",
+            hx_swap="outerHTML",
+            hx_trigger="dblclick",
+        ),
+        Span(" → ", cls="paired-sep", title="Purchasing unit conversion to stock unit"),
+        Span(
+            cf_disp,
+            cls="paired-secondary",
+            title="Double-click to edit",
+            hx_get=cf_edit,
+            hx_target="closest td",
+            hx_swap="outerHTML",
+            hx_trigger="dblclick",
+        ),
+        Span(" ", cls="paired-sep"),
+        Span(sb_disp, cls="paired-tertiary cell-readonly"),
+        cls="cell cell--paired",
+        data_col="purchase_unit",
+    )
+
+
 def editable_cell(
     entity_id: str,
     field: str,
@@ -191,12 +280,18 @@ def editable_cell(
     cell_type: str = "text",
     options: list[str] | None = None,
     allow_custom: bool = False,
+    restore_url: str | None = None,
+    label_map: dict | None = None,
 ) -> FT:
-    """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell."""
+    """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
+    label_map: optional {slug: display_name} - if set, select renders option labels from map."""
     display_val = str(value) if value is not None else ""
     patch_url = f"/api/items/{entity_id}/field/{field}"
-    restore_url = f"/api/items/{entity_id}/field/{field}/display"
+    restore_url = restore_url or f"/api/items/{entity_id}/field/{field}/display"
     swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
+    # Apply label_map to options for selects
+    if options is not None and label_map:
+        options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
     escape_js = (
@@ -232,8 +327,10 @@ def editable_cell(
                 onkeydown=combobox_escape_js,
             )
         else:
+            _opt_items = [(o, o) if isinstance(o, str) else o for o in options]
             input_el = Select(
-                *[Option(o, value=o, selected=(o == display_val)) for o in options],
+                *([] if display_val else [Option("", value="", disabled=True, selected=True)]),
+                *[Option(lbl, value=val, selected=(val == display_val)) for val, lbl in _opt_items],
                 name="value",
                 **swap,
                 hx_trigger="change",
@@ -323,13 +420,16 @@ def display_cell(
     currency: str | None = None,
     link_href: str | None = None,
     edit_url: str | None = None,
+    label_map: dict | None = None,
 ) -> FT:
     """Read-only cell. Double-click-to-edit fires HTMX GET to fetch editable_cell.
     Image cells support drag-and-drop upload in addition to click.
     link_href: if set, renders cell value as a clickable hyperlink (e.g. SKU -> detail page).
     edit_url: custom HTMX GET URL for editing this cell. Overrides the default
-              ``/api/items/{entity_id}/field/{field}/edit`` pattern."""
-    inner = _display_val(value, cell_type, currency)
+              ``/api/items/{entity_id}/field/{field}/edit`` pattern.
+    label_map: optional {slug: display_name} dict - if set, display_val shows the mapped name."""
+    display_value = label_map.get(value, value) if label_map and value is not None else value
+    inner = _display_val(display_value, cell_type, currency)
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
 
     if not editable:
@@ -416,6 +516,8 @@ def data_table(
     auto_hide_empty: bool = True,
     edit_url_tpl: str | None = None,
     delete_url_tpl: str | None = None,
+    cell_renderers: dict | None = None,
+    hidden_fields: set | None = None,
 ) -> FT:
     """
     Dynamic spreadsheet table. Headers from schema (never hardcoded), rows from API.
@@ -445,7 +547,9 @@ def data_table(
         ordered = [f for key in show_cols for f in schema if f["key"] == key]
         rest = [f for f in schema if f["key"] not in show_cols]
         visible = ordered + rest
-
+    # Drop fields that are rendered inside another cell (paired secondaries etc.)
+    if hidden_fields:
+        visible = [f for f in visible if f["key"] not in hidden_fields]
     if not rows:
         if q and q.strip():
             return Div(
@@ -522,17 +626,21 @@ def data_table(
                ), cls="col-checkbox")] if show_checkboxes else []
         return Tr(
             *checkbox_td,
-            *[display_cell(
-                entity_id=entity_id,
-                field=f["key"],
-                value=row.get(f["key"], ""),
-                cell_type=f.get("type", "text"),
-                options=f.get("options"),
-                editable=f.get("editable", True),
-                currency=currency,
-                link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
-                edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
-            ) for f in visible],
+            *[
+                cell_renderers[f["key"]](entity_id, row) if cell_renderers and f["key"] in cell_renderers
+                else display_cell(
+                    entity_id=entity_id,
+                    field=f["key"],
+                    value=row.get(f["key"], ""),
+                    cell_type=f.get("type", "text"),
+                    options=f.get("options"),
+                    editable=f.get("editable", True),
+                    currency=currency,
+                    link_href=(link_fn[f["key"]].format(id=entity_id) if link_fn and f["key"] in link_fn else None),
+                    edit_url=(edit_url_tpl.format(id=entity_id, field=f["key"]) if edit_url_tpl else None),
+                )
+                for f in visible
+            ],
             *action_cell,
             id=f"row-{safe_id}",
             cls="data-row",
@@ -587,9 +695,12 @@ def data_table(
     }});
   }} else {{
     // Merge: columns not in stored prefs get their schema default
+    // Force-hide any column whose schema default is false (catches renamed/merged columns in old prefs)
     ths.forEach(function(th) {{
       if (!(th.dataset.key in prefs)) {{
         prefs[th.dataset.key] = SCHEMA_DEFAULTS[th.dataset.key] !== false;
+      }} else if (SCHEMA_DEFAULTS[th.dataset.key] === false) {{
+        prefs[th.dataset.key] = false;
       }}
     }});
   }}
@@ -817,6 +928,12 @@ function bulkActionChanged(action){
   if(action==='merge'&&n<2){alert('Select at least 2 items to merge.');return;}
   var clone=tpl.content.cloneNode(true);
   ctx.appendChild(clone);
+  // Split: auto-load preview immediately; no qty input needed
+  if(action==='split'){
+    if(window.htmx) htmx.process(ctx);
+    if(typeof bulkSplitAutoLoad==='function') bulkSplitAutoLoad();
+    return;
+  }
   // Merge: populate target dropdown with selected items
   if(action==='merge') _populateMergeTargets();
   // Re-process htmx on new content
@@ -960,6 +1077,50 @@ function sendToTypeChanged(docType){
       }
     }
   });
+  // Guard: register body-level htmx handlers only once per page load
+  if(!window.__celerpHtmxHandlers){
+    window.__celerpHtmxHandlers=true;
+  // Sync derived cells (weight/pieces) after a quantity PATCH.
+  // Use htmx:afterRequest (fires before swap) to get the requestConfig path reliably,
+  // then re-query the live DOM after the swap completes via htmx:afterSettle.
+  document.body.addEventListener('htmx:afterSettle',function(e){
+    var path=(e.detail.requestConfig&&e.detail.requestConfig.path)||
+             (e.detail.pathInfo&&e.detail.pathInfo.requestPath)||'';
+    if(!path){return;}
+    var m=path.match(/\/api\/items\/([^/]+)\/field\/quantity/);
+    if(!m){return;}
+    var eid=m[1];
+    var safeId=eid.replace(/:/g,'-');
+    var tr=document.getElementById('row-'+safeId);
+    if(!tr){return;}
+    var qtyTd=tr.querySelector('[data-col="quantity"]');
+    if(!qtyTd){return;}
+    var primSpan=qtyTd.querySelector('.paired-primary');
+    var secSpan=qtyTd.querySelector('.paired-secondary');
+    // Use the raw numeric value from the paired-primary span for precise formatting
+    var rawQty=primSpan?primSpan.textContent.trim():qtyTd.textContent.trim();
+    var newUnit=secSpan?secSpan.textContent.trim():'';
+    function fmtNum(val, decimals) {
+      var n=parseFloat(val);
+      if(isNaN(n)){return val||'--';}
+      if(decimals===''||decimals===null||decimals===undefined){return String(n);}
+      return n.toFixed(parseInt(decimals,10));
+    }
+    tr.querySelectorAll('.cell-derived').forEach(function(span){
+      var derivedTd=span.closest('td');
+      if(!derivedTd){return;}
+      var col=derivedTd.dataset.col;
+      var decimals=derivedTd.dataset.decimals;
+      var fmt=fmtNum(rawQty, decimals);
+      if(col==='weight'){
+        span.textContent=(rawQty&&rawQty!=='--'&&newUnit&&newUnit!=='--')
+          ?fmt+'\u00a0'+newUnit:(fmt||'--');
+      } else if(col==='pieces'){
+        span.textContent=fmt||'--';
+      }
+    });
+  });
+  } // end if(!window.__celerpHtmxHandlers)
   CelerpSelection.syncCheckboxes();
   updateBulkToolbar();
 })();
@@ -1155,6 +1316,16 @@ def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> F
 
 
 def search_bar(placeholder: str = "Search...", target: str = "#data-table", url: str = "") -> FT:
+    # Enter key → insert comma (for barcode scanner multi-scan: each scan ends with Enter,
+    # becoming a comma-separated OR query without submitting the form).
+    enter_js = (
+        "if(event.key==='Enter'){"
+        "event.preventDefault();"
+        "var v=this.value,end=this.selectionEnd;"
+        "if(v.length&&v[v.length-1]!==','){"
+        "this.value=v+',';"
+        "} }"
+    )
     return Input(
         type="search",
         name="q",
@@ -1167,6 +1338,8 @@ def search_bar(placeholder: str = "Search...", target: str = "#data-table", url:
         hx_include="this",
         cls="search-input",
         id="search-input",
+        onkeydown=enter_js,
+        title="Use a comma (or Enter) for OR — e.g. scan multiple barcodes one after another",
     )
 
 

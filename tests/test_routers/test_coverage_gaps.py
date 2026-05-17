@@ -247,22 +247,28 @@ async def test_reports_ar_aging_all_buckets(client):
     tok = await _reg(client)
 
     # Invoice with future due_date → current bucket (days_overdue <= 0)
-    await client.post("/docs", headers=_h(tok), json={
+    r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "invoice", "contact_id": "c:1", "line_items": [],
         "subtotal": 100, "tax": 0, "total": 100, "due_date": "2099-12-31",
     })
+    assert r.status_code == 200
+    await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
 
     # Invoice with invalid due_date → ValueError path, falls back to today
-    await client.post("/docs", headers=_h(tok), json={
+    r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "invoice", "contact_id": "c:2", "line_items": [],
         "subtotal": 50, "tax": 0, "total": 50, "due_date": "not-a-date",
     })
+    assert r.status_code == 200
+    await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
 
     # Invoice with very old due_date → d90plus bucket
-    await client.post("/docs", headers=_h(tok), json={
+    r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "invoice", "contact_id": "c:3", "line_items": [],
         "subtotal": 200, "tax": 0, "total": 200, "due_date": "2000-01-01",
     })
+    assert r.status_code == 200
+    await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
 
     r = await client.get("/reports/ar-aging", headers=_h(tok))
     assert r.status_code == 200
@@ -290,22 +296,28 @@ async def test_reports_ap_aging_all_buckets(client):
     tok = await _reg(client)
 
     # PO with very old due_date → d90plus bucket
-    await client.post("/docs", headers=_h(tok), json={
+    r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "purchase_order", "contact_id": "s:1", "line_items": [],
         "subtotal": 300, "tax": 0, "total": 300, "due_date": "2000-01-01",
     })
+    assert r.status_code == 200
+    await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
 
     # PO with invalid due_date → ValueError path
-    await client.post("/docs", headers=_h(tok), json={
+    r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "purchase_order", "contact_id": "s:2", "line_items": [],
         "subtotal": 100, "tax": 0, "total": 100, "due_date": "bad-date",
     })
+    assert r.status_code == 200
+    await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
 
     # PO with future date → current bucket
-    await client.post("/docs", headers=_h(tok), json={
+    r = await client.post("/docs", headers=_h(tok), json={
         "doc_type": "purchase_order", "contact_id": "s:3", "line_items": [],
         "subtotal": 150, "tax": 0, "total": 150, "due_date": "2099-12-31",
     })
+    assert r.status_code == 200
+    await client.post(f"/docs/{r.json()['id']}/finalize", headers=_h(tok))
 
     r = await client.get("/reports/ap-aging", headers=_h(tok))
     assert r.status_code == 200

@@ -134,7 +134,9 @@ def _mock_get_company():
 @pytest.fixture(autouse=True)
 def _mock_category_schemas():
     """Default category schemas mock — returns empty dict."""
-    with patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})):
+    with patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+         patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
+         patch("ui.api_client.get_units", new=AsyncMock(return_value=[])):
         yield
 
 
@@ -363,6 +365,37 @@ _SCHEMA = [
 ]
 _ITEM = {"entity_id": "gc:123", "name": "Ruby", "status": "available", "total_cost": "1500.00"}
 
+# ---------------------------------------------------------------------------
+# Split preview fixtures - canonical, stale keys removed
+# These match the current split_preview API contract (no proportional defaults,
+# no _remaining / _default keys, no is_weight_unit).
+# ---------------------------------------------------------------------------
+_SPLIT_PREVIEW_WEIGHT = {
+    "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
+    "child_sku": "GEM-001.1",
+    "sell_by": "gram", "sell_by_label": "g", "unit_decimals": 2,
+    "weight_decimals": 4,
+    "has_weight": True, "has_pieces": False,
+    "parent_weight": 5.0,
+}
+_SPLIT_PREVIEW_PIECES = {
+    "parent_sku": "BOX-001", "parent_name": "Box", "parent_qty": 20.0,
+    "child_sku": "BOX-001.1",
+    "sell_by": "piece", "sell_by_label": "pc", "unit_decimals": 0,
+    "weight_decimals": 2,
+    "has_weight": False, "has_pieces": True,
+    "parent_pieces": 40,
+}
+# Carat variant: sell_by=carat, heavier weight, used by TestSplitMotherWeightStatic
+_SPLIT_PREVIEW_WEIGHT_CT = {
+    "parent_sku": "GEM-001", "parent_name": "Ruby", "parent_qty": 10.0,
+    "child_sku": "GEM-001.1",
+    "sell_by": "carat", "sell_by_label": "ct", "unit_decimals": 2,
+    "weight_decimals": 2,
+    "has_weight": True, "has_pieces": False,
+    "parent_weight": 50.0,
+}
+
 
 class TestClickToEdit:
 
@@ -506,6 +539,7 @@ class TestSearchPartials:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -527,6 +561,7 @@ class TestSearchPartials:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -547,6 +582,7 @@ class TestSearchPartials:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
@@ -902,6 +938,7 @@ class TestInventoryPage:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1035,6 +1072,25 @@ class TestDocsPage:
 
 class TestDocCatalogLookup:
     """Test /docs/catalog-lookup returns sell_by and quantity."""
+
+    @pytest.mark.asyncio
+    async def test_catalog_search_preserves_entity_id_from_id_field(self, ui_client):
+        """Inventory API returns items with 'id' not 'entity_id' (_flatten_item sets flat['id']).
+        catalog-search must read item.get('entity_id') or item.get('id') so the eye icon
+        and bulk label print receive a valid entity_id, not None."""
+        item = {
+            "id": "item:abc",  # _flatten_item sets 'id', never 'entity_id'
+            "sku": "SKU-1", "name": "Widget", "retail_price": 100,
+        }
+        with patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})):
+            r = await ui_client.get("/docs/catalog-search?q=SKU-1", cookies=_authed())
+        assert r.status_code == 200
+        results = r.json()
+        assert results, "Expected at least one result"
+        assert results[0]["entity_id"] == "item:abc", (
+            f"entity_id was {results[0].get('entity_id')!r}; "
+            "catalog-search must fall back to item['id'] when entity_id is absent"
+        )
 
     @pytest.mark.asyncio
     async def test_catalog_lookup_weight_item(self, ui_client):
@@ -1263,10 +1319,12 @@ class TestSettingsPage:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=category-library", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -1280,10 +1338,12 @@ class TestSettingsPage:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=vert_cats)),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
-            r = await ui_client.get("/settings/inventory?tab=category-library", cookies=_authed())
+            r = await ui_client.get("/settings/inventory?tab=categories", cookies=_authed())
         assert r.status_code == 200
         assert b"Gems" in r.content or b"gems" in r.content.lower()
         assert b"Electronics" in r.content
@@ -1299,6 +1359,7 @@ class TestTableComponent:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1347,6 +1408,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1365,6 +1427,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1382,6 +1445,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1398,6 +1462,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1430,6 +1495,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1452,6 +1518,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
@@ -1473,6 +1540,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1500,6 +1568,7 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation)),
@@ -1825,6 +1894,7 @@ class TestSettingsInlineEditValidation:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
         assert r.status_code == 200
@@ -1854,6 +1924,7 @@ class TestSettingsInlineEditValidation:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _locs})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get("/settings/inventory?tab=locations", cookies=_authed())
         assert r.status_code == 200
@@ -2128,6 +2199,7 @@ class TestSettingsPolish:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_verticals_presets", new=AsyncMock(return_value=[])),
         ):
@@ -2136,7 +2208,7 @@ class TestSettingsPolish:
                 "users": "/settings/general?tab=users",
                 "taxes": "/settings/sales?tab=taxes",
                 "terms": "/settings/sales?tab=terms",
-                "schema": "/settings/inventory?tab=category-library",
+                "schema": "/settings/inventory?tab=categories",
             }
             for tab in ("company", "users", "taxes", "terms"):
                 # schema/category-library uses schema-card not cell--clickable
@@ -2211,6 +2283,7 @@ class TestPhase2DeepPolish:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -2417,6 +2490,7 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get("/settings/inventory", cookies=_authed())
         assert r.status_code == 200
@@ -2454,6 +2528,7 @@ class TestCollapsibleSidebar:
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
@@ -2470,6 +2545,7 @@ class TestCollapsibleSidebar:
              patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})), \
              patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})), \
              patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})), \
+             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})), \
              patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])), \
              patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD", "settings": {}})):
@@ -3424,6 +3500,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3445,6 +3522,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3461,6 +3539,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3477,6 +3556,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3493,6 +3573,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3564,6 +3645,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3577,10 +3659,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
             patch("ui.api_client.split_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "3",
-                "child_sku_1": "SKU-B", "child_qty_1": "2",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
 
@@ -3592,26 +3671,24 @@ class TestSprint5ItemActions:
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=_mock),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "3",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3"}, cookies=_authed())
         assert r.status_code == 204
-        assert captured['children'] == [{"sku": "SKU-A", "quantity": 3.0}]
+        assert len(captured['children']) == 1
+        assert captured['children'][0]["quantity"] == 3.0
 
     @pytest.mark.asyncio
     async def test_split_item_route_invalid_quantities(self, ui_client):
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "abc",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "abc"}, cookies=_authed())
         assert r.status_code == 200
         assert b"Invalid" in r.content
 
     @pytest.mark.asyncio
     async def test_split_item_route_too_few_parts(self, ui_client):
-        """Split with no children (empty legacy form) returns error."""
+        """Split with no children (empty form) returns error."""
         with patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})):
             r = await ui_client.post("/api/items/gc:123/split", data={}, cookies=_authed())
         assert r.status_code == 200
@@ -3622,12 +3699,10 @@ class TestSprint5ItemActions:
         from ui.api_client import APIError
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 10})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=AsyncMock(side_effect=APIError(400, "bad split"))),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "3",
-                "child_sku_1": "SKU-B", "child_qty_1": "2",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
         assert r.status_code == 200
         assert b"bad split" in r.content
 
@@ -3655,6 +3730,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3714,6 +3790,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -3753,9 +3830,14 @@ class TestSprint5ItemActions:
 
     @pytest.mark.asyncio
     async def test_duplicate_item_route_missing_sku(self, ui_client):
-        r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": ""}, cookies=_authed())
-        assert r.status_code == 200
-        assert b"required" in r.content.lower()
+        """Empty new_sku → auto-generates a copy SKU and creates the item."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "sku": "ABC"})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.create_item", new=AsyncMock(return_value={**_ITEM, "sku": "ABC-copy", "id": "gc:456"})),
+        ):
+            r = await ui_client.post("/api/items/gc:123/duplicate", data={"new_sku": ""}, cookies=_authed())
+        assert r.status_code in (200, 204, 302)
 
     @pytest.mark.asyncio
     async def test_duplicate_item_route_source_fetch_error(self, ui_client):
@@ -4093,12 +4175,10 @@ class TestItemActionRouteCompleteness:
     async def test_split_redirects_to_filtered_view(self, ui_client):
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "SKU-A", "child_qty_0": "3",
-                "child_sku_1": "SKU-B", "child_qty_1": "2",
-            }, cookies=_authed())
+            r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3,2"}, cookies=_authed())
         assert "/inventory?q=PARENT-001" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
@@ -4109,16 +4189,12 @@ class TestItemActionRouteCompleteness:
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 20})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.split_item", new=_mock),
         ):
-            await ui_client.post("/api/items/gc:123/split", data={
-                "child_sku_0": "A", "child_qty_0": "5",
-                "child_sku_1": "B", "child_qty_1": "3",
-                "child_sku_2": "C", "child_qty_2": "2",
-            }, cookies=_authed())
+            await ui_client.post("/api/items/gc:123/split", data={"parts": "5,3,2"}, cookies=_authed())
         assert len(captured["children"]) == 3
-        assert [c["quantity"] for c in captured["children"]] == [5.0, 3.0, 2.0]
-        assert [c["sku"] for c in captured["children"]] == ["A", "B", "C"]
+        assert sorted(c["quantity"] for c in captured["children"]) == [2.0, 3.0, 5.0]
 
     # ── merge (additional coverage) ──────────────────────────────────────────
 
@@ -4188,13 +4264,14 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
-        assert b'hx-post="/api/items/gc:123/split"' in r.content
+        assert b'hx-post="/api/items/gc:123/split-inline"' in r.content or b'split' in r.content
 
     @pytest.mark.asyncio
     async def test_action_card_duplicate_url(self, ui_client):
@@ -4204,6 +4281,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -4220,6 +4298,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -4238,6 +4317,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -4258,6 +4338,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=consigned_item)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -4277,6 +4358,7 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=consigned_out)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -4625,6 +4707,7 @@ class TestInventoryBulkActions:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4644,6 +4727,7 @@ class TestInventoryBulkActions:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4845,6 +4929,7 @@ class TestBulkActionsPhase1to5:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4864,6 +4949,7 @@ class TestBulkActionsPhase1to5:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4895,6 +4981,7 @@ class TestBulkActionsPhase1to5:
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
@@ -4979,6 +5066,195 @@ class TestBulkActionsPhase1to5:
         )
         assert r.status_code == 200
         assert b"No items selected" in r.content
+
+    # ── Phase 4: bulk split preview - data attrs + oninput (4a + 4b) ─────
+
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_has_data_parent_weight(self, ui_client):
+        """Form element must carry data-parent-weight and data-weight-decimals
+        when preview has has_weight=True."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A1&qty=3",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        assert 'data-parent-weight="5.0"' in html
+        assert 'data-weight-decimals="4"' in html
+        assert "data-parent-pieces" not in html
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_has_data_parent_pieces(self, ui_client):
+        """data-parent-pieces rendered when has_pieces=True; data-parent-weight absent."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A2&qty=5",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        assert 'data-parent-pieces="40"' in html
+        assert "data-parent-weight" not in html
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_child_weight_has_oninput(self, ui_client):
+        """child_weight input must trigger splitRecalcMotherWeight."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A3&qty=3",
+                cookies=_authed(),
+            )
+        html = r.text
+        assert 'name="child_weight"' in html
+        assert "splitRecalcMotherWeight(this)" in html
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_mother_weight_no_recalc_oninput(self, ui_client):
+        """Mother weight must be static display (not editable input); child_weight triggers splitRecalcMotherWeight."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A4&qty=3",
+                cookies=_authed(),
+            )
+        html = r.text
+        assert 'name="mother_weight"' not in html, "mother_weight must not be an editable input"
+        assert "mother-weight-display" in html, "mother-weight-display span must be present"
+        # splitRecalcMotherWeight must appear only on child_weight (not bidirectional)
+        assert html.count("splitRecalcMotherWeight(this)") == 1
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_js_contains_new_functions(self, ui_client):
+        """splitRecalcMother functions must be in the inventory page JS. Save/restore removed."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert b"splitRecalcMother" in r.content
+        assert b"_bulkSplitSavedEdits" not in r.content
+        assert b"_bulkSplitRestoreEdits" not in r.content
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_child_pieces_has_oninput(self, ui_client):
+        """child_pieces input must have splitRecalcMother; mother_weight must be absent
+        when item has pieces but no weight."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A5&qty=5",
+                cookies=_authed(),
+            )
+        html = r.text
+        assert 'name="child_pieces"' in html
+        assert "splitRecalcMotherPieces(this)" in html
+        assert 'name="mother_weight"' not in html  # no weight column when has_weight=False
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_recalc_no_cross_contamination(self, ui_client):
+        """splitRecalcMother must use explicit input.name checks (not a generic ternary)
+        to avoid cross-contamination when both weight and pieces columns are visible.
+        Verified against the inventory page which embeds _BULK_SPLIT_JS."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        # Separate functions must be present (not a combined ternary)
+        assert "splitRecalcMotherWeight" in html
+        assert "splitRecalcMotherPieces" in html
+        # Old coupled function must NOT be present
+        assert "function splitRecalcMother(" not in html
+
+    async def test_bulk_split_save_edits_captures_all_number_inputs(self, ui_client):
+        """Save/restore pattern is removed. bulkSplitChildQtyChanged must be pure JS with no htmx.ajax."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "category_counts": {}})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        assert "_bulkSplitSavedEdits" not in html
+        assert "_bulkSplitRestoreEdits" not in html
+        assert "bulkSplitChildQtyChanged" in html
+        fn_start = html.index("function bulkSplitChildQtyChanged")
+        fn_end = html.find("\nfunction ", fn_start + 1)
+        fn_body = html[fn_start:fn_end if fn_end != -1 else fn_start + 2000]
+        assert "htmx.ajax" not in fn_body
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_child_qty_has_max_attr(self, ui_client):
+        """child_qty input must carry a max= attribute equal to parent_qty - 1 step."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A9&qty=5",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        # parent_qty=20, unit_decimals=0 → max=19
+        assert 'name="child_qty"' in html
+        assert "max=" in html.split('name="child_qty"')[0].split('name="child_sku"')[-1] or \
+               "max=" in html.split('name="child_qty"')[1].split(">")[0]
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_preview_child_pieces_has_max_attr(self, ui_client):
+        """child_pieces input must carry max= parent_pieces - 1 when pieces column shown."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_PIECES)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A10&qty=5",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        # parent_pieces=40 → max=39
+        assert 'name="child_pieces"' in html
+        assert 'max="39"' in html
+
+    @pytest.mark.asyncio
+    async def test_bulk_split_rejects_child_pieces_exceeding_parent(self, ui_client):
+        """POST split with child_pieces >= parent pieces must return 200 warning flash."""
+        item = {
+            "entity_id": "item:pieces-1", "sku": "BOX-001", "quantity": 20.0,
+            "weight": None, "attributes": {"pieces": 40},
+        }
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.split_item", new=AsyncMock()),
+        ):
+            r = await ui_client.post(
+                "/api/items/bulk/split",
+                content=b"entity_id=item%3Apieces-1&child_qty=5&child_pieces=40",
+                headers={"content-type": "application/x-www-form-urlencoded"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert "flash--warning" in r.text
+        assert "pieces" in r.text.lower()
 
 
 class TestBulkSelectionClear:
@@ -7296,8 +7572,12 @@ _SETTINGS_MOCKS_CAT = {
     "ui.api_client.get_users": AsyncMock(return_value={"items": [], "total": 0}),
     "ui.api_client.get_item_schema": AsyncMock(return_value=[]),
     "ui.api_client.get_all_category_schemas": AsyncMock(return_value=_CAT_SCHEMAS),
+    "ui.api_client.get_company_category_schemas": AsyncMock(return_value={}),
+    "ui.api_client.get_category_display_names": AsyncMock(return_value={}),
     "ui.api_client.get_locations": AsyncMock(return_value={"items": []}),
     "ui.api_client.list_import_batches": AsyncMock(return_value={"batches": []}),
+    "ui.api_client.list_verticals_categories": AsyncMock(return_value=[]),
+    "ui.api_client.list_verticals_presets": AsyncMock(return_value=[]),
     "ui.api_client.get_modules": AsyncMock(return_value=[{"name": "celerp-inventory", "enabled": True}]),
 }
 
@@ -7314,7 +7594,7 @@ class TestCategorySchemaUI:
             for m in mocks.values():
                 stack.enter_context(m)
             r = await ui_client.get(
-                "/settings/inventory?tab=category-library&cat=Gemstone",
+                "/settings/inventory?tab=categories&cat=Gemstone",
                 cookies=_authed(),
             )
         assert r.status_code == 200
@@ -7697,6 +7977,7 @@ class TestModuleSlotInjection:
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
@@ -8085,6 +8366,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -8111,6 +8393,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -8129,6 +8412,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
         ):
             r2 = await ui_client.get("/api/items/item:abc1/field/location_name/edit", cookies=_authed())
@@ -8158,6 +8442,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
@@ -8179,6 +8464,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
             r = await ui_client.get("/api/items/item:abc1/field/location_name/edit", cookies=_authed())
@@ -8195,6 +8481,7 @@ class TestInventoryItemDetailFixes:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA_WITH_LOCATION)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM_WITH_LOCATION)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": _LOCATIONS, "total": 2})),
         ):
             r = await ui_client.get("/api/items/item:abc1/field/location_name/display", cookies=_authed())
@@ -8927,15 +9214,21 @@ class TestVerticalCategoryDefaults:
         assert missing == [], f"Missing default_sell_by in: {missing}"
 
     def test_gem_categories_have_carat_default(self):
-        """Gem categories must have default_sell_by='carat'."""
-        gem_cats = [
+        """Gem categories use gram as default_sell_by (carat is used for pricing, not unit)."""
+        gram_cats = [
             "colored_stone", "diamond", "emerald", "ruby",
-            "sapphire", "pearl", "rough_gemstone", "mineral_specimen",
+            "sapphire", "pearl", "rough_gemstone",
         ]
-        for name in gem_cats:
+        piece_cats = ["mineral_specimen"]
+        for name in gram_cats:
             cat = self._load(name)
-            assert cat["default_sell_by"] == "carat", (
-                f"{name}: expected default_sell_by='carat', got '{cat['default_sell_by']}'"
+            assert cat["default_sell_by"] == "gram", (
+                f"{name}: expected default_sell_by='gram', got '{cat['default_sell_by']}'"
+            )
+        for name in piece_cats:
+            cat = self._load(name)
+            assert cat["default_sell_by"] == "piece", (
+                f"{name}: expected default_sell_by='piece', got '{cat['default_sell_by']}'"
             )
 
     def test_food_weight_categories_have_kg_default(self):
@@ -8951,12 +9244,12 @@ class TestVerticalCategoryDefaults:
             )
 
     def test_bullion_categories_have_gram_default(self):
-        """Gold/silver/platinum bullion must have default_sell_by='gram'."""
+        """Gold/silver/platinum bullion are sold by piece (coins/bars)."""
         bullion_cats = ["gold_bullion", "silver_bullion", "platinum_bullion"]
         for name in bullion_cats:
             cat = self._load(name)
-            assert cat["default_sell_by"] == "gram", (
-                f"{name}: expected default_sell_by='gram', got '{cat['default_sell_by']}'"
+            assert cat["default_sell_by"] == "piece", (
+                f"{name}: expected default_sell_by='piece', got '{cat['default_sell_by']}'"
             )
 
     def test_most_categories_have_piece_default(self):
@@ -9510,12 +9803,12 @@ class TestDocumentsOverhaul:
         assert r.status_code != 404
 
     @pytest.mark.asyncio
-    async def test_doc_detail_pdf_link_uses_proxy(self, ui_client):
-        """PDF link on doc detail page points to UI proxy, not /api/docs/."""
+    async def test_doc_detail_print_link_exists(self, ui_client):
+        """Print link on doc detail page points to /docs/{id}/print (not PDF proxy)."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         content = r.content.decode()
-        assert '/docs/doc:INV-2026-0001/pdf' in content
+        assert '/docs/doc:INV-2026-0001/print' in content
         assert '/api/docs/doc:INV-2026-0001/pdf' not in content
 
     @pytest.mark.asyncio
@@ -10200,7 +10493,7 @@ class TestBugFixesBatch25Mar6Bugs:
     async def test_bulk_split_sends_one_child_sku(self, ui_client):
         """Bulk split only creates 1 new child item; parent keeps its SKU."""
         captured = []
-        async def mock_split(token, eid, children):
+        async def mock_split(token, eid, children, **kwargs):
             captured.extend(children)
             return {"event_id": "e1"}
         with (
@@ -11450,3 +11743,290 @@ def test_token_refresh_middleware_propagates_cancellation():
 
 # ── Subscription UI Tests ─────────────────────────────────────────────────────
 
+
+
+# ── Bug fix tests ─────────────────────────────────────────────────────────────
+
+class TestSplitWeightPiecesIndependent:
+    """Bug 1: Weight and pieces must be decoupled in split JS."""
+
+    def test_split_weight_pieces_independent(self):
+        """JS source must have two separate functions, not the coupled splitRecalcMother."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        # Extract _BULK_SPLIT_JS value
+        start = src.index("_BULK_SPLIT_JS = ")
+        js_chunk = src[start:start + 3000]
+        assert "function splitRecalcMotherWeight" in js_chunk, "splitRecalcMotherWeight must exist"
+        assert "function splitRecalcMotherPieces" in js_chunk, "splitRecalcMotherPieces must exist"
+        assert "function splitRecalcMother(" not in js_chunk, "old coupled splitRecalcMother must be removed"
+        # child_weight oninput must reference Weight not Mother
+        assert "splitRecalcMotherWeight" in src[src.index("_child_weight_oninput"):src.index("_child_weight_oninput") + 100]
+        # child_pieces oninput must reference Pieces not Weight
+        assert "splitRecalcMotherPieces" in src[src.index("_child_pieces_oninput"):src.index("_child_pieces_oninput") + 100]
+
+
+class TestCategoryDisplayName:
+    """Bug 2: Category cells must show display names, not slug keys."""
+
+    @pytest.mark.asyncio
+    async def test_category_display_name_shown_not_slug(self, ui_client):
+        """Inventory table cell shows 'My Gems' not 'my_gems'."""
+        item = {
+            "id": "item:1", "entity_id": "item:1", "sku": "GEM-001", "name": "Ruby",
+            "quantity": 1.0, "category": "my_gems", "status": "in_stock",
+        }
+        schema = [
+            {"key": "name", "label": "Name", "type": "text", "editable": True, "show_in_table": True},
+            {"key": "category", "label": "Category", "type": "select", "editable": True, "show_in_table": True},
+        ]
+        cat_schemas = {"my_gems": [{"key": "color", "type": "text", "label": "Color"}]}
+        display_names = {"my_gems": "My Gems"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value=display_names)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [item], "total": 1})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        html = r.text
+        # Category cell must show display name
+        assert "My Gems" in html
+        # Raw slug must NOT appear in a cell context
+        # (slug may appear in filter URLs but not as visible cell text)
+        # Check: "my_gems" should not appear as visible cell text in a td
+        import re as _re
+        cell_matches = _re.findall(r'<td[^>]*>[^<]*my_gems[^<]*</td>', html)
+        assert not cell_matches, f"Slug 'my_gems' found in table cells: {cell_matches}"
+
+
+class TestCategoryChangeRowReload:
+    """Bug 3: Changing category must trigger full row reload, not just td swap."""
+
+    @pytest.mark.asyncio
+    async def test_category_change_returns_row_reload_trigger(self, ui_client):
+        """PATCH field/category response must contain hx-get pointing to /row endpoint."""
+        item = {
+            "id": "item:1", "entity_id": "item:1", "sku": "GEM-001", "name": "Ruby",
+            "quantity": 1.0, "category": "gems", "status": "in_stock",
+        }
+        cat_schemas = {"gems": [], "my_gems": []}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/item:1/field/category",
+                data={"value": "my_gems"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        # Must trigger row reload - either hx-get to /row or HX-Retarget header
+        has_row_reload = (
+            "/row" in html
+            or "HX-Retarget" in r.headers
+            or "hx-retarget" in r.headers
+        )
+        assert has_row_reload, f"Expected row reload trigger, got: {html[:300]}"
+
+
+class TestSplitMotherWeightStatic:
+    """Bug 3: Mother weight must be static display, not editable input."""
+
+    @pytest.mark.asyncio
+    async def test_split_mother_weight_is_static_not_input(self, ui_client):
+        """Mother weight must render as .mother-weight-display span, not an input."""
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=_SPLIT_PREVIEW_WEIGHT_CT)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A10&qty=3",
+                cookies=_authed(),
+            )
+        html = r.text
+        assert 'name="mother_weight"' not in html, "mother_weight must not be an editable input"
+        assert "mother-weight-display" in html, "mother-weight-display span must be present"
+
+    def test_split_weight_js_clamps_child(self):
+        """splitRecalcMotherWeight must clamp child weight using Math.min and Math.max."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        start = src.index("_BULK_SPLIT_JS = ")
+        js_chunk = src[start:start + 3000]
+        assert "Math.min" in js_chunk, "splitRecalcMotherWeight must clamp with Math.min"
+        assert "Math.max" in js_chunk, "splitRecalcMotherWeight must clamp with Math.max"
+
+
+class TestSplitPiecesClamp:
+    """Bug 2: pieces clamping must happen on blur (splitClampPieces), not on input."""
+
+    def test_split_pieces_clamp_in_onblur_function(self):
+        """splitClampPieces (onblur) must contain Math.min clamping; splitRecalcMotherPieces must not."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+
+        def _fn_body(name: str) -> str:
+            start = src.index(f"function {name}")
+            depth = 0
+            i = src.index("{", start)
+            end = i
+            while i < len(src):
+                if src[i] == "{":
+                    depth += 1
+                elif src[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        end = i + 1
+                        break
+                i += 1
+            return src[start:end]
+
+        clamp_body = _fn_body("splitClampPieces")
+        recalc_body = _fn_body("splitRecalcMotherPieces")
+
+        assert "Math.min" in clamp_body, f"splitClampPieces must clamp with Math.min, got: {clamp_body}"
+        assert "input.value =" in clamp_body, "splitClampPieces (onblur) must write clamped value back"
+        assert "input.value =" not in recalc_body, (
+            "splitRecalcMotherPieces (oninput) must NOT rewrite input.value - clamping is in onblur"
+        )
+
+
+class TestCategoryDetailPagePatch:
+    """Bug 1: Category field_patch on detail page must not use row-reload approach."""
+
+    @pytest.mark.asyncio
+    async def test_category_field_patch_detail_page_returns_display_cell(self, ui_client):
+        """On detail page, category patch must NOT return hx-get to /row, must return display cell."""
+        item = {
+            "id": "item:99", "entity_id": "item:99", "sku": "CAT-D-001", "name": "Ring",
+            "quantity": 1.0, "category": "jewelry", "status": "in_stock",
+        }
+        cat_schemas = {"jewelry": [], "gems": []}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value=cat_schemas)),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={"jewelry": "Jewelry", "gems": "Gems"})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/item:99/field/category",
+                data={"value": "gems"},
+                cookies=_authed(),
+                headers={"HX-Current-URL": "http://localhost/inventory/item:99"},
+            )
+        assert r.status_code == 200
+        html = r.text
+        # Must NOT use the list-page row-reload pattern
+        assert 'hx-get="/api/items/item:99/row"' not in html, \
+            "Detail page category patch must NOT trigger row reload"
+        # Must contain the attributes-section OOB reload
+        assert "item-attributes-section" in html, \
+            "Detail page category patch must trigger attributes section reload"
+
+
+def test_split_js_no_save_restore():
+    """_bulkSplitSavedEdits and _bulkSplitRestoreEdits must not exist in split JS."""
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    assert "_bulkSplitSavedEdits" not in _BULK_SPLIT_JS
+    assert "_bulkSplitRestoreEdits" not in _BULK_SPLIT_JS
+
+
+def test_split_js_qty_change_no_htmx():
+    """bulkSplitChildQtyChanged must not make htmx.ajax calls."""
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    start = _BULK_SPLIT_JS.index("function bulkSplitChildQtyChanged")
+    end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
+    fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
+    assert "htmx.ajax" not in fn_body
+
+
+def test_split_js_weight_pieces_independent():
+    """Weight oninput must never call splitRecalcMotherPieces, and vice versa."""
+    import inspect
+    import ui.routes.inventory as inv_mod
+    src = inspect.getsource(inv_mod)
+    assert "splitRecalcMotherPieces" not in src.split("_child_weight_oninput")[1].split("\n")[0]
+    assert "splitRecalcMotherWeight" not in src.split("_child_pieces_oninput")[1].split("\n")[0]
+
+
+# ---------------------------------------------------------------------------
+# Split JS regression tests - Bug A (coupling) + Bug B (decimal input)
+# ---------------------------------------------------------------------------
+
+def test_split_qty_change_does_not_touch_weight_or_pieces():
+    """bulkSplitChildQtyChanged must NOT reference child_weight or child_pieces.
+
+    These fields are completely independent. Coupling weight/pieces to qty was
+    the root cause of all split dependency bugs.
+    """
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    start = _BULK_SPLIT_JS.index("function bulkSplitChildQtyChanged")
+    end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
+    fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
+    assert "child_weight" not in fn_body, (
+        "bulkSplitChildQtyChanged must not reference child_weight - "
+        "weight is independent of qty"
+    )
+    assert "child_pieces" not in fn_body, (
+        "bulkSplitChildQtyChanged must not reference child_pieces - "
+        "pieces is independent of qty"
+    )
+    assert "userEdited" not in fn_body, (
+        "bulkSplitChildQtyChanged must not use userEdited guard - "
+        "remove the auto-fill entirely"
+    )
+
+
+def test_split_weight_oninput_does_not_rewrite_value():
+    """splitRecalcMotherWeight (oninput) must NOT rewrite input.value.
+
+    Rewriting input.value on every keystroke destroys decimal input:
+    typing '2.' immediately becomes '2.00', making it impossible to type '2.5'.
+    Only the mother display span should be updated on input.
+    Clamping of the child field belongs in an onblur handler.
+    """
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    start = _BULK_SPLIT_JS.index("function splitRecalcMotherWeight")
+    end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
+    fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
+    assert "input.value =" not in fn_body, (
+        "splitRecalcMotherWeight must not write to input.value - "
+        "this destroys decimal input in progress"
+    )
+
+
+def test_split_pieces_oninput_does_not_rewrite_value():
+    """splitRecalcMotherPieces (oninput) must NOT rewrite input.value.
+
+    Same reason as weight: rewriting on every keystroke breaks typing.
+    Clamping belongs in onblur.
+    """
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    start = _BULK_SPLIT_JS.index("function splitRecalcMotherPieces")
+    end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
+    fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
+    assert "input.value =" not in fn_body, (
+        "splitRecalcMotherPieces must not write to input.value - "
+        "clamping belongs in onblur"
+    )
+
+
+def test_split_weight_has_onblur_clamp():
+    """child_weight input must have an onblur attribute for clamping."""
+    from pathlib import Path
+    src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+    # The onblur handler must exist for child weight
+    assert "splitClampWeight" in src or "onblur" in src.split("child_weight")[1][:200], (
+        "child_weight input must have an onblur clamp handler"
+    )

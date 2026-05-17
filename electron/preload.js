@@ -42,6 +42,12 @@ contextBridge.exposeInMainWorld("celerp", {
   // Always fired on any update error — never silently dropped.
   onUpdateError: (cb) => ipcRenderer.on("update-error", (_event, info) => cb(info)),
 
+  // Uninstall: quit and keep data (shows instructions to remove .app manually)
+  uninstallKeepData: () => ipcRenderer.invoke("uninstall-keep-data"),
+
+  // Uninstall: delete all user data then quit (irreversible)
+  uninstallDeleteData: () => ipcRenderer.invoke("uninstall-delete-data"),
+
   // Quit and install the downloaded update immediately.
   installUpdate: () => ipcRenderer.send("install-update"),
 });

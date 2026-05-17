@@ -379,13 +379,39 @@ def _aging_view(data: dict, label: str, sort: str = "outstanding", sort_dir: str
         cid = _get_contact_id(l)
         name = _get_contact(l)
         contact_cell = Td(A(name, href=f"/crm/contacts/{cid}", cls="link") if cid and cid not in ("unlinked", "Unlinked", "unknown") else name)
+
+        # Build doc list drilldown links using due_date ranges.
+        # as_of is today's date from the API response.
+        as_of = data.get("as_of", "")
+        doc_type_param = "invoice" if label == "AR" else "purchase_order"
+        status_param = "status_in=final,partial"
+
+        def _bucket_link(amount, due_from_val: str | None, due_to_val: str | None) -> FT:
+            if not float(amount or 0):
+                return Td(fmt_money(amount, currency), cls="cell--number")
+            params = f"doc_type={doc_type_param}&{status_param}"
+            if cid and cid not in ("unlinked", "Unlinked", "unknown"):
+                params += f"&contact_id={cid}"
+            if due_from_val:
+                params += f"&due_from={due_from_val}"
+            if due_to_val:
+                params += f"&due_to={due_to_val}"
+            return Td(A(fmt_money(amount, currency), href=f"/docs?{params}", cls="drilldown-link"), cls="cell--number")
+
+        # Compute bucket boundaries relative to as_of
+        from datetime import date as _d, timedelta as _td
+        try:
+            today_d = _d.fromisoformat(as_of) if as_of else _d.today()
+        except ValueError:
+            today_d = _d.today()
+
         return Tr(
             contact_cell,
-            Td(fmt_money(l.get('current', 0), currency), cls="cell--number"),
-            Td(fmt_money(l.get('d30', 0), currency), cls="cell--number"),
-            Td(fmt_money(l.get('d60', 0), currency), cls="cell--number"),
-            Td(fmt_money(l.get('d90', 0), currency), cls="cell--number"),
-            Td(fmt_money(l.get('d90plus', 0), currency), cls="cell--number"),
+            _bucket_link(l.get('current', 0), today_d.isoformat(), None),
+            _bucket_link(l.get('d30', 0), (today_d - _td(days=30)).isoformat(), (today_d - _td(days=1)).isoformat()),
+            _bucket_link(l.get('d60', 0), (today_d - _td(days=60)).isoformat(), (today_d - _td(days=31)).isoformat()),
+            _bucket_link(l.get('d90', 0), (today_d - _td(days=90)).isoformat(), (today_d - _td(days=61)).isoformat()),
+            _bucket_link(l.get('d90plus', 0), None, (today_d - _td(days=91)).isoformat()),
             Td(fmt_money(_get_outstanding(l), currency), cls="cell--number"),
         )
 
@@ -424,7 +450,7 @@ def _normalize_line(line: dict, group_by: str) -> dict:
             "count": line.get("invoice_count") or line.get("count", 0),
             "total": line.get("total_revenue") or line.get("total", 0),
             "_id": line.get("customer_id", ""),
-            "_link": "/docs?type=invoice",
+            "_link": f"/docs?type=invoice&contact_id={line.get('customer_id', '')}" if line.get("customer_id") else "/docs?type=invoice",
         }
     elif group_by == "supplier":
         base = {
@@ -432,7 +458,7 @@ def _normalize_line(line: dict, group_by: str) -> dict:
             "count": line.get("po_count") or line.get("count", 0),
             "total": line.get("total_spend") or line.get("total", 0),
             "_id": line.get("supplier_id", ""),
-            "_link": "/docs?type=purchase_order",
+            "_link": f"/docs?type=purchase_order&contact_id={line.get('supplier_id', '')}" if line.get("supplier_id") else "/docs?type=purchase_order",
         }
     elif group_by == "item":
         base = {
@@ -658,9 +684,14 @@ def _expiring_view(data: dict, days: int = 30) -> FT:
 
     def _row(i: dict) -> FT:
         dr = i.get("days_remaining")
+        item_id = i.get("item_id") or i.get("entity_id") or ""
+        sku = i.get("sku", "") or EMPTY
+        name = i.get("name", "") or EMPTY
+        sku_cell = Td(A(sku, href=f"/inventory/{item_id}", cls="link") if item_id else sku)
+        name_cell = Td(A(name, href=f"/inventory/{item_id}", cls="link") if item_id else name)
         return Tr(
-            Td(i.get("sku", "") or EMPTY),
-            Td(i.get("name", "") or EMPTY),
+            sku_cell,
+            name_cell,
             Td(i.get("category", "") or EMPTY),
             Td((i.get("expires_at") or "")[:10] or EMPTY),
             Td(str(dr) if dr is not None else EMPTY),

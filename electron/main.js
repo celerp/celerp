@@ -13,7 +13,7 @@
 
 "use strict";
 
-const { app, BrowserWindow, shell, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, dialog, ipcMain, Menu } = require("electron");
 const { autoUpdater } = require("electron-updater");
 const path = require("path");
 const fs = require("fs");
@@ -554,6 +554,159 @@ function setLoadingStatus(msg) {
   }
 }
 
+function setupAppMenu() {
+  // macOS: build a native menu that includes Uninstall items in the app menu.
+  // On other platforms there is no standard app-menu slot; skip.
+  if (process.platform !== "darwin") return;
+
+  const template = [
+    {
+      label: app.name,
+      submenu: [
+        { role: "about" },
+        { type: "separator" },
+        { role: "services" },
+        { type: "separator" },
+        { role: "hide" },
+        { role: "hideOthers" },
+        { role: "unhide" },
+        { type: "separator" },
+        {
+          label: "Uninstall Celerp…",
+          submenu: [
+            {
+              label: "Quit and Keep Data",
+              click: () => ipcMain.emit("_uninstall-keep-data-menu"),
+            },
+            {
+              label: "Quit and Delete All Data…",
+              click: () => ipcMain.emit("_uninstall-delete-data-menu"),
+            },
+          ],
+        },
+        { type: "separator" },
+        { role: "quit" },
+      ],
+    },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+
+  // Wire menu clicks to the same handlers as the IPC calls
+  ipcMain.on("_uninstall-keep-data-menu", () => {
+    _doUninstallKeepData();
+  });
+  ipcMain.on("_uninstall-delete-data-menu", () => {
+    _doUninstallDeleteData();
+  });
+}
+
+// Internal helpers called by both menu and IPC
+async function _doUninstallKeepData() {
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Cancel", "Quit Celerp"],
+    defaultId: 1,
+    cancelId: 0,
+    title: "Uninstall Celerp",
+    message: "Uninstall Celerp",
+    detail:
+      "To remove the app, drag Celerp from your Applications folder to the Trash.\n\n" +
+      "Your data will be preserved at:\n" +
+      `${app.getPath("userData")}\n\n` +
+      "Click \"Quit Celerp\" to close the app first, then delete it from Applications.",
+  });
+  if (response === 1) { isQuitting = true; app.quit(); }
+}
+
+async function _doUninstallDeleteData() {
+  // Delete only DATA_DIR (celerp-data subdirectory), not the full userData dir.
+  // Electron holds open handles on Cache/Code Cache/Network/Persistent State inside
+  // userData throughout the process lifetime; deleting userData itself leaves those
+  // dirs behind on macOS. DATA_DIR is everything Celerp owns (postgres, modules,
+  // config, JWT secret) and is safe to remove while the process is still running.
+  const dataPath = DATA_DIR;
+  const { response } = await dialog.showMessageBox(mainWindow, {
+    type: "warning",
+    buttons: ["Cancel", "Delete Data & Quit"],
+    defaultId: 0,
+    cancelId: 0,
+    title: "Uninstall and Delete All Data",
+    message: "Delete all Celerp data?",
+    detail:
+      "This will permanently delete:\n\n" +
+      `• ${dataPath}\n\n` +
+      "This includes your database, configuration, modules, and all business data. " +
+      "This cannot be undone.\n\n" +
+      "After quitting, drag Celerp from Applications to Trash to complete removal.",
+  });
+  if (response === 1) {
+    try { fs.rmSync(dataPath, { recursive: true, force: true }); }
+    catch (err) { console.error("[uninstall] failed to delete data dir:", err); }
+    isQuitting = true;
+    app.quit();
+  }
+}
+
+/**
+ * Show an error to the user. Strips verbose Alembic INFO/DEBUG noise so only
+ * the actual failure is visible. Uses a scrollable BrowserWindow instead of
+ * the native showErrorBox (which clips on macOS with no scroll).
+ */
+function showError(title, rawMessage) {
+  // Strip alembic INFO/DEBUG lines — keep WARNING/ERROR and anything after them.
+  const lines = String(rawMessage).split("\n");
+  const filtered = lines.filter((l) => !/^\s*(INFO|DEBUG)\s+\[/.test(l));
+  // If filtering left nothing meaningful, fall back to raw (avoid blank dialog).
+  const message = filtered.join("\n").trim() || rawMessage;
+
+  // Short messages: native box is fine (no clipping risk).
+  if (message.length < 400 && !message.includes("\n")) {
+    dialog.showErrorBox(title, message);
+    return;
+  }
+
+  // Long messages: scrollable BrowserWindow.
+  const errWin = new BrowserWindow({
+    width: 720,
+    height: 480,
+    minWidth: 480,
+    minHeight: 280,
+    resizable: true,
+    title,
+    alwaysOnTop: true,
+    webPreferences: { nodeIntegration: false, contextIsolation: true },
+  });
+  const escaped = message
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #1e1e1e; color: #f0f0f0;
+         display: flex; flex-direction: column; height: 100vh; }
+  h2 { padding: 14px 16px 10px; font-size: 15px; background: #c0392b;
+       color: #fff; flex-shrink: 0; }
+  pre { flex: 1; overflow: auto; padding: 14px 16px; font-size: 12px;
+        font-family: "SF Mono", Menlo, Consolas, monospace; white-space: pre-wrap;
+        word-break: break-word; }
+  footer { padding: 10px 16px; background: #2a2a2a; flex-shrink: 0; text-align: right; }
+  button { padding: 6px 20px; background: #c0392b; color: #fff; border: none;
+           border-radius: 4px; font-size: 13px; cursor: pointer; }
+  button:hover { background: #a93226; }
+</style></head><body>
+<h2>${title.replace(/</g, "&lt;")}</h2>
+<pre>${escaped}</pre>
+<footer><button onclick="window.close()">Close</button></footer>
+</body></html>`;
+  errWin.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(html));
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -657,9 +810,33 @@ ipcMain.on("show-confirm", (event, message) => {
   event.returnValue = result === 1; // true = OK, false = Cancel
 });
 
+// ── Uninstall IPC handlers ───────────────────────────────────────────────────
+
+// uninstall-keep-data: quit without touching user data.
+ipcMain.handle("uninstall-keep-data", () => _doUninstallKeepData());
+
+// uninstall-delete-data: delete all user data then quit.
+ipcMain.handle("uninstall-delete-data", () => _doUninstallDeleteData());
+
+// ── Single-instance lock ─────────────────────────────────────────────────────
+
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+}
+
 // ── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  setupAppMenu();
   try {
     if (DEV_MODE) {
       // Skip Postgres/Python management — connect to already-running local services.
@@ -719,7 +896,7 @@ app.whenReady().then(async () => {
       // resolves to the same directory that Electron watches.
       sentinelPath: path.join(path.dirname(PYTHON_CONFIG_PATH), ".restart_requested"),
       onCrash: (err) => {
-        dialog.showErrorBox("Celerp crashed", err?.message ?? String(err));
+        showError("Celerp crashed", err?.message ?? String(err));
         app.quit();
       },
       onRestart: () => {
@@ -738,7 +915,7 @@ app.whenReady().then(async () => {
       setupAutoUpdater();
     }
   } catch (err) {
-    dialog.showErrorBox("Celerp failed to start", err?.message ?? String(err));
+    showError("Celerp failed to start", err?.message ?? String(err));
     app.quit();
   }
 });

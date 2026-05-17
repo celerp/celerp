@@ -39,13 +39,10 @@ class Location(Base):
 
 class User(Base):
     __tablename__ = "users"
-    __table_args__ = (UniqueConstraint("company_id", "email", name="uq_user_company_email"),)
 
     id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), nullable=False)
-    email: Mapped[str] = mapped_column(String(320), nullable=False)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
-    role: Mapped[str] = mapped_column(String(64), default="user", nullable=False)
     auth_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     api_key: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

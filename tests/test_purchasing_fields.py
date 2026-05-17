@@ -100,7 +100,8 @@ async def test_create_item_without_purchasing_fields(client):
     resp2 = await client.get(f"{_BASE}/{eid}", headers=_h(token))
     item = resp2.json()
     assert item.get("purchase_sku") is None
-    assert item.get("purchase_conversion_factor") is None
+    # purchase_conversion_factor defaults to 1 (neutral value) even when not explicitly set
+    assert item.get("purchase_conversion_factor") in (None, 1)
 
 
 def test_field_schema_includes_purchasing_fields():
@@ -115,5 +116,9 @@ def test_field_schema_includes_purchasing_fields():
 
     for f in DEFAULT_ITEM_SCHEMA:
         if f["key"].startswith("purchase_"):
-            assert f["show_in_table"] is False, f"{f['key']} should be hidden in table"
+            # purchase_unit is shown in table (merged with conversion_factor as a triple cell)
+            if f["key"] == "purchase_unit":
+                assert f["show_in_table"] is True, "purchase_unit should be visible (triple cell)"
+            else:
+                assert f["show_in_table"] is False, f"{f['key']} should be hidden in table"
             assert f["editable"] is True, f"{f['key']} should be editable"

@@ -60,6 +60,10 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("is_available", True)
         current.setdefault("status", "available")
         current.setdefault("inventory_type", "stocked")
+        # Default purchase unit = sell unit, conversion = 1 (most items bought in same unit as sold)
+        if not current.get("purchase_unit") and current.get("sell_by"):
+            current.setdefault("purchase_unit", current["sell_by"])
+        current.setdefault("purchase_conversion_factor", 1)
         current = _migrate_sell_by(current)
         current = _sync_expiry_from_attributes(current)
     elif event_type == "item.updated":
@@ -72,6 +76,8 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = data["new_status"]
     elif event_type == "item.transferred":
         current["location_id"] = data["to_location_id"]
+        if "updated_at" in data:
+            current["updated_at"] = data["updated_at"]
     elif event_type == "item.quantity.adjusted":
         current["quantity"] = data["new_qty"]
     elif event_type in {"item.expired", "item.disposed"}:

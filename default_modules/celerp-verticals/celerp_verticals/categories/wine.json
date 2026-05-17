@@ -47,7 +47,7 @@
       "options": [
         "Red",
         "White",
-        "Rosé",
+        "Ros\u00e9",
         "Sparkling",
         "Champagne",
         "Dessert / Sweet",
@@ -107,5 +107,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "piece"
+  "default_sell_by": "piece",
+  "default_purchase_unit": "piece",
+  "default_weight_unit": "gram"
 }

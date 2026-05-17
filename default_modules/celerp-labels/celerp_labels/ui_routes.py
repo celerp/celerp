@@ -1488,77 +1488,52 @@ def setup_ui_routes(app) -> None:
 
     @app.post("/labels/print-bulk")
     async def labels_print_bulk(request: Request):
-        """Bulk print preview: show template picker + print button for selected items."""
-        if not _token(request):
-            return RedirectResponse("/login", status_code=302)
-        token = _token(request)
-        form = await request.form()
-        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
-        if not entity_ids:
-            return RedirectResponse("/inventory", status_code=302)
-        templates = await _seed_presets_if_empty(request)
-        return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
+        """Bulk print preview: show template picker + print button for selected items.
 
-    @app.get("/labels/print-doc/{doc_id}")
-    async def labels_print_doc(request: Request, doc_id: str):
-        """Print labels for all line items in a finalized/sent doc or list.
-
-        Fetches the doc (or list) by id, extracts item entity_ids from line_items,
-        and opens the bulk preview page. Opens in a new tab via the action bar button.
-        Query param ``list=1`` switches to the lists API endpoint.
+        Accepts ``selected`` values that are either entity_ids (item:uuid) or
+        ``sku:{sku_value}`` fallbacks for legacy docs where entity_id was not stored.
+        SKU values are resolved to entity_ids via inventory search before rendering.
         """
         if not _token(request):
             return RedirectResponse("/login", status_code=302)
         token = _token(request)
-        is_list = request.query_params.get("list") == "1"
+        form = await request.form()
+        raw_selected = [v.strip() for v in form.getlist("selected") if v.strip()]
+        if not raw_selected:
+            return RedirectResponse("/inventory", status_code=302)
+
+        # Resolve sku: fallbacks to entity_ids
         entity_ids: list[str] = []
         skus_to_resolve: list[str] = []
-        try:
-            async with httpx.AsyncClient(timeout=10) as c:
-                endpoint = f"{_api_base(request)}/lists/{doc_id}" if is_list else f"{_api_base(request)}/docs/{doc_id}"
-                r = await c.get(endpoint, headers={"Authorization": f"Bearer {token}"})
-                log.debug("labels_print_doc: GET %s -> %s", endpoint, r.status_code)
-                if r.status_code == 200:
-                    doc = r.json()
-                    line_items = doc.get("line_items") or []
-                    log.debug("labels_print_doc: %d line items in doc", len(line_items))
-                    for li in line_items:
-                        # entity_id stored by JS save; item_id stored by some import paths
-                        eid = li.get("entity_id") or li.get("item_entity_id") or li.get("item_id")
-                        if eid:
-                            entity_ids.append(eid)
-                        elif li.get("sku"):
-                            skus_to_resolve.append(li["sku"])
-                    log.debug("labels_print_doc: %d entity_ids direct, %d SKUs to resolve", len(entity_ids), len(skus_to_resolve))
-                else:
-                    log.warning("labels_print_doc: unexpected status %s from %s: %s", r.status_code, endpoint, r.text[:200])
-                # SKU fallback: resolve any line items that had no entity_id stored
-                if skus_to_resolve:
-                    seen: set[str] = set(entity_ids)
-                    for sku in dict.fromkeys(skus_to_resolve):  # deduplicate, preserve order
-                        try:
-                            sr = await c.get(
-                                f"{_api_base(request)}/items",
-                                params={"sku": sku, "limit": 1, "status": "all"},
-                                headers={"Authorization": f"Bearer {token}"},
+        for val in raw_selected:
+            if val.startswith("sku:"):
+                skus_to_resolve.append(val[4:])
+            else:
+                entity_ids.append(val)
+        if skus_to_resolve:
+            try:
+                async with httpx.AsyncClient(timeout=10) as c:
+                    for sku in dict.fromkeys(skus_to_resolve):  # dedup, preserve order
+                        r = await c.get(
+                            f"{_api_base(request)}/items",
+                            params={"q": sku, "limit": 5},
+                            headers={"Authorization": f"Bearer {token}"},
+                        )
+                        if r.status_code == 200:
+                            items = r.json().get("items", []) if isinstance(r.json(), dict) else r.json()
+                            match = next(
+                                (it for it in items if (it.get("sku") or "").lower() == sku.lower()),
+                                None,
                             )
-                            if sr.status_code == 200:
-                                items = sr.json().get("items", [])
-                                if items:
-                                    # list_items uses "id", single item fetch uses "entity_id"
-                                    eid = items[0].get("entity_id") or items[0].get("id")
-                                    if eid and eid not in seen:
-                                        entity_ids.append(eid)
-                                        seen.add(eid)
-                            else:
-                                log.warning("labels_print_doc: SKU lookup for %r -> %s", sku, sr.status_code)
-                        except Exception as exc:
-                            log.warning("labels_print_doc: SKU lookup for %r failed: %s", sku, exc)
-        except Exception as exc:
-            log.exception("labels_print_doc: failed to fetch doc %s: %s", doc_id, exc)
-        redirect = "/lists" if is_list else "/docs"
+                            if match:
+                                eid = match.get("entity_id") or match.get("id")
+                                if eid:
+                                    entity_ids.append(eid)
+            except Exception:
+                pass  # best-effort; unresolved SKUs are simply omitted
+
         if not entity_ids:
-            return RedirectResponse(redirect, status_code=302)
+            return RedirectResponse("/inventory", status_code=302)
         templates = await _seed_presets_if_empty(request)
         return _bulk_print_preview_page(entity_ids, templates, _api_base(request), token, request=request)
 

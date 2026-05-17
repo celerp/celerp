@@ -182,6 +182,7 @@ class UnitRecord(BaseModel):
     name: str
     label: str
     decimals: int
+    unit_type: str = "quantity"  # "weight" | "pieces" | "quantity"
 
 
 class UnitsPatch(BaseModel):
@@ -256,14 +257,14 @@ async def create_company(
     from celerp.config import settings as _cfg
     from datetime import datetime, timedelta, timezone as _tz
     snonce = await _get_nonce(session, str(user.id))
-    access_token, token_jti = create_access_token(str(user.id), str(company.id), "admin", snonce=snonce)
+    access_token, token_jti = create_access_token(str(user.id), str(company.id), "owner", user.email, snonce=snonce)
     # Cap at 24h to match create_access_token's internal cap so DB expiry = JWT exp
     capped_minutes = min(int(_cfg.access_token_expire_minutes), 24 * 60)
     expiry = datetime.now(_tz.utc) + timedelta(minutes=capped_minutes)
     await _reg_token(session, token_jti, str(user.id), expiry)
     return {
         "access_token": access_token,
-        "refresh_token": create_refresh_token(str(user.id), str(company.id), "admin"),
+        "refresh_token": create_refresh_token(str(user.id), str(company.id), "owner", user.email),
     }
 
 
@@ -481,8 +482,15 @@ async def delete_location(
 
 @router.get("/me/users")
 async def list_users(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    rows = (await session.execute(select(User).where(User.company_id == company_id))).scalars().all()
-    items = [{"id": str(u.id), "email": u.email, "name": u.name, "role": u.role, "is_active": u.is_active} for u in rows]
+    from celerp.models.accounting import UserCompany
+    rows = (
+        await session.execute(
+            select(User, UserCompany.role, UserCompany.is_active).join(UserCompany, UserCompany.user_id == User.id).where(
+                UserCompany.company_id == company_id
+            )
+        )
+    ).all()
+    items = [{"id": str(u.id), "email": u.email, "name": u.name, "role": role, "is_active": uc_active} for u, role, uc_active in rows]
     return {"items": items, "total": len(items)}
 
 
@@ -498,18 +506,35 @@ async def create_user(
     if payload.role not in ROLE_LEVELS:
         raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
 
+    # Check if user with this email already exists globally; if so, just link them.
+    existing_user = (await session.execute(select(User).where(User.email == payload.email))).scalar_one_or_none()
+    if existing_user:
+        # Verify not already a member of this company
+        existing_link = (await session.execute(
+            select(UserCompany).where(UserCompany.user_id == existing_user.id, UserCompany.company_id == company_id)
+        )).scalar_one_or_none()
+        if existing_link:
+            raise HTTPException(status_code=400, detail="User already a member of this company")
+        link = UserCompany(id=uuid.uuid4(), user_id=existing_user.id, company_id=company_id, role=payload.role)
+        session.add(link)
+        try:
+            await session.commit()
+        except Exception as e:
+            await session.rollback()
+            logger.error("create_user link failed: %s", e, exc_info=True)
+            raise HTTPException(status_code=400, detail=f"User creation failed: {e}") from e
+        return {"id": str(existing_user.id)}
+
     user = User(
         id=uuid.uuid4(),
-        company_id=company_id,
         email=payload.email,
         name=payload.name,
-        role=payload.role,
         auth_hash=hash_password(payload.password),
         is_active=True,
     )
     session.add(user)
     try:
-        await session.flush()  # persist user first (Postgres FK enforcement)
+        await session.flush()  # persist user first so FK on user_companies is satisfied
         link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company_id, role=payload.role)
         session.add(link)
         await session.commit()
@@ -528,8 +553,14 @@ async def patch_user(
     _=Depends(require_admin),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from celerp.models.accounting import UserCompany
+    from sqlalchemy import func as _func
+
     user = await session.get(User, user_id)
-    if not user or user.company_id != company_id:
+    link = (await session.execute(
+        select(UserCompany).where(UserCompany.user_id == user_id, UserCompany.company_id == company_id)
+    )).scalar_one_or_none()
+    if not user or not link:
         raise HTTPException(status_code=404, detail="User not found")
     if payload.name is not None:
         user.name = payload.name
@@ -537,24 +568,23 @@ async def patch_user(
         if payload.role not in ROLE_LEVELS:
             raise HTTPException(400, f"Invalid role. Must be one of: {', '.join(sorted(ROLE_LEVELS, key=ROLE_LEVELS.get))}")
         # Guard: cannot demote the last active owner
-        old_level = ROLE_LEVELS.get(user.role, 0)
+        old_level = ROLE_LEVELS.get(link.role, 0)
         new_level = ROLE_LEVELS.get(payload.role, 0)
         if old_level >= ROLE_LEVELS["owner"] and new_level < ROLE_LEVELS["owner"]:
-            from sqlalchemy import func as _func
             owner_count = (
                 await session.execute(
                     select(_func.count()).where(
-                        User.company_id == company_id,
-                        User.role == "owner",
-                        User.is_active.is_(True),
+                        UserCompany.company_id == company_id,
+                        UserCompany.role == "owner",
+                        UserCompany.is_active.is_(True),
                     )
                 )
             ).scalar()
             if owner_count <= 1:
                 raise HTTPException(status_code=400, detail="Cannot demote the last owner. Assign another owner first.")
-        user.role = payload.role
+        link.role = payload.role
     if payload.is_active is not None:
-        user.is_active = payload.is_active
+        link.is_active = payload.is_active
     if payload.password is not None:
         user.auth_hash = hash_password(payload.password)
     await session.commit()
@@ -642,6 +672,24 @@ async def patch_category_schema(
     return {"ok": True, "category": category, "field_count": len(payload.fields)}
 
 
+@router.get("/me/company-category-schemas")
+async def get_company_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    """Return only company-level category schemas (no module defaults). Used to determine which categories the user explicitly applied."""
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return dict(company.settings.get("category_schemas") or {})
+
+
+@router.get("/me/category-display-names")
+async def get_category_display_names(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+    """Return display names keyed by category slug."""
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return dict(company.settings.get("category_display_names") or {})
+
+
 @router.get("/me/category-schemas")
 async def get_all_category_schemas(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     """Return all category schemas keyed by category name.
@@ -715,8 +763,135 @@ async def merge_category_schemas(
 
 
 # ---------------------------------------------------------------------------
-# Column visibility prefs - per-view (category or "__all__")
+# Category CRUD
 # ---------------------------------------------------------------------------
+
+def _slugify_category(name: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
+@router.post("/me/categories")
+async def create_category(
+    payload: dict,
+    company_id=Depends(get_current_company_id),
+    _=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="name is required")
+    key = _slugify_category(name)
+    if not key:
+        raise HTTPException(status_code=422, detail="name produces an empty key")
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings or {})
+    cat_schemas = dict(settings.get("category_schemas") or {})
+    if key in cat_schemas:
+        raise HTTPException(status_code=409, detail=f"Category '{key}' already exists")
+    cat_schemas[key] = []
+    settings["category_schemas"] = cat_schemas
+    display_names = dict(settings.get("category_display_names") or {})
+    display_names[key] = name
+    settings["category_display_names"] = display_names
+    company.settings = settings
+    await session.commit()
+    return {"ok": True, "key": key}
+
+
+@router.patch("/me/categories/{category_key}")
+async def rename_category(
+    category_key: str,
+    payload: dict,
+    company_id=Depends(get_current_company_id),
+    _=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from celerp.models.projections import Projection
+    new_name = str(payload.get("name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=422, detail="name is required")
+    new_key = _slugify_category(new_name)
+    if not new_key:
+        raise HTTPException(status_code=422, detail="name produces an empty key")
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings or {})
+    cat_schemas = dict(settings.get("category_schemas") or {})
+    if category_key not in cat_schemas:
+        raise HTTPException(status_code=404, detail=f"Category '{category_key}' not found")
+    if new_key == category_key:
+        return {"ok": True, "items_updated": 0}
+    if new_key in cat_schemas:
+        raise HTTPException(status_code=409, detail=f"Category '{new_key}' already exists")
+    # Rename schema key
+    cat_schemas[new_key] = cat_schemas.pop(category_key)
+    settings["category_schemas"] = cat_schemas
+    display_names = dict(settings.get("category_display_names") or {})
+    display_names[new_key] = new_name
+    display_names.pop(category_key, None)
+    settings["category_display_names"] = display_names
+    company.settings = settings
+    # Bulk-update item projections
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    updated = 0
+    for row in rows:
+        if str(row.state.get("category") or "") == category_key:
+            new_state = dict(row.state)
+            new_state["category"] = new_key
+            row.state = new_state
+            updated += 1
+    await session.commit()
+    return {"ok": True, "items_updated": updated}
+
+
+@router.delete("/me/categories/{category_key}")
+async def delete_category(
+    category_key: str,
+    company_id=Depends(get_current_company_id),
+    _=Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from celerp.models.projections import Projection
+    company = await session.get(Company, company_id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    settings = dict(company.settings or {})
+    cat_schemas = dict(settings.get("category_schemas") or {})
+    if category_key not in cat_schemas:
+        raise HTTPException(status_code=404, detail=f"Category '{category_key}' not found")
+    # Count items referencing this category
+    rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    item_count = sum(1 for r in rows if str(r.state.get("category") or "") == category_key)
+    if item_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail={"detail": f"Cannot delete: {item_count} item(s) use this category.", "item_count": item_count},
+        )
+    cat_schemas.pop(category_key)
+    settings["category_schemas"] = cat_schemas
+    display_names = dict(settings.get("category_display_names") or {})
+    display_names.pop(category_key, None)
+    settings["category_display_names"] = display_names
+    company.settings = settings
+    await session.commit()
+    return {"ok": True}
+
+
+
 
 @router.get("/me/column-prefs")
 async def get_column_prefs(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
@@ -1220,16 +1395,19 @@ async def import_purchasing_payment_terms_batch(
 import re as _re
 
 _DEFAULT_UNITS: list[dict] = [
-    {"name": "piece", "label": "Piece", "decimals": 0},
-    {"name": "carat", "label": "Carat (ct)", "decimals": 2},
-    {"name": "gram", "label": "Gram (g)", "decimals": 2},
-    {"name": "kg", "label": "Kilogram (kg)", "decimals": 3},
-    {"name": "oz", "label": "Ounce (oz)", "decimals": 2},
-    {"name": "liter", "label": "Liter (L)", "decimals": 2},
-    {"name": "meter", "label": "Meter (m)", "decimals": 2},
+    {"name": "piece",  "label": "Piece",         "decimals": 0, "unit_type": "pieces"},
+    {"name": "carat",  "label": "Carat (ct)",     "decimals": 2, "unit_type": "weight"},
+    {"name": "gram",   "label": "Gram (g)",        "decimals": 2, "unit_type": "weight"},
+    {"name": "kg",     "label": "Kilogram (kg)",   "decimals": 3, "unit_type": "weight"},
+    {"name": "oz",     "label": "Ounce (oz)",      "decimals": 2, "unit_type": "weight"},
+    {"name": "liter",  "label": "Liter (L)",       "decimals": 2, "unit_type": "quantity"},
+    {"name": "meter",  "label": "Meter (m)",       "decimals": 2, "unit_type": "quantity"},
 ]
 
 _UNIT_NAME_RE = _re.compile(r"^[a-z0-9_]+$")
+
+
+_VALID_UNIT_TYPES: frozenset[str] = frozenset({"weight", "pieces", "quantity"})
 
 
 def _validate_units(units: list[UnitRecord]) -> None:
@@ -1239,6 +1417,8 @@ def _validate_units(units: list[UnitRecord]) -> None:
             raise HTTPException(status_code=422, detail=f"Unit name '{u.name}' must be lowercase alphanumeric + underscore")
         if not (0 <= u.decimals <= 6):
             raise HTTPException(status_code=422, detail=f"Unit '{u.name}' decimals must be 0–6")
+        if u.unit_type not in _VALID_UNIT_TYPES:
+            raise HTTPException(status_code=422, detail=f"Unit '{u.name}' type must be one of: {', '.join(sorted(_VALID_UNIT_TYPES))}")
         if u.name in seen:
             raise HTTPException(status_code=422, detail=f"Duplicate unit name: '{u.name}'")
         seen.add(u.name)
@@ -1526,10 +1706,16 @@ async def deactivate_company(
     Does not delete any data. All records (ledger, documents, users) are preserved.
     Use POST /me/reactivate to restore.
     """
+    import time as _time
+    import re as _re2
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.is_active = False
+    # Free the slug so the user can re-create a company with the same name later.
+    # Strip any previous deactivated suffix first (idempotent), then append new one.
+    base_slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)
+    company.slug = f"{base_slug}-deactivated-{int(_time.time())}"
     await session.commit()
     return {"ok": True, "company_id": str(company_id), "is_active": False}
 
@@ -1540,10 +1726,13 @@ async def reactivate_company(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Reactivate a previously deactivated company. Admin only."""
+    import re as _re2
     company = await session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
     company.is_active = True
+    # Restore slug to its original form (strip deactivated suffix).
+    company.slug = _re2.sub(r"-deactivated-\d+$", "", company.slug)
     await session.commit()
     return {"ok": True, "company_id": str(company_id), "is_active": True}
 

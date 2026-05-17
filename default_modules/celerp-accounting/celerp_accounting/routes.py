@@ -10,7 +10,7 @@ from decimal import Decimal
 from fastapi import APIRouter, Depends, File, Form as FastForm, HTTPException, UploadFile
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
@@ -31,6 +31,8 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "1110", "name": "Cash and Cash Equivalents", "account_type": "asset", "parent_code": "1100"},
     {"code": "1120", "name": "Accounts Receivable", "account_type": "asset", "parent_code": "1100"},
     {"code": "1130", "name": "Inventory", "account_type": "asset", "parent_code": "1100"},
+    {"code": "1130-P", "name": "Inventory - Purchased", "account_type": "asset", "parent_code": "1130"},
+    {"code": "1130-OB", "name": "Inventory - Opening Balance", "account_type": "asset", "parent_code": "1130"},
     {"code": "1140", "name": "Prepaid Expenses", "account_type": "asset", "parent_code": "1100"},
     {"code": "1150", "name": "VAT Receivable (Input VAT)", "account_type": "asset", "parent_code": "1100"},
     {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000"},
@@ -403,7 +405,8 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = (state.get("ts") or state.get("created_at") or "")[:10]
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        ts = str(ts_raw)[:10] if ts_raw else ""
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
@@ -412,8 +415,11 @@ def _build_balances(rows: list, date_from: str | None, date_to: str | None) -> d
             code = entry.get("account")
             if not code:
                 continue
-            debit = Decimal(str(entry.get("debit") or 0))
-            credit = Decimal(str(entry.get("credit") or 0))
+            try:
+                debit = Decimal(str(entry.get("debit") or 0))
+                credit = Decimal(str(entry.get("credit") or 0))
+            except Exception:
+                continue
             balances[code] = balances.get(code, Decimal(0)) + debit - credit
     return balances
 
@@ -435,6 +441,131 @@ async def list_journal_entries(
     ).scalars().all()
     items = [{"entity_id": r.entity_id, **r.state} for r in rows]
     return {"items": items, "total": len(items)}
+
+
+@router.get("/ledger/{account_code}")
+async def account_ledger(
+    account_code: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Account ledger: all posted JE lines for a single account, with running balance and source doc links."""
+    from celerp.models.ledger import LedgerEntry
+
+    # Fetch account metadata for name + type (sign convention)
+    account = (
+        await session.execute(
+            select(Account).where(Account.company_id == company_id, Account.code == account_code)
+        )
+    ).scalar_one_or_none()
+
+    # Fetch all posted JE projections for this company
+    je_rows = (
+        await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "journal_entry",
+            )
+        )
+    ).scalars().all()
+
+    # Build je_id -> doc_id map from ledger events (one join query)
+    ledger_events = (
+        await session.execute(
+            select(LedgerEntry).where(
+                LedgerEntry.company_id == company_id,
+                LedgerEntry.event_type == "acc.journal_entry.created",
+            )
+        )
+    ).scalars().all()
+    je_doc_map: dict[str, str] = {}
+    for ev in ledger_events:
+        meta = ev.metadata_ or {}
+        if meta.get("doc_id"):
+            je_doc_map[ev.entity_id] = meta["doc_id"]
+
+    # Build doc_id -> doc_ref (human-readable number) map for display
+    doc_ids = set(je_doc_map.values())
+    doc_ref_map: dict[str, str] = {}
+    if doc_ids:
+        doc_rows = (
+            await session.execute(
+                select(Projection).where(
+                    Projection.company_id == company_id,
+                    Projection.entity_id.in_(doc_ids),
+                )
+            )
+        ).scalars().all()
+        for dr in doc_rows:
+            ref = dr.state.get("ref_id") or dr.state.get("doc_number") or dr.entity_id
+            doc_ref_map[dr.entity_id] = ref
+
+    # If this account has a parent that has sub-accounts, also include entries posted
+    # directly to the parent (legacy JEs from before the sub-account split).
+    # This ensures e.g. 1130-P ledger shows old 1130 entries alongside new 1130-P entries.
+    parent_legacy_codes: set[str] = set()
+    if account and account.parent_code:
+        sibling_count = (
+            await session.execute(
+                select(func.count()).select_from(Account).where(
+                    Account.company_id == company_id,
+                    Account.parent_code == account.parent_code,
+                )
+            )
+        ).scalar()
+        if sibling_count and sibling_count > 1:
+            parent_legacy_codes.add(account.parent_code)
+    match_codes = {account_code} | parent_legacy_codes
+
+    # Filter to lines that touch this account (or its legacy parent), apply date filter
+    lines = []
+    for row in je_rows:
+        state = row.state
+        if state.get("status") != "posted":
+            continue
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        ts = str(ts_raw)[:10] if ts_raw else ""
+        # Dateless JEs (ts="") are always included - hiding them would be worse than showing them.
+        if ts and date_from and ts < date_from:
+            continue
+        if ts and date_to and ts > date_to:
+            continue
+        for entry in state.get("entries", []):
+            if entry.get("account") not in match_codes:
+                continue
+            lines.append({
+                "date": ts,
+                "je_id": row.entity_id,
+                "memo": state.get("memo", ""),
+                "doc_id": je_doc_map.get(row.entity_id),
+                "doc_ref": doc_ref_map.get(je_doc_map.get(row.entity_id, ""), je_doc_map.get(row.entity_id)) if je_doc_map.get(row.entity_id) else None,
+                "debit": float(entry.get("debit") or 0),
+                "credit": float(entry.get("credit") or 0),
+            })
+
+    # Sort chronologically for running balance
+    lines.sort(key=lambda x: (x["date"], x["je_id"]))
+
+    # Compute running balance (debit-normal for asset/expense, credit-normal for others)
+    account_type = account.account_type if account else "asset"
+    debit_normal = account_type in ("asset", "expense", "cogs")
+    running = Decimal(0)
+    for line in lines:
+        d, c = Decimal(str(line["debit"])), Decimal(str(line["credit"]))
+        running += (d - c) if debit_normal else (c - d)
+        line["balance"] = float(running)
+
+    return {
+        "account_code": account_code,
+        "account_name": account.name if account else account_code,
+        "account_type": account_type,
+        "date_from": date_from,
+        "date_to": date_to,
+        "lines": lines,
+    }
 
 
 @router.get("/trial-balance")
@@ -470,7 +601,8 @@ async def trial_balance(
         state = row.state
         if state.get("status") != "posted":
             continue
-        ts = (state.get("ts") or state.get("created_at") or "")[:10]
+        ts_raw = state.get("ts") or state.get("created_at") or ""
+        ts = str(ts_raw)[:10] if ts_raw else ""
         if date_from and ts < date_from:
             continue
         if date_to and ts > date_to:
@@ -575,10 +707,16 @@ async def profit_and_loss(
 @router.get("/balance-sheet")
 async def balance_sheet(
     as_of: str | None = None,
-    company_id: uuid.UUID = Depends(get_current_company_id), _: None = Depends(require_manager),
+    company_id: uuid.UUID = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Balance sheet as of a given date (default: all posted entries to date)."""
+    from celerp.services.auto_je import upsert_opening_inventory_je
+    await upsert_opening_inventory_je(session, company_id=company_id, user_id=user.id)
+    await session.commit()
+
     rows = (
         await session.execute(
             select(Projection).where(
@@ -599,24 +737,69 @@ async def balance_sheet(
 
     def _section(types: list[str], credit_normal: bool) -> tuple[list[dict], float]:
         lines = []
+        # Collect all leaf balances first
+        leaf_lines: list[dict] = []
+        seen_codes: set[str] = set()
         for code in sorted(balances):
             acc = account_map.get(code)
             if not acc or acc.account_type not in types:
                 continue
             net = balances[code]
             amount = float(-net) if credit_normal else float(net)
-            lines.append({"code": code, "name": acc.name, "account_type": acc.account_type, "amount": amount})
-        total = sum(l["amount"] for l in lines)
+            leaf_lines.append({"code": code, "name": acc.name, "account_type": acc.account_type, "amount": amount, "parent_code": acc.parent_code})
+            seen_codes.add(code)
+
+        # Also include child accounts that exist in account_map but have zero balance,
+        # so parent accounts with sub-accounts always expand correctly.
+        parent_codes_in_balance = {l["code"] for l in leaf_lines}
+        for acc in sorted(accounts, key=lambda a: a.code):
+            if acc.code in seen_codes:
+                continue
+            if acc.account_type not in types:
+                continue
+            if acc.parent_code in parent_codes_in_balance:
+                leaf_lines.append({"code": acc.code, "name": acc.name, "account_type": acc.account_type, "amount": 0.0, "parent_code": acc.parent_code})
+                seen_codes.add(acc.code)
+        leaf_lines.sort(key=lambda l: l["code"])
+
+        # For accounts that have children in the result set, replace with parent + indented children.
+        child_codes = {l["code"] for l in leaf_lines if l.get("parent_code") and any(l2["code"] == l["parent_code"] for l2 in leaf_lines)}
+        for leaf in leaf_lines:
+            code = leaf["code"]
+            children = [l for l in leaf_lines if l.get("parent_code") == code]
+            if children:
+                # Roll parent's own JE balance (from pre-sub-account JEs) into the first
+                # "purchased" child (1130-P), then display parent as sum of children.
+                parent_own = leaf["amount"]
+                if parent_own != 0.0:
+                    purchased = next((c for c in children if c["code"].endswith("-P")), children[0])
+                    purchased["amount"] += parent_own
+                parent_total = sum(c["amount"] for c in children)
+                lines.append({"code": code, "name": leaf["name"], "account_type": leaf["account_type"], "amount": parent_total, "is_parent": True})
+                for child in children:
+                    lines.append({**child, "is_child": True})
+            elif code not in child_codes:
+                lines.append(leaf)
+
+        total = sum(l["amount"] for l in lines if not l.get("is_child"))
         return lines, total
 
     asset_lines, total_assets = _section(["asset"], credit_normal=False)
     liability_lines, total_liabilities = _section(["liability"], credit_normal=True)
     equity_lines, total_equity = _section(["equity"], credit_normal=True)
 
-    # Derive retained earnings from P&L (Assets - Liabilities - explicit Equity)
+    # Retained earnings = net income (all revenue - COGS - expenses) accumulated to date.
+    # This equals Assets - Liabilities - explicit Equity by the accounting equation.
     retained_earnings = total_assets - total_liabilities - total_equity
     if abs(retained_earnings) >= 0.01:
-        equity_lines.append({"code": "—", "name": "Retained Earnings (derived)", "account_type": "equity", "amount": retained_earnings})
+        equity_lines.append({
+            "code": "RE",
+            "name": "Retained Earnings",
+            "account_type": "equity",
+            "amount": retained_earnings,
+            "synthetic": True,
+            "href_pnl": True,
+        })
         total_equity += retained_earnings
 
     total_l_e = total_liabilities + total_equity

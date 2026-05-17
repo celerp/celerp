@@ -120,6 +120,8 @@ def _inventory_mocks(items=None):
         "ui.api_client.get_valuation": AsyncMock(return_value=_VALUATION),
         "ui.api_client.get_item_schema": AsyncMock(return_value=_SCHEMA),
         "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
+        "ui.api_client.get_company_category_schemas": AsyncMock(return_value={}),
+        "ui.api_client.get_units": AsyncMock(return_value=[]),
         "ui.api_client.get_column_prefs": AsyncMock(return_value={}),
         "ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
         "ui.api_client.get_locations": AsyncMock(return_value={"items": _LOCATIONS, "total": len(_LOCATIONS)}),
@@ -154,6 +156,8 @@ def _settings_mocks():
         "ui.api_client.get_users": AsyncMock(return_value={"items": _USERS, "total": len(_USERS)}),
         "ui.api_client.get_item_schema": AsyncMock(return_value=_SCHEMA),
         "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
+        "ui.api_client.get_company_category_schemas": AsyncMock(return_value={}),
+        "ui.api_client.get_category_display_names": AsyncMock(return_value={}),
         "ui.api_client.get_column_prefs": AsyncMock(return_value={}),
         "ui.api_client.get_locations": AsyncMock(return_value={"items": _LOCATIONS, "total": len(_LOCATIONS)}),
         "ui.api_client.list_import_batches": AsyncMock(return_value={"batches": []}),
@@ -853,7 +857,7 @@ class TestNavigation:
             "taxes": "/settings/sales?tab=taxes",
             "terms": "/settings/sales?tab=terms",
             "users": "/settings/general?tab=users",
-            "schema": "/settings/inventory?tab=category-library",
+            "schema": "/settings/inventory?tab=categories",
         }
         for tab in ["company", "taxes", "terms", "users", "schema"]:
             url = _TAB_URLS[tab]

@@ -312,8 +312,10 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
         error = request.query_params.get("error", "")
+        reason = request.query_params.get("reason", "")
+        notice = flash("Your company was deactivated. Enter a name to create a new one.", kind="info") if reason == "deactivated" else ""
         return auth_shell(
-            _new_company_form(error=error, lang=lang),
+            Div(notice, _new_company_form(error=error, lang=lang, hide_back=reason == "deactivated")) if notice else _new_company_form(error=error, lang=lang),
             title="New company - Celerp",
         )
 
@@ -654,8 +656,12 @@ def _cloud_form() -> FT:
     )
 
 
-def _new_company_form(error: str = "", lang: str = "en") -> FT:
+def _new_company_form(error: str = "", lang: str = "en", hide_back: bool = False) -> FT:
     """Simple name-entry form for creating a new company workspace."""
+    back_link = None if hide_back else P(
+        A(t("btn.back_to_settings", lang), href="/settings/general?tab=company", cls="auth-link"),
+        cls="auth-footer-text",
+    )
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
@@ -675,10 +681,7 @@ def _new_company_form(error: str = "", lang: str = "en") -> FT:
                 cls="form-group",
             ),
             Button(t("btn.continue", lang), type="submit", cls="btn btn--primary btn--full mt-sm"),
-            P(
-                A(t("btn.back_to_settings", lang), href="/settings/general?tab=company", cls="auth-link"),
-                cls="auth-footer-text",
-            ),
+            back_link,
             method="post", action="/setup/new-company", cls="auth-form",
         ),
         cls="auth-card",

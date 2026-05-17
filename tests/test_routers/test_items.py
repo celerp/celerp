@@ -888,3 +888,477 @@ async def test_inventory_list_filter_by_inventory_type(client):
     items = r.json()["items"]
     assert len(items) == 2
     assert all(i.get("inventory_type") == "service" for i in items)
+
+
+@pytest.mark.asyncio
+async def test_split_child_pieces_attribute_stored(client):
+    """When sell_by is weight (carat), pieces on child must come from attributes.pieces in the split payload."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Parent: sell_by=carat (weight unit) with 3 pieces
+    r = await client.post("/items", json={
+        "sku": "GEM-W-001", "name": "Rough Stone", "quantity": 10.0,
+        "sell_by": "carat", "attributes": {"pieces": 3},
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    # Split: child gets explicit pieces=1 via attributes
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "GEM-W-001.1", "quantity": 3.0, "attributes": {"pieces": 1}}],
+    }, headers=h)
+    assert r.status_code == 200
+    child_id = r.json()["children"][0]["id"]
+
+    child = (await client.get(f"/items/{child_id}", headers=h)).json()
+    assert child["sku"] == "GEM-W-001.1"
+    assert float(child["quantity"]) == 3.0
+    # pieces must be 1 (the override), not proportional (10%)
+    # attributes are flattened to top-level in the GET response
+    assert int(child.get("pieces", -1)) == 1
+
+
+@pytest.mark.asyncio
+async def test_split_child_weight_stored(client):
+    """When sell_by is pieces (piece), weight on child must be set from SplitChild.weight."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Parent: sell_by=piece (pieces unit) with a physical weight
+    r = await client.post("/items", json={
+        "sku": "GEM-P-001", "name": "Cut Stones", "quantity": 5.0,
+        "sell_by": "piece", "weight": 25.0,
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    # Split: child gets explicit weight=7.5
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "GEM-P-001.1", "quantity": 2.0, "weight": 7.5}],
+    }, headers=h)
+    assert r.status_code == 200
+    child_id = r.json()["children"][0]["id"]
+
+    child = (await client.get(f"/items/{child_id}", headers=h)).json()
+    assert child["sku"] == "GEM-P-001.1"
+    assert float(child["quantity"]) == 2.0
+    # weight must be 7.5 (explicit override), not proportional (10.0)
+    assert abs(float(child.get("weight", 0)) - 7.5) < 0.01
+
+
+@pytest.mark.asyncio
+async def test_inventory_list_filter_by_skus(client):
+    """GET /items?skus=A,B must return exactly those two items by exact SKU match."""
+    _, h = await _reg_items(client, "SkusFilterCo")
+    await client.post("/items", headers=h, json={"name": "Alpha", "sku": "SKUS-A", "sell_by": "piece", "quantity": 1})
+    await client.post("/items", headers=h, json={"name": "Beta", "sku": "SKUS-B", "sell_by": "piece", "quantity": 1})
+    await client.post("/items", headers=h, json={"name": "Gamma", "sku": "SKUS-C", "sell_by": "piece", "quantity": 1})
+    r = await client.get("/items?skus=SKUS-A,SKUS-B", headers=h)
+    assert r.status_code == 200
+    items = r.json()["items"]
+    skus = {i["sku"] for i in items}
+    assert skus == {"SKUS-A", "SKUS-B"}
+
+
+@pytest.mark.asyncio
+async def test_split_preview_reads_pieces_from_top_level_state(client):
+    """split-preview must return has_pieces=True when pieces is stored at top-level state.
+
+    Bug: preview read parent.state['attributes']['pieces'] but _flatten_item promotes
+    pieces to top-level. Correct read is parent.state.get('pieces').
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Create item with pieces stored in attributes (will be flattened to top-level by projection)
+    r = await client.post("/items", json={
+        "sku": "PREV-PIECES-001", "name": "Gem", "quantity": 10.0,
+        "sell_by": "carat", "attributes": {"pieces": 5},
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r2 = await client.get(f"/items/{parent_id}/split-preview", headers=h)
+    assert r2.status_code == 200
+    preview = r2.json()
+
+    assert preview.get("has_pieces") is True, f"Expected has_pieces=True, got {preview}"
+    assert "parent_pieces" in preview, f"Expected parent_pieces in preview: {preview}"
+    assert preview["parent_pieces"] == 5
+
+
+@pytest.mark.asyncio
+async def test_split_preview_weight_uses_weight_unit_decimals(client):
+    """parent_weight must use weight_unit decimals precision.
+
+    The preview returns the raw parent weight; proportional computation is client-side.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "PREV-WDEC-001", "name": "Cut Stones", "quantity": 4.0,
+        "sell_by": "piece", "weight": 2.0, "weight_unit": "gram",
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    r2 = await client.get(f"/items/{parent_id}/split-preview", headers=h)
+    assert r2.status_code == 200
+    preview = r2.json()
+
+    assert preview.get("has_weight") is True, f"Expected has_weight=True: {preview}"
+    assert abs(preview["parent_weight"] - 2.0) < 0.01, (
+        f"Expected parent_weight=2.0, got {preview['parent_weight']}"
+    )
+    assert preview.get("weight_decimals", 2) == 2
+
+
+@pytest.mark.asyncio
+async def test_merge_sums_weight(client):
+    """Merged item weight must equal the sum of all source item weights."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    ra = await client.post("/items", json={
+        "sku": "WGT-MERGE-A", "name": "Stone A", "quantity": 2, "sell_by": "gram",
+        "weight": 3.0, "weight_unit": "gram",
+    }, headers=h)
+    assert ra.status_code == 200
+    id_a = ra.json()["id"]
+
+    rb = await client.post("/items", json={
+        "sku": "WGT-MERGE-B", "name": "Stone B", "quantity": 3, "sell_by": "gram",
+        "weight": 2.0, "weight_unit": "gram",
+    }, headers=h)
+    assert rb.status_code == 200
+    id_b = rb.json()["id"]
+
+    rm = await client.post("/items/merge", json={
+        "source_entity_ids": [id_a, id_b], "target_sku_from": id_a,
+    }, headers=h)
+    assert rm.status_code == 200
+    merged_id = rm.json()["id"]
+
+    rg = await client.get(f"/items/{merged_id}", headers=h)
+    assert rg.status_code == 200
+    state = rg.json()
+    assert abs(float(state.get("weight", 0)) - 5.0) < 0.01, (
+        f"Expected weight=5.0, got {state.get('weight')}"
+    )
+    assert state.get("weight_unit") == "gram"
+
+
+@pytest.mark.asyncio
+async def test_attachment_stored_under_data_dir(client):
+    """Uploaded attachment URL must point to a file under settings.data_dir, not CWD."""
+    from celerp.config import settings
+
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "ATT-DATADIR-001", "name": "Cert Item", "quantity": 1, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+
+    fake_pdf = b"%PDF-1.4 fake"
+    ru = await client.post(
+        f"/items/{item_id}/attachments?attachment_type=certificate",
+        files={"file": ("cert.pdf", fake_pdf, "application/pdf")},
+        headers=h,
+    )
+    assert ru.status_code == 200
+    att = ru.json()
+    url = att["url"]
+    assert url.startswith("/static/attachments/"), f"URL must start with /static/attachments/, got {url!r}"
+
+    # File must exist under data_dir (not CWD)
+    rel = url.lstrip("/")  # "static/attachments/<co>/<id>.pdf"
+    expected_path = settings.data_dir / rel
+    assert expected_path.exists(), (
+        f"File not found at {expected_path}. data_dir={settings.data_dir}. "
+        "LocalBackend is likely writing to CWD instead of data_dir."
+    )
+
+
+@pytest.mark.asyncio
+async def test_split_preview_clamps_qty(client):
+    """split-preview no longer accepts qty - returns static parent data only."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "CLAMP-001", "name": "Clamp Stone", "quantity": 5.0, "sell_by": "carat",
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+
+    # qty param is now ignored; response contains parent_qty only
+    r2 = await client.get(f"/items/{parent_id}/split-preview", headers=h)
+    assert r2.status_code == 200
+    preview = r2.json()
+    assert preview["parent_qty"] == 5.0
+    assert "child_qty" not in preview
+
+
+@pytest.mark.asyncio
+async def test_split_item_pieces_conservation(client):
+    """split must reject child_pieces >= parent_pieces."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "PIECE-CONS-001", "name": "Multi-stone", "quantity": 10.0,
+        "sell_by": "carat", "attributes": {"pieces": 5},
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+    child_sku = "PIECE-CONS-CHILD-001"
+    r2 = await client.post("/items", json={"sku": child_sku, "name": "placeholder", "quantity": 0, "sell_by": "carat"}, headers=h)
+    # child_pieces == parent_pieces should be rejected
+    rs = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": child_sku, "quantity": 3.0, "attributes": {"pieces": 5}}],
+    }, headers=h)
+    assert rs.status_code == 422, f"Expected 422 for child_pieces >= parent_pieces, got {rs.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_split_item_mother_pieces_computed(client):
+    """After split, mother pieces = parent_pieces - child_pieces (server-computed)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "MPIECE-001", "name": "Multi-pc", "quantity": 10.0,
+        "sell_by": "carat", "attributes": {"pieces": 6},
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+    child_sku = "MPIECE-CHILD-001"
+    rs = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": child_sku, "quantity": 3.0, "attributes": {"pieces": 2}}],
+    }, headers=h)
+    assert rs.status_code == 200, f"Split failed: {rs.text}"
+    # Mother should have 6 - 2 = 4 pieces
+    rp = await client.get(f"/items/{parent_id}", headers=h)
+    state = rp.json()
+    mother_pieces = state.get("pieces") or (state.get("attributes") or {}).get("pieces")
+    assert int(mother_pieces) == 4, f"Expected mother_pieces=4, got {mother_pieces}"
+
+
+# ---------------------------------------------------------------------------
+# Bug 4: Negative weights rejected
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_patch_item_negative_weight_rejected(client):
+    """PATCH weight=-1 must return 422."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "NEG-W-001", "name": "Test", "quantity": 1.0, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+    r2 = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"weight": {"old": None, "new": -1}},
+    }, headers=h)
+    assert r2.status_code == 422, f"Expected 422, got {r2.status_code}: {r2.text}"
+
+
+@pytest.mark.asyncio
+async def test_split_negative_child_weight_rejected(client):
+    """Split with child weight=-1 must return 422."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "NEG-CW-001", "name": "Parent", "quantity": 10.0, "sell_by": "piece", "weight": 100.0,
+    }, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+    r2 = await client.post(f"/items/{item_id}/split", json={
+        "children": [{"sku": "NEG-CW-001.1", "quantity": 3.0, "weight": -1}],
+    }, headers=h)
+    assert r2.status_code == 422, f"Expected 422, got {r2.status_code}: {r2.text}"
+
+
+# ---------------------------------------------------------------------------
+# Bug 3: Weight conservation (mother weight computed server-side)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_split_mother_weight_computed_server_side(client):
+    """After split, parent weight = original_weight - child_weight (server-computed)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "MW-CS-001", "name": "Gem", "quantity": 10.0,
+        "sell_by": "carat", "weight": 50.0,
+    }, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "MW-CS-001.1", "quantity": 4.0, "weight": 20.0}],
+    }, headers=h)
+    assert r2.status_code == 200, f"Split failed: {r2.text}"
+    rp = await client.get(f"/items/{parent_id}", headers=h)
+    parent_state = rp.json()
+    assert abs(float(parent_state.get("weight", 0)) - 30.0) < 0.01, \
+        f"Expected mother weight=30.0, got {parent_state.get('weight')}"
+
+
+@pytest.mark.asyncio
+async def test_split_preview_no_proportional_defaults(client):
+    """split-preview must return static parent data only - no proportional computed fields."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "PREV-STATIC-001", "name": "Test", "quantity": 10, "sell_by": "piece",
+        "weight": 5.0, "weight_unit": "gram",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    entity_id = r.json()["id"]
+    r = await client.get(f"/items/{entity_id}/split-preview?child_sku=PREV-STATIC-001.1", headers=h)
+    assert r.status_code == 200
+    data = r.json()
+    # These keys must NOT be in the response
+    assert "child_weight_default" not in data
+    assert "child_pieces_default" not in data
+    assert "parent_weight_remaining" not in data
+    assert "parent_pieces_remaining" not in data
+    assert "parent_qty_remaining" not in data
+    assert "child_qty" not in data
+    # These keys MUST be in the response
+    assert "parent_weight" in data
+    assert "parent_qty" in data
+
+
+@pytest.mark.asyncio
+async def test_split_omitting_child_weight_gives_child_no_weight(client):
+    """If child_weight is not supplied, child item must have no weight.
+
+    The backend must NOT assign a proportional fallback weight.
+    This guards against the evil fallback that was removed from routes.py.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "NO-CW-PARENT-001", "name": "Parent", "quantity": 10.0,
+        "sell_by": "piece", "weight": 100.0, "weight_unit": "gram",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "NO-CW-CHILD-001", "quantity": 3.0}],
+        # NOTE: no weight key supplied
+    }, headers=h)
+    assert r2.status_code == 200, f"Split failed: {r2.text}"
+    child_ids = r2.json().get("child_ids") or r2.json().get("children") or []
+    # Fetch all items matching child SKU
+    rc = await client.get("/items", params={"q": "NO-CW-CHILD-001", "status": "all"}, headers=h)
+    assert rc.status_code == 200
+    children = rc.json().get("items", [])
+    assert len(children) >= 1, "Child item not found after split"
+    child = children[0]
+    assert child.get("weight") is None, (
+        f"Child weight should be None when not supplied, got {child.get('weight')}. "
+        "Proportional fallback must be removed."
+    )
+
+
+@pytest.mark.asyncio
+async def test_split_child_inherits_weight_unit(client):
+    """Child items created via split must inherit weight_unit from parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "WU-PARENT-001", "name": "Parent", "quantity": 10.0,
+        "sell_by": "piece", "weight": 50.0, "weight_unit": "carat",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": "WU-CHILD-001", "quantity": 3.0, "weight": 15.0}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+    rc = await client.get("/items", params={"q": "WU-CHILD-001", "status": "all"}, headers=h)
+    assert rc.status_code == 200
+    children = rc.json().get("items", [])
+    assert len(children) >= 1, "Child item not found after split"
+    assert children[0].get("weight_unit") == "carat", (
+        f"Child must inherit weight_unit='carat' from parent, got {children[0].get('weight_unit')!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_patch_item_updates_updated_at(client):
+    """Patching any field must advance updated_at on the projection."""
+    import time
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "UPD-AT-001", "name": "Timestamp Test", "quantity": 5.0, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    before = (await client.get(f"/items/{item_id}", headers=h)).json().get("updated_at")
+
+    # Small sleep to ensure timestamp advances
+    time.sleep(0.05)
+
+    r2 = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"name": {"old": "Timestamp Test", "new": "Timestamp Test 2"}},
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    after = (await client.get(f"/items/{item_id}", headers=h)).json().get("updated_at")
+    assert after is not None, "updated_at must be set"
+    assert after != before, f"updated_at must advance after patch; before={before!r} after={after!r}"
+
+
+@pytest.mark.asyncio
+async def test_transfer_item_updates_updated_at(client):
+    """Transferring an item must advance updated_at on the projection."""
+    import time
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc1 = (await client.post("/companies/me/locations", json={"name": "Warehouse A", "type": "warehouse"}, headers=h)).json()
+    loc2 = (await client.post("/companies/me/locations", json={"name": "Warehouse B", "type": "warehouse"}, headers=h)).json()
+
+    r = await client.post("/items", json={
+        "sku": "TR-AT-001", "name": "Transfer Timestamp", "quantity": 3.0,
+        "sell_by": "piece", "location_id": loc1["id"],
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    before = (await client.get(f"/items/{item_id}", headers=h)).json().get("updated_at")
+    time.sleep(0.05)
+
+    r2 = await client.post(f"/items/{item_id}/transfer", json={"to_location_id": loc2["id"]}, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    after_item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    after = after_item.get("updated_at")
+    assert after is not None, "updated_at must be set after transfer"
+    assert after != before, f"updated_at must advance after transfer; before={before!r} after={after!r}"
+    assert after_item.get("location_id") == loc2["id"], "location_id must reflect new location"
+
+
+@pytest.mark.asyncio
+async def test_bulk_transfer_updates_projection(client):
+    """Bulk transfer must update location_id on all selected items' projections."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc1 = (await client.post("/companies/me/locations", json={"name": "BT-Warehouse-A", "type": "warehouse"}, headers=h)).json()
+    loc2 = (await client.post("/companies/me/locations", json={"name": "BT-Warehouse-B", "type": "warehouse"}, headers=h)).json()
+
+    item1_id = (await client.post("/items", json={"sku": "BT-001", "name": "Bulk A", "quantity": 1.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+    item2_id = (await client.post("/items", json={"sku": "BT-002", "name": "Bulk B", "quantity": 2.0, "sell_by": "piece", "location_id": loc1["id"]}, headers=h)).json()["id"]
+
+    r = await client.post("/items/bulk/transfer", json={"entity_ids": [item1_id, item2_id], "to_location_id": loc2["id"]}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json().get("updated") == 2
+
+    for item_id in [item1_id, item2_id]:
+        item = (await client.get(f"/items/{item_id}", headers=h)).json()
+        assert item.get("location_id") == loc2["id"], (
+            f"Item {item_id} location_id must be {loc2['id']} after bulk transfer, got {item.get('location_id')!r}"
+        )

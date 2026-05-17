@@ -28,29 +28,52 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
     subscriptions = [r for r in rows if r.entity_type == "doc" and r.state.get("doc_type") in {"subscription_invoice", "subscription_po"}]
 
     now = datetime.now(UTC).date().isoformat()
-    ar_outstanding = sum(float(d.state.get("amount_outstanding", 0) or 0) for d in docs if d.state.get("doc_type") == "invoice")
-    ap_outstanding = sum(float(d.state.get("amount_outstanding", d.state.get("total", 0)) or 0) for d in docs if d.state.get("doc_type") == "purchase_order")
+    month_prefix = now[:7]  # "YYYY-MM"
+    year_prefix = now[:4]   # "YYYY"
+
+    # AR: only non-void, non-draft invoices count as outstanding.
+    # Exclude pro-forma (draft/sent pre-approval), void, and fully-paid with no balance.
+    _AR_STATUSES = {"final", "sent", "awaiting_payment", "partial", "paid"}
+    ar_docs = [d for d in docs if d.state.get("doc_type") == "invoice" and d.state.get("status") in _AR_STATUSES]
+    ar_outstanding = sum(float(d.state.get("amount_outstanding", 0) or 0) for d in ar_docs)
+    ap_outstanding = sum(float(d.state.get("amount_outstanding", d.state.get("total", 0)) or 0) for d in docs if d.state.get("doc_type") == "purchase_order" and d.state.get("status") not in {"void", "draft"})
+
+    # Inventory: delegate entirely to the canonical valuation endpoint.
+    # This is the single source of truth for item counts and price totals.
+    from celerp_inventory.routes import get_valuation as _get_valuation
+    valuation = await _get_valuation(company_id=company_id, session=session)
+    total_value_cost = valuation["cost_total"]
+    total_value_retail = valuation["retail_total"]
+    active_item_count_inv = valuation["active_item_count"]
+
+    # For KPI sub-fields that need per-item access, re-use already-loaded items list.
     _CONSIGNMENT_IN = "in"
-    total_value_cost = 0.0
-    total_value_retail = 0.0
+    _INACTIVE_STATUSES = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "disposed"})
     active_items = []
     for i in items:
         s = i.state
         if s.get("consignment_flag") == _CONSIGNMENT_IN or i.consignment_flag == _CONSIGNMENT_IN:
             continue
+        if (s.get("inventory_type") or "stocked") != "stocked":
+            continue
         status = str(s.get("status") or "").lower()
-        if status in {"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "disposed"}:
+        if status in _INACTIVE_STATUSES:
             continue
         active_items.append(i)
-        qty = float(s.get("quantity") or 0)
-        cost = float(s.get("cost_price") or 0)
-        retail = float(s.get("retail_price") or 0)
-        total_value_cost += qty * cost
-        total_value_retail += qty * retail
+
+    # Revenue: filter to current month / year using issue_date or finalized_at
+    def _doc_month(d: "Projection") -> str:
+        ts = d.state.get("issue_date") or d.state.get("finalized_at") or ""
+        return str(ts)[:7]
+
+    _REVENUE_STATUSES = {"paid", "partial", "final", "awaiting_payment"}
+    revenue_docs = [d for d in docs if d.state.get("doc_type") == "invoice" and d.state.get("status") in _REVENUE_STATUSES]
+    revenue_mtd = sum(float(d.state.get("total", 0) or 0) for d in revenue_docs if _doc_month(d) == month_prefix)
+    revenue_ytd = sum(float(d.state.get("total", 0) or 0) for d in revenue_docs if _doc_month(d).startswith(year_prefix))
 
     return {
         "inventory": {
-            "total_items": len(active_items),
+            "total_items": active_item_count_inv,
             "total_value_cost": total_value_cost,
             "total_value_retail": total_value_retail,
             "items_expiring_30d": 0,
@@ -60,14 +83,14 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
             "low_stock_items": sum(1 for i in active_items if float(i.state.get("quantity", 0) or 0) <= 0),
         },
         "sales": {
-            "revenue_mtd": sum(float(d.state.get("total", 0) or 0) for d in docs if d.state.get("doc_type") == "invoice" and d.state.get("status") in {"paid", "partial", "final"}),
-            "revenue_ytd": sum(float(d.state.get("total", 0) or 0) for d in docs if d.state.get("doc_type") == "invoice"),
-            "invoices_outstanding": sum(1 for d in docs if d.state.get("doc_type") == "invoice" and float(d.state.get("amount_outstanding", 0) or 0) > 0),
+            "revenue_mtd": revenue_mtd,
+            "revenue_ytd": revenue_ytd,
+            "invoices_outstanding": sum(1 for d in ar_docs if float(d.state.get("amount_outstanding", 0) or 0) > 0),
             "ar_outstanding": ar_outstanding,
-            "ar_overdue": sum(float(d.state.get("amount_outstanding", 0) or 0) for d in docs if d.state.get("doc_type") == "invoice" and d.state.get("due_date") and d.state.get("due_date") < now and float(d.state.get("amount_outstanding", 0) or 0) > 0),
+            "ar_overdue": sum(float(d.state.get("amount_outstanding", 0) or 0) for d in ar_docs if d.state.get("due_date") and d.state.get("due_date") < now and float(d.state.get("amount_outstanding", 0) or 0) > 0),
         },
         "purchasing": {
-            "spend_mtd": sum(float(d.state.get("total", 0) or 0) for d in docs if d.state.get("doc_type") == "purchase_order"),
+            "spend_mtd": sum(float(d.state.get("total", 0) or 0) for d in docs if d.state.get("doc_type") == "purchase_order" and _doc_month(d) == month_prefix),
             "pending_pos": sum(1 for d in docs if d.state.get("doc_type") == "purchase_order" and d.state.get("status") not in {"received", "void"}),
             "ap_outstanding": ap_outstanding,
         },

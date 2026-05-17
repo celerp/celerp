@@ -220,6 +220,18 @@ async def get_all_category_schemas(token: str) -> dict:
         return _raise(await c.get("/companies/me/category-schemas")).json()
 
 
+async def get_company_category_schemas(token: str) -> dict:
+    """Return only company-applied schemas (no module defaults). Used to determine which categories the user explicitly applied."""
+    async with _client(token) as c:
+        return _raise(await c.get("/companies/me/company-category-schemas")).json()
+
+
+async def get_category_display_names(token: str) -> dict:
+    """Return display names keyed by category slug."""
+    async with _client(token) as c:
+        return _raise(await c.get("/companies/me/category-display-names")).json()
+
+
 async def get_category_schema(token: str, category: str) -> list[dict]:
     async with _client(token) as c:
         return _raise(await c.get(f"/companies/me/category-schema/{category}")).json()
@@ -666,6 +678,11 @@ async def create_account(token: str, data: dict) -> dict:
 async def patch_account(token: str, code: str, data: dict) -> dict:
     async with _client(token) as c:
         return _raise(await c.patch(f"/accounting/accounts/{code}", json=data)).json()
+
+
+async def get_ledger(token: str, account_code: str, params: dict | None = None) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.get(f"/accounting/ledger/{account_code}", params=params or {})).json()
 
 
 async def get_trial_balance(token: str, params: dict | None = None) -> dict:
@@ -1178,7 +1195,7 @@ async def adjust_item(token: str, entity_id: str, new_qty: float) -> dict:
 
 async def transfer_item(token: str, entity_id: str, location_id: str) -> dict:
     async with _client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/transfer", json={"location_id": location_id})).json()
+        return _raise(await c.post(f"/items/{entity_id}/transfer", json={"to_location_id": location_id})).json()
 
 
 async def set_item_price(token: str, entity_id: str, price_type: str, new_price: float) -> dict:
@@ -1226,8 +1243,17 @@ async def create_item(token: str, data: dict) -> dict:
 
 
 async def split_item(token: str, entity_id: str, children: list[dict]) -> dict:
+    body: dict = {"children": children}
     async with _client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/split", json={"children": children})).json()
+        return _raise(await c.post(f"/items/{entity_id}/split", json=body)).json()
+
+
+async def split_preview(token: str, entity_id: str, child_sku: str | None = None) -> dict:
+    params: dict = {}
+    if child_sku:
+        params["child_sku"] = child_sku
+    async with _client(token) as c:
+        return _raise(await c.get(f"/items/{entity_id}/split-preview", params=params)).json()
 
 
 async def merge_items(
@@ -1773,6 +1799,24 @@ async def apply_vertical_category(token: str, name: str) -> dict:
     """POST /companies/me/apply-category?name=X — seed a single category schema."""
     async with _client(token) as c:
         return _raise(await c.post("/companies/me/apply-category", params={"name": name})).json()
+
+
+async def create_category(token: str, name: str) -> dict:
+    """POST /companies/me/categories — create a new empty category."""
+    async with _client(token) as c:
+        return _raise(await c.post("/companies/me/categories", json={"name": name})).json()
+
+
+async def rename_category(token: str, category_key: str, new_name: str) -> dict:
+    """PATCH /companies/me/categories/{key} — rename category and update all item projections."""
+    async with _client(token) as c:
+        return _raise(await c.patch(f"/companies/me/categories/{category_key}", json={"name": new_name})).json()
+
+
+async def delete_category(token: str, category_key: str) -> dict:
+    """DELETE /companies/me/categories/{key} — delete category (403 if items reference it)."""
+    async with _client(token) as c:
+        return _raise(await c.delete(f"/companies/me/categories/{category_key}")).json()
 
 
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────

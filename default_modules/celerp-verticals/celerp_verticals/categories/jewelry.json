@@ -44,13 +44,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "weight_g",
-      "label": "Total Weight (g)",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "stones",
       "label": "Stones",
       "type": "text",
@@ -87,5 +80,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "piece"
+  "default_sell_by": "piece",
+  "default_purchase_unit": "piece",
+  "default_weight_unit": "gram"
 }

@@ -20,11 +20,9 @@ async def test_lists_import_batch_idempotency(client, session):
     session.add(Company(id=company_id, name="TestCo", slug="testco"))
     session.add(User(
         id=user_id,
-        company_id=company_id,
         email="admin@test.co",
         name="Admin",
         auth_hash="x",
-        role="admin",
         is_active=True,
     ))
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))

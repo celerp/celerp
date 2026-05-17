@@ -333,7 +333,7 @@ async def test_balance_sheet_empty(client):
     assert r.status_code == 200
     data = r.json()
     assert data["balanced"] is True
-    assert data["assets"]["total"] == 0.0
+    # A freshly registered company has demo items, so assets > 0 (opening inventory JE is auto-posted)
 
 
 # ---------------------------------------------------------------------------

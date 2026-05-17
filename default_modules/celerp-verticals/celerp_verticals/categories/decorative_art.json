@@ -53,13 +53,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "weight_kg",
-      "label": "Weight (kg)",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "edition",
       "label": "Edition (if applicable)",
       "type": "text",
@@ -111,5 +104,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "piece"
+  "default_sell_by": "piece",
+  "default_purchase_unit": "piece",
+  "default_weight_unit": "kg"
 }

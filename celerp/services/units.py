@@ -15,14 +15,14 @@ from fastapi import HTTPException
 # Units sold by weight/volume/length allow fractional quantities.
 # "piece" (decimals=0) enforces positive integers.
 DEFAULT_UNITS: list[dict] = [
-    {"name": "piece",  "label": "Piece",          "decimals": 0},
-    {"name": "carat",  "label": "Carat (ct)",      "decimals": 2},
-    {"name": "gram",   "label": "Gram (g)",         "decimals": 2},
-    {"name": "kg",     "label": "Kilogram (kg)",    "decimals": 3},
-    {"name": "oz",     "label": "Ounce (oz)",       "decimals": 2},
-    {"name": "lb",     "label": "Pound (lb)",       "decimals": 2},
-    {"name": "liter",  "label": "Liter (L)",        "decimals": 2},
-    {"name": "meter",  "label": "Meter (m)",        "decimals": 2},
+    {"name": "piece",  "label": "Piece",          "decimals": 0, "unit_type": "pieces"},
+    {"name": "carat",  "label": "Carat (ct)",      "decimals": 2, "unit_type": "weight"},
+    {"name": "gram",   "label": "Gram (g)",         "decimals": 2, "unit_type": "weight"},
+    {"name": "kg",     "label": "Kilogram (kg)",    "decimals": 3, "unit_type": "weight"},
+    {"name": "oz",     "label": "Ounce (oz)",       "decimals": 2, "unit_type": "weight"},
+    {"name": "lb",     "label": "Pound (lb)",       "decimals": 2, "unit_type": "weight"},
+    {"name": "liter",  "label": "Liter (L)",        "decimals": 2, "unit_type": "quantity"},
+    {"name": "meter",  "label": "Meter (m)",        "decimals": 2, "unit_type": "quantity"},
 ]
 
 # sell_by values that represent services - quantity precision is not enforced.
@@ -32,6 +32,20 @@ SERVICE_SELL_BY: frozenset[str] = frozenset({"service", "hour"})
 def build_unit_map(units: list[dict]) -> dict[str, dict]:
     """Return a name-keyed dict for O(1) lookup."""
     return {u["name"]: u for u in units}
+
+
+def is_weight_unit(unit_name: str | None, unit_map: dict[str, dict]) -> bool:
+    """Return True if the named unit has unit_type='weight'."""
+    if not unit_name:
+        return False
+    return unit_map.get(unit_name, {}).get("unit_type") == "weight"
+
+
+def is_pieces_unit(unit_name: str | None, unit_map: dict[str, dict]) -> bool:
+    """Return True if the named unit has unit_type='pieces'."""
+    if not unit_name:
+        return False
+    return unit_map.get(unit_name, {}).get("unit_type") == "pieces"
 
 
 def validate_quantity(qty: float, decimals: int, *, label: str = "Quantity") -> None:
@@ -73,3 +87,24 @@ def validate_line_quantity(qty: float, sell_by: str | None, unit_map: dict[str, 
         return
     validate_positive(qty, label=label)
     validate_quantity(qty, unit_map[sell_by]["decimals"], label=label)
+
+
+def format_qty(value, unit_name: str | None, unit_map: dict[str, dict]) -> str:
+    """Format a quantity value according to its unit's decimal precision.
+
+    Returns a string with exactly `decimals` decimal places for known units,
+    or a plain str() conversion for unknown/absent units.
+    Falls back to str() if value is not numeric.
+    """
+    if value is None or value == "":
+        return ""
+    try:
+        f = float(value)
+    except (ValueError, TypeError):
+        return str(value)
+    if unit_name and unit_name in unit_map:
+        decimals = unit_map[unit_name].get("decimals", None)
+        if decimals is not None:
+            return f"{f:.{decimals}f}"
+    # Unknown unit: strip trailing zeros but keep at least one decimal if non-integer
+    return f"{f:g}"

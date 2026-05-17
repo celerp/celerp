@@ -83,7 +83,7 @@ def _apply_field_visibility(items: list[dict], role: str, field_schema: list[dic
 class ItemCreate(BaseModel):
     model_config = {"extra": "allow"}  # Accept dynamic price fields (e.g. vip_price)
 
-    sku: str
+    sku: str | None = None
     name: str
     sell_by: str                           # required - must be a valid unit name from company settings
     quantity: float = 0
@@ -120,6 +120,7 @@ class TransferBody(BaseModel):
 class SplitChild(BaseModel):
     sku: str
     quantity: float
+    weight: float | None = None
     attributes: dict = Field(default_factory=dict)
 
 
@@ -175,6 +176,7 @@ async def list_items(
     offset: int = 0,
     q: str | None = None,
     sku: str | None = None,
+    skus: str | None = None,  # comma-separated exact SKU list
     barcode: str | None = None,
     status: str | None = None,
     category: str | None = None,
@@ -224,31 +226,34 @@ async def list_items(
     if sku:
         result = [r for r in result if str(r.get("sku", "")) == sku]
 
+    if skus:
+        sku_set = {s.strip() for s in skus.split(",") if s.strip()}
+        result = [r for r in result if str(r.get("sku", "")) in sku_set]
+
     if barcode:
         result = [r for r in result if str(r.get("barcode", "")) == barcode]
 
     if q:
-        q_lower = q.lower()
-        # Core fields to search explicitly
+        # Support comma-separated OR queries (e.g. from barcode scanner multi-scan)
+        terms = [t.strip().lower() for t in q.split(",") if t.strip()]
         _SEARCH_FIELDS = ("name", "sku", "barcode", "description", "category")
-        # Keys that are never useful to search (IDs, numbers, booleans)
         _SKIP_KEYS = frozenset({"id", "entity_id", "company_id", "location_id", "quantity",
-                                 "weight", "status", "created_at", "updated_at"})
-        def _item_matches(r: dict) -> bool:
+                                 "weight", "pieces", "status", "created_at", "updated_at"})
+        def _item_matches_term(r: dict, term: str) -> bool:
             for field in _SEARCH_FIELDS:
-                if q_lower in str(r.get(field, "")).lower():
+                if term in str(r.get(field, "")).lower():
                     return True
-            # Search nested attributes dict (for items not yet fully flattened)
             for v in (r.get("attributes") or {}).values():
-                if q_lower in str(v).lower():
+                if term in str(v).lower():
                     return True
-            # Search all string values in the flattened item (covers flattened attributes)
             for k, v in r.items():
                 if k in _SKIP_KEYS or k in _SEARCH_FIELDS or k.endswith("_price"):
                     continue
-                if isinstance(v, str) and q_lower in v.lower():
+                if isinstance(v, str) and term in v.lower():
                     return True
             return False
+        def _item_matches(r: dict) -> bool:
+            return any(_item_matches_term(r, term) for term in terms)
         result = [r for r in result if _item_matches(r)]
 
     # Apply visible_to_roles filtering from company field schema
@@ -542,6 +547,22 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if payload.barcode is not None and not payload.barcode.isdigit():
         raise HTTPException(status_code=422, detail="Barcode must contain digits only")
 
+    # Auto-assign sequential SKU if not provided
+    if not payload.sku:
+        from sqlalchemy import func as _func, cast as _cast, Integer as _Int
+        # DB-side max over numeric-only SKUs; non-numeric values are cast to NULL and ignored
+        max_seq_row = (await session.execute(
+            select(_func.max(_cast(
+                _func.nullif(_func.regexp_replace(Projection.state["sku"].as_string(), r"[^0-9]", "", "g"), ""),
+                _Int,
+            ))).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )).scalar()
+        max_seq = int(max_seq_row) if max_seq_row is not None else 0
+        payload = payload.model_copy(update={"sku": str(max_seq + 1).zfill(6)})
+
     # SKU uniqueness
     existing_sku = (await session.execute(
         select(Projection).where(
@@ -569,6 +590,22 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     data = payload.model_dump(exclude_none=True)
     if payload.location_id is not None:
         data["location_id"] = str(payload.location_id)
+
+    # Apply category defaults for purchase_unit and weight_unit if not explicitly provided
+    if payload.category:
+        try:
+            from celerp_verticals.routes import _all_categories  # type: ignore
+            _cats = _all_categories()
+            _cat = _cats.get(payload.category)
+            if _cat:
+                if payload.purchase_unit is None and _cat.get("default_purchase_unit"):
+                    data["purchase_unit"] = _cat["default_purchase_unit"]
+                if payload.purchase_conversion_factor is None:
+                    data["purchase_conversion_factor"] = 1
+                if data.get("weight_unit") is None and _cat.get("default_weight_unit"):
+                    data["weight_unit"] = _cat["default_weight_unit"]
+        except ImportError:
+            pass
 
     # Ensure status is set (not part of ItemCreate model but required for projections)
     data.setdefault("status", "available")
@@ -686,6 +723,14 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if new_inv_type not in VALID_INVENTORY_TYPES:
             raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
 
+    # Validate weight is non-negative
+    if "weight" in changed_keys:
+        new_weight = (payload.fields_changed["weight"] or {}).get("new")
+        if new_weight is not None and float(new_weight) < 0:
+            raise HTTPException(status_code=422, detail="Weight cannot be negative")
+
+    # Always stamp updated_at so the projection reflects the mutation time.
+    payload.fields_changed["updated_at"] = {"old": None, "new": datetime.now(timezone.utc).isoformat()}
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -701,417 +746,6 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
     )
     await session.commit()
     return {"event_id": entry.id}
-
-
-@router.post("/{entity_id}/transfer")
-async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.transferred",
-        data={"to_location_id": str(payload.to_location_id)},
-        actor_id=user.id,
-        location_id=payload.to_location_id,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
-    )
-    await session.commit()
-    return {"event_id": entry.id}
-
-
-@router.post("/{entity_id}/split")
-async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    # Fetch parent
-    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if parent is None or not parent.state.get("is_available", True):
-        raise HTTPException(status_code=404, detail="Item not found or unavailable")
-
-    if not parent.state.get("allow_splitting", True):
-        raise HTTPException(
-            status_code=422,
-            detail="Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting.",
-        )
-
-    parent_qty = float(parent.state.get("quantity") or 0)
-    parent_sell_by = parent.state.get("sell_by") or "piece"
-    parent_category = parent.state.get("category")
-    parent_location_id = parent.state.get("location_id")
-    parent_attrs = dict(parent.state.get("attributes") or {})
-
-    # Fields to preserve on children (everything except identity/qty)
-    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None}
-    parent_description = parent.state.get("description")
-    parent_status = parent.state.get("status")
-    parent_tax_codes = parent.state.get("tax_codes")
-    parent_expires_at = parent.state.get("expires_at")
-
-    units = await _get_company_units(session, company_id)
-    unit_map = {u["name"]: u for u in units}
-    unit_cfg = unit_map.get(parent_sell_by)
-    decimals = unit_cfg["decimals"] if unit_cfg else 0
-
-    children = payload.children
-    if len(children) < 1:
-        raise HTTPException(status_code=422, detail="Split requires at least 1 child")
-
-    # Validate each child quantity
-    for child in children:
-        validate_quantity(child.quantity, decimals)
-
-    # Validate total <= parent qty
-    total_child_qty = sum(c.quantity for c in children)
-    if round(total_child_qty, 10) >= round(parent_qty, 10):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Child quantities ({total_child_qty}) exceed or equal parent quantity ({parent_qty})",
-        )
-
-    # Validate child SKU uniqueness within batch
-    child_skus = [c.sku for c in children]
-    if len(child_skus) != len(set(child_skus)):
-        raise HTTPException(status_code=409, detail="Duplicate SKUs within split children")
-
-    # Validate child SKUs against existing items
-    parent_sku = parent.state.get("sku")
-    for child_sku in child_skus:
-        if child_sku == parent_sku:
-            raise HTTPException(status_code=422, detail=f"Child SKU cannot be the same as the parent SKU '{parent_sku}'. The parent keeps its original SKU.")
-        existing = (await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-                Projection.state["sku"].as_string() == child_sku,
-            )
-        )).scalars().first()
-        if existing:
-            raise HTTPException(status_code=409, detail=f"SKU '{child_sku}' already exists")
-
-    # Create child items
-    child_eids: list[str] = []
-    child_qty_list: list[float] = []
-    for child in children:
-        child_eid = f"item:{uuid.uuid4()}"
-        child_eids.append(child_eid)
-        child_qty_list.append(child.quantity)
-        merged_attrs = {**parent_attrs, **child.attributes}
-        now_iso = datetime.now(timezone.utc).isoformat()
-        child_data: dict = {
-            "sku": child.sku,
-            "name": parent.state.get("name", child.sku),
-            "quantity": child.quantity,
-            "sell_by": parent_sell_by,
-            "allow_splitting": bool(parent.state.get("allow_splitting", True)),
-            "attributes": merged_attrs,
-            "created_at": now_iso,
-            "updated_at": now_iso,
-        }
-        if parent_category:
-            child_data["category"] = parent_category
-        if parent_location_id:
-            child_data["location_id"] = parent_location_id
-        if parent_description:
-            child_data["description"] = parent_description
-        if parent_status:
-            child_data["status"] = parent_status
-        if parent_tax_codes:
-            child_data["tax_codes"] = parent_tax_codes
-        if parent_expires_at:
-            child_data["expires_at"] = parent_expires_at
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=child_eid,
-            entity_type="item",
-            event_type="item.created",
-            data=child_data,
-            actor_id=user.id,
-            location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"parent_id": entity_id},
-        )
-
-        # Preserve prices from parent via pricing events
-        for price_type, price_val in parent_prices.items():
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=child_eid,
-                entity_type="item",
-                event_type="item.pricing.set",
-                data={"price_type": price_type, "new_price": price_val},
-                actor_id=user.id,
-                location_id=None,
-                source="api",
-                idempotency_key=str(uuid.uuid4()),
-                metadata_={},
-            )
-
-    # Reduce parent quantity
-    new_parent_qty = parent_qty - total_child_qty
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.quantity.adjusted",
-        data={"new_qty": new_parent_qty},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
-
-    # If parent quantity is now 0, mark as sold
-    if new_parent_qty == 0:
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=entity_id,
-            entity_type="item",
-            event_type="item.status.set",
-            data={"new_status": "sold"},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
-
-    # Emit item.split for history
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.split",
-        data={
-            "child_ids": child_eids,
-            "child_skus": child_skus,
-            "quantities": child_qty_list,
-        },
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
-    )
-
-    await session.commit()
-    return {
-        "event_id": entry.id,
-        "children": [{"id": eid, "sku": sku} for eid, sku in zip(child_eids, child_skus)],
-    }
-
-
-@router.post("/merge")
-async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if len(payload.source_entity_ids) < 2:
-        raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
-
-    # Fetch projections for all source items.
-    source_projections: list[Projection] = []
-    for sid in payload.source_entity_ids:
-        proj = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
-        if proj is None:
-            raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
-        source_projections.append(proj)
-
-    # Validate: all items must share the same category.
-    categories = {str(p.state.get("category") or "").strip() for p in source_projections}
-    if len(categories) > 1:
-        raise HTTPException(
-            status_code=422,
-            detail=f"All items must belong to the same category to merge. Found: {sorted(categories)}.",
-        )
-
-    # Resolve target projection (SKU/barcode/name/prices come from this source).
-    target_proj = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_sku_from})
-    if target_proj is None:
-        raise HTTPException(status_code=422, detail=f"target_sku_from '{payload.target_sku_from}' not found.")
-
-    def _get_expiry(proj: Projection) -> str | None:
-        raw = proj.state.get("expires_at")
-        if raw:
-            return str(raw)[:10]
-        attrs = proj.state.get("attributes") or {}
-        raw_attr = attrs.get("expiry_date") or attrs.get("warranty_exp")
-        return str(raw_attr)[:10] if raw_attr else None
-
-    # Compute defaults.
-    total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
-    total_cost_qty = sum(
-        float(p.state.get("quantity") or 0)
-        for p in source_projections
-        if p.state.get("cost_price") is not None
-    )
-    if total_cost_qty > 0:
-        weighted_cost = sum(
-            float(p.state.get("cost_price") or 0) * float(p.state.get("quantity") or 0)
-            for p in source_projections
-        ) / total_cost_qty
-    else:
-        weighted_cost = float(target_proj.state.get("cost_price") or 0) or None
-
-    expiry_dates = sorted(e for p in source_projections if (e := _get_expiry(p)))
-    earliest_expiry = expiry_dates[0] if expiry_dates else None
-
-    # Resolve attributes: collect all keys across sources.
-    def _is_numeric(val: str) -> bool:
-        try:
-            float(val)
-            return True
-        except (TypeError, ValueError):
-            return False
-
-    # Expiry-related attributes are handled separately (earliest wins); exclude from conflict resolution.
-    _EXPIRY_ATTR_KEYS = frozenset({"expiry_date", "warranty_exp", "expires_at"})
-
-    all_attr_keys: set[str] = set()
-    for p in source_projections:
-        all_attr_keys.update((p.state.get("attributes") or {}).keys())
-    all_attr_keys -= _EXPIRY_ATTR_KEYS
-
-    resolved_attrs: dict = {}
-    unresolved_conflicts: list[str] = []
-    for key in all_attr_keys:
-        values = [str((p.state.get("attributes") or {}).get(key, "")) for p in source_projections if key in (p.state.get("attributes") or {})]
-        unique_vals = set(values)
-        if len(unique_vals) == 1:
-            # No conflict — carry forward.
-            resolved_attrs[key] = values[0]
-        elif all(_is_numeric(v) for v in unique_vals):
-            # Numeric conflict — sum.
-            resolved_attrs[key] = str(sum(float(v) for v in values))
-        else:
-            # String conflict — require user resolution.
-            if payload.resolved_attributes and key in payload.resolved_attributes:
-                resolved_attrs[key] = str(payload.resolved_attributes[key])
-            else:
-                unresolved_conflicts.append(key)
-
-    if unresolved_conflicts:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Attribute conflicts require resolution via resolved_attributes: {sorted(unresolved_conflicts)}.",
-        )
-
-    # Apply user overrides.
-    resulting_qty = payload.resulting_quantity if payload.resulting_quantity is not None else total_qty
-    resulting_cost = payload.resulting_cost_price if payload.resulting_cost_price is not None else weighted_cost
-    resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
-
-    # Update expiry_date attribute to earliest.
-    if earliest_expiry:
-        resolved_attrs["expiry_date"] = earliest_expiry
-
-    # Build item.created data from target projection.
-    target_state = target_proj.state
-    new_entity_id = f"item:{uuid.uuid4()}"
-    now_iso = datetime.now(timezone.utc).isoformat()
-    create_data: dict = {
-        "sku": str(target_state.get("sku") or ""),
-        "name": resulting_name,
-        "quantity": resulting_qty,
-        "sell_by": str(target_state.get("sell_by") or "piece"),
-        "status": "available",
-        "allow_splitting": bool(target_state.get("allow_splitting", True)),
-        "attributes": resolved_attrs,
-        "created_at": now_iso,
-        "updated_at": now_iso,
-    }
-    for field in ("category", "location_id", "barcode", "description", "unit", "tax_codes"):
-        val = target_state.get(field)
-        if val is not None:
-            create_data[field] = str(val) if field == "location_id" else val
-
-    # Create the new merged item.
-    raw_loc = target_state.get("location_id")
-    emit_location_id = uuid.UUID(str(raw_loc)) if raw_loc else None
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=new_entity_id,
-        entity_type="item",
-        event_type="item.created",
-        data=create_data,
-        actor_id=user.id,
-        location_id=emit_location_id,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={"merged_from": payload.source_entity_ids},
-    )
-
-    # Emit pricing events for all price fields from target (or computed cost).
-    price_fields: dict = {}
-    if resulting_cost is not None:
-        price_fields["cost_price"] = resulting_cost
-    for pf, val in target_state.items():
-        if pf.endswith("_price") and pf != "cost_price" and val is not None:
-            price_fields[pf] = val
-
-    for price_type, price_val in price_fields.items():
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=new_entity_id,
-            entity_type="item",
-            event_type="item.pricing.set",
-            data={"price_type": price_type, "new_price": float(price_val)},
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
-
-    # Emit item.merged marker on the new item for history display.
-    source_skus = {p.entity_id: str(p.state.get("sku") or p.entity_id) for p in source_projections}
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=new_entity_id,
-        entity_type="item",
-        event_type="item.merged",
-        data={
-            "source_entity_ids": payload.source_entity_ids,
-            "source_skus": source_skus,
-            "resulting_qty": float(resulting_qty),
-        },
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
-
-    # Deactivate all source items: qty=0, is_available=False, merged_into=new item.
-    new_sku = str(target_state.get("sku") or new_entity_id)
-    for proj in source_projections:
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=proj.entity_id,
-            entity_type="item",
-            event_type="item.source_deactivated",
-            data={
-                "merged_into": new_entity_id,
-                "merged_into_sku": new_sku,
-                "original_qty": float(proj.state.get("quantity") or 0),
-            },
-            actor_id=user.id,
-            location_id=None,
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={},
-        )
-
-    await session.commit()
-    return {"id": new_entity_id}
 
 
 class BulkStatusBody(BaseModel):
@@ -1163,8 +797,8 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
             company_id=company_id,
             entity_id=entity_id,
             entity_type="item",
-            event_type="item.location.transferred",
-            data={"to_location_id": str(payload.to_location_id)},
+            event_type="item.transferred",
+            data={"to_location_id": str(payload.to_location_id), "updated_at": datetime.now(timezone.utc).isoformat()},
             actor_id=user.id,
             location_id=payload.to_location_id,
             source="api",
@@ -1254,6 +888,556 @@ async def bulk_dispose(payload: BulkDisposeBody, company_id=Depends(get_current_
     )
     await session.commit()
     return {"disposed": len(payload.entity_ids)}
+
+
+@router.post("/{entity_id}/transfer")
+async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.transferred",
+        data={"to_location_id": str(payload.to_location_id), "updated_at": datetime.now(timezone.utc).isoformat()},
+        actor_id=user.id,
+        location_id=payload.to_location_id,
+        source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.get("/{entity_id}/split-preview")
+async def split_preview(
+    entity_id: str,
+    child_sku: str | None = None,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if parent is None or not parent.state.get("is_available", True):
+        raise HTTPException(status_code=404, detail="Item not found or unavailable")
+
+    parent_qty = float(parent.state.get("quantity") or 0)
+    if parent_qty <= 0:
+        raise HTTPException(status_code=422, detail="parent qty must be > 0")
+
+    parent_sku = parent.state.get("sku", "")
+    parent_sell_by = parent.state.get("sell_by") or "piece"
+    parent_weight_raw = parent.state.get("weight")
+    parent_weight = float(parent_weight_raw) if parent_weight_raw is not None else None
+    _pieces_raw = parent.state.get("pieces")
+    if _pieces_raw is None:
+        _pieces_raw = (parent.state.get("attributes") or {}).get("pieces")
+    parent_pieces = float(_pieces_raw) if _pieces_raw is not None else None
+
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
+    unit_cfg = unit_map.get(parent_sell_by) or {}
+    decimals = unit_cfg.get("decimals", 0)
+    sell_by_label = unit_cfg.get("label", parent_sell_by)
+
+    parent_weight_unit = parent.state.get("weight_unit") or "gram"
+    weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
+    weight_decimals = weight_unit_cfg.get("decimals", 2)
+
+    if not child_sku:
+        prefix = f"{parent_sku}."
+        existing_res = await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )
+        all_items = existing_res.scalars().all()
+        max_suffix = 0
+        for it in all_items:
+            sku = str(it.state.get("sku", "") or "")
+            if sku.startswith(prefix) and "." not in sku[len(prefix):]:
+                try:
+                    max_suffix = max(max_suffix, int(sku[len(prefix):]))
+                except ValueError:
+                    pass
+        child_sku = f"{prefix}{max_suffix + 1}"
+
+    result: dict = {
+        "parent_sku": parent_sku,
+        "parent_name": parent.state.get("name", parent_sku),
+        "parent_qty": parent_qty,
+        "child_sku": child_sku,
+        "sell_by": parent_sell_by,
+        "sell_by_label": sell_by_label,
+        "unit_decimals": decimals,
+        "weight_decimals": weight_decimals,
+        "has_weight": parent_weight is not None,
+        "has_pieces": parent_pieces is not None,
+        "cannot_split": (decimals == 0 and parent_qty <= 1),
+    }
+
+    if parent_weight is not None:
+        result["parent_weight"] = parent_weight
+    if parent_pieces is not None:
+        result["parent_pieces"] = int(parent_pieces)
+
+    return result
+
+
+@router.post("/{entity_id}/split")
+async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    # Fetch parent
+    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if parent is None or not parent.state.get("is_available", True):
+        raise HTTPException(status_code=404, detail="Item not found or unavailable")
+
+    if not parent.state.get("allow_splitting", True):
+        raise HTTPException(
+            status_code=422,
+            detail="Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting.",
+        )
+
+    parent_qty = float(parent.state.get("quantity") or 0)
+    parent_sell_by = parent.state.get("sell_by") or "piece"
+    parent_category = parent.state.get("category")
+    parent_location_id = parent.state.get("location_id")
+    parent_attrs = dict(parent.state.get("attributes") or {})
+
+    # Fields to preserve on children (everything except identity/qty)
+    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None}
+    parent_description = parent.state.get("description")
+    parent_status = parent.state.get("status")
+    parent_tax_codes = parent.state.get("tax_codes")
+    parent_expires_at = parent.state.get("expires_at")
+
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
+    unit_cfg = unit_map.get(parent_sell_by)
+    decimals = unit_cfg["decimals"] if unit_cfg else 0
+
+    parent_weight_raw = parent.state.get("weight")
+    parent_weight: float | None = float(parent_weight_raw) if parent_weight_raw is not None else None
+    parent_weight_unit = parent.state.get("weight_unit") or "gram"
+    weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
+    weight_decimals = weight_unit_cfg.get("decimals", 2)
+
+    children = payload.children
+    if len(children) < 1:
+        raise HTTPException(status_code=422, detail="Split requires at least 1 child")
+
+    # Validate each child quantity and weight
+    for child in children:
+        validate_quantity(child.quantity, decimals)
+        if child.weight is not None and child.weight < 0:
+            raise HTTPException(status_code=422, detail="Child weight cannot be negative")
+
+    # Validate total <= parent qty
+    total_child_qty = sum(c.quantity for c in children)
+    if round(total_child_qty, 10) >= round(parent_qty, 10):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Child quantities ({total_child_qty}) exceed or equal parent quantity ({parent_qty})",
+        )
+
+    # Pieces conservation: if parent has pieces, validate and compute mother
+    _pieces_raw = parent.state.get("pieces") if "pieces" in parent.state else parent_attrs.get("pieces")
+    parent_pieces: int | None = int(_pieces_raw) if _pieces_raw is not None else None
+    if parent_pieces is not None:
+        total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
+        if total_child_pieces >= parent_pieces:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Total child pieces ({total_child_pieces}) must be less than parent pieces ({parent_pieces})",
+            )
+
+    # Validate child SKU uniqueness within batch
+    child_skus = [c.sku for c in children]
+    if len(child_skus) != len(set(child_skus)):
+        raise HTTPException(status_code=409, detail="Duplicate SKUs within split children")
+
+    # Validate child SKUs against existing items
+    parent_sku = parent.state.get("sku")
+    for child_sku in child_skus:
+        if child_sku == parent_sku:
+            raise HTTPException(status_code=422, detail=f"Child SKU cannot be the same as the parent SKU '{parent_sku}'. The parent keeps its original SKU.")
+        existing = (await session.execute(
+            select(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+                Projection.state["sku"].as_string() == child_sku,
+            )
+        )).scalars().first()
+        if existing:
+            raise HTTPException(status_code=409, detail=f"SKU '{child_sku}' already exists")
+
+    # Create child items
+    child_eids: list[str] = []
+    child_qty_list: list[float] = []
+    for child in children:
+        child_eid = f"item:{uuid.uuid4()}"
+        child_eids.append(child_eid)
+        child_qty_list.append(child.quantity)
+        merged_attrs = {**parent_attrs, **child.attributes}
+        now_iso = datetime.now(timezone.utc).isoformat()
+        child_data: dict = {
+            "sku": child.sku,
+            "name": parent.state.get("name", child.sku),
+            "quantity": child.quantity,
+            "sell_by": parent_sell_by,
+            "allow_splitting": bool(parent.state.get("allow_splitting", True)),
+            "attributes": merged_attrs,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        if child.weight is not None:
+            child_data["weight"] = child.weight
+        if parent_category:
+            child_data["category"] = parent_category
+        if parent_location_id:
+            child_data["location_id"] = parent_location_id
+        if parent_description:
+            child_data["description"] = parent_description
+        if parent_status:
+            child_data["status"] = parent_status
+        parent_weight_unit = parent.state.get("weight_unit")
+        if parent_weight_unit:
+            child_data["weight_unit"] = parent_weight_unit
+        if parent_tax_codes:
+            child_data["tax_codes"] = parent_tax_codes
+        if parent_expires_at:
+            child_data["expires_at"] = parent_expires_at
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=child_eid,
+            entity_type="item",
+            event_type="item.created",
+            data=child_data,
+            actor_id=user.id,
+            location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"parent_id": entity_id},
+        )
+
+        # Preserve prices from parent via pricing events
+        for price_type, price_val in parent_prices.items():
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=child_eid,
+                entity_type="item",
+                event_type="item.pricing.set",
+                data={"price_type": price_type, "new_price": price_val},
+                actor_id=user.id,
+                location_id=None,
+                source="api",
+                idempotency_key=str(uuid.uuid4()),
+                metadata_={},
+            )
+
+    # Reduce parent quantity
+    new_parent_qty = parent_qty - total_child_qty
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.quantity.adjusted",
+        data={"new_qty": new_parent_qty},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
+    computed_mother_pieces: int | None = None
+    if parent_pieces is not None:
+        total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
+        computed_mother_pieces = parent_pieces - total_child_pieces
+
+    computed_mother_weight: float | None = None
+    if parent_weight is not None:
+        total_child_weight = sum(c.weight for c in payload.children if c.weight is not None)
+        computed_mother_weight = round(parent_weight - total_child_weight, weight_decimals)
+
+    if computed_mother_weight is not None or computed_mother_pieces is not None:
+        fields_changed: dict[str, dict] = {}
+        if computed_mother_weight is not None:
+            fields_changed["weight"] = {"old": parent.state.get("weight"), "new": computed_mother_weight}
+        if computed_mother_pieces is not None:
+            new_attrs = dict(parent_attrs)
+            new_attrs["pieces"] = computed_mother_pieces
+            fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.updated",
+            data={"fields_changed": fields_changed},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    # If parent quantity is now 0, mark as sold
+    if new_parent_qty == 0:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.status.set",
+            data={"new_status": "sold"},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    # Emit item.split for history
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.split",
+        data={
+            "child_ids": child_eids,
+            "child_skus": child_skus,
+            "quantities": child_qty_list,
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    await session.commit()
+    return {
+        "event_id": entry.id,
+        "children": [{"id": eid, "sku": sku} for eid, sku in zip(child_eids, child_skus)],
+    }
+
+
+@router.post("/merge")
+async def merge_items(payload: MergeBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    if len(payload.source_entity_ids) < 2:
+        raise HTTPException(status_code=422, detail="At least 2 source_entity_ids are required to merge.")
+
+    # Fetch projections for all source items.
+    source_projections: list[Projection] = []
+    for sid in payload.source_entity_ids:
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
+        if proj is None:
+            raise HTTPException(status_code=404, detail=f"Item '{sid}' not found.")
+        source_projections.append(proj)
+
+    # Validate: all items must share the same category.
+    categories = {str(p.state.get("category") or "").strip() for p in source_projections}
+    if len(categories) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"All items must belong to the same category to merge. Found: {sorted(categories)}.",
+        )
+
+    # Resolve target projection (SKU/barcode/name/prices come from this source).
+    target_proj = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_sku_from})
+    if target_proj is None:
+        raise HTTPException(status_code=422, detail=f"target_sku_from '{payload.target_sku_from}' not found.")
+
+    def _get_expiry(proj: Projection) -> str | None:
+        raw = proj.state.get("expires_at")
+        if raw:
+            return str(raw)[:10]
+        attrs = proj.state.get("attributes") or {}
+        raw_attr = attrs.get("expiry_date") or attrs.get("warranty_exp")
+        return str(raw_attr)[:10] if raw_attr else None
+
+    # Compute defaults.
+    total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
+    weights = [float(p.state["weight"]) for p in source_projections if p.state.get("weight") is not None]
+    total_weight = sum(weights) if weights else None
+    total_cost_qty = sum(
+        float(p.state.get("quantity") or 0)
+        for p in source_projections
+        if p.state.get("cost_price") is not None
+    )
+    if total_cost_qty > 0:
+        weighted_cost = sum(
+            float(p.state.get("cost_price") or 0) * float(p.state.get("quantity") or 0)
+            for p in source_projections
+        ) / total_cost_qty
+    else:
+        weighted_cost = float(target_proj.state.get("cost_price") or 0) or None
+
+    expiry_dates = sorted(e for p in source_projections if (e := _get_expiry(p)))
+    earliest_expiry = expiry_dates[0] if expiry_dates else None
+
+    # Resolve attributes: collect all keys across sources.
+    def _is_numeric(val: str) -> bool:
+        try:
+            float(val)
+            return True
+        except (TypeError, ValueError):
+            return False
+
+    # Expiry-related attributes are handled separately (earliest wins); exclude from conflict resolution.
+    _EXPIRY_ATTR_KEYS = frozenset({"expiry_date", "warranty_exp", "expires_at"})
+
+    all_attr_keys: set[str] = set()
+    for p in source_projections:
+        all_attr_keys.update((p.state.get("attributes") or {}).keys())
+    all_attr_keys -= _EXPIRY_ATTR_KEYS
+
+    resolved_attrs: dict = {}
+    unresolved_conflicts: list[str] = []
+    for key in all_attr_keys:
+        values = [str((p.state.get("attributes") or {}).get(key, "")) for p in source_projections if key in (p.state.get("attributes") or {})]
+        unique_vals = set(values)
+        if len(unique_vals) == 1:
+            # No conflict — carry forward.
+            resolved_attrs[key] = values[0]
+        elif all(_is_numeric(v) for v in unique_vals):
+            # Numeric conflict — sum.
+            resolved_attrs[key] = str(sum(float(v) for v in values))
+        else:
+            # String conflict — require user resolution.
+            if payload.resolved_attributes and key in payload.resolved_attributes:
+                resolved_attrs[key] = str(payload.resolved_attributes[key])
+            else:
+                unresolved_conflicts.append(key)
+
+    if unresolved_conflicts:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Attribute conflicts require resolution via resolved_attributes: {sorted(unresolved_conflicts)}.",
+        )
+
+    # Apply user overrides.
+    resulting_qty = payload.resulting_quantity if payload.resulting_quantity is not None else total_qty
+    resulting_cost = payload.resulting_cost_price if payload.resulting_cost_price is not None else weighted_cost
+    resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
+
+    # Update expiry_date attribute to earliest.
+    if earliest_expiry:
+        resolved_attrs["expiry_date"] = earliest_expiry
+
+    # Build item.created data from target projection.
+    target_state = target_proj.state
+    new_entity_id = f"item:{uuid.uuid4()}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+    create_data: dict = {
+        "sku": str(target_state.get("sku") or ""),
+        "name": resulting_name,
+        "quantity": resulting_qty,
+        "sell_by": str(target_state.get("sell_by") or "piece"),
+        "status": "available",
+        "allow_splitting": bool(target_state.get("allow_splitting", True)),
+        "attributes": resolved_attrs,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    for field in ("category", "location_id", "barcode", "description", "unit", "tax_codes"):
+        val = target_state.get(field)
+        if val is not None:
+            create_data[field] = str(val) if field == "location_id" else val
+
+    if total_weight is not None:
+        create_data["weight"] = total_weight
+    weight_unit = target_state.get("weight_unit")
+    if weight_unit:
+        create_data["weight_unit"] = weight_unit
+    # Create the new merged item.
+    raw_loc = target_state.get("location_id")
+    emit_location_id = uuid.UUID(str(raw_loc)) if raw_loc else None
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=new_entity_id,
+        entity_type="item",
+        event_type="item.created",
+        data=create_data,
+        actor_id=user.id,
+        location_id=emit_location_id,
+        source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
+        metadata_={"merged_from": payload.source_entity_ids},
+    )
+
+    # Emit pricing events for all price fields from target (or computed cost).
+    price_fields: dict = {}
+    if resulting_cost is not None:
+        price_fields["cost_price"] = resulting_cost
+    for pf, val in target_state.items():
+        if pf.endswith("_price") and pf != "cost_price" and val is not None:
+            price_fields[pf] = val
+
+    for price_type, price_val in price_fields.items():
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=new_entity_id,
+            entity_type="item",
+            event_type="item.pricing.set",
+            data={"price_type": price_type, "new_price": float(price_val)},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    # Emit item.merged marker on the new item for history display.
+    source_skus = {p.entity_id: str(p.state.get("sku") or p.entity_id) for p in source_projections}
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=new_entity_id,
+        entity_type="item",
+        event_type="item.merged",
+        data={
+            "source_entity_ids": payload.source_entity_ids,
+            "source_skus": source_skus,
+            "resulting_qty": float(resulting_qty),
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    # Deactivate all source items: qty=0, is_available=False, merged_into=new item.
+    new_sku = str(target_state.get("sku") or new_entity_id)
+    for proj in source_projections:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=proj.entity_id,
+            entity_type="item",
+            event_type="item.source_deactivated",
+            data={
+                "merged_into": new_entity_id,
+                "merged_into_sku": new_sku,
+                "original_qty": float(proj.state.get("quantity") or 0),
+            },
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    await session.commit()
+    return {"id": new_entity_id}
 
 
 @router.post("/{entity_id}/adjust")
@@ -1706,7 +1890,7 @@ async def export_items_csv(
     price_lists: list[dict] = (settings or {}).get("price_lists") or [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
     price_cols = [f"{pl.get('name', '').lower()}_price" for pl in price_lists if pl.get("name")]
 
-    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
+    _COLS = ["id", "sku", "name", "category", "quantity", "status"] + price_cols + ["weight", "weight_unit", "pieces", "sell_by", "barcode", "hs_code", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor", "created_at", "updated_at"]
 
     def _fmt_ts(val) -> str:
         """Ensure timestamps are ISO 8601 UTC with Z suffix."""

@@ -126,7 +126,7 @@ class GatewayClient:
     async def _connect_and_serve(self) -> None:
         log.debug("Connecting to gateway at %s", self._url)
         self._relay_status = "connecting"
-        async with websockets.connect(self._url, ping_interval=_PING_INTERVAL) as ws:
+        async with websockets.connect(self._url, ping_interval=None) as ws:
             self._ws = ws
             # Read current TOS version from config
             from celerp.config import read_config
@@ -158,14 +158,21 @@ class GatewayClient:
         payload = msg.get("payload", {})
 
         if msg_type == "hello_ack":
-            log.info("Gateway handshake complete (instance_id=%s)", self._instance_id)
             self._relay_status = "active"
+            # Relay returns the canonical instance_id - store it for quota calls
+            from celerp.gateway.state import set_session_token, set_instance_id
+            canonical_id = payload.get("instance_id", "")
+            if canonical_id and canonical_id != self._instance_id:
+                log.debug("Gateway: canonical instance_id updated %s -> %s", self._instance_id, canonical_id)
+                self._instance_id = canonical_id
+            set_instance_id(self._instance_id)
             # Store short-lived session token - required for cloud-gated endpoints
             session_token = payload.get("session_token", "")
             if session_token:
-                from celerp.gateway.state import set_session_token
                 set_session_token(session_token)
-                log.debug("Gateway session token updated.")
+            else:
+                log.warning("Gateway hello_ack: no session_token in payload (instance=%s)", self._instance_id)
+            log.info("Gateway handshake complete (instance_id=%s)", self._instance_id)
             feature_flags = payload.get("feature_flags", {})
             if feature_flags:
                 from celerp.gateway.state import set_feature_flags

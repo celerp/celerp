@@ -199,3 +199,196 @@ async def test_create_company_seeds_head_office_location(client):
     assert "Head Office" in names, f"Expected Head Office location seeded, got: {names}"
     default_locs = [loc for loc in locs if loc.get("is_default")]
     assert default_locs, "Expected a default location to exist"
+
+
+@pytest.mark.asyncio
+async def test_deactivate_frees_slug_for_recreate(client):
+    """Deactivating a company must free its slug so a new company with the same name can be created."""
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "Gems Co", "email": "owner@gemsco.com", "name": "Owner", "password": "pw"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Deactivate the company
+    r2 = await client.delete("/companies/me", headers=headers)
+    assert r2.status_code == 200, r2.text
+
+    # Create a new company with the same name - must succeed (slug freed)
+    r3 = await client.post("/companies", json={"name": "Gems Co"}, headers=headers)
+    assert r3.status_code == 200, f"Expected 200 after deactivation freed slug, got {r3.status_code}: {r3.text}"
+
+    # Verify the new company is active
+    new_token = r3.json()["access_token"]
+    r4 = await client.get("/companies/me", headers={"Authorization": f"Bearer {new_token}"})
+    assert r4.json()["name"] == "Gems Co"
+
+
+@pytest.mark.asyncio
+async def test_reactivate_restores_slug(client):
+    """Reactivating a company must strip the -deactivated-{ts} suffix from the slug."""
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "SlugTest Co", "email": "owner@slugtest.com", "name": "Owner", "password": "pw"},
+    )
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    r2 = await client.get("/companies/me", headers=headers)
+    original_slug = r2.json()["slug"]
+
+    # Deactivate - slug gains suffix
+    await client.delete("/companies/me", headers=headers)
+
+    # Reactivate - slug should be restored
+    r3 = await client.post("/companies/me/reactivate", headers=headers)
+    assert r3.status_code == 200, r3.text
+
+    r4 = await client.get("/companies/me", headers=headers)
+    assert r4.json()["slug"] == original_slug, (
+        f"Expected slug restored to '{original_slug}', got '{r4.json()['slug']}'"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_company_token_has_owner_role_and_email(client):
+    """POST /companies must return a JWT with role=owner and email set.
+
+    Bug: create_access_token was called with role='admin' and no email,
+    causing the logout button and danger zone to disappear after creating
+    a company via the deactivation flow.
+    """
+    import base64
+    import json as _json
+
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "TokenTest", "email": "token@test.com", "name": "Tester", "password": "pw"},
+    )
+    assert r.status_code == 200, r.text
+    orig_token = r.json()["access_token"]
+
+    r2 = await client.post(
+        "/companies",
+        json={"name": "Second Co"},
+        headers={"Authorization": f"Bearer {orig_token}"},
+    )
+    assert r2.status_code == 200, r2.text
+    new_token = r2.json()["access_token"]
+
+    payload_b64 = new_token.split(".")[1]
+    claims = _json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
+
+    assert claims.get("role") == "owner", f"Expected role=owner, got {claims.get('role')!r}"
+    assert claims.get("email") == "token@test.com", f"Expected email in token, got {claims.get('email')!r}"
+
+
+# ── Category CRUD ────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_category_success(client):
+    headers = await _headers(client)
+    r = await client.post("/companies/me/categories", json={"name": "Gold Rings"}, headers=headers)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["ok"] is True
+    assert data["key"] == "gold_rings"
+    # Verify it's in settings
+    r2 = await client.get("/companies/me/company-category-schemas", headers=headers)
+    assert "gold_rings" in r2.json()
+
+
+@pytest.mark.asyncio
+async def test_create_category_duplicate_409(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Gold Rings"}, headers=headers)
+    r = await client.post("/companies/me/categories", json={"name": "Gold Rings"}, headers=headers)
+    assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_rename_category_updates_items(client):
+    """Rename must update category key in category_schemas AND in all item projections."""
+    headers = await _headers(client)
+    # Create category
+    await client.post("/companies/me/categories", json={"name": "Old Name"}, headers=headers)
+    # Create item referencing that category
+    r = await client.post(
+        "/items",
+        json={"name": "Test Item", "quantity": 1, "sell_by": "piece", "category": "old_name", "sku": "RENAME-TEST-001"},
+        headers=headers,
+    )
+    assert r.status_code in (200, 201), r.text
+    item_id = r.json()["id"]
+    # Rename
+    r2 = await client.patch(
+        "/companies/me/categories/old_name",
+        json={"name": "New Name"},
+        headers=headers,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["ok"] is True
+    assert r2.json()["items_updated"] >= 1
+    # Verify schema key updated
+    schemas = (await client.get("/companies/me/company-category-schemas", headers=headers)).json()
+    assert "new_name" in schemas
+    assert "old_name" not in schemas
+    # Verify item projection updated
+    r3 = await client.get(f"/items/{item_id}", headers=headers)
+    assert r3.json().get("category") == "new_name"
+
+
+@pytest.mark.asyncio
+async def test_delete_category_with_items_409(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Gems"}, headers=headers)
+    await client.post(
+        "/items",
+        json={"name": "Ruby", "quantity": 1, "sell_by": "piece", "category": "gems", "sku": "DELETE-TEST-001"},
+        headers=headers,
+    )
+    r = await client.delete("/companies/me/categories/gems", headers=headers)
+    assert r.status_code == 409
+    assert r.json()["detail"]["item_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_delete_category_empty_ok(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Empty Cat"}, headers=headers)
+    r = await client.delete("/companies/me/categories/empty_cat", headers=headers)
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    schemas = (await client.get("/companies/me/company-category-schemas", headers=headers)).json()
+    assert "empty_cat" not in schemas
+
+
+@pytest.mark.asyncio
+async def test_create_category_stores_display_name(client):
+    headers = await _headers(client)
+    r = await client.post("/companies/me/categories", json={"name": "My Gems"}, headers=headers)
+    assert r.status_code == 200
+    dn = (await client.get("/companies/me/category-display-names", headers=headers)).json()
+    assert dn.get("my_gems") == "My Gems"
+
+
+@pytest.mark.asyncio
+async def test_delete_category_removes_display_name(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Delete Me"}, headers=headers)
+    await client.delete("/companies/me/categories/delete_me", headers=headers)
+    dn = (await client.get("/companies/me/category-display-names", headers=headers)).json()
+    assert "delete_me" not in dn
+
+
+@pytest.mark.asyncio
+async def test_rename_category_updates_display_name(client):
+    headers = await _headers(client)
+    await client.post("/companies/me/categories", json={"name": "Before Rename"}, headers=headers)
+    await client.patch("/companies/me/categories/before_rename", json={"name": "After Rename"}, headers=headers)
+    dn = (await client.get("/companies/me/category-display-names", headers=headers)).json()
+    assert dn.get("after_rename") == "After Rename"
+    assert "before_rename" not in dn

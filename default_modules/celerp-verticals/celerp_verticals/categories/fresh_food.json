@@ -56,12 +56,14 @@
       "label": "Storage Condition",
       "type": "select",
       "options": [
-        "Refrigerated (0-4°C)",
-        "Frozen (-18°C)",
-        "Chilled (0-8°C)"
+        "Refrigerated (0-4\u00b0C)",
+        "Frozen (-18\u00b0C)",
+        "Chilled (0-8\u00b0C)"
       ],
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "kg"
+  "default_sell_by": "kg",
+  "default_purchase_unit": "kg",
+  "default_weight_unit": "kg"
 }

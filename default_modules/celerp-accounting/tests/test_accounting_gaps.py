@@ -469,3 +469,173 @@ async def test_pnl_finalization_visible_on_same_day(client):
     assert r.status_code == 200, r.text
     data = r.json()
     assert data["revenue"]["total"] > 0, "Same-day finalized invoice must appear in P&L with date_to=today"
+
+
+# ---------------------------------------------------------------------------
+# GET /accounting/ledger/{account_code}
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ledger_returns_lines_for_account(client):
+    """Lines touching the requested account code are returned with correct fields."""
+    tok = await _reg(client)
+    await _post_je(client, tok, [
+        {"account": "4100", "debit": 0, "credit": 500.0},
+        {"account": "1110", "debit": 500.0, "credit": 0},
+    ], ts="2026-03-01")
+
+    r = await client.get("/accounting/ledger/4100", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["account_code"] == "4100"
+    assert len(data["lines"]) == 1
+    line = data["lines"][0]
+    assert line["date"] == "2026-03-01"
+    assert line["credit"] == 500.0
+    assert line["debit"] == 0.0
+    # credit-normal account: credit increases balance → balance should be positive
+    assert line["balance"] == pytest.approx(500.0)
+
+
+@pytest.mark.asyncio
+async def test_ledger_running_balance_accumulates(client):
+    """Multiple JE lines accumulate into a correct running balance."""
+    tok = await _reg(client)
+    # Two credits to the same revenue account
+    await _post_je(client, tok, [
+        {"account": "4100", "credit": 200.0, "debit": 0},
+        {"account": "1110", "debit": 200.0, "credit": 0},
+    ], ts="2026-01-10")
+    await _post_je(client, tok, [
+        {"account": "4100", "credit": 300.0, "debit": 0},
+        {"account": "1110", "debit": 300.0, "credit": 0},
+    ], ts="2026-01-20")
+
+    r = await client.get("/accounting/ledger/4100", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    lines = r.json()["lines"]
+    assert len(lines) == 2
+    # Sorted by date; running balance after each line
+    assert lines[0]["balance"] == pytest.approx(200.0)
+    assert lines[1]["balance"] == pytest.approx(500.0)
+
+
+@pytest.mark.asyncio
+async def test_ledger_date_filter_excludes_outside_range(client):
+    """date_from/date_to filter excludes lines outside the window."""
+    tok = await _reg(client)
+    await _post_je(client, tok, [
+        {"account": "4100", "credit": 100.0, "debit": 0},
+        {"account": "1110", "debit": 100.0, "credit": 0},
+    ], ts="2025-12-01")
+    await _post_je(client, tok, [
+        {"account": "4100", "credit": 200.0, "debit": 0},
+        {"account": "1110", "debit": 200.0, "credit": 0},
+    ], ts="2026-02-15")
+
+    r = await client.get("/accounting/ledger/4100", headers=_h(tok), params={
+        "date_from": "2026-01-01", "date_to": "2026-12-31"
+    })
+    assert r.status_code == 200, r.text
+    lines = r.json()["lines"]
+    assert len(lines) == 1
+    assert lines[0]["date"] == "2026-02-15"
+
+
+@pytest.mark.asyncio
+async def test_ledger_empty_for_unknown_account(client):
+    """Account with no JEs returns empty lines list."""
+    tok = await _reg(client)
+    r = await client.get("/accounting/ledger/9999", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["lines"] == []
+    assert data["account_code"] == "9999"
+
+
+@pytest.mark.asyncio
+async def test_ledger_skips_unposted_entries(client):
+    """JE with status != posted must not appear in ledger."""
+    tok = await _reg(client)
+    entity_id = f"je:{uuid.uuid4()}"
+    # Create without posting (status=draft)
+    r = await client.post("/accounting/import/batch", headers=_h(tok), json={"records": [{
+        "entity_id": entity_id,
+        "event_type": "acc.journal_entry.created",
+        "data": {"status": "draft", "ts": "2026-01-01", "entries": [
+            {"account": "4100", "credit": 999.0, "debit": 0},
+        ]},
+        "source": "test",
+        "idempotency_key": str(uuid.uuid4()),
+    }]})
+    assert r.status_code == 200, r.text
+
+    r2 = await client.get("/accounting/ledger/4100", headers=_h(tok))
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["lines"] == []
+
+
+@pytest.mark.asyncio
+async def test_ledger_debit_normal_account_balance(client):
+    """Asset account (1110) is debit-normal: debit increases balance, credit decreases."""
+    tok = await _reg(client)
+    await _post_je(client, tok, [
+        {"account": "1110", "debit": 400.0, "credit": 0},
+        {"account": "4100", "debit": 0, "credit": 400.0},
+    ], ts="2026-05-01")
+    await _post_je(client, tok, [
+        {"account": "1110", "debit": 0, "credit": 100.0},
+        {"account": "4100", "debit": 100.0, "credit": 0},
+    ], ts="2026-05-10")
+
+    r = await client.get("/accounting/ledger/1110", headers=_h(tok))
+    assert r.status_code == 200, r.text
+    lines = r.json()["lines"]
+    assert len(lines) == 2
+    assert lines[0]["balance"] == pytest.approx(400.0)
+    assert lines[1]["balance"] == pytest.approx(300.0)
+
+
+@pytest.mark.asyncio
+async def test_opening_inventory_je_excludes_inactive_items(client):
+    """Regression: upsert_opening_inventory_je() included sold/disposed items in catalog_total.
+
+    Strategy: load balance sheet before and after marking an item sold.
+    The OB JE amount should decrease by exactly that item's cost (200).
+    """
+    tok = await _reg(client)
+    auth = _h(tok)
+
+    r1 = await client.post("/items", headers=auth, json={
+        "sku": "OB-ACTIVE", "name": "Active Item", "quantity": 1,
+        "sell_by": "piece", "cost_price": 100.0,
+    })
+    assert r1.status_code == 200
+    r2 = await client.post("/items", headers=auth, json={
+        "sku": "OB-SOLD", "name": "Sold Item", "quantity": 1,
+        "sell_by": "piece", "cost_price": 200.0,
+    })
+    assert r2.status_code == 200
+    sold_id = r2.json()["id"]
+
+    # Load balance sheet BEFORE selling - record OB JE amount
+    assert (await client.get("/accounting/balance-sheet", headers=auth)).status_code == 200
+    r_led1 = await client.get("/accounting/ledger/1130-OB", headers=auth)
+    assert r_led1.status_code == 200
+    ob_before = sum(float(ln.get("debit", 0) or 0) for ln in r_led1.json()["lines"])
+
+    # Mark second item as sold
+    rp = await client.patch(f"/items/{sold_id}", headers=auth, json={
+        "fields_changed": {"status": {"old": "available", "new": "sold"}}
+    })
+    assert rp.status_code == 200
+
+    # Load balance sheet AFTER selling - OB JE must be recalculated
+    assert (await client.get("/accounting/balance-sheet", headers=auth)).status_code == 200
+    r_led2 = await client.get("/accounting/ledger/1130-OB", headers=auth)
+    assert r_led2.status_code == 200
+    ob_after = sum(float(ln.get("debit", 0) or 0) for ln in r_led2.json()["lines"])
+
+    # OB JE must decrease by exactly the sold item's cost (200)
+    assert ob_before - ob_after == pytest.approx(200.0, abs=0.02), \
+        f"OB JE should drop by 200 after selling item; before={ob_before}, after={ob_after}"

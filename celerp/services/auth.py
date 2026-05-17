@@ -133,9 +133,10 @@ async def get_current_user(
     if link is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
-    # Block access to deactivated companies
+    # Block access to deactivated companies - but owners can still authenticate
+    # so they can create a new company or reactivate the existing one.
     company = await session.get(Company, uuid.UUID(str(company_id)))
-    if company is None or not company.is_active:
+    if company is None or (not company.is_active and link.role != "owner"):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Company is deactivated")
 
     # Validate session nonce: rejects tokens minted before the last logout/force-login.

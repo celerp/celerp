@@ -97,10 +97,8 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     company = Company(id=uuid.uuid4(), name=payload.company_name, slug=slug, settings={"fiscal_year_start": "01-01"})
     user = User(
         id=uuid.uuid4(),
-        company_id=company.id,
         email=payload.email,
         name=payload.name,
-        role="owner",
         auth_hash=hash_password(payload.password),
         api_key=None,
         is_active=True,
@@ -108,7 +106,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     session.add(company)
     session.add(user)
     await session.flush()  # persist company + user first (Postgres FK enforcement)
-    # Link user to company after flush so user_id FK is satisfied
+    # Link user to company - UserCompany is the single source of role+company truth
     link = UserCompany(id=uuid.uuid4(), user_id=user.id, company_id=company.id, role="owner")
     session.add(link)
     await session.flush()  # ensure IDs are set before module hooks
@@ -144,7 +142,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         logger.error("register failed: %s", e, exc_info=True)
         raise HTTPException(status_code=400, detail=f"Registration failed: {e}") from e
 
-    return await _issue_tokens(session, str(user.id), str(company.id), user.role, user.email)
+    return await _issue_tokens(session, str(user.id), str(company.id), link.role, user.email)
 
 
 from slowapi import Limiter
@@ -169,7 +167,20 @@ async def login(request: Request, payload: LoginRequest, session: AsyncSession =
         if active:
             raise HTTPException(status_code=409, detail="direct_connection_limit")
 
-    return await _issue_tokens(session, str(user.id), str(user.company_id), user.role, user.email)
+    # Pick the user's active company link. If they belong to multiple companies
+    # they must use /switch-company after login; we pick the first active one here.
+    link = (
+        await session.execute(
+            select(UserCompany).where(
+                UserCompany.user_id == user.id,
+                UserCompany.is_active == True,  # noqa: E712
+            ).order_by(UserCompany.id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if link is None:
+        raise HTTPException(status_code=401, detail="No active company membership")
+
+    return await _issue_tokens(session, str(user.id), str(link.company_id), link.role, user.email)
 
 
 @router.post("/login-force")
@@ -183,7 +194,19 @@ async def login_force(request: Request, payload: LoginRequest, session: AsyncSes
     from celerp.services.session_tracker import invalidate_all_sessions as _invalidate_all
     evicting_ip = request.client.host if request.client else None
     await _invalidate_all(session, str(user.id), evicting_ip=evicting_ip)
-    return await _issue_tokens(session, str(user.id), str(user.company_id), user.role, user.email)
+
+    link = (
+        await session.execute(
+            select(UserCompany).where(
+                UserCompany.user_id == user.id,
+                UserCompany.is_active == True,  # noqa: E712
+            ).order_by(UserCompany.id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if link is None:
+        raise HTTPException(status_code=401, detail="No active company membership")
+
+    return await _issue_tokens(session, str(user.id), str(link.company_id), link.role, user.email)
 
 
 class RefreshRequest(BaseModel):

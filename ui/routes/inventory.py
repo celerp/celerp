@@ -16,13 +16,89 @@ from starlette.requests import Request
 from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
-from ui.api_client import APIError
+from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
 from ui.config import get_token as _token, API_BASE as _api_base
 from ui.i18n import t, get_lang
+from celerp.services.units import is_weight_unit, is_pieces_unit
 
 _DEFAULT_PER_PAGE = 50
+
+_BULK_SPLIT_JS = """
+function splitRecalcMotherWeight(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var parentWeight = parseFloat(form.dataset.parentWeight || '0');
+  var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
+  var childVal = parseFloat(input.value) || 0;
+  var mw = form.querySelector('.mother-weight-display');
+  if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+}
+function splitClampWeight(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var parentWeight = parseFloat(form.dataset.parentWeight || '0');
+  var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
+  var childVal = Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
+  input.value = childVal.toFixed(decimals);
+  var mw = form.querySelector('.mother-weight-display');
+  if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+}
+function splitRecalcMotherPieces(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var parentPieces = parseFloat(form.dataset.parentPieces || '0');
+  var childP = parseFloat(input.value) || 0;
+  var mp = form.querySelector('.mother-pieces-display');
+  if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
+}
+function splitClampPieces(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var parentPieces = parseFloat(form.dataset.parentPieces || '0');
+  var maxVal = Math.max(0, parentPieces - 1);
+  var childP = Math.min(Math.max(0, parseFloat(input.value) || 0), maxVal);
+  input.value = String(Math.round(childP));
+  var mp = form.querySelector('.mother-pieces-display');
+  if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
+}
+function bulkSplitAutoLoad() {
+  var checked = document.querySelector('.row-select:checked');
+  if (!checked) return;
+  var entityId = checked.dataset.entityId || checked.value;
+  if (!entityId) return;
+  var url = '/api/items/bulk/split-preview?entity_id=' + encodeURIComponent(entityId);
+  htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
+    .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
+}
+function bulkSplitChildQtyChanged(input) {
+  var form = input.closest('form');
+  if (!form) return;
+  var parentQty = parseFloat(form.dataset.parentQty || '0');
+  var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
+  var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
+  var childQty = Math.min(Math.max(0, parseFloat(input.value) || 0), parentQty - epsilon);
+  input.value = childQty.toFixed(decimals);
+  var motherQtyDisplay = form.querySelector('.mother-qty-display');
+  if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childQty).toFixed(decimals);
+}
+function bulkSplitSkuChanged(input) {
+  // SKU is a free-text field; no server call needed.
+}
+function bulkSplitSubmit(formEl) {
+  var existing = formEl.querySelector('input[name="entity_id"]');
+  if (!existing || !existing.value) {
+    var checked = document.querySelector('.row-select:checked');
+    var entityId = checked ? (checked.dataset.entityId || checked.value) : '';
+    if (!existing) {
+      var inp = document.createElement('input'); inp.type = 'hidden'; inp.name = 'entity_id'; inp.value = entityId;
+      formEl.appendChild(inp);
+    } else { existing.value = entityId; }
+  }
+  return true;
+}
+"""
 
 
 
@@ -40,6 +116,7 @@ def _parse_params(request: Request) -> dict:
     cols = q.getlist("cols") or [c for c in q.get("cols", "").split(",") if c]
     return {
         "q": q.get("q", ""),
+        "skus": q.get("skus", ""),  # comma-separated exact SKU filter
         "page": max(1, page),
         "status": q.get("status", ""),
         "category": q.get("category", ""),
@@ -53,7 +130,7 @@ def _parse_params(request: Request) -> dict:
 
 def _base_state(p: dict, include_page: bool = False) -> dict:
     state = {}
-    for k in ("q", "status", "category", "inventory_type", "sort", "dir"):
+    for k in ("q", "skus", "status", "category", "inventory_type", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
     if p.get("per_page") and p["per_page"] != _DEFAULT_PER_PAGE:
@@ -87,6 +164,8 @@ async def _inventory_content(
         params: dict = {"limit": p["per_page"], "offset": (p["page"] - 1) * p["per_page"]}
         if p["q"]:
             params["q"] = p["q"]
+        if p.get("skus"):
+            params["skus"] = p["skus"]
         if p["status"]:
             params["status"] = p["status"]
         if p["category"]:
@@ -96,9 +175,19 @@ async def _inventory_content(
         if p["sort"]:
             params["sort"] = p["sort"]
             params["dir"] = p["dir"]
-        items = (await api.list_items(token, params)).get("items", [])
+        items_resp, units_resp = await asyncio.gather(
+            api.list_items(token, params),
+            api.get_units(token),
+        )
+        items = items_resp.get("items", [])
+        unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
+        units_map: dict[str, dict] = {u["name"]: u for u in units_resp if u.get("name")}
+        try:
+            category_label_map: dict = await api.get_category_display_names(token)
+        except Exception:
+            category_label_map = {}
     except APIError:
-        valuation, items = {}, []
+        valuation, items, unit_names, units_map, category_label_map = {}, [], [], {}, {}
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -134,6 +223,8 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
+            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map),
+            hidden_fields=set(_PAIRED_TABLE.values()),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
         Div(id="modal-container"),
@@ -187,6 +278,7 @@ def setup_routes(app):
                 A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm"),
             ),
             content,
+            Script(_BULK_SPLIT_JS),
             title="Inventory - Celerp",
             nav_active="inventory",
             lang=lang,
@@ -758,10 +850,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-        import uuid as _uuid
-        sku = f"ITEM-{_uuid.uuid4().hex[:8].upper()}"
         try:
-            result = await api.create_item(token, {"sku": sku, "name": "New Item", "quantity": 0, "sell_by": "piece"})
+            result = await api.create_item(token, {"name": "New Item", "quantity": 0, "sell_by": "piece"})
             item_id = result.get("id", result.get("entity_id", ""))
         except APIError as e:
             if e.status == 401:
@@ -895,8 +985,15 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
+        label_map: dict | None = None
+        if field == "category":
+            try:
+                label_map = await api.get_category_display_names(token)
+            except Exception:
+                label_map = None
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
-                             cell_type=cell_type, options=options, allow_custom=allow_custom)
+                             cell_type=cell_type, options=options, allow_custom=allow_custom,
+                             label_map=label_map)
 
     @app.get("/api/items/{entity_id}/field/{field}/display")
     async def field_display_cell(request: Request, entity_id: str, field: str):
@@ -916,9 +1013,21 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import display_cell
+        label_map: dict | None = None
+        if field == "category":
+            try:
+                label_map = await api.get_category_display_names(token)
+            except Exception:
+                label_map = None
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
-                            editable=f_def.get("editable", True) if f_def else True)
+                            editable=f_def.get("editable", True) if f_def else True,
+                            label_map=label_map)
+
+    _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
+                                      "weight": "weight_unit", "weight_unit": "weight",
+                                      "purchase_unit": "purchase_conversion_factor",
+                                      "purchase_conversion_factor": "purchase_unit"}
 
     @app.patch("/api/items/{entity_id}/field/{field}")
     async def field_patch(request: Request, entity_id: str, field: str):
@@ -959,10 +1068,247 @@ function celerpPrintLabel(entityId, templateId) {
 
         locations = locs_data.get("items", [])
         f_def, cell_type, options, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
+        # Category change: context-aware response
+        if field == "category":
+            safe_id = entity_id.replace(":", "-")
+            current_url = request.headers.get("hx-current-url", "")
+            if "/inventory/item:" in current_url:
+                # Detail page: return display cell + OOB reload of attributes section
+                try:
+                    label_map = await api.get_category_display_names(token)
+                except Exception:
+                    label_map = {}
+                f_def2, cell_type2, options2, _ = _resolve_field_def(field, schema, cat_schemas, item, locations)
+                from ui.components.table import display_cell
+                cat_cell = display_cell(
+                    entity_id=entity_id, field=field, value=item.get(field, ""),
+                    cell_type=cell_type2, options=options2,
+                    editable=f_def2.get("editable", True) if f_def2 else True,
+                    label_map=label_map,
+                )
+                oob_reload = Div(
+                    hx_get=f"/api/items/{entity_id}/attributes-section",
+                    hx_trigger="load",
+                    hx_swap="outerHTML",
+                    hx_swap_oob="true",
+                    id="item-attributes-section",
+                )
+                return cat_cell, oob_reload
+            else:
+                # List page: row reload
+                return Div(
+                    hx_get=f"/api/items/{entity_id}/row",
+                    hx_trigger="load",
+                    hx_target=f"#row-{safe_id}",
+                    hx_swap="outerHTML",
+                    style="display:none",
+                )
+        # Paired fields: return the combined paired cell after save
+        if field in _PAIRED_FIELDS:
+            try:
+                return await _paired_display(token, entity_id, field)
+            except Exception:
+                pass  # fall through to single display_cell on error
         from ui.components.table import display_cell
+        try:
+            label_map = await api.get_category_display_names(token) if field == "category" else None
+        except Exception:
+            label_map = None
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
-                            editable=f_def.get("editable", True) if f_def else True)
+                            editable=f_def.get("editable", True) if f_def else True,
+                            label_map=label_map)
+
+    # ── Paired-cell endpoints (quantity+sell_by, weight+weight_unit, purchase_unit+purchase_conversion_factor) ─────────
+
+    @app.get("/api/items/{entity_id}/attributes-section")
+    async def item_attributes_section(request: Request, entity_id: str):
+        """Return the attributes detail-card for an item. Used by detail page after category change."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            schema, item, cat_schemas, price_lists = await asyncio.gather(
+                api.get_item_schema(token),
+                api.get_item(token, entity_id),
+                api.get_all_category_schemas(token),
+                api.get_price_lists(token),
+            )
+        except APIError as e:
+            return Response(str(e.detail), status_code=500)
+        # Build category options
+        cat_names = sorted(cat_schemas.keys())
+        schema = [
+            {**f, "type": "select", "options": cat_names} if f.get("key") == "category" else f
+            for f in schema
+        ]
+        # Merge category-specific fields
+        item_cat = item.get("category", "")
+        if item_cat and item_cat in cat_schemas:
+            global_keys = {f["key"] for f in schema}
+            extra = [f for f in cat_schemas[item_cat] if f["key"] not in global_keys]
+            schema = schema + extra
+        # Build pricing_keys to exclude from detail_fields
+        pl_names = {pl.get("name", "") for pl in price_lists}
+        pl_conventional = {f"{n.lower()}_price" for n in pl_names}
+        pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
+        core_keys = {"sku", "name", "status", "category", "quantity", "weight", "weight_unit", "sell_by", "allow_splitting", "barcode", "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor"}
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys]
+        right = [f for f in detail_fields if f.get("key") not in core_keys]
+        currency = None
+        try:
+            company = await api.get_company(token)
+            currency = company.get("currency")
+        except Exception:
+            pass
+        return Div(
+            _detail_table(entity_id, item, right, title="Attributes", currency=currency),
+            id="item-attributes-section",
+        )
+
+    @app.get("/api/items/{entity_id}/row")
+    async def item_row(request: Request, entity_id: str):
+        """Return the full <tr> for one item. Used after category change to reload attribute columns."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            schema, item, cat_schemas, loc_resp, units_resp = await asyncio.gather(
+                api.get_item_schema(token),
+                api.get_item(token, entity_id),
+                api.get_all_category_schemas(token),
+                api.get_locations(token),
+                api.get_units(token),
+            )
+        except APIError as e:
+            return Response(str(e.detail), status_code=500)
+        unit_names = [u["name"] for u in units_resp if u.get("name")]
+        units_map = {u["name"]: u for u in units_resp if u.get("name")}
+        try:
+            category_label_map = await api.get_category_display_names(token)
+        except Exception:
+            category_label_map = {}
+        active_cat = item.get("category", "")
+        eff_schema = _effective_schema(schema, cat_schemas, active_cat)
+        col_prefs: dict = {}
+        try:
+            col_prefs = await api.get_column_prefs(token)
+        except Exception:
+            pass
+        visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
+        cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map)
+        from ui.components.table import display_cell, EMPTY
+        safe_id = entity_id.replace(":", "-")
+        flat = _flatten_item_attrs(item)
+        visible = [f for f in eff_schema if f.get("key") in set(visible_cols)] if visible_cols else eff_schema
+        cells = [
+            cell_renderers[f["key"]](entity_id, flat) if f["key"] in cell_renderers
+            else display_cell(
+                entity_id=entity_id,
+                field=f["key"],
+                value=flat.get(f["key"], ""),
+                cell_type=f.get("type", "text"),
+                options=f.get("options"),
+                editable=f.get("editable", True),
+            )
+            for f in visible
+        ]
+        return Tr(*cells, id=f"row-{safe_id}", cls="data-row")
+
+    async def _paired_display(token: str, entity_id: str, field: str):
+        """Return a display cell TD for the pair/triple containing `field`."""
+        schema, item, cat_schemas, locs = await asyncio.gather(
+            api.get_item_schema(token), api.get_item(token, entity_id),
+            api.get_all_category_schemas(token), api.get_locations(token),
+        )
+        # Purchase triple: purchase_unit + purchase_conversion_factor + sell_by (read-only)
+        if field in ("purchase_unit", "purchase_conversion_factor"):
+            from ui.components.table import purchase_display_cell
+            return purchase_display_cell(
+                entity_id=entity_id,
+                pu_val=item.get("purchase_unit", ""),
+                cf_val=item.get("purchase_conversion_factor", ""),
+                sb_val=item.get("sell_by", ""),
+            )
+        from ui.components.table import paired_display_cell
+        locations = locs.get("items", [])
+        peer = _PAIRED_FIELDS[field]
+        # Determine which is primary (qty/weight) vs secondary (unit)
+        primary, secondary = (field, peer) if field not in ("sell_by", "weight_unit") else (peer, field)
+        pri_def, pri_type, pri_opts, _ = _resolve_field_def(primary, schema, cat_schemas, item, locations)
+        sec_def, sec_type, sec_opts, _ = _resolve_field_def(secondary, schema, cat_schemas, item, locations)
+        return paired_display_cell(
+            entity_id=entity_id,
+            primary_field=primary, primary_value=item.get(primary, ""),
+            secondary_field=secondary, secondary_value=item.get(secondary, ""),
+            primary_type=pri_type, secondary_type=sec_type,
+            primary_options=pri_opts, secondary_options=sec_opts,
+        )
+
+    @app.get("/api/items/{entity_id}/field/{field}/paired-edit")
+    async def field_paired_edit_cell(request: Request, entity_id: str, field: str):
+        """Return editable_cell for `field` with restore_url → paired-display."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if field not in _PAIRED_FIELDS:
+            return P("Not a paired field", cls="cell-error")
+        try:
+            schema, item, cat_schemas, locs = await asyncio.gather(
+                api.get_item_schema(token), api.get_item(token, entity_id),
+                api.get_all_category_schemas(token), api.get_locations(token),
+            )
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
+        locations = locs.get("items", [])
+        f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
+        # Field-specific overrides
+        if field in ("sell_by", "purchase_unit"):
+            # Unit dropdown with add-new option
+            try:
+                units_resp = await api.get_units(token)
+                unit_names = [u["name"] for u in units_resp if u.get("name")]
+            except Exception:
+                unit_names = []
+            options = [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")]
+            cell_type, allow_custom = "select", True
+        elif field == "purchase_conversion_factor":
+            # Plain number input
+            cell_type = "number"
+        elif field in ("weight", "pieces"):
+            # Derived fields: block editing when sell_by qualifies
+            try:
+                units_resp = await api.get_units(token)
+                _umap = {u["name"]: u for u in units_resp if u.get("name")}
+            except Exception:
+                _umap = {}
+            sell_by = item.get("sell_by") or ""
+            derived = (field == "weight" and is_weight_unit(sell_by, _umap)) or \
+                      (field == "pieces" and is_pieces_unit(sell_by, _umap))
+            if derived:
+                return Td(
+                    Span("Derived from Qty column", cls="cell-derived"),
+                    cls="cell",
+                    data_col=field,
+                )
+        from ui.components.table import editable_cell
+        restore_url = f"/api/items/{entity_id}/field/{field}/paired-display"
+        return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
+                             cell_type=cell_type, options=options, allow_custom=allow_custom,
+                             restore_url=restore_url)
+
+    @app.get("/api/items/{entity_id}/field/{field}/paired-display")
+    async def field_paired_display_cell(request: Request, entity_id: str, field: str):
+        """Restore paired cell to display state (ESC or after save)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if field not in _PAIRED_FIELDS:
+            return P("Not a paired field", cls="cell-error")
+        try:
+            return await _paired_display(token, entity_id, field)
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
 
     # ── Bulk actions (list-level) ─────────────────────────────────────────────
 
@@ -1112,11 +1458,12 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Bulk split (simplified single-qty) ───────────────────────────────
 
-    async def _next_split_sku(token: str, parent_sku: str) -> str:
+    async def _next_split_sku(token: str, parent_sku: str, exclude: set[str] | None = None) -> str:
         """Find next available child SKU suffix for splitting.
 
         DEMO-RGH-001 -> DEMO-RGH-001.1, DEMO-RGH-001.2, ...
         DEMO-RGH-001.1 -> DEMO-RGH-001.1.1, DEMO-RGH-001.1.2, ...
+        exclude: set of SKUs already allocated in this batch (not yet committed to DB).
         """
         prefix = f"{parent_sku}."
         try:
@@ -1124,18 +1471,157 @@ function celerpPrintLabel(entityId, templateId) {
             items = resp.get("items", []) if isinstance(resp, dict) else resp
         except Exception:
             items = []
-        max_suffix = 0
+        taken: set[int] = set()
         for it in items:
             sku = str(it.get("sku", ""))
             if sku.startswith(prefix):
                 suffix_part = sku[len(prefix):]
-                # Only count direct children (no dots in suffix)
                 if "." not in suffix_part:
                     try:
-                        max_suffix = max(max_suffix, int(suffix_part))
+                        taken.add(int(suffix_part))
                     except ValueError:
                         pass
-        return f"{prefix}{max_suffix + 1}"
+        # Also exclude in-batch allocations
+        if exclude:
+            for s in exclude:
+                if s.startswith(prefix):
+                    suffix_part = s[len(prefix):]
+                    if "." not in suffix_part:
+                        try:
+                            taken.add(int(suffix_part))
+                        except ValueError:
+                            pass
+        n = 1
+        while n in taken:
+            n += 1
+        return f"{prefix}{n}"
+
+    @app.get("/api/items/bulk/split-preview")
+    async def bulk_split_preview(request: Request):
+        """HTMX fragment: preview for bulk split (inline in toolbar, no modal)."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        entity_id = request.query_params.get("entity_id", "").strip()
+        child_sku_param = request.query_params.get("child_sku", "").strip() or None
+        if not entity_id:
+            return Div()
+        try:
+            preview = await api.split_preview(token, entity_id, child_sku_param)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"))
+
+        if preview.get("cannot_split"):
+            return Div(P("Cannot split - only 1 piece", cls="flash flash--warning"))
+
+        sell_by_label = preview.get("sell_by_label", preview.get("sell_by", ""))
+        decimals = preview.get("unit_decimals", 0)
+        weight_decimals = preview.get("weight_decimals", 2)
+        fmt = f"{{:.{decimals}f}}"
+        wfmt = f"{{:.{weight_decimals}f}}"
+
+        # Show weight/pieces columns only when the parent actually has those values.
+        show_weight = preview.get("has_weight", False)
+        show_pieces = preview.get("has_pieces", False)
+
+        headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY ({sell_by_label})", cls="sp-th")]
+        if show_weight:
+            headers.append(Th("Weight", cls="sp-th"))
+        if show_pieces:
+            headers.append(Th("Pieces", cls="sp-th"))
+
+        def _static_td(val: str) -> FT:
+            return Td(val, cls="sp-td")
+
+        def _editable_td(name: str, val: str, oninput: str | None = None, onblur: str | None = None, max: str | None = None, min: str | None = None) -> FT:
+            kwargs = dict(type="number", name=name, value=val, step="any", cls="form-input form-input--xs sp-input")
+            if oninput:
+                kwargs["oninput"] = oninput
+            if onblur:
+                kwargs["onblur"] = onblur
+            if max is not None:
+                kwargs["max"] = max
+            if min is not None:
+                kwargs["min"] = min
+            return Td(Input(**kwargs), cls="sp-td")
+
+        _child_weight_oninput = "splitRecalcMotherWeight(this)"
+        _child_weight_onblur = "splitClampWeight(this)"
+        _child_pieces_oninput = "splitRecalcMotherPieces(this)"
+        _child_pieces_onblur = "splitClampPieces(this)"
+
+        def _parcel_row(label: str, sku_cell: FT, qty_cell: FT, weight_val, pieces_val,
+                        weight_name: str | None, pieces_name: str | None, is_child: bool = False) -> FT:
+            cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
+            if show_weight:
+                w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
+                if weight_name and is_child:
+                    cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur))
+                else:
+                    # Mother: static display, updated by JS
+                    cells.append(Td(Span(w, cls="mother-weight-display"), cls="sp-td"))
+            if show_pieces:
+                p = str(int(pieces_val)) if pieces_val is not None else "0"
+                if is_child and pieces_name:
+                    pieces_max = str(int(preview["parent_pieces"]) - 1)
+                    cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max))
+                else:
+                    # Mother pieces: static display updated by JS
+                    cells.append(Td(Span(p, cls="mother-pieces-display"), cls="sp-td"))
+            return Tr(*cells)
+
+        mother_row = _parcel_row(
+            "Mother",
+            _static_td(preview["parent_sku"]),
+            Td(Span(fmt.format(preview["parent_qty"]), cls="mother-qty-display"), cls="sp-td"),
+            preview.get("parent_weight"),
+            preview.get("parent_pieces"),
+            weight_name=None,
+            pieces_name=None,
+            is_child=False,
+        )
+        child_row = _parcel_row(
+            "Child",
+            Td(Input(type="text", name="child_sku", value=preview["child_sku"],
+                     cls="form-input sp-sku-input",
+                     oninput="bulkSplitSkuChanged(this)"), cls="sp-td"),
+            Td(Input(type="number", name="child_qty", value="0",
+                     step=str(10 ** -decimals if decimals > 0 else 1), min="0",
+                     max=fmt.format(preview["parent_qty"] - (10 ** -decimals if decimals > 0 else 1)),
+                     cls="form-input form-input--xs sp-input",
+                     onchange="bulkSplitChildQtyChanged(this)"), cls="sp-td"),
+            None,
+            0,
+            weight_name="child_weight" if show_weight else None,
+            pieces_name="child_pieces" if show_pieces else None,
+            is_child=True,
+        )
+
+        form_data: dict = {
+            "data_weight_decimals": str(weight_decimals),
+            "data_unit_decimals": str(decimals),
+            "data_parent_qty": str(preview["parent_qty"]),
+        }
+        if show_weight:
+            form_data["data_parent_weight"] = str(preview["parent_weight"])
+        if show_pieces:
+            form_data["data_parent_pieces"] = str(int(preview["parent_pieces"]))
+
+        return Form(
+            Input(type="hidden", name="entity_id", value=entity_id),
+            Table(
+                Thead(Tr(*headers)),
+                Tbody(mother_row, child_row),
+                cls="split-preview-table",
+            ),
+            Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+            hx_post="/api/items/bulk/split",
+            hx_target="#bulk-action-result",
+            hx_swap="outerHTML",
+            onsubmit="bulkSplitSubmit(this)",
+            id="bulk-split-preview-form",
+            **form_data,
+        )
 
     @app.post("/api/items/bulk/split")
     async def bulk_item_split(request: Request):
@@ -1143,37 +1629,74 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
-        entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
-        if len(entity_ids) != 1:
-            return Div(P(t("inv.select_exactly_1_item_to_split"), cls="flash flash--warning"), id="bulk-action-result")
-        eid = entity_ids[0]
-        split_qty_raw = str(form.get("split_qty", "")).strip()
+
+        # Accept entity_id from form (preview form path) or from selected checkboxes
+        eid = str(form.get("entity_id", "")).strip()
+        if not eid:
+            entity_ids = [v.strip() for v in form.getlist("selected") if v.strip()]
+            if len(entity_ids) != 1:
+                return Div(P(t("inv.select_exactly_1_item_to_split"), cls="flash flash--warning"), id="bulk-action-result")
+            eid = entity_ids[0]
+
+        split_qty_raw = str(form.get("child_qty", "") or form.get("split_qty", "")).strip()
         try:
             split_qty = float(split_qty_raw)
         except (ValueError, TypeError):
             return Div(P(t("inv.invalid_split_quantity"), cls="flash flash--warning"), id="bulk-action-result")
         if split_qty <= 0:
             return Div(P(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--warning"), id="bulk-action-result")
+
         try:
             item = await api.get_item(token, eid)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+
         current_qty = float(item.get("quantity", 0) or 0)
         if split_qty >= current_qty:
             return Div(P(f"Split quantity must be less than current quantity ({current_qty}).", cls="flash flash--warning"), id="bulk-action-result")
+
         orig_sku = str(item.get("sku", "") or "")
-        new_sku = await _next_split_sku(token, orig_sku)
+
+        # Child SKU: from preview form or auto-generate
+        child_sku_input = str(form.get("child_sku", "")).strip()
+        child_sku = child_sku_input if child_sku_input else await _next_split_sku(token, orig_sku)
+
+        # Optional weight/pieces overrides from preview form
+        def _opt_float(key: str) -> float | None:
+            raw = str(form.get(key, "")).strip()
+            try:
+                return float(raw) if raw else None
+            except ValueError:
+                return None
+
+        child_weight = _opt_float("child_weight")
+        child_pieces = _opt_float("child_pieces")
+
+        if child_pieces is not None:
+            parent_pieces_raw = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
+            parent_pieces_val = float(parent_pieces_raw) if parent_pieces_raw is not None else None
+            if parent_pieces_val is not None and child_pieces >= parent_pieces_val:
+                return Div(P(f"Child pieces ({int(child_pieces)}) must be less than parent pieces ({int(parent_pieces_val)}).", cls="flash flash--warning"), id="bulk-action-result")
+
+        child: dict = {"sku": child_sku, "quantity": split_qty}
+        if child_weight is not None:
+            child["weight"] = child_weight
+        if child_pieces is not None:
+            # pieces lives in attributes on the item
+            child["attributes"] = {"pieces": child_pieces}
+
         try:
-            await api.split_item(token, eid, [
-                {"sku": new_sku, "quantity": split_qty},
-            ])
+            await api.split_item(token, eid, [child])
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+
         from urllib.parse import quote
         remaining_qty = current_qty - split_qty
+        # Filter to exactly the two parcels by their SKUs
+        exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
-            f"Split: {orig_sku} ({remaining_qty}) + {new_sku} ({split_qty}).",
-            f"?q={quote(orig_sku)}",
+            f"Split: {orig_sku} ({remaining_qty}) + {child_sku} ({split_qty}).",
+            f"?skus={exact_skus}&status=all",
         )
 
     # ── Send-to search (HTMX dropdown) ───────────────────────────────────
@@ -1530,22 +2053,7 @@ function celerpPrintLabel(entityId, templateId) {
                 for i, qty in enumerate(quantities, start=1):
                     children.append({"sku": f"{prefix}{max_suffix + i}", "quantity": qty})
             else:
-                # Legacy format: child_sku_N / child_qty_N pairs (children only, not parent)
-                children = []
-                idx = 0
-                while True:
-                    sku = str(form.get(f"child_sku_{idx}", "")).strip()
-                    qty_raw = str(form.get(f"child_qty_{idx}", "")).strip()
-                    if not sku and not qty_raw:
-                        break
-                    if sku and qty_raw:
-                        try:
-                            children.append({"sku": sku, "quantity": float(qty_raw)})
-                        except ValueError:
-                            return Div(Span(f"Invalid quantity for child {idx+1}", cls="flash flash--error"), id="item-action-error")
-                    idx += 1
-                if not children:
-                    return Div(Span(t("inv.enter_commaseparated_quantities_eg_321"), cls="flash flash--error"), id="item-action-error")
+                return Div(Span(t("inv.enter_commaseparated_quantities_eg_321"), cls="flash flash--error"), id="item-action-error")
         if len(children) < 1:
             return Div(Span(t("inv.enter_at_least_one_split_quantity"), cls="flash flash--error"), id="item-action-error")
         try:
@@ -1553,6 +2061,47 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         redirect = f"/inventory?q={quote(orig_sku)}" if orig_sku else f"/inventory/{entity_id}"
+        return Response("", status_code=204, headers={"HX-Redirect": redirect})
+
+    @app.post("/api/items/{entity_id}/split-inline")
+    async def item_split_inline(request: Request, entity_id: str):
+        """Detail page split: one or more children, auto-SKU, redirect to exact filtered inventory."""
+        from urllib.parse import quote as _quote
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        qty_raws = [v.strip() for v in form.getlist("split_qty") if v.strip()]
+        if not qty_raws:
+            return Span(t("inv.invalid_split_quantity"), cls="flash flash--error", id="item-action-error")
+        children_qtys: list[float] = []
+        for raw in qty_raws:
+            try:
+                q = float(raw)
+            except (ValueError, TypeError):
+                return Span(t("inv.invalid_split_quantity"), cls="flash flash--error", id="item-action-error")
+            if q <= 0:
+                return Span(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--error", id="item-action-error")
+            children_qtys.append(q)
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
+        orig_sku = str(item.get("sku", "") or "")
+        # Auto-generate sequential SKUs for each child
+        children: list[dict] = []
+        used_skus: set[str] = set()
+        for qty in children_qtys:
+            child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
+            used_skus.add(child_sku)
+            children.append({"sku": child_sku, "quantity": qty})
+        try:
+            await api.split_item(token, entity_id, children)
+        except APIError as e:
+            return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
+        child_skus = [c["sku"] for c in children]
+        skus_param = ",".join(_quote(s) for s in [orig_sku] + child_skus)
+        redirect = f"/inventory?skus={skus_param}&status=all" if orig_sku else "/inventory"
         return Response("", status_code=204, headers={"HX-Redirect": redirect})
 
     @app.post("/api/items/merge")
@@ -1610,12 +2159,24 @@ function celerpPrintLabel(entityId, templateId) {
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         new_sku = str(form.get("new_sku", "")).strip()
-        if not new_sku:
-            return Div(Span(t("error.new_sku_required"), cls="flash flash--error"), id="item-action-error")
         try:
             source = await api.get_item(token, entity_id)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        if not new_sku:
+            orig = str(source.get("sku", "") or "")
+            # Auto-generate: {sku}-copy, -copy2, -copy3 ...
+            candidate = f"{orig}-copy"
+            try:
+                resp = await api.list_items(token, {"q": orig, "limit": 100, "status": "all"})
+                existing_skus = {str(it.get("sku", "")) for it in (resp.get("items", []) if isinstance(resp, dict) else resp)}
+            except Exception:
+                existing_skus = set()
+            n = 2
+            while candidate in existing_skus:
+                candidate = f"{orig}-copy{n}"
+                n += 1
+            new_sku = candidate
 
         # Build create payload from source — carry all fields except id, status, location_name
         _SKIP = {"id", "status", "location_name", "created_at", "updated_at"}
@@ -1795,17 +2356,11 @@ def _bulk_context_templates(
         id="tpl-transfer",
     )
 
-    # Split: qty input + split button
+    # Split: auto-loads preview on action select; child QTY editable in preview table
     split_tpl = Template(
-        Form(
-            Input(type="number", name="split_qty", placeholder="Quantity to split off",
-                  step="any", min="0.001", cls="form-input form-input--sm", required=True),
-            Button(t("inv.split"), type="submit", cls="btn btn--primary btn--sm"),
-            hx_post="/api/items/bulk/split",
-            hx_target="#bulk-action-result",
-            hx_swap="outerHTML",
-            onsubmit="submitBulkAction(this)",
-            cls="display-contents",
+        Div(
+            Div(id="bulk-split-preview"),
+            id="bulk-split-form",
         ),
         id="tpl-split",
     )
@@ -2175,270 +2730,125 @@ def _inventory_type_tabs(p: dict) -> FT:
         for it, label in _TABS
     ]
     return Div(*tabs, cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
-    """Column manager dropdown with immediate JS toggle + localStorage + drag-and-drop reorder.
+_PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "purchase_unit": "purchase_conversion_factor"}
 
-    Server-side pref save is preserved for cross-device sync (background fetch).
-    Client-side: checkboxes immediately show/hide columns and persist to localStorage.
+
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None) -> dict:
+    """Build cell_renderers dict for paired/triple columns.
+
+    Handles:
+    - quantity+sell_by paired cell
+    - weight+weight_unit paired cell
+    - purchase_unit+purchase_conversion_factor+sell_by triple cell
+    - weight derived from qty when sell_by is a weight unit
+    - pieces derived from qty when sell_by is a pieces unit
+
+    unit_names: company unit names used as sell_by/purchase_unit dropdown options.
+    units_map: full unit dict keyed by name, used to check unit_type for derivation.
     """
-    import json as _json
-    selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
-    cat_pref = active_cat or "__all__"
-    # JS data for all columns (key, label, visible)
-    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema]
-    col_data_js = _json.dumps(col_data)
-    selected_js = _json.dumps(sorted(selected))
-    # Hidden inputs for fallback server save (category, status, sort etc.)
-    hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
-    hidden_state["_cat_pref"] = cat_pref
+    from ui.components.table import paired_display_cell, display_cell
+    from celerp.services.units import format_qty
+    schema_keys = {f["key"] for f in schema}
+    renderers: dict = {}
+    _umap = units_map or {}
+    # sell_by options: company units (searchable select); fallback to text if no units
+    sell_by_opts = unit_names or None
+    paired_options: dict[str, list[str] | None] = {
+        "sell_by": sell_by_opts,
+        "weight_unit": _UNIVERSAL_FIELD_OPTIONS.get("weight_unit"),
+    }
+    for primary, secondary in _PAIRED_TABLE.items():
+        if primary in schema_keys and secondary in schema_keys:
+            pri_def = next((f for f in schema if f["key"] == primary), {})
+            sec_def = next((f for f in schema if f["key"] == secondary), {})
+            sec_opts = paired_options.get(secondary)
+            sec_type = "select" if sec_opts else sec_def.get("type", "text")
+            def _make(pri=primary, sec=secondary, pt=pri_def.get("type", "number"),
+                      st=sec_type, po=pri_def.get("options"), so=sec_opts, _um=_umap):
+                def renderer(entity_id: str, row: dict, _umap=_um):
+                    # Format primary numeric value using its unit's decimal precision
+                    raw_pri = row.get(pri, "")
+                    unit_for_pri = row.get(sec, "") if pri in ("quantity", "weight") else None
+                    fmt_pri = format_qty(raw_pri, unit_for_pri, _umap) if pt == "number" else raw_pri
+                    return paired_display_cell(
+                        entity_id=entity_id,
+                        primary_field=pri, primary_value=fmt_pri,
+                        secondary_field=sec, secondary_value=row.get(sec, ""),
+                        primary_type=pt, secondary_type=st,
+                        primary_options=po, secondary_options=so,
+                    )
+                return renderer
+            renderers[primary] = _make()
 
-    # Build checkbox list for initial render
-    checkboxes = [
-        Label(
-            Input(
-                type="checkbox",
-                name="cols",
-                value=f.get("key"),
-                checked=f.get("key") in selected,
-                id=f"col-chk-{f.get('key', '')}",
-            ),
-            Span(f.get("label", f.get("key"))),
-            cls="column-option",
-            draggable="true",
-            data_col=f.get("key", ""),
-        )
-        for f in schema
-    ]
+    # purchase_unit triple renderer: overrides the generic paired renderer from _PAIRED_TABLE loop
+    # Shows: purchase_unit → conversion_factor sell_by (sell_by read-only from item)
+    if "purchase_unit" in schema_keys:
+        def _purchase_renderer(entity_id: str, row: dict) -> FT:
+            from ui.components.table import purchase_display_cell
+            return purchase_display_cell(
+                entity_id=entity_id,
+                pu_val=row.get("purchase_unit", ""),
+                cf_val=row.get("purchase_conversion_factor", ""),
+                sb_val=row.get("sell_by", ""),
+            )
+        renderers["purchase_unit"] = _purchase_renderer
 
-    hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
+    # Derived cell renderers for weight and pieces
+    # weight: derived from qty when sell_by is a weight unit; falls back to paired cell
+    if "weight" in schema_keys:
+        _weight_paired = renderers.get("weight")  # paired renderer built above (may be None)
+        def _weight_renderer(entity_id: str, row: dict, _umap=_umap, _paired=_weight_paired) -> FT:
+            sell_by = row.get("sell_by") or ""
+            if is_weight_unit(sell_by, _umap):
+                qty_val = row.get("quantity", "")
+                fmt = format_qty(qty_val, sell_by, _umap)
+                decimals = _umap.get(sell_by, {}).get("decimals", "")
+                return Td(
+                    Span(
+                        f"{fmt} {sell_by}" if fmt not in ("", None) else EMPTY,
+                        title="Derived from Qty column",
+                        cls="cell-derived",
+                    ),
+                    cls="cell cell--number",
+                    data_col="weight",
+                    data_decimals=str(decimals),
+                )
+            # Not a weight unit - use paired cell (weight + weight_unit) or plain editable
+            if _paired:
+                return _paired(entity_id, row)
+            return display_cell(entity_id=entity_id, field="weight", value=row.get("weight", ""), cell_type="number", editable=True)
+        renderers["weight"] = _weight_renderer
 
-    # JS: localStorage key matches data_table's PAGE_KEY for inventory
-    col_mgr_js = f"""
-(function() {{
-  var LS_VIS_KEY = 'celerp_cols_inventory';
-  var LS_ORDER_KEY = 'celerp_col_order_inventory';
-  var CAT_PREF = '{cat_pref}';
-  var ALL_COLS = {col_data_js};
-  var btn = document.getElementById('col-mgr-btn');
-  var menu = document.getElementById('col-mgr-menu');
-  if (!btn || !menu) return;
+    # pieces: derived from qty when sell_by is a pieces unit
+    if "pieces" in schema_keys:
+        def _pieces_renderer(entity_id: str, row: dict, _umap=_umap) -> FT:
+            sell_by = row.get("sell_by") or ""
+            if is_pieces_unit(sell_by, _umap):
+                qty_val = row.get("quantity", "")
+                fmt = format_qty(qty_val, sell_by, _umap)
+                decimals = _umap.get(sell_by, {}).get("decimals", "")
+                return Td(
+                    Span(
+                        fmt if fmt not in ("", None) else EMPTY,
+                        title="Derived from Qty column",
+                        cls="cell-derived",
+                    ),
+                    cls="cell cell--number",
+                    data_col="pieces",
+                    data_decimals=str(decimals),
+                )
+            return display_cell(entity_id=entity_id, field="pieces", value=row.get("pieces", ""), cell_type="number", editable=True)
+        renderers["pieces"] = _pieces_renderer
 
-  // Load visibility from localStorage
-  function loadVis() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_VIS_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveVis(prefs) {{
-    localStorage.setItem(LS_VIS_KEY, JSON.stringify(prefs));
-  }}
+    # Category renderer: shows display name instead of slug
+    if category_label_map:
+        _clm = category_label_map
+        def _cat_renderer(entity_id: str, row: dict, _lm=_clm) -> FT:
+            return display_cell(entity_id=entity_id, field="category", value=row.get("category", ""),
+                                cell_type="select", editable=True, label_map=_lm)
+        renderers["category"] = _cat_renderer
 
-  // Load order from localStorage
-  function loadOrder() {{
-    try {{ return JSON.parse(localStorage.getItem(LS_ORDER_KEY) || 'null'); }} catch(e) {{ return null; }}
-  }}
-  function saveOrder(order) {{
-    localStorage.setItem(LS_ORDER_KEY, JSON.stringify(order));
-  }}
-
-  // Apply column visibility to the data table
-  function applyVisToTable(prefs) {{
-    var table = document.getElementById('data-table');
-    if (!table) return;
-    var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
-    var rows = Array.from(table.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th) {{
-      var key = th.dataset.key;
-      var colIdx = Array.from(th.parentNode.children).indexOf(th);
-      var show = prefs[key] !== false;
-      th.style.display = show ? '' : 'none';
-      rows.forEach(function(tr) {{
-        var td = tr.querySelector('[data-col="' + key + '"]');
-        if (td) td.style.display = show ? '' : 'none';
-      }});
-    }});
-  }}
-
-  // Sync checkboxes in menu to match localStorage
-  function syncCheckboxes() {{
-    var prefs = loadVis() || {{}};
-    menu.querySelectorAll('input[type=checkbox]').forEach(function(cb) {{
-      cb.checked = prefs[cb.value] !== false;
-    }});
-  }}
-
-  // Apply column order to table (move TH and TD columns)
-  function applyOrderToTable(order) {{
-    if (!order || !order.length) return;
-    var table = document.getElementById('data-table');
-    if (!table) return;
-    var thead_tr = table.querySelector('thead tr');
-    if (!thead_tr) return;
-    var actionsTh = thead_tr.querySelector('.col-actions');
-    // Move TH elements into order (before actions column)
-    order.forEach(function(key) {{
-      var th = thead_tr.querySelector('th[data-key="' + key + '"]');
-      if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
-    }});
-    // Re-order tbody cells to match header using data-col attribute
-    var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
-    table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
-      var cells = Array.from(tr.children);
-      var checkboxTd = cells[0];
-      var actionsTd = cells[cells.length - 1];
-      var dataCells = allThs.map(function(th) {{
-        return cells.find(function(td) {{ return td.dataset.col === th.dataset.key; }});
-      }}).filter(Boolean);
-      [checkboxTd].concat(dataCells).concat([actionsTd]).forEach(function(td) {{
-        if (td) tr.appendChild(td);
-      }});
-    }});
-  }}
-
-  // Mirror the picker label order to match a given key array (picker is source of truth)
-  function applyOrderToPicker(order) {{
-    if (!order || !order.length) return;
-    var labels = menu.querySelectorAll('label[data-col]');
-    if (!labels.length) return;
-    var parent = labels[0].parentNode;
-    // Move labels into the declared order; unmentioned keys stay at end
-    order.forEach(function(key) {{
-      var lbl = menu.querySelector('label[data-col="' + key + '"]');
-      if (lbl) parent.appendChild(lbl);
-    }});
-  }}
-
-  // Get current picker order (label DOM order = source of truth)
-  function pickerOrder() {{
-    return Array.from(menu.querySelectorAll('label[data-col]')).map(function(l) {{ return l.dataset.col; }});
-  }}
-
-  // Save cols to server (background, no page reload)
-  function saveToServer(visibleKeys) {{
-    var form = new FormData();
-    visibleKeys.forEach(function(k) {{ form.append('cols', k); }});
-    Object.entries({_json.dumps(hidden_state)}).forEach(function(kv) {{
-      form.append(kv[0], kv[1]);
-    }});
-    fetch('/inventory/columns', {{method:'POST', body:form}}).catch(function(){{}});
-  }}
-
-  // Toggle open/close
-  btn.addEventListener('click', function(e) {{
-    e.stopPropagation();
-    var isOpen = menu.style.display !== 'none';
-    menu.style.display = isOpen ? 'none' : '';
-    if (!isOpen) syncCheckboxes();
-  }});
-
-  // Close on outside click
-  document.addEventListener('click', function(e) {{
-    if (!btn.contains(e.target) && !menu.contains(e.target)) {{
-      menu.style.display = 'none';
-    }}
-  }});
-
-  // Checkbox change: immediate column toggle + re-apply order so new column
-  // appears at its picker position rather than at the DOM end of the table.
-  menu.addEventListener('change', function(e) {{
-    if (e.target.type !== 'checkbox') return;
-    var key = e.target.value;
-    var prefs = loadVis() || {{}};
-    // Init prefs from current state if empty
-    if (!Object.keys(prefs).length) {{
-      ALL_COLS.forEach(function(c) {{ prefs[c.key] = {_json.dumps(sorted(selected))} .indexOf(c.key) !== -1; }});
-    }}
-    prefs[key] = e.target.checked;
-    saveVis(prefs);
-    applyVisToTable(prefs);
-    // Re-apply picker order so the newly-visible column lands in the right slot
-    applyOrderToTable(pickerOrder());
-    // Save visible keys to server
-    var visibleKeys = ALL_COLS.filter(function(c) {{ return prefs[c.key] !== false; }}).map(function(c){{return c.key;}});
-    saveToServer(visibleKeys);
-  }});
-
-  // Drag-and-drop reordering within column manager menu
-  var dragSrc = null;
-  menu.querySelectorAll('label[draggable]').forEach(function(lbl) {{
-    lbl.addEventListener('dragstart', function(e) {{
-      dragSrc = lbl;
-      e.dataTransfer.effectAllowed = 'move';
-      lbl.style.opacity = '0.5';
-    }});
-    lbl.addEventListener('dragend', function() {{
-      lbl.style.opacity = '';
-      dragSrc = null;
-    }});
-    lbl.addEventListener('dragover', function(e) {{
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-    }});
-    lbl.addEventListener('drop', function(e) {{
-      e.preventDefault();
-      if (!dragSrc || dragSrc === lbl) return;
-      // Swap in picker DOM
-      var parent = lbl.parentNode;
-      var srcNext = dragSrc.nextSibling;
-      parent.insertBefore(dragSrc, lbl);
-      if (srcNext) parent.insertBefore(lbl, srcNext); else parent.appendChild(lbl);
-      dragSrc.style.opacity = '';
-      // Persist new order and apply to table
-      var newOrder = pickerOrder();
-      saveOrder(newOrder);
-      applyOrderToTable(newOrder);
-    }});
-  }});
-
-  // Listen for table-header drag reorder (fired by data_table.py drag handler)
-  document.addEventListener('celerp:col-reorder', function(e) {{
-    if (!e.detail || !e.detail.order) return;
-    applyOrderToPicker(e.detail.order);
-  }});
-
-  // Init: apply localStorage state on page load
-  var storedVis = loadVis();
-  if (storedVis) applyVisToTable(storedVis);
-  var storedOrder = loadOrder();
-  if (storedOrder) {{
-    applyOrderToPicker(storedOrder);
-    applyOrderToTable(storedOrder);
-  }}
-
-  // Keep menu closed unless keep_open is set
-  {'menu.style.display = "";' if keep_open else 'menu.style.display = "none";'}
-}})();
-"""
-
-    return Div(
-        Button(t("btn.manage_columns"), id="col-mgr-btn", cls="btn btn--secondary", type="button"),
-        Div(
-            *checkboxes,
-            Button(
-                t("btn.reset_columns"),
-                id="col-mgr-reset",
-                cls="btn btn--sm btn--ghost col-mgr-reset-btn",
-                type="button",
-                onclick=(
-                    f"localStorage.removeItem('celerp_cols_inventory');"
-                    f"localStorage.removeItem('celerp_col_order_inventory');"
-                    f"localStorage.removeItem('celerp_col_widths_inventory');"
-                    f"fetch('/inventory/columns',{{method:'POST',body:new FormData()}});"
-                    f"location.reload();"
-                ),
-                title=t("btn.reset_columns_title"),
-            ),
-            Form(
-                *hidden_inputs,
-                id="col-mgr-form",
-                style="display:none",
-            ),
-            cls="column-menu",
-            id="col-mgr-menu",
-            style="display:none" if not keep_open else "",
-        ),
-        Script(col_mgr_js),
-        cls="column-manager",
-        id="col-mgr-details",
-    )
-
+    return renderers
 
 
 def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_cols: list[str] | None = None, keep_open: bool = False) -> FT:
@@ -2479,12 +2889,16 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
 
     # JS: localStorage key matches data_table's PAGE_KEY for inventory
+    paired_secondaries_js = _json.dumps(list(_PAIRED_TABLE.values()))
+
     col_mgr_js = f"""
 (function() {{
   var LS_VIS_KEY = 'celerp_cols_inventory';
   var LS_ORDER_KEY = 'celerp_col_order_inventory';
   var CAT_PREF = '{cat_pref}';
   var ALL_COLS = {col_data_js};
+  // Keys that are now merged into their primary column - strip from saved prefs
+  var MERGED_SECONDARIES = {paired_secondaries_js};
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
@@ -2661,10 +3075,15 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   }});
 
   // Init: apply localStorage state on page load
+  // Strip merged secondary keys from any saved prefs (migration for users who had them as separate columns)
   var storedVis = loadVis();
-  if (storedVis) applyVisToTable(storedVis);
+  if (storedVis) {{
+    MERGED_SECONDARIES.forEach(function(k) {{ delete storedVis[k]; }});
+    applyVisToTable(storedVis);
+  }}
   var storedOrder = loadOrder();
   if (storedOrder) {{
+    storedOrder = storedOrder.filter(function(k) {{ return MERGED_SECONDARIES.indexOf(k) === -1; }});
     applyOrderToPicker(storedOrder);
     applyOrderToTable(storedOrder);
   }}
@@ -2927,7 +3346,10 @@ def _item_detail_tabs(
         right = [f for f in detail_fields if f.get("key") not in core_keys]
         panel = Div(
             _detail_table(entity_id, item, left, title="Core Details", currency=currency),
-            _detail_table(entity_id, item, right, title="Attributes", currency=currency) if right else "",
+            Div(
+                _detail_table(entity_id, item, right, title="Attributes", currency=currency),
+                id="item-attributes-section",
+            ) if right else Div(id="item-attributes-section"),
             cls="detail-grid",
         )
     return Div(
@@ -2939,41 +3361,81 @@ def _item_detail_tabs(
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None) -> FT:
-    """Render dynamic pricing form with one input per price list."""
+    """Render dynamic pricing form: unit price + linked total (back-calculates unit price from total)."""
     from ui.routes.documents import resolve_price as _resolve_price
+    qty = float(item.get("quantity") or 0)
+    sell_by = str(item.get("sell_by") or "unit")
+    has_qty = qty > 0
+
+    cur_sym = currency or ""
     rows = []
     for pl in price_lists:
         pl_name = pl.get("name", "")
-        # Conventional key (e.g. "retail_price" for "Retail")
         conventional_key = f"{pl_name.lower()}_price"
-        # Use the conventional key as input name so it matches item state
         price_val = _resolve_price(item, pl_name)
+        unit_val = f"{price_val:.2f}" if price_val else ""
+        total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
+        # JS IDs scoped per price list
+        unit_id = f"unit_{conventional_key}"
+        total_id = f"total_{conventional_key}"
+        cur_prefix = Span(cur_sym, cls="input-prefix") if cur_sym else ""
         rows.append(Tr(
             Td(pl_name, cls="detail-label"),
             Td(
-                Input(
-                    type="number",
-                    name=conventional_key,
-                    value=str(price_val) if price_val else "",
-                    step="0.01",
-                    min="0",
-                    placeholder="—",
-                    cls="form-input",
+                Div(
+                    cur_prefix,
+                    Input(
+                        type="number", name=conventional_key, id=unit_id,
+                        value=unit_val, step="0.01", min="0", placeholder="—",
+                        cls="form-input",
+                        oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
+                    ),
+                    cls="input-with-prefix",
+                )
+            ),
+            Td(
+                Div(
+                    cur_prefix,
+                    Input(
+                        type="number", id=total_id,
+                        value=total_val, step="0.01", min="0", placeholder="—",
+                        cls="form-input",
+                        disabled=not has_qty,
+                        oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
+                    ),
+                    cls="input-with-prefix",
                 )
             ),
         ))
+
+    unit_hdr = f"Unit price ({cur_sym} / {sell_by})" if cur_sym else f"Unit price / {sell_by}"
+    total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else f"Total (no stock)"
+
     return Div(
         H3(t("page.pricing"), cls="section-title"),
+        Script("""
+function syncPricingTotal(unitId, totalId, qty) {
+  var u = parseFloat(document.getElementById(unitId).value);
+  var tEl = document.getElementById(totalId);
+  tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(2);
+}
+function syncPricingUnit(unitId, totalId, qty) {
+  if (!qty) return;
+  var total = parseFloat(document.getElementById(totalId).value);
+  var uEl = document.getElementById(unitId);
+  uEl.value = isNaN(total) ? '' : (total / qty).toFixed(2);
+}
+"""),
         Form(
             Table(
-                Thead(Tr(Th(t("th.price_list")), Th(t("th.price")))),
+                Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
                 Tbody(*rows),
                 cls="detail-table",
             ),
             Button(t("btn.save_prices"), type="submit", cls="btn btn--primary mt-sm"),
             hx_post=f"/api/items/{entity_id}/price",
             hx_swap="none",
-            hx_on__after_request=f"window.location.reload()",
+            hx_on__after_request="window.location.reload()",
         ),
         cls="detail-card",
     )
@@ -2988,7 +3450,7 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "
         Table(
             Tbody(*[
                 Tr(
-                    Td(f.get("label", f.get("key")), cls="detail-label"),
+                    Td(f.get("label", f.get("key")), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
                     display_cell(
                         entity_id=entity_id,
                         field=f.get("key", ""),
@@ -3052,7 +3514,7 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
 
 # Base import columns (without price columns - those are added dynamically)
 _IMPORT_BASE_COLS = ["sku", "name", "category", "quantity"]
-_IMPORT_TAIL_COLS = ["weight", "weight_unit", "sell_by", "status", "barcode", "hs_code",
+_IMPORT_TAIL_COLS = ["weight", "weight_unit", "sell_by", "pieces", "status", "barcode", "hs_code",
                      "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
                      "short_description", "description", "notes", "location_name",
                      "created_at", "updated_at"]
@@ -3068,7 +3530,7 @@ _IMPORT_SPEC = CsvImportSpec(
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     """Build import spec with dynamic price columns from company price lists."""
     price_cols = [f"{pl.get('name', '').lower()}_price" for pl in price_lists if pl.get("name")]
-    type_map = {"quantity": float, "weight": float}
+    type_map = {"quantity": float, "weight": float, "pieces": float}
     for col in price_cols:
         type_map[col] = float
     return CsvImportSpec(
@@ -3119,7 +3581,7 @@ async def _build_item_validator(token: str) -> ValidateFn:
 # Price columns (any key ending in _price) are excluded from attributes separately.
 _CORE_ITEM_COLS: frozenset[str] = frozenset({
     "sku", "name", "category", "quantity",
-    "weight", "weight_ct", "weight_unit", "sell_by", "status",
+    "weight", "weight_ct", "weight_unit", "sell_by", "pieces", "status",
     "barcode", "hs_code", "short_description", "description", "notes", "location_name",
     "location_id", "created_at", "updated_at",
 })
@@ -3246,17 +3708,40 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
 
     # 2x2 compact action cards
     allow_splitting = item.get("allow_splitting", True)
+    sell_by = item.get("sell_by") or "piece"
     if allow_splitting:
+        sell_by_label = sell_by.capitalize()
         split_card = Div(
             Form(
                 Strong(t("inv.u2702_split"), cls="action-card-title"),
                 Div(
-                    Input(type="text", name="parts", placeholder="e.g. 3,2,1", cls="form-input form-input--sm",
-                          title=f"Comma-separated quantities (current: {current_qty})"),
+                    # Dynamic qty rows - JS adds more via addSplitRow()
+                    Div(
+                        Div(
+                            Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
+                                   onclick="addSplitRow(this)"),
+                            Input(type="number", name="split_qty", placeholder=f"{sell_by_label} to split off",
+                                  step="any", min="0.001", cls="form-input form-input--sm", required=True),
+                            cls="split-qty-row",
+                        ),
+                        id="split-qty-rows",
+                    ),
                     Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
-                    cls="action-card-row",
+                    cls="action-card-row action-card-row--col",
                 ),
-                hx_post=f"/api/items/{entity_id}/split",
+                Script(f"""
+function addSplitRow(btn) {{
+  var container = document.getElementById('split-qty-rows');
+  var row = document.createElement('div');
+  row.className = 'split-qty-row';
+  row.innerHTML = '<button type="button" class="btn btn--secondary btn--xs split-add-btn" onclick="addSplitRow(this)">+</button>'
+    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" step="any" min="0.001" class="form-input form-input--sm" required>'
+    + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">✕</button>';
+  container.appendChild(row);
+  row.querySelector('input').focus();
+}}
+"""),
+                hx_post=f"/api/items/{entity_id}/split-inline",
                 hx_target="#item-action-error",
                 hx_swap="outerHTML",
             ),
@@ -3273,7 +3758,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         Form(
             Strong(t("inv.u0001f4cb_duplicate"), cls="action-card-title"),
             Div(
-                Input(type="text", name="new_sku", placeholder="New SKU", cls="form-input form-input--sm", required=True),
+                Input(type="text", name="new_sku", placeholder="New SKU (optional)", cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
                 cls="action-card-row",
             ),

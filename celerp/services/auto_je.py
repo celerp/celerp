@@ -214,13 +214,14 @@ async def create_for_po_received(
     doc: dict | None = None,
     unique_suffix: str | None = None,
     base_currency: str = "USD",
+    receive_date: str | None = None,
 ) -> None:
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     debit_account = {
-        "inventory": "1130",
+        "inventory": "1130-P",
         "expense": "6950",
         "asset": "1210",
-    }.get(purchase_kind, "1130")
+    }.get(purchase_kind, "1130-P")
 
     rate = _Dec(str((doc or {}).get("conversion_rate") or 1))
     base_total = _to_base(float(total), rate, base_currency)
@@ -237,6 +238,7 @@ async def create_for_po_received(
         idem_create=je_idempotency_key(po_id, f"po.received{idem_suffix}", "c"),
         idem_posted=je_idempotency_key(po_id, f"po.received{idem_suffix}", "p"),
         memo=f"Auto JE for {po_id} received",
+        ts=receive_date,
         entries=[
             {"account": debit_account, "debit": base_total, "credit": 0.0},
             {"account": "2110", "debit": 0.0, "credit": base_total},
@@ -288,7 +290,7 @@ async def create_for_bill_conversion(
             elif receive_as == "asset":
                 account = "1210"
             else:
-                account = "1130" if li.get("sku") else "6950"
+                account = "1130-P" if li.get("sku") else "6950"
             debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
         if tax_total_d > 0:
             debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
@@ -309,7 +311,7 @@ async def create_for_bill_conversion(
         idem_create=je_idempotency_key(doc_id, "po.converted_to_bill", "c"),
         idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
-        ts=doc.get("issue_date") or doc.get("finalized_at"),
+        ts=doc.get("issue_date") or doc.get("finalized_at") or __import__("datetime").date.today().isoformat(),
         entries=entries,
         metadata_={"trigger": "doc.converted_to_bill", "doc_id": doc_id},
     )
@@ -404,7 +406,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 elif receive_as == "asset":
                     account = "1210"
                 else:
-                    account = "1130" if li.get("sku") else "6950"
+                    account = "1130-P" if li.get("sku") else "6950"
                 debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
             if tax_total_d > 0:
                 debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
@@ -533,10 +535,10 @@ async def create_for_receive_undone(
         return
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     credit_account = {
-        "inventory": "1130",
+        "inventory": "1130-P",
         "expense": "6950",
         "asset": "1210",
-    }.get(purchase_kind, "1130")
+    }.get(purchase_kind, "1130-P")
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -564,9 +566,145 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         idem_posted=je_idempotency_key(order_id, "mfg.completed", "p"),
         memo=f"Auto JE for {order_id} completion",
         entries=[
-            {"account": "1130", "debit": output_cost, "credit": 0.0},
+            {"account": "1130-P", "debit": output_cost, "credit": 0.0},
             {"account": "5100", "debit": float(waste_cost), "credit": 0.0},
-            {"account": "1130", "debit": 0.0, "credit": float(input_cost)},
+            {"account": "1130-P", "debit": 0.0, "credit": float(input_cost)},
         ],
         metadata_={"trigger": "mfg.order.completed", "order_id": order_id},
+    )
+
+
+
+
+async def upsert_opening_inventory_je(
+    session,
+    *,
+    company_id,
+    user_id,
+) -> None:
+    """Auto-post (or update) the opening inventory JE for pre-system stock.
+
+    Computes gap = catalog_cost_total (stocked, non-consignment, non-archived)
+    minus the sum of all JE-backed balances on 1130 / 1130-P (excluding the OB
+    JE itself).  If gap > ฿0.01, emits/updates je:auto:opening-inventory:{company_id}
+    (debit 1130-OB, credit 3200).  If gap is negligible, voids the OB JE.
+
+    When the gap changes (more stock added), voids the old JE and posts a fresh
+    one so the amount stays current.  Idempotent: safe to call on every render.
+    """
+    from sqlalchemy import select as _sel
+
+    # --- Catalog cost: sum total_cost for stocked, non-consignment, non-archived items ---
+    item_rows = (
+        await session.execute(
+            _sel(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "item",
+            )
+        )
+    ).scalars().all()
+
+    # Inactive statuses: items no longer owned. Must match get_valuation()'s filter.
+    _INACTIVE = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "disposed"})
+
+    catalog_total = _Dec("0")
+    for row in item_rows:
+        s = row.state
+        status = str(s.get("status") or "").lower()
+        if status in _INACTIVE:
+            continue
+        if s.get("consignment_flag") == "in" or row.consignment_flag == "in":
+            continue
+        if (s.get("inventory_type") or "stocked") != "stocked":
+            continue
+        tc = s.get("total_cost")
+        if tc is not None:
+            catalog_total += _Dec(str(tc))
+        else:
+            cost = s.get("cost_price") or s.get("cost price")
+            qty = s.get("quantity") or 0
+            if cost is not None:
+                catalog_total += _Dec(str(cost)) * _Dec(str(qty))
+
+    # --- JE-backed inventory: sum 1130 / 1130-P / 1130-OB across all posted JEs ---
+    je_rows = (
+        await session.execute(
+            _sel(Projection).where(
+                Projection.company_id == company_id,
+                Projection.entity_type == "journal_entry",
+            )
+        )
+    ).scalars().all()
+
+    inv_codes = {"1130", "1130-P", "1130-OB"}
+    ob_je_id = f"je:auto:opening-inventory:{company_id}"
+    je_backed = _Dec("0")
+    ob_proj = None
+    for row in je_rows:
+        if row.entity_id == ob_je_id:
+            ob_proj = row
+            continue  # exclude OB JE itself from gap calculation
+        s = row.state
+        if s.get("status") != "posted":
+            continue
+        for entry in s.get("entries", []):
+            if entry.get("account") in inv_codes:
+                je_backed += _Dec(str(entry.get("debit") or 0))
+                je_backed -= _Dec(str(entry.get("credit") or 0))
+
+    gap = catalog_total - je_backed
+    from celerp.models.company import Company as _Company
+    company_obj = await session.get(_Company, company_id)
+    base_currency = (company_obj.settings or {}).get("currency", "USD") if company_obj else "USD"
+    needed = float(round_money(gap, base_currency)) if gap >= _Dec("0.01") else 0.0
+
+    # Current OB JE amount (0 if not posted)
+    current_amount = 0.0
+    if ob_proj and ob_proj.state.get("status") == "posted":
+        for entry in ob_proj.state.get("entries", []):
+            if entry.get("account") == "1130-OB":
+                current_amount = float(entry.get("debit") or 0)
+                break
+
+    if abs(needed - current_amount) < 0.01:
+        # Amount is correct - but also void+repost if the JE is missing a ts (dateless legacy)
+        if not (ob_proj and ob_proj.state.get("status") == "posted" and not ob_proj.state.get("ts")):
+            return  # already correct and has a date, nothing to do
+
+    # Void the existing OB JE if posted (amount changed or gap closed)
+    if ob_proj and ob_proj.state.get("status") == "posted":
+        from celerp.events.engine import emit_event as _emit
+        await _emit(
+            session,
+            company_id=company_id,
+            entity_id=ob_je_id,
+            entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data={"reason": "opening inventory amount updated"},
+            actor_id=user_id,
+            location_id=None,
+            source="auto_je",
+            idempotency_key=f"opening-inv:{company_id}:void:{current_amount}",
+            metadata_={"trigger": "opening_inventory.auto"},
+        )
+
+    if needed < 0.01:
+        return  # gap closed, no new JE needed
+
+    from datetime import date as _date
+    today = str(_date.today())
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=ob_je_id,
+        idem_create=f"opening-inv:{company_id}:c:{needed}:{today}",
+        idem_posted=f"opening-inv:{company_id}:p:{needed}:{today}",
+        memo="Opening inventory balance (pre-system stock)",
+        entries=[
+            {"account": "1130-OB", "debit": needed, "credit": 0.0},
+            {"account": "3200",    "debit": 0.0,    "credit": needed},
+        ],
+        metadata_={"trigger": "opening_inventory.auto"},
+        ts=today,
     )

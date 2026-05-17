@@ -70,13 +70,6 @@
       "visible_to_roles": []
     },
     {
-      "key": "weight_g",
-      "label": "Weight (g)",
-      "type": "number",
-      "options": [],
-      "visible_to_roles": []
-    },
-    {
       "key": "pieces",
       "label": "Pieces",
       "type": "number",
@@ -114,5 +107,7 @@
       "visible_to_roles": []
     }
   ],
-  "default_sell_by": "carat"
+  "default_sell_by": "piece",
+  "default_purchase_unit": "gram",
+  "default_weight_unit": "gram"
 }

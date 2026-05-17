@@ -80,12 +80,15 @@ class StorageBackend(Protocol):
 # ── LocalBackend ──────────────────────────────────────────────────────────────
 
 class LocalBackend:
-    """Writes files to static/attachments/<company_id>/. Default backend."""
+    """Writes files to <data_dir>/static/attachments/<company_id>/."""
 
-    _ROOT = Path("static/attachments")
+    @property
+    def _root(self) -> Path:
+        from celerp.config import settings  # lazy: settings not ready at import time
+        return settings.data_dir / "static" / "attachments"
 
     def _company_dir(self, company_id: str) -> Path:
-        d = self._ROOT / str(company_id)
+        d = self._root / str(company_id)
         d.mkdir(parents=True, exist_ok=True)
         return d
 

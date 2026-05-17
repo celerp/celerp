@@ -510,6 +510,168 @@ def _send_to_modal(
 # Compact SVG icons for CSV export/import (16x16, matching pair)
 _ICON_CSV_EXPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><polyline points="9 15 12 18 15 15"/></svg>'
 _ICON_CSV_IMPORT = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="12" x2="12" y2="18"/><polyline points="9 15 12 12 15 15"/></svg>'
+_ICON_PRINT = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" '
+    'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    '<polyline points="6 9 6 2 18 2 18 9"/>'
+    '<path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/>'
+    '<rect x="6" y="14" width="12" height="8"/></svg>'
+)
+
+_DOC_PRINT_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background: white; padding: 20mm; }
+.dp-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8mm; padding-bottom: 4mm; border-bottom: 2px solid #111; }
+.dp-company-name { font-size: 14pt; font-weight: 700; margin-bottom: 2mm; }
+.dp-company-sub { font-size: 9pt; color: #555; line-height: 1.5; }
+.dp-doc-title { font-size: 18pt; font-weight: 700; text-align: right; text-transform: uppercase; letter-spacing: 0.03em; }
+.dp-doc-meta { font-size: 9pt; text-align: right; margin-top: 2mm; line-height: 1.6; color: #333; }
+.dp-doc-meta strong { color: #111; }
+.dp-parties { display: flex; gap: 10mm; margin-bottom: 6mm; }
+.dp-party { flex: 1; }
+.dp-party-label { font-size: 8pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #888; margin-bottom: 1mm; }
+.dp-party-name { font-size: 10pt; font-weight: 600; }
+.dp-party-sub { font-size: 9pt; color: #444; line-height: 1.5; }
+.dp-lines { width: 100%; border-collapse: collapse; margin-bottom: 4mm; font-size: 9pt; }
+.dp-lines thead th { background: #f5f5f5; font-weight: 700; text-align: left; padding: 1.5mm 2mm; border-bottom: 1px solid #999; }
+.dp-lines thead th.r { text-align: right; }
+.dp-lines tbody td { padding: 1.5mm 2mm; border-bottom: 1px solid #eee; vertical-align: top; }
+.dp-lines tbody td.r { text-align: right; }
+.dp-lines tbody td.mono { font-family: 'Courier New', monospace; font-size: 8.5pt; }
+.dp-totals { display: flex; flex-direction: column; align-items: flex-end; margin-bottom: 6mm; }
+.dp-totals table { border-collapse: collapse; min-width: 60mm; }
+.dp-totals td { padding: 1mm 2mm; font-size: 9.5pt; }
+.dp-totals td.label { text-align: left; color: #555; }
+.dp-totals td.amount { text-align: right; font-weight: 600; }
+.dp-totals tr.grand td { border-top: 2px solid #111; font-size: 11pt; font-weight: 700; padding-top: 2mm; }
+.dp-notes { margin-top: 4mm; font-size: 9pt; color: #444; border-top: 1px solid #ddd; padding-top: 3mm; }
+.dp-notes-label { font-weight: 700; color: #111; margin-bottom: 1mm; }
+.dp-footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 3mm 20mm; border-top: 1px solid #ddd; font-size: 8pt; color: #aaa; text-align: center; background: white; }
+@page { margin: 0; size: A4 portrait; }
+@media print { body { padding: 15mm; } }
+"""
+
+
+def _doc_print_view(doc: dict) -> FT:
+    """Render a standalone printable HTML page for a document."""
+    from ui.components.table import fmt_money, currency_symbol
+
+    entity_id = doc.get("id") or doc.get("entity_id") or ""
+    doc_type = doc.get("doc_type", "")
+    doc_number = doc.get("doc_number") or doc.get("ref_id") or entity_id
+    title = doc_type.replace("_", " ").title() if doc_type else "Document"
+    issue_date = (doc.get("issue_date") or "")[:10]
+    due_date = (doc.get("due_date") or "")[:10]
+    currency = doc.get("currency") or "USD"
+
+    company_name = doc.get("company_name") or ""
+    company_address = doc.get("company_address") or ""
+    company_tax_id = doc.get("company_tax_id") or ""
+    company_email = doc.get("company_email") or ""
+    company_phone = doc.get("company_phone") or ""
+
+    contact_name = doc.get("contact_name") or doc.get("customer_name") or ""
+    contact_company = doc.get("contact_company_name") or ""
+    contact_address = doc.get("contact_billing_address") or doc.get("contact_address") or ""
+    contact_tax_id = doc.get("contact_tax_id") or ""
+    contact_email = doc.get("contact_email") or ""
+
+    line_items = doc.get("line_items") or []
+
+    def _money(v) -> str:
+        try:
+            return fmt_money(v, currency)
+        except Exception:
+            sym = currency_symbol(currency)
+            return f"{sym}{float(v or 0):,.2f}"
+
+    has_disc = any(li.get("discount_pct") for li in line_items)
+    rows = []
+    for li in line_items:
+        qty = li.get("quantity") or li.get("qty") or 0
+        price = li.get("unit_price") or li.get("price") or 0
+        disc = li.get("discount_pct") or 0
+        line_total = li.get("line_total") or (float(qty) * float(price) * (1 - float(disc) / 100))
+        desc = li.get("description") or ""
+        item_name = li.get("name") or li.get("item_name") or li.get("sku") or ""
+        sku = li.get("sku") or ""
+        rows.append(Tr(
+            Td(sku, cls="mono"),
+            Td(Div(Strong(item_name), P(desc, style="font-size:8pt;color:#555;") if desc and desc != item_name else None)),
+            Td(str(qty), cls="r"),
+            Td(_money(price), cls="r"),
+            *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
+            Td(_money(line_total), cls="r"),
+        ))
+
+    headers = Tr(
+        Th("SKU"), Th("Description"), Th("Qty", cls="r"), Th("Unit Price", cls="r"),
+        *([] if not has_disc else [Th("Disc%", cls="r")]),
+        Th("Amount", cls="r"),
+    )
+
+    subtotal = doc.get("subtotal") or 0
+    tax_total = doc.get("tax_total") or 0
+    grand_total = doc.get("grand_total") or doc.get("total") or 0
+    notes_text = doc.get("notes") or doc.get("terms") or ""
+
+    totals_rows = [Tr(Td("Subtotal", cls="label"), Td(_money(subtotal), cls="amount"))]
+    if float(tax_total or 0):
+        totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
+    totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
+
+    return Html(
+        Head(
+            Meta(charset="utf-8"),
+            Meta(name="viewport", content="width=device-width, initial-scale=1"),
+            Title(f"{title} {doc_number}"),
+            Style(_DOC_PRINT_CSS),
+        ),
+        Body(
+            Div(
+                Div(
+                    P(company_name, cls="dp-company-name"),
+                    Div(
+                        P(company_address) if company_address else None,
+                        P(f"Tax ID: {company_tax_id}") if company_tax_id else None,
+                        P(company_email) if company_email else None,
+                        P(company_phone) if company_phone else None,
+                        cls="dp-company-sub",
+                    ),
+                ),
+                Div(
+                    P(title, cls="dp-doc-title"),
+                    Div(
+                        P(Strong("No.: "), doc_number),
+                        P(Strong("Date: "), issue_date) if issue_date else None,
+                        P(Strong("Due: "), due_date) if due_date else None,
+                        cls="dp-doc-meta",
+                    ),
+                ),
+                cls="dp-header",
+            ),
+            Div(
+                Div(
+                    P("Bill To", cls="dp-party-label"),
+                    P(contact_name, cls="dp-party-name") if contact_name else None,
+                    Div(
+                        P(contact_company) if contact_company and contact_company != contact_name else None,
+                        P(contact_address) if contact_address else None,
+                        P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
+                        P(contact_email) if contact_email else None,
+                        cls="dp-party-sub",
+                    ),
+                ) if contact_name else None,
+                cls="dp-parties",
+            ),
+            Table(Thead(headers), Tbody(*rows), cls="dp-lines") if rows else P("No line items.", style="font-size:9pt;color:#888;margin-bottom:4mm;"),
+            Div(Table(*totals_rows), cls="dp-totals"),
+            Div(P("Notes", cls="dp-notes-label"), P(notes_text), cls="dp-notes") if notes_text else None,
+            Div(NotStr(f'Powered by <a href="https://celerp.com" style="color:#aaa;text-decoration:none;">celerp.com</a>  ·  {doc_number}'), cls="dp-footer"),
+            Script("window.onload = function() { window.print(); }"),
+        ),
+    )
+
 
 
 async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool):
@@ -550,6 +712,7 @@ def setup_routes(app):
         doc_type = request.query_params.get("type", "") or request.query_params.get("doc_type", "")
         status = request.query_params.get("status", "")
         status_in = request.query_params.get("status_in", "")
+        contact_id = request.query_params.get("contact_id", "")
         overdue_only = request.query_params.get("overdue_only", "") in ("1", "true")
         unfulfilled_only = request.query_params.get("unfulfilled_only", "") in ("1", "true")
         not_restocked = request.query_params.get("not_restocked", "") in ("1", "true")
@@ -600,6 +763,8 @@ def setup_routes(app):
             params = {"limit": per_page, "offset": (page - 1) * per_page}
             if q:
                 params["q"] = q
+            if contact_id:
+                params["contact_id"] = contact_id
             if doc_type:
                 params["doc_type"] = doc_type
             if is_drafts_view:
@@ -699,7 +864,7 @@ def setup_routes(app):
                 docs,
                 sort=sort,
                 sort_dir=sort_dir,
-                base_params={"q": q, "type": doc_type, "status": status, "view": view, "page": str(page), "per_page": str(per_page)},
+                base_params={"q": q, "type": doc_type, "status": status, "contact_id": contact_id, "view": view, "page": str(page), "per_page": str(per_page)},
                 doc_type=doc_type if not is_drafts_view else doc_type,
                 lang=lang,
             ),
@@ -922,7 +1087,7 @@ def setup_routes(app):
                 "sell_by": item.get("sell_by") or None,
                 "quantity": item.get("quantity") or 0,
                 "hs_code": item.get("hs_code") or None,
-                "entity_id": item.get("entity_id") or None,
+                "entity_id": item.get("entity_id") or item.get("id") or None,
                 "allow_splitting": bool(item.get("allow_splitting")),
                 "category": item.get("category") or None,
                 "cost_price": item.get("cost_price") or None,
@@ -974,7 +1139,7 @@ def setup_routes(app):
                 "sell_by": item.get("sell_by") or None,
                 "hs_code": item.get("hs_code") or None,
                 "quantity": item.get("quantity") or 0,
-                "entity_id": item.get("entity_id") or None,
+                "entity_id": item.get("entity_id") or item.get("id") or None,
                 "allow_splitting": bool(item.get("allow_splitting")),
                 "category": item.get("category") or None,
                 "cost_price": item.get("cost_price") or None,
@@ -1194,6 +1359,40 @@ def setup_routes(app):
         return _J({"ok": True, "imported": len(new_lines)})
 
     # Same export for lists
+    @app.get("/lists/{entity_id}/print")
+    async def list_print_view(request: Request, entity_id: str):
+        """Standalone printable HTML for a list - auto-triggers window.print()."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            lst = await api.get_list(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            from starlette.responses import HTMLResponse as _HR
+            return _HR(f"<p>Error: {e.detail}</p>", status_code=e.status)
+        lst.setdefault("doc_type", "list")
+        if not lst.get("contact_name"):
+            lst["contact_name"] = lst.get("receiver") or lst.get("customer_name") or ""
+        if not lst.get("issue_date"):
+            lst["issue_date"] = lst.get("created_at") or lst.get("date")
+        if not lst.get("company_name"):
+            try:
+                company = await api.get_company(token)
+                lst.update({
+                    "company_name": company.get("name") or "",
+                    "company_address": company.get("address") or "",
+                    "company_phone": company.get("phone") or "",
+                    "company_tax_id": company.get("tax_id") or "",
+                    "company_email": company.get("email") or "",
+                })
+            except Exception:
+                pass
+        from starlette.responses import HTMLResponse as _HR
+        from fasthtml.common import to_xml
+        return _HR(to_xml(_doc_print_view(lst)))
+
     @app.get("/lists/{entity_id}/items/csv")
     async def list_items_export_csv(request: Request, entity_id: str):
         """Export a list's line items as CSV - delegates to shared handler."""
@@ -1204,27 +1403,52 @@ def setup_routes(app):
         """Import line items from CSV and append to list - delegates to doc handler."""
         return await doc_items_import_csv(request, entity_id)
 
-    @app.get("/docs/{entity_id}/pdf")
-    async def doc_pdf_proxy(request: Request, entity_id: str):
-        """Proxy PDF generation from the API app so the browser can access it on the UI port."""
-        from starlette.responses import Response as _Resp
+    @app.get("/docs/{entity_id}/print")
+    async def doc_print_view(request: Request, entity_id: str):
+        """Standalone printable HTML for a document - auto-triggers window.print()."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            import httpx
-            from ui.config import API_BASE
-            async with httpx.AsyncClient(base_url=API_BASE, headers={"Authorization": f"Bearer {token}"}, timeout=30.0) as c:
-                r = await c.get(f"/docs/{entity_id}/pdf")
-                if r.status_code != 200:
-                    return _Resp(content=f"PDF generation failed ({r.status_code})", status_code=r.status_code)
-                return _Resp(
-                    content=r.content,
-                    media_type=r.headers.get("content-type", "application/pdf"),
-                    headers={"Content-Disposition": r.headers.get("content-disposition", f'inline; filename="{entity_id}.pdf"')},
-                )
-        except Exception as e:
-            return _Resp(content=f"PDF error: {e}", status_code=500)
+            doc = await api.get_doc(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            from starlette.responses import HTMLResponse as _HR
+            return _HR(f"<p>Error loading document: {e.detail}</p>", status_code=e.status)
+        # Inject company fields
+        if not doc.get("company_name"):
+            try:
+                company = await api.get_company(token)
+                doc = {**doc,
+                    "company_name": company.get("name") or "",
+                    "company_address": company.get("address") or "",
+                    "company_phone": company.get("phone") or "",
+                    "company_tax_id": company.get("tax_id") or "",
+                    "company_email": company.get("email") or "",
+                }
+            except Exception:
+                pass
+        # Resolve contact
+        cid = doc.get("contact_id")
+        if cid and not doc.get("contact_name"):
+            try:
+                contact = await api.get_contact(token, cid)
+                doc["contact_name"] = contact.get("name") or ""
+                doc["contact_company_name"] = contact.get("company_name") or ""
+                doc["contact_email"] = contact.get("email") or ""
+                doc["contact_billing_address"] = contact.get("billing_address") or contact.get("address") or ""
+                doc["contact_tax_id"] = contact.get("tax_id") or ""
+            except Exception:
+                pass
+        from starlette.responses import HTMLResponse as _HR
+        from fasthtml.common import to_xml
+        return _HR(to_xml(_doc_print_view(doc)))
+
+    @app.get("/docs/{entity_id}/pdf")
+    async def doc_pdf_redirect(request: Request, entity_id: str):
+        """Legacy PDF route - redirect to new print view."""
+        return RedirectResponse(f"/docs/{entity_id}/print", status_code=302)
 
     @app.get("/docs/{entity_id}")
     async def doc_detail(request: Request, entity_id: str):
@@ -3797,26 +4021,47 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool) -> FT:
-    """Bulk action toolbar for draft line items. Hidden until JS detects 1+ checked rows.
-    Print Labels option only appears when celerp-labels is installed (slot-driven, DRY)."""
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False) -> FT:
+    """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
+    labels_only=True: finalized docs - only Print Labels action, no delete.
+    Two-stage: select action → confirm button appears. Print Labels only shown when
+    celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
     labels_action = next(
         (a for a in get_slot("bulk_action") if a.get("_module") == "celerp-labels"),
         None,
     )
-    options = [
-        Option(t("doc.action"), value="", disabled=True, selected=True),
-        Option(t("btn.delete_selected"), value="li-delete"),
-        Option(t("doc.print_selected"), value="li-print"),
-    ]
-    if labels_action:
-        options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
-    return Div(
+    if not labels_only:
+        options = [
+            Option(t("doc.action"), value="", disabled=True, selected=True),
+            Option(t("btn.delete_selected"), value="li-delete"),
+        ]
+        if labels_action:
+            options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
+    else:
+        options = [
+            Option(t("doc.action"), value="", disabled=True, selected=True),
+            Option(t("doc.print_labels"), value="mod:labels_print-bulk"),
+        ]
+    children = [
         Span(t("doc.0_rows_selected"), id="li-bulk-count", cls="bulk-count"),
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
-               onchange="liActionChanged(this.value)"),
+               onchange="liBulkActionSelected(this.value)"),
+    ]
+    if not labels_only:
+        children.append(
+            Button(t("btn.delete_selected"), type="button", id="li-bulk-delete-btn",
+                   cls="btn btn--danger btn--sm", style="display:none",
+                   onclick="liBulkDeleteConfirmed()"),
+        )
+    children += [
+        Button(t("doc.print_labels"), type="button", id="li-bulk-labels-btn",
+               cls="btn btn--secondary btn--sm", style="display:none",
+               onclick="liBulkLabelsConfirmed()"),
         Div(id="li-bulk-context"),
+    ]
+    return Div(
+        *children,
         id="li-bulk-toolbar",
         cls="bulk-toolbar",
         style="display:none",
@@ -4090,8 +4335,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
     # PDF + CSV buttons → print group (hidden entirely when suppress_pdf is set)
     if not suppress_pdf:
-        if not is_list:
-            action_btns_print.append(A("PDF", href=f"/docs/{entity_id}/pdf", target="_blank", cls="btn btn--secondary"))
+        _print_href = f"/lists/{entity_id}/print" if is_list else f"/docs/{entity_id}/print"
+        action_btns_print.append(A(NotStr(_ICON_PRINT), href=_print_href, target="_blank", cls="btn btn--ghost btn--icon", title=t("btn.print")))
         # CSV line items export/import icons
         action_btns_print.append(
             A(NotStr(_ICON_CSV_EXPORT), href=f"{_base}/items/csv",
@@ -4102,16 +4347,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Button(NotStr(_ICON_CSV_IMPORT), type="button",
                        cls="btn btn--ghost btn--icon", title=t("doc.import_line_items_csv"),
                        onclick="document.getElementById('csv-import-input').click()"),
-            )
-    # Print Labels button — non-draft docs only, when celerp-labels is installed, not for subscription templates
-    if not is_draft and not suppress_doc_actions:
-        from celerp.modules.slots import get as _get_slot_labels
-        _labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels("bulk_action"))
-        if _labels_active and line_items:
-            _labels_url = f"/labels/print-doc/{entity_id}{'?list=1' if is_list else ''}"
-            action_btns_print.append(
-                A(t("doc._labels"), href=_labels_url, target="_blank", cls="btn btn--secondary",
-                  title="Print labels for all line items in this document"),
             )
     action_btns_print.append(Span("", id="share-result"))
     action_btns_print.append(Span("", id="action-error"))
@@ -4229,7 +4464,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     if is_draft:
         def _sku_input(val: str = "", entity_id: str = "") -> FT:
             eye_cls = "item-link item-link--active" if entity_id else "item-link item-link--inactive"
-            eye_href = f"/items/{entity_id}" if entity_id else "#"
+            eye_href = f"/inventory/{entity_id}" if entity_id else "#"
             eye = A("👁", href=eye_href, target="_blank" if entity_id else "",
                      cls=eye_cls, data_name="item_link",
                      title="View item details" if entity_id else "No linked item",
@@ -4314,7 +4549,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             discount_pct = float(li.get("discount_pct") or 0)
             discounted = float(qty or 0) * float(price or 0) * (1 - discount_pct / 100)
             line_tot = discounted
-            li_entity_id = li.get("entity_id") or ""
+            li_entity_id = li.get("entity_id") or li.get("item_id") or ""
             li_allow_splitting = "1" if li.get("allow_splitting") else ""
             account_cell = Td(Input(type="text", value=li.get("account_code", "") or "",
                          data_name="account_code", placeholder="e.g. 1130",
@@ -4390,8 +4625,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(account_cell)
             cells.extend([
                 Td(Span(fmt_money(line_tot, currency), cls="line-total"), cls="cell--number"),
-                Td(Button("x", type="button", cls="btn btn--danger btn--xs",
-                          onclick="this.closest('tr').remove(); celerpUpdateTotals(); celerpAutoSave();")),
             ])
             return Tr(*cells)
 
@@ -4450,8 +4683,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value="", data_name="allow_splitting"),
                    Input(type="hidden", value="", data_name="item_quantity")),
                 Td(Span(fmt_money(0, currency), cls="line-total"), cls="cell--number"),
-                Td(Button("x", type="button", cls="btn btn--danger btn--xs",
-                          onclick="this.closest('tr').remove(); celerpUpdateTotals(); celerpAutoSave();")),
             ])
             return Tr(*cells)
 
@@ -4643,7 +4874,7 @@ function celerpFillRow(row, data) {{
     const linkEl = row.querySelector('[data-name="item_link"]');
     if (linkEl) {{
         if (data.entity_id) {{
-            linkEl.href = '/items/' + data.entity_id;
+            linkEl.href = '/inventory/' + data.entity_id;
             linkEl.target = '_blank';
             linkEl.className = 'item-link item-link--active';
             linkEl.title = 'View item details';
@@ -4731,7 +4962,23 @@ async function celerpAcSearch(input, field) {{
 }}
 function celerpAcBlur(input) {{
     const list = input.parentElement.querySelector('.catalog-ac-list');
+    // If cursor moved to a dropdown option (mousedown), let that handler fire first
     setTimeout(() => {{ list.style.display = 'none'; }}, 200);
+    // If this is the SKU field and no entity_id linked yet, attempt a silent exact lookup
+    if (input.dataset.name === 'sku') {{
+        const row = input.closest('tr');
+        const eidEl = row ? row.querySelector('[data-name="entity_id"]') : null;
+        if (row && eidEl && !eidEl.value && input.value.trim()) {{
+            const sku = input.value.trim();
+            const pl = _celerpPriceListParam();
+            fetch('/docs/catalog-search?q=' + encodeURIComponent(sku) + pl + _celerpDocTypeParam())
+              .then(r => r.ok ? r.json() : [])
+              .then(items => {{
+                const exact = items.find(i => i.sku && i.sku.toLowerCase() === sku.toLowerCase());
+                if (exact && exact.entity_id) celerpFillRow(row, exact);
+              }});
+        }}
+    }}
     celerpAutoSave();
 }}
 function celerpAcKey(e, input) {{
@@ -4769,7 +5016,7 @@ function celerpQtyBlur(input) {{
     if (itemQty > 0 && currentQty !== itemQty) {{
         const eid = entityIdEl.value;
         const msg = 'Allow splitting is set to false for this item, so you cannot sell less than the full quantity (' + itemQty + '). '
-            + 'You can modify this in the item details page: /items/' + eid;
+            + 'You can modify this in the item details page: /inventory/' + eid;
         alert(msg);
         // Per UX rules: do NOT revert the value or make readonly - just warn
     }}
@@ -5075,38 +5322,56 @@ async function celerpCsvImport(input, entityId) {{
     if(table) table.querySelectorAll('tbody .li-select').forEach(function(cb){{cb.checked=sa.checked;}});
     _update();
   }});
-  window.liActionChanged=function(action){{
+  var deleteBtn=document.getElementById('li-bulk-delete-btn');
+  var labelsBtn=document.getElementById('li-bulk-labels-btn');
+  function _hideBtns(){{
+    if(deleteBtn) deleteBtn.style.display='none';
+    if(labelsBtn) labelsBtn.style.display='none';
+  }}
+  window.liBulkActionSelected=function(action){{
+    _hideBtns();
     if(!action) return;
     if(action==='li-delete'){{
-      if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
-      celerpUpdateTotals(); celerpAutoSave(); _update(); return;
-    }}
-    if(action==='li-print'){{
-      var hidden=[];
-      if(table) table.querySelectorAll('tbody tr').forEach(function(tr){{
-        var cb=tr.querySelector('.li-select');
-        if(cb&&!cb.checked){{tr.style.display='none';hidden.push(tr);}}
-      }});
-      document.body.classList.add('li-print-mode');
-      window.print();
-      document.body.classList.remove('li-print-mode');
-      hidden.forEach(function(tr){{tr.style.display='';}});
-      if(sel) sel.value=''; return;
-    }}
-    if(action.startsWith('mod:')){{
-      if(typeof CelerpSelection!=='undefined') CelerpSelection.clear();
-      if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
-        if(cb.value&&typeof CelerpSelection!=='undefined') CelerpSelection.add(cb.value,{{}});
-      }});
-      if(typeof bulkActionChanged==='function') bulkActionChanged(action);
+      if(deleteBtn) deleteBtn.style.display='';
+    }} else if(action.startsWith('mod:')){{
+      if(labelsBtn) labelsBtn.style.display='';
     }}
   }};
+  window.liBulkDeleteConfirmed=function(){{
+    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
+    celerpUpdateTotals(); celerpAutoSave();
+    if(sel) sel.value='';
+    _hideBtns(); _update();
+  }};
+  window.liBulkLabelsConfirmed=function(){{
+    var ids=[];
+    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{
+      var row=cb.closest('tr');
+      var eidInput=row?row.querySelector('[data-name="entity_id"]'):null;
+      var id=(eidInput&&eidInput.value)||cb.value||'';
+      if(!id){{var skuEl=row?row.querySelector('[data-name="sku"]'):null;var sku=skuEl?skuEl.value.trim():'';if(sku)id='sku:'+sku;}}
+      if(id) ids.push(id);
+    }});
+    if(!ids.length){{alert('The selected rows have no linked inventory items. Only items picked from the product catalog can be label-printed.');return;}}
+    var form=document.createElement('form');
+    form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
+    ids.forEach(function(id){{
+      var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
+      form.appendChild(inp);
+    }});
+    document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
+  }};
+  window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
 }})();
 """),
             cls="lines-section",
         )
     else:
         _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
+        # Show checkboxes + bulk toolbar on finalized docs when celerp-labels is installed
+        from celerp.modules.slots import get as _get_slot_labels_fin
+        _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
+        _fin_show_bulk = _fin_labels_active and bool(line_items)
 
         def _li_row(li: dict) -> FT:
             qty = float(li.get("quantity", 0) or 0)
@@ -5114,7 +5379,16 @@ async function celerpCsvImport(input, entityId) {{
             discount_pct = float(li.get("discount_pct") or 0)
             discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
             line_total = float(li.get("line_total", 0) or 0) or discounted
-            cells = [
+            cells = []
+            if _fin_show_bulk:
+                li_eid = li.get("entity_id") or li.get("item_id") or ""
+                li_sku = li.get("sku") or ""
+                cells.append(Td(
+                    Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku),
+                    Input(type="hidden", value=li_eid, data_name="entity_id"),
+                    cls="col-checkbox li-checkbox-cell",
+                ))
+            cells += [
                 Td(format_value(li.get("description") or li.get("name"))),
                 Td(format_value(li.get("sku") or None)),
             ]
@@ -5131,19 +5405,70 @@ async function celerpCsvImport(input, entityId) {{
             ])
             return Tr(*cells)
 
-        _thead_base = [Th(t("th.description")), Th(t("th.skuitem"))]
+        _thead_base = []
+        if _fin_show_bulk:
+            _thead_base.append(Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"))
+        _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.category")), Th(t("th.type"))]
         _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"))]
         _colspan = len(_thead_base)
+        _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
+            _li_bulk_toolbar(entity_id, is_list, labels_only=True) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li) for li in line_items] if line_items else [
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
-                ])),
+                ]), id=_fin_bulk_id),
                 cls="data-table doc-lines",
             ),
+            Script(f"""
+(function(){{
+  var table=document.getElementById('{_fin_bulk_id}');
+  var toolbar=document.getElementById('li-bulk-toolbar');
+  var countEl=document.getElementById('li-bulk-count');
+  var sel=document.getElementById('li-bulk-select');
+  function _n(){{return table?table.querySelectorAll('.li-select:checked').length:0;}}
+  function _update(){{
+    var n=_n();
+    if(countEl) countEl.textContent=n+' row'+(n===1?'':'s')+' selected';
+    if(toolbar) toolbar.style.display=n>0?'flex':'none';
+    if(sel&&n===0) sel.value='';
+  }}
+  if(table) table.addEventListener('change',function(e){{
+    if(e.target&&e.target.classList.contains('li-select')) _update();
+  }});
+  var sa=document.getElementById('li-select-all');
+  if(sa) sa.addEventListener('change',function(){{
+    if(table) table.querySelectorAll('.li-select').forEach(function(cb){{cb.checked=sa.checked;}});
+    _update();
+  }});
+  var labelsBtn=document.getElementById('li-bulk-labels-btn');
+  window.liBulkActionSelected=function(action){{
+    if(labelsBtn) labelsBtn.style.display=action&&action.startsWith('mod:')?'':'none';
+  }};
+  window.liBulkLabelsConfirmed=function(){{
+    var ids=[];
+    if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{
+      var row=cb.closest('tr');
+      var eidInput=row?row.querySelector('[data-name="entity_id"]'):null;
+      var id=(eidInput&&eidInput.value)||cb.value||'';
+      if(!id){{var sku=cb.dataset.sku||'';if(sku)id='sku:'+sku;}}
+      if(id) ids.push(id);
+    }});
+    if(!ids.length){{alert('The selected rows have no linked inventory items. Only items picked from the product catalog can be label-printed.');return;}}
+    var form=document.createElement('form');
+    form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
+    ids.forEach(function(id){{
+      var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;
+      form.appendChild(inp);
+    }});
+    document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
+  }};
+  window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
+}})();
+""") if _fin_show_bulk else None,
         )
 
     # --- Totals ---

@@ -99,7 +99,7 @@ async def create_template(
     )
     session.add(t)
     await session.commit()
-    log.info("Created label template %s for company %s", t.id, company_id)
+    log.debug("Created label template %s for company %s", t.id, company_id)
     return t.as_dict()
 
 

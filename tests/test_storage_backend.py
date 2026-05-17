@@ -46,7 +46,7 @@ def test_infer_certificate_default():
 @pytest.mark.asyncio
 async def test_local_backend_stores_file(tmp_path, monkeypatch):
     backend = LocalBackend()
-    monkeypatch.setattr(backend, "_ROOT", tmp_path)
+    monkeypatch.setattr(type(backend), "_root", property(lambda self: tmp_path))
     content = b"fake image data"
     url = await backend.store("company-1", "att-123", "photo.png", content, "image/png")
     assert url.startswith("/static/attachments/company-1/att-123")
@@ -57,7 +57,7 @@ async def test_local_backend_stores_file(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_local_backend_creates_company_dir(tmp_path, monkeypatch):
     backend = LocalBackend()
-    monkeypatch.setattr(backend, "_ROOT", tmp_path)
+    monkeypatch.setattr(type(backend), "_root", property(lambda self: tmp_path))
     await backend.store("new-company", "id1", "f.pdf", b"data", "application/pdf")
     assert (tmp_path / "new-company").is_dir()
 

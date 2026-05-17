@@ -195,6 +195,11 @@ function initCombobox(wrap) {
   function selectOpt(opt) {
     var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
     var label = opt.textContent.trim();
+    // __new__:URL values trigger a redirect instead of a form submission
+    if (val.indexOf('__new__:') === 0) {
+      window.location = val.slice('__new__:'.length);
+      return;
+    }
     // Show human-readable label in the visible input; store actual value in hidden
     input.value = label;
     if (hidden) hidden.value = val;

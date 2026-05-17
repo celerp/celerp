@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.models.accounting import UserCompany
 from celerp.models.company import Company, Location, User
 from celerp.models.ledger import LedgerEntry
 from celerp.projections.engine import ProjectionEngine
@@ -63,8 +64,12 @@ async def export_system(
     ).scalars().all()
 
     users = (
-        await session.execute(select(User).where(User.company_id == company_id))
-    ).scalars().all()
+        await session.execute(
+            select(User, UserCompany.role).join(UserCompany, UserCompany.user_id == User.id).where(
+                UserCompany.company_id == company_id
+            )
+        )
+    ).all()
 
     ledger_rows = (
         await session.execute(
@@ -114,10 +119,10 @@ async def export_system(
                             "id": str(u.id),
                             "email": u.email,
                             "name": u.name,
-                            "role": u.role,
+                            "role": role,
                             "is_active": u.is_active,
                         }
-                        for u in users
+                        for u, role in users
                     ],
                 },
                 indent=2,
@@ -234,15 +239,23 @@ async def import_system(
 
     # ── Create users (no auth_hash — require password reset) ─────────────────
     for u in company_data.get("users", []):
-        new_user = User(
-            id=uuid.uuid4(),
-            company_id=company.id,
-            email=u["email"],
-            name=u["name"],
-            role=u.get("role", "user"),
-            is_active=u.get("is_active", True),
-        )
-        session.add(new_user)
+        existing_user = (await session.execute(select(User).where(User.email == u["email"]))).scalar_one_or_none()
+        if existing_user is None:
+            existing_user = User(
+                id=uuid.uuid4(),
+                email=u["email"],
+                name=u["name"],
+                is_active=u.get("is_active", True),
+            )
+            session.add(existing_user)
+            await session.flush()
+        # Link to company if not already linked
+        existing_link = (await session.execute(
+            select(UserCompany).where(UserCompany.user_id == existing_user.id, UserCompany.company_id == company.id)
+        )).scalar_one_or_none()
+        if existing_link is None:
+            link = UserCompany(id=uuid.uuid4(), user_id=existing_user.id, company_id=company.id, role=u.get("role", "user"))
+            session.add(link)
     await session.flush()
 
     # ── Replay ledger ─────────────────────────────────────────────────────────

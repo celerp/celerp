@@ -60,14 +60,21 @@ async def test_deactivate_company(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_deactivated_company_blocks_api(client: AsyncClient):
-    """Requests to a deactivated company are rejected with 401."""
-    token = await _register(client)
-    await client.delete("/companies/me", headers=_auth(token))
+async def test_deactivated_company_blocks_non_owner(client: AsyncClient, session):
+    """Requests to a deactivated company are rejected for non-owners but owner stays accessible."""
+    admin_token = await _register(client)
+    user_token = await _add_user(client, session, admin_token)
 
-    r = await client.get("/companies/me", headers=_auth(token))
+    await client.delete("/companies/me", headers=_auth(admin_token))
+
+    # Non-owner is blocked
+    r = await client.get("/companies/me", headers=_auth(user_token))
     assert r.status_code == 401
     assert "deactivated" in r.json()["detail"].lower()
+
+    # Owner can still access (so they can create a new company or reactivate)
+    r = await client.get("/companies/me", headers=_auth(admin_token))
+    assert r.status_code == 200
 
 
 @pytest.mark.asyncio
@@ -107,11 +114,11 @@ async def test_deactivated_hidden_from_my_companies(client: AsyncClient, session
     ids = [item["company_id"] for item in r.json()["items"]]
     assert str(company_id) in ids
 
-    # Deactivate again and verify token is blocked
+    # Deactivate again and verify non-owner token is blocked; owner still passes
     company.is_active = False
     await session.commit()
     r = await client.get("/auth/my-companies", headers=_auth(token))
-    assert r.status_code == 401
+    assert r.status_code == 200  # owner still authenticated
 
 
 @pytest.mark.asyncio

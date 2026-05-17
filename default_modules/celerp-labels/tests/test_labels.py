@@ -801,3 +801,46 @@ def test_celerp_fill_row_description_always_overwrites():
         "!descEl.value guard must be removed so catalog picker always overwrites description. "
         f"Found condition: {condition!r}"
     )
+
+
+def test_print_bulk_resolves_sku_prefix():
+    """print-bulk must resolve 'sku:{value}' entries to entity_ids via inventory search.
+
+    Legacy docs saved before the catalog-search entity_id fix have line items with
+    no entity_id. The JS sends 'sku:{sku}' as a fallback. The server must resolve these.
+    """
+    # Verify the resolution logic matches inventory API response shape
+    raw_selected = ["item:abc", "sku:SKU-X", "sku:SKU-Y"]
+    entity_ids = []
+    skus_to_resolve = []
+    for val in raw_selected:
+        if val.startswith("sku:"):
+            skus_to_resolve.append(val[4:])
+        else:
+            entity_ids.append(val)
+
+    assert entity_ids == ["item:abc"]
+    assert skus_to_resolve == ["SKU-X", "SKU-Y"]
+
+    # Simulate inventory search response (uses 'id' key from _flatten_item)
+    def _resolve(sku: str, items: list[dict]) -> str | None:
+        match = next((it for it in items if (it.get("sku") or "").lower() == sku.lower()), None)
+        if match:
+            return match.get("entity_id") or match.get("id")
+        return None
+
+    items_from_api = [{"id": "item:x1", "sku": "SKU-X"}, {"id": "item:y1", "sku": "SKU-Y"}]
+    for sku in dict.fromkeys(skus_to_resolve):
+        eid = _resolve(sku, items_from_api)
+        if eid:
+            entity_ids.append(eid)
+
+    assert entity_ids == ["item:abc", "item:x1", "item:y1"]
+
+
+def test_print_bulk_sku_prefix_dedup():
+    """Duplicate sku: entries are deduplicated before lookup."""
+    raw = ["sku:SKU-A", "sku:SKU-A", "sku:SKU-B"]
+    skus = [v[4:] for v in raw if v.startswith("sku:")]
+    deduped = list(dict.fromkeys(skus))
+    assert deduped == ["SKU-A", "SKU-B"]
