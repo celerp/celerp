@@ -976,21 +976,20 @@ async def test_split_preview_reads_pieces_from_top_level_state(client):
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
-    r2 = await client.get(f"/items/{parent_id}/split-preview?qty=3", headers=h)
+    r2 = await client.get(f"/items/{parent_id}/split-preview", headers=h)
     assert r2.status_code == 200
     preview = r2.json()
 
     assert preview.get("has_pieces") is True, f"Expected has_pieces=True, got {preview}"
-    assert "child_pieces_default" in preview, f"Expected child_pieces_default in preview: {preview}"
-    assert preview["child_pieces_default"] == 1  # int(3/10 * 5) = 1
+    assert "parent_pieces" in preview, f"Expected parent_pieces in preview: {preview}"
+    assert preview["parent_pieces"] == 5
 
 
 @pytest.mark.asyncio
 async def test_split_preview_weight_uses_weight_unit_decimals(client):
-    """child_weight_default must be rounded to weight_unit decimals, not sell_by decimals.
+    """parent_weight must use weight_unit decimals precision.
 
-    Bug: when sell_by=piece (decimals=0), weight was rounded to 0 decimal places,
-    so 0.5g became 0.0.
+    The preview returns the raw parent weight; proportional computation is client-side.
     """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
@@ -1001,15 +1000,15 @@ async def test_split_preview_weight_uses_weight_unit_decimals(client):
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
-    # Split off 1 piece: expected child_weight = 1/4 * 2.0 = 0.5g
-    r2 = await client.get(f"/items/{parent_id}/split-preview?qty=1", headers=h)
+    r2 = await client.get(f"/items/{parent_id}/split-preview", headers=h)
     assert r2.status_code == 200
     preview = r2.json()
 
     assert preview.get("has_weight") is True, f"Expected has_weight=True: {preview}"
-    assert abs(preview["child_weight_default"] - 0.5) < 0.01, (
-        f"Expected child_weight_default≈0.5, got {preview['child_weight_default']}"
+    assert abs(preview["parent_weight"] - 2.0) < 0.01, (
+        f"Expected parent_weight=2.0, got {preview['parent_weight']}"
     )
+    assert preview.get("weight_decimals", 2) == 2
 
 
 @pytest.mark.asyncio
@@ -1081,7 +1080,7 @@ async def test_attachment_stored_under_data_dir(client):
 
 @pytest.mark.asyncio
 async def test_split_preview_clamps_qty(client):
-    """split-preview must clamp qty to parent_qty - epsilon (never equal or exceed parent)."""
+    """split-preview no longer accepts qty - returns static parent data only."""
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
@@ -1090,14 +1089,12 @@ async def test_split_preview_clamps_qty(client):
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
-    # Request qty equal to parent_qty - should be clamped
-    r2 = await client.get(f"/items/{parent_id}/split-preview?qty=5", headers=h)
+    # qty param is now ignored; response contains parent_qty only
+    r2 = await client.get(f"/items/{parent_id}/split-preview", headers=h)
     assert r2.status_code == 200
     preview = r2.json()
-    # child_qty must be strictly less than parent_qty
-    assert preview["child_qty"] < preview["parent_qty"], (
-        f"child_qty {preview['child_qty']} must be < parent_qty {preview['parent_qty']}"
-    )
+    assert preview["parent_qty"] == 5.0
+    assert "child_qty" not in preview
 
 
 @pytest.mark.asyncio
@@ -1202,3 +1199,29 @@ async def test_split_mother_weight_computed_server_side(client):
     parent_state = rp.json()
     assert abs(float(parent_state.get("weight", 0)) - 30.0) < 0.01, \
         f"Expected mother weight=30.0, got {parent_state.get('weight')}"
+
+
+@pytest.mark.asyncio
+async def test_split_preview_no_proportional_defaults(client):
+    """split-preview must return static parent data only - no proportional computed fields."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": "PREV-STATIC-001", "name": "Test", "quantity": 10, "sell_by": "piece",
+        "weight": 5.0, "weight_unit": "gram",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    entity_id = r.json()["id"]
+    r = await client.get(f"/items/{entity_id}/split-preview?child_sku=PREV-STATIC-001.1", headers=h)
+    assert r.status_code == 200
+    data = r.json()
+    # These keys must NOT be in the response
+    assert "child_weight_default" not in data
+    assert "child_pieces_default" not in data
+    assert "parent_weight_remaining" not in data
+    assert "parent_pieces_remaining" not in data
+    assert "parent_qty_remaining" not in data
+    assert "child_qty" not in data
+    # These keys MUST be in the response
+    assert "parent_weight" in data
+    assert "parent_qty" in data

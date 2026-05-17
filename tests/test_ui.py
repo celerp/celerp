@@ -5126,7 +5126,7 @@ class TestBulkActionsPhase1to5:
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_js_contains_new_functions(self, ui_client):
-        """splitRecalcMother and savedEdits symbols must be in the inventory page JS."""
+        """splitRecalcMother functions must be in the inventory page JS. Save/restore removed."""
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -5140,7 +5140,8 @@ class TestBulkActionsPhase1to5:
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert b"splitRecalcMother" in r.content
-        assert b"savedEdits" in r.content
+        assert b"_bulkSplitSavedEdits" not in r.content
+        assert b"_bulkSplitRestoreEdits" not in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_pieces_has_oninput(self, ui_client):
@@ -5191,9 +5192,7 @@ class TestBulkActionsPhase1to5:
         assert "function splitRecalcMother(" not in html
 
     async def test_bulk_split_save_edits_captures_all_number_inputs(self, ui_client):
-        """_bulkSplitSavedEdits must save all number inputs (not just data-user-edited),
-        so that proportionally-set weight/pieces values survive qty re-renders.
-        child_qty must be excluded to avoid restoring over the new qty value."""
+        """Save/restore pattern is removed. bulkSplitChildQtyChanged must be pure JS with no htmx.ajax."""
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
@@ -5208,11 +5207,13 @@ class TestBulkActionsPhase1to5:
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
         html = r.text
-        # Must save all number inputs (not restricted to data-user-edited)
-        assert 'input[type="number"]' in html or "input[type='number']" in html
-        assert 'data-user-edited="1"' not in html.split("_bulkSplitSavedEdits")[1].split("}")[0]
-        # Must exclude child_qty from restore
-        assert "child_qty" in html.split("_bulkSplitSavedEdits")[1].split("_bulkSplitRestoreEdits")[0]
+        assert "_bulkSplitSavedEdits" not in html
+        assert "_bulkSplitRestoreEdits" not in html
+        assert "bulkSplitChildQtyChanged" in html
+        fn_start = html.index("function bulkSplitChildQtyChanged")
+        fn_end = html.find("\nfunction ", fn_start + 1)
+        fn_body = html[fn_start:fn_end if fn_end != -1 else fn_start + 2000]
+        assert "htmx.ajax" not in fn_body
 
     @pytest.mark.asyncio
     async def test_bulk_split_preview_child_qty_has_max_attr(self, ui_client):
@@ -11941,3 +11942,28 @@ class TestCategoryDetailPagePatch:
         # Must contain the attributes-section OOB reload
         assert "item-attributes-section" in html, \
             "Detail page category patch must trigger attributes section reload"
+
+
+def test_split_js_no_save_restore():
+    """_bulkSplitSavedEdits and _bulkSplitRestoreEdits must not exist in split JS."""
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    assert "_bulkSplitSavedEdits" not in _BULK_SPLIT_JS
+    assert "_bulkSplitRestoreEdits" not in _BULK_SPLIT_JS
+
+
+def test_split_js_qty_change_no_htmx():
+    """bulkSplitChildQtyChanged must not make htmx.ajax calls."""
+    from ui.routes.inventory import _BULK_SPLIT_JS
+    start = _BULK_SPLIT_JS.index("function bulkSplitChildQtyChanged")
+    end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
+    fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
+    assert "htmx.ajax" not in fn_body
+
+
+def test_split_js_weight_pieces_independent():
+    """Weight oninput must never call splitRecalcMotherPieces, and vice versa."""
+    import inspect
+    import ui.routes.inventory as inv_mod
+    src = inspect.getsource(inv_mod)
+    assert "splitRecalcMotherPieces" not in src.split("_child_weight_oninput")[1].split("\n")[0]
+    assert "splitRecalcMotherWeight" not in src.split("_child_pieces_oninput")[1].split("\n")[0]

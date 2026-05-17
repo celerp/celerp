@@ -1250,8 +1250,8 @@ async def split_item(token: str, entity_id: str, children: list[dict], mother_pi
         return _raise(await c.post(f"/items/{entity_id}/split", json=body)).json()
 
 
-async def split_preview(token: str, entity_id: str, qty: float, child_sku: str | None = None) -> dict:
-    params: dict = {"qty": qty}
+async def split_preview(token: str, entity_id: str, child_sku: str | None = None) -> dict:
+    params: dict = {}
     if child_sku:
         params["child_sku"] = child_sku
     async with _client(token) as c:

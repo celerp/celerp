@@ -770,7 +770,6 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
 @router.get("/{entity_id}/split-preview")
 async def split_preview(
     entity_id: str,
-    qty: float,
     child_sku: str | None = None,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
@@ -780,6 +779,9 @@ async def split_preview(
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
     parent_qty = float(parent.state.get("quantity") or 0)
+    if parent_qty <= 0:
+        raise HTTPException(status_code=422, detail="parent qty must be > 0")
+
     parent_sku = parent.state.get("sku", "")
     parent_sell_by = parent.state.get("sell_by") or "piece"
     parent_weight_raw = parent.state.get("weight")
@@ -793,16 +795,9 @@ async def split_preview(
     unit_map = {u["name"]: u for u in units}
     unit_cfg = unit_map.get(parent_sell_by) or {}
     decimals = unit_cfg.get("decimals", 0)
-    epsilon = 10 ** (-decimals) if decimals > 0 else 1
-    # Clamp qty instead of rejecting - allows previewing boundary values
-    if parent_qty <= 0:
-        raise HTTPException(status_code=422, detail="parent qty must be > 0")
-    qty = max(0.0, min(qty, parent_qty - epsilon))
-
     is_weight = unit_cfg.get("unit_type") == "weight"
     sell_by_label = unit_cfg.get("label", parent_sell_by)
 
-    # Weight rounding uses the weight unit's own precision, independent of sell_by decimals.
     parent_weight_unit = parent.state.get("weight_unit") or "gram"
     weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
     weight_decimals = weight_unit_cfg.get("decimals", 2)
@@ -830,9 +825,7 @@ async def split_preview(
         "parent_sku": parent_sku,
         "parent_name": parent.state.get("name", parent_sku),
         "parent_qty": parent_qty,
-        "parent_qty_remaining": round(parent_qty - qty, decimals),
         "child_sku": child_sku,
-        "child_qty": qty,
         "sell_by": parent_sell_by,
         "sell_by_label": sell_by_label,
         "unit_decimals": decimals,
@@ -844,16 +837,9 @@ async def split_preview(
     }
 
     if parent_weight is not None:
-        child_weight_default = round(qty / parent_qty * parent_weight, weight_decimals)
         result["parent_weight"] = parent_weight
-        result["parent_weight_remaining"] = round(parent_weight - child_weight_default, weight_decimals)
-        result["child_weight_default"] = child_weight_default
-
     if parent_pieces is not None:
-        child_pieces_default = int(qty / parent_qty * parent_pieces)
-        result["parent_pieces"] = parent_pieces
-        result["parent_pieces_remaining"] = parent_pieces - child_pieces_default
-        result["child_pieces_default"] = child_pieces_default
+        result["parent_pieces"] = int(parent_pieces)
 
     return result
 
