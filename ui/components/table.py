@@ -9,6 +9,25 @@ from ui.i18n import t, get_lang
 # Canonical empty-value placeholder (rule k)
 EMPTY = "--"
 
+# Default column widths for fixed-layout tables.
+# Keys are schema field keys; "_attr_default" applies to any column not listed here.
+_DEFAULT_COL_WIDTHS: dict[str, str] = {
+    "sku": "110px",
+    "name": "200px",
+    "barcode": "130px",
+    "category": "130px",
+    "quantity": "110px",
+    "status": "90px",
+    "weight": "100px",
+    "weight_unit": "80px",
+    "sell_by": "90px",
+    "location_name": "140px",
+    "pieces": "80px",
+    "created_at": "120px",
+    "updated_at": "120px",
+    "_attr_default": "120px",
+}
+
 
 def format_value(v, fmt: str = "text", currency: str | None = None) -> str | FT:
     """Universal display formatter for table cells and detail pages.
@@ -579,6 +598,8 @@ def data_table(
 
     def _th(f: dict) -> FT:
         key = f["key"]
+        default_width = _DEFAULT_COL_WIDTHS.get(key, _DEFAULT_COL_WIDTHS["_attr_default"])
+        th_style = f"width:{default_width}"
         if sort_url:
             params = {**(extra_params or {}), "sort": key}
             new_dir = "asc" if (sort_key == key and sort_dir == "desc") else "desc"
@@ -596,9 +617,10 @@ def data_table(
                   cls="sort-link"),
                 cls=f"col-{key}", data_key=key, draggable="true",
                 title="Drag to reorder columns",
+                style=th_style,
             )
         return Th(f["label"], cls=f"col-{key}", data_key=key, draggable="true",
-                   title="Drag to reorder columns")
+                   title="Drag to reorder columns", style=th_style)
 
     checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
     header = Thead(Tr(

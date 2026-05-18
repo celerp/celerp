@@ -45,6 +45,19 @@ async def _get_company_units(session: AsyncSession, company_id) -> list[dict]:
     return DEFAULT_UNITS
 
 
+def _to_int_pieces(val) -> int:
+    """Convert a pieces value to int, tolerating float strings like '25.0'."""
+    return int(float(val))
+
+
+def _read_pieces(state: dict) -> float | None:
+    """Read pieces from item state, checking top-level then attributes (single source of truth)."""
+    raw = state.get("pieces")
+    if raw is None:
+        raw = (state.get("attributes") or {}).get("pieces")
+    return float(raw) if raw is not None else None
+
+
 def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields."""
     flat = dict(state)
@@ -923,10 +936,7 @@ async def split_preview(
     parent_sell_by = parent.state.get("sell_by") or "piece"
     parent_weight_raw = parent.state.get("weight")
     parent_weight = float(parent_weight_raw) if parent_weight_raw is not None else None
-    _pieces_raw = parent.state.get("pieces")
-    if _pieces_raw is None:
-        _pieces_raw = (parent.state.get("attributes") or {}).get("pieces")
-    parent_pieces = float(_pieces_raw) if _pieces_raw is not None else None
+    parent_pieces = _read_pieces(parent.state)
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -1035,10 +1045,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         )
 
     # Pieces conservation: if parent has pieces, validate and compute mother
-    _pieces_raw = parent.state.get("pieces") if "pieces" in parent.state else parent_attrs.get("pieces")
-    parent_pieces: int | None = int(_pieces_raw) if _pieces_raw is not None else None
+    _pieces_float = _read_pieces(parent.state)
+    parent_pieces: int | None = _to_int_pieces(_pieces_float) if _pieces_float is not None else None
     if parent_pieces is not None:
-        total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
+        total_child_pieces = sum(_to_int_pieces(c.attributes.get("pieces", 0)) for c in children)
         if total_child_pieces >= parent_pieces:
             raise HTTPException(
                 status_code=422,
@@ -1150,7 +1160,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
     if parent_pieces is not None:
-        total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
+        total_child_pieces = sum(_to_int_pieces(c.attributes.get("pieces", 0)) for c in children)
         computed_mother_pieces = parent_pieces - total_child_pieces
 
     computed_mother_weight: float | None = None
@@ -1295,14 +1305,17 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     resolved_attrs: dict = {}
     unresolved_conflicts: list[str] = []
     for key in all_attr_keys:
-        values = [str((p.state.get("attributes") or {}).get(key, "")) for p in source_projections if key in (p.state.get("attributes") or {})]
-        unique_vals = set(values)
-        if len(unique_vals) == 1:
-            # No conflict — carry forward.
-            resolved_attrs[key] = values[0]
-        elif all(_is_numeric(v) for v in unique_vals):
-            # Numeric conflict — sum.
-            resolved_attrs[key] = str(sum(float(v) for v in values))
+        # Collect raw attribute values (preserve original type for numeric fields)
+        raw_values = [(p.state.get("attributes") or {}).get(key) for p in source_projections if key in (p.state.get("attributes") or {})]
+        str_values = [str(v) for v in raw_values]
+        unique_str_vals = set(str_values)
+        if len(unique_str_vals) == 1:
+            # No conflict — carry forward the original typed value.
+            resolved_attrs[key] = raw_values[0]
+        elif all(_is_numeric(v) for v in unique_str_vals):
+            # Numeric conflict — sum. Store as number to preserve type through round-trips.
+            total = sum(float(v) for v in str_values)
+            resolved_attrs[key] = int(total) if total == int(total) else total
         else:
             # String conflict — require user resolution.
             if payload.resolved_attributes and key in payload.resolved_attributes:
