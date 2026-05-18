@@ -120,7 +120,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["quantity"] = float(data.get("quantity_fulfilled", 0))
         current["quantity_fulfilled"] = float(data.get("quantity_fulfilled", 0))
         current["is_available"] = False
-        current["status"] = "sold"
+        current["status"] = "memo_out" if data.get("doc_type") == "memo" else "sold"
         current.setdefault("fulfilled_for_docs", [])
         current["fulfilled_for_docs"].append(data["source_doc_id"])
     elif event_type == "item.fulfillment_reversed":

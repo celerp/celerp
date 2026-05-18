@@ -2886,6 +2886,7 @@ async def unfulfill_doc(
         company_id=company_id,
         user_id=user.id,
         reason="manual",
+        doc_type=state.get("doc_type", ""),
     )
     from celerp.modules.slots import fire_lifecycle_strict
     await fire_lifecycle_strict("post_unfulfill_hook", doc_id=entity_id, company_id=company_id, session=session)

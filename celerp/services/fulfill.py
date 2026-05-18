@@ -81,6 +81,7 @@ async def execute_fulfill(
                         "source_doc_id": doc_entity_id,
                         "quantity_fulfilled": pick.pick_qty,
                         "fulfilled_by": str(uid),
+                        "doc_type": doc_type,
                     },
                     actor_id=uid,
                     location_id=None,
@@ -142,6 +143,7 @@ async def execute_fulfill(
                         "source_doc_id": doc_entity_id,
                         "quantity_fulfilled": pick.pick_qty,
                         "fulfilled_by": str(uid),
+                        "doc_type": doc_type,
                     },
                     actor_id=uid,
                     location_id=None,
@@ -247,6 +249,7 @@ async def execute_unfulfill(
     company_id,
     user_id,
     reason: str = "manual",
+    doc_type: str = "",
 ) -> dict[str, Any]:
     """Reverse fulfillment: restore item quantities, emit reversal events, reverse COGS JE.
 
@@ -304,6 +307,7 @@ async def execute_unfulfill(
                 "quantity_restored": qty,
                 "reversed_by": str(uid),
                 "reason": reason,
+                "doc_type": doc_type,
             },
             actor_id=uid,
             location_id=None,
