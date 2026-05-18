@@ -737,6 +737,10 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     row = await _get_doc(session, company_id, entity_id)
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot send void document")
+    from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
+    doc_type = row.state.get("doc_type", "")
+    if doc_type in NO_SEND_DOC_TYPES:
+        raise HTTPException(status_code=409, detail=f"Document type '{doc_type}' cannot be sent")
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",

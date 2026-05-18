@@ -67,7 +67,7 @@ async def test_full_assembly_flow_with_lineage_and_je(client, session):
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
     je = next(e for e in ledger if order_id in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
-    assert [x["account"] for x in entries].count("1130") == 2
+    assert [x["account"] for x in entries].count("1130-P") == 2
     assert any(x["account"] == "5100" for x in entries)
     _balanced(entries)
 

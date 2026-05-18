@@ -83,7 +83,7 @@ async def test_manufacturing_complete_cross_entity_outputs_and_je(client):
     je = next(e for e in ledger if order_id in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
     accounts = [x["account"] for x in entries]
-    assert accounts.count("1130") == 2  # debit FG + credit raw inventory
+    assert accounts.count("1130-P") == 2  # debit FG + credit raw inventory
     assert "5100" in accounts
 
     debit = sum(float(x.get("debit", 0) or 0) for x in entries)
