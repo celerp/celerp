@@ -752,7 +752,7 @@ async def test_crud_item_merge(client):
         r3 = await client.get(f"/items/{eid}", headers=h)
         assert r3.status_code == 200
         assert r3.json()["is_available"] is False
-        assert r3.json()["quantity"] == 0
+        assert r3.json()["quantity"] > 0  # original qty preserved for audit; merged status excludes from live counts
         assert r3.json()["status"] == "merged"
         assert r3.json()["merged_into"] == new_id
     # Default list should show new item but not merged sources.

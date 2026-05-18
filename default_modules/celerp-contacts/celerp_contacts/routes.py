@@ -1043,3 +1043,66 @@ async def merge_contacts(
 
 def setup_api_routes(app) -> None:
     app.include_router(router, prefix="/crm", tags=["crm"])
+
+
+# ── Batch import endpoints (CIF) ─────────────────────────────────────────────
+
+async def _batch_import(
+    records: list[CRMImportRecord],
+    entity_type: str,
+    company_id,
+    user,
+    session: AsyncSession,
+) -> BatchImportResult:
+    """Shared batch logic: pre-check existing keys, emit only new records."""
+    from sqlalchemy import select as _select
+
+    from celerp.models.ledger import LedgerEntry
+
+    keys = [r.idempotency_key for r in records]
+    existing = set(
+        (await session.execute(
+            _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        )).scalars().all()
+    )
+
+    created = skipped = 0
+    errors: list[str] = []
+
+    for rec in records:
+        if rec.idempotency_key in existing:
+            skipped += 1
+            continue
+        try:
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=rec.entity_id,
+                entity_type=entity_type,
+                event_type=rec.event_type,
+                data=rec.data,
+                actor_id=user.id,
+                location_id=None,
+                source=rec.source,
+                idempotency_key=rec.idempotency_key,
+                metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
+            )
+            existing.add(rec.idempotency_key)
+            created += 1
+        except Exception as exc:
+            if len(errors) < 10:
+                errors.append(f"{rec.entity_id}: {exc}")
+
+    await session.commit()
+    return BatchImportResult(created=created, skipped=skipped, errors=errors)
+
+
+@router.post("/contacts/import/batch", response_model=BatchImportResult)
+async def batch_import_contacts(
+    body: CRMBatchImportRequest,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> BatchImportResult:
+    """Batch-import CIF contact records. Idempotent on idempotency_key. Max 500 per call."""
+    return await _batch_import(body.records, "contact", company_id, user, session)
