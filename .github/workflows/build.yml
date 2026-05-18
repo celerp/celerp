@@ -4,6 +4,8 @@ on:
   push:
     tags: ["v*"]
     branches: ["develop"]
+  pull_request:
+    branches: ["develop"]
   workflow_dispatch:
 
 permissions:
@@ -14,6 +16,39 @@ env:
   PBS_PYTHON: "3.12.13"
 
 jobs:
+  # ── Test suite ───────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run test suite
+        env:
+          ALLOW_INSECURE_JWT: "true"
+        run: |
+          python -m pytest \
+            tests/test_ui.py \
+            tests/test_user_journeys.py \
+            tests/test_unit_type.py \
+            tests/test_inventory_table_helpers.py \
+            tests/test_proactive_qa.py \
+            tests/test_setup_wizard.py \
+            tests/test_settings.py \
+            tests/test_routers/test_items.py \
+            tests/test_routers/test_companies.py \
+            tests/test_import_upsert.py \
+            tests/test_events/test_item_events.py \
+            --no-cov --no-header -p no:cacheprovider --tb=short --disable-warnings
+
   # ── Prepare release (tag builds only) ────────────────────────────────────
   # Runs once before all three platform builds. Creates the GitHub release and
   # clears any stale assets from a previous attempt at the same tag. This
@@ -58,9 +93,9 @@ jobs:
           echo "Assets cleared"
 
   build:
-    needs: [prepare-release]
+    needs: [prepare-release, test]
     # prepare-release is skipped on non-tag builds; treat skipped as success.
-    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped')
+    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') && needs.test.result == 'success'
     strategy:
       fail-fast: false
       matrix:
