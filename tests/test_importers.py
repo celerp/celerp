@@ -26,7 +26,6 @@ from celerp.importers.schema import (
     CIFImportManifest,
     CIFItem,
     CIFLineItem,
-    CIFMemo,
 )
 from celerp.importers.importer import (
     MAX_BATCH_SIZE,
@@ -49,7 +48,6 @@ def _minimal_manifest() -> dict:
             "items": [],
             "contacts": [],
             "documents": [],
-            "memos": [],
         },
         "stats": {},
     }
@@ -85,14 +83,6 @@ def _make_document() -> CIFDocument:
         amount_paid=Decimal("100.00"),
         amount_outstanding=Decimal("0.00"),
         line_items=[_make_line_item()],
-    )
-
-
-def _make_memo() -> CIFMemo:
-    return CIFMemo(
-        external_id="memo:001",
-        status="out",
-        total=Decimal("50.00"),
     )
 
 
@@ -146,7 +136,6 @@ def test_entity_type_values() -> None:
     assert CIFEntityType.ITEM == "item"
     assert CIFEntityType.CONTACT == "contact"
     assert CIFEntityType.INVOICE == "invoice"
-    assert CIFEntityType.MEMO == "memo"
 
 
 # ── CIFItem ───────────────────────────────────────────────────────────────────
@@ -260,14 +249,6 @@ def test_cif_document_with_dates() -> None:
     assert doc.contact_external_id is None
 
 
-# ── CIFMemo ───────────────────────────────────────────────────────────────────
-
-
-def test_cif_memo_minimal() -> None:
-    memo = _make_memo()
-    assert memo.external_id == "memo:001"
-    assert memo.status == "out"
-    assert memo.total == Decimal("50.00")
 
 
 # ── CIFBatch ─────────────────────────────────────────────────────────────────
@@ -288,7 +269,6 @@ def test_cif_import_bundle_empty() -> None:
     assert bundle.items == []
     assert bundle.contacts == []
     assert bundle.documents == []
-    assert bundle.memos == []
 
 
 def test_cif_import_bundle_populated() -> None:
@@ -296,12 +276,10 @@ def test_cif_import_bundle_populated() -> None:
         items=[_make_item()],
         contacts=[_make_contact()],
         documents=[_make_document()],
-        memos=[_make_memo()],
     )
     assert len(bundle.items) == 1
     assert len(bundle.contacts) == 1
     assert len(bundle.documents) == 1
-    assert len(bundle.memos) == 1
 
 
 # ── CIFImportManifest ─────────────────────────────────────────────────────────
@@ -421,7 +399,6 @@ def test_dry_run_returns_empty_result(capsys) -> None:
             "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],
             "contacts": [],
             "documents": [],
-            "memos": [],
         },
         "stats": {"items": 1},
     })
@@ -468,7 +445,6 @@ async def test_run_calls_batch_endpoints() -> None:
             "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],
             "contacts": [{"external_id": "c:1", "name": "Alice"}],
             "documents": [],
-            "memos": [],
         },
     })
 
@@ -493,7 +469,6 @@ async def test_run_handles_batch_error() -> None:
             "items": [{"external_id": "i:1", "name": "Stone", "status": "available"}],
             "contacts": [],
             "documents": [],
-            "memos": [],
         },
     })
 
