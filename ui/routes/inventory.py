@@ -914,7 +914,7 @@ def setup_routes(app):
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
         pl_conventional = {f"{n.lower()}_price" for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS]
         pricing_fields = [f for f in schema if f.get("key") in pricing_keys]
 
         active_tab = request.query_params.get("tab", "details")
@@ -995,6 +995,14 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
+        # Apply unit-field override (sell_by, purchase_unit → searchable select)
+        if field in ("sell_by", "purchase_unit"):
+            try:
+                units_resp = await api.get_units(token)
+                unit_names = [u["name"] for u in units_resp if u.get("name")]
+            except Exception:
+                unit_names = []
+            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names)
         label_map: dict | None = None
         if field == "category":
             try:
@@ -1162,9 +1170,8 @@ function celerpPrintLabel(entityId, templateId) {
         pl_names = {pl.get("name", "") for pl in price_lists}
         pl_conventional = {f"{n.lower()}_price" for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        core_keys = {"sku", "name", "status", "category", "quantity", "weight", "weight_unit", "sell_by", "allow_splitting", "barcode", "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys]
-        right = [f for f in detail_fields if f.get("key") not in core_keys]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS]
+        right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
         currency = None
         try:
             company = await api.get_company(token)
@@ -1281,14 +1288,12 @@ function celerpPrintLabel(entityId, templateId) {
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Field-specific overrides
         if field in ("sell_by", "purchase_unit"):
-            # Unit dropdown with add-new option
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
             except Exception:
                 unit_names = []
-            options = [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")]
-            cell_type, allow_custom = "select", True
+            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names)
         elif field == "purchase_conversion_factor":
             # Plain number input
             cell_type = "number"
@@ -2716,6 +2721,15 @@ def _inventory_type_tabs(p: dict) -> FT:
 
     return Div(*[_tab(it, label) for it, label in _TABS], cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "purchase_unit": "purchase_conversion_factor"}
+# Derived from _PAIRED_TABLE — secondary fields already rendered inside paired cells; exclude from standalone rows
+_PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
+# Core item fields shown in the left (core details) panel on the detail page — single definition
+_ITEM_CORE_KEYS: frozenset[str] = frozenset({
+    "sku", "name", "status", "category", "quantity", "weight", "weight_unit",
+    "sell_by", "allow_splitting", "barcode", "hs_code", "location_name",
+    "short_description", "purchase_sku", "purchase_name", "purchase_unit",
+    "purchase_conversion_factor",
+})
 
 
 def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None) -> dict:
@@ -3226,6 +3240,21 @@ _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
 }
 
 
+def _apply_unit_field_override(
+    field: str, cell_type: str, options, allow_custom: bool, unit_names: list[str]
+) -> tuple[str, list | None, bool]:
+    """Return (cell_type, options, allow_custom) with unit-field overrides applied.
+    sell_by and purchase_unit become searchable selects populated from company units.
+    """
+    if field in ("sell_by", "purchase_unit"):
+        return (
+            "select",
+            [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
+            True,
+        )
+    return cell_type, options, allow_custom
+
+
 def _resolve_field_def(
     field: str,
     schema: list[dict],
@@ -3327,9 +3356,8 @@ def _item_detail_tabs(
         )
     else:
         # Details tab: two-column layout — core fields left, attributes right
-        core_keys = {"sku", "name", "status", "category", "quantity", "weight", "weight_unit", "sell_by", "allow_splitting", "barcode", "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor"}
-        left = [f for f in detail_fields if f.get("key") in core_keys]
-        right = [f for f in detail_fields if f.get("key") not in core_keys]
+        left = [f for f in detail_fields if f.get("key") in _ITEM_CORE_KEYS]
+        right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
         panel = Div(
             _detail_table(entity_id, item, left, title="Core Details", currency=currency, cell_renderers=cell_renderers),
             Div(

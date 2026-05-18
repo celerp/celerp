@@ -193,3 +193,75 @@ class TestParseParamsColsFlattening:
     def test_single_col(self):
         result = self._make_request("cols=sku")
         assert result["cols"] == ["sku"]
+
+
+class TestPairedSecondaryKeys:
+    """_PAIRED_SECONDARY_KEYS is derived from _PAIRED_TABLE and excludes secondaries from detail_fields."""
+
+    def test_secondary_keys_derived_from_paired_table(self):
+        from ui.routes.inventory import _PAIRED_TABLE, _PAIRED_SECONDARY_KEYS
+        assert _PAIRED_SECONDARY_KEYS == frozenset(_PAIRED_TABLE.values())
+
+    def test_sell_by_excluded(self):
+        from ui.routes.inventory import _PAIRED_SECONDARY_KEYS
+        assert "sell_by" in _PAIRED_SECONDARY_KEYS
+
+    def test_weight_unit_excluded(self):
+        from ui.routes.inventory import _PAIRED_SECONDARY_KEYS
+        assert "weight_unit" in _PAIRED_SECONDARY_KEYS
+
+    def test_purchase_conversion_factor_excluded(self):
+        from ui.routes.inventory import _PAIRED_SECONDARY_KEYS
+        assert "purchase_conversion_factor" in _PAIRED_SECONDARY_KEYS
+
+    def test_primary_keys_not_in_secondary_keys(self):
+        from ui.routes.inventory import _PAIRED_TABLE, _PAIRED_SECONDARY_KEYS
+        for primary in _PAIRED_TABLE:
+            assert primary not in _PAIRED_SECONDARY_KEYS
+
+
+class TestItemCoreKeys:
+    """_ITEM_CORE_KEYS is defined once and used in both detail page and _item_detail_tabs."""
+
+    def test_is_frozenset(self):
+        from ui.routes.inventory import _ITEM_CORE_KEYS
+        assert isinstance(_ITEM_CORE_KEYS, frozenset)
+
+    def test_contains_quantity(self):
+        from ui.routes.inventory import _ITEM_CORE_KEYS
+        assert "quantity" in _ITEM_CORE_KEYS
+
+    def test_contains_sku_and_name(self):
+        from ui.routes.inventory import _ITEM_CORE_KEYS
+        assert "sku" in _ITEM_CORE_KEYS
+        assert "name" in _ITEM_CORE_KEYS
+
+
+class TestApplyUnitFieldOverride:
+    """_apply_unit_field_override returns unit select for sell_by/purchase_unit, passthrough otherwise."""
+
+    def test_sell_by_becomes_select(self):
+        from ui.routes.inventory import _apply_unit_field_override
+        ct, opts, ac = _apply_unit_field_override("sell_by", "text", None, False, ["kg", "g"])
+        assert ct == "select"
+        assert ac is True
+        assert "kg" in opts
+        assert any("__new__" in str(o) for o in opts)
+
+    def test_purchase_unit_becomes_select(self):
+        from ui.routes.inventory import _apply_unit_field_override
+        ct, opts, ac = _apply_unit_field_override("purchase_unit", "text", None, False, ["pcs"])
+        assert ct == "select"
+        assert ac is True
+
+    def test_other_field_passthrough(self):
+        from ui.routes.inventory import _apply_unit_field_override
+        ct, opts, ac = _apply_unit_field_override("name", "text", ["a"], False, ["kg"])
+        assert ct == "text"
+        assert opts == ["a"]
+        assert ac is False
+
+    def test_empty_units_still_has_add_new(self):
+        from ui.routes.inventory import _apply_unit_field_override
+        ct, opts, ac = _apply_unit_field_override("sell_by", "text", None, False, [])
+        assert any("__new__" in str(o) for o in opts)

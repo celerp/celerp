@@ -743,11 +743,11 @@ def data_table(
     ths.forEach(function(th) {{ if (th.style.width) w[th.dataset.key] = th.style.width; }});
     localStorage.setItem(WIDTH_KEY, JSON.stringify(w));
   }}
-  // Restore persisted widths on load
-  (function() {{
+  // Restore persisted widths on load — defer to rAF so HTMX-swapped DOM has committed layout
+  requestAnimationFrame(function() {{
     var saved = loadWidths();
     if (saved) ths.forEach(function(th) {{ if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; }});
-  }})();
+  }});
   ths.forEach(function(th) {{
     var handle = document.createElement('div');
     handle.className = 'col-resize-handle';
