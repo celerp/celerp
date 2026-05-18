@@ -294,6 +294,8 @@ def editable_cell(
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
     label_map: optional {slug: display_name} - if set, select renders option labels from map."""
     display_val = str(value) if value is not None else ""
+    if cell_type == "number" and display_val:
+        display_val = _normalize_number_str(display_val)
     patch_url = f"/api/items/{entity_id}/field/{field}"
     restore_url = restore_url or f"/api/items/{entity_id}/field/{field}/display"
     swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
@@ -384,6 +386,15 @@ def editable_cell(
     return Td(input_el, cls=f"cell cell--editing cell--{cell_type}")
 
 
+def _normalize_number_str(s: str) -> str:
+    """Format a numeric string for display: drop .0 for integers, use :g for floats."""
+    try:
+        n = float(s)
+        return str(int(n)) if n == int(n) else f"{n:g}"
+    except (ValueError, TypeError):
+        return s
+
+
 def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
     """Format a value for display. Empty/null → EMPTY constant."""
     s = str(value).strip() if value is not None else ""
@@ -400,12 +411,7 @@ def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
     if cell_type == "number":
         if not s:
             return Span(EMPTY)
-        try:
-            n = float(s)
-            display = str(int(n)) if n == int(n) else f"{n:g}"
-            return Span(display, cls="cell-number")
-        except (ValueError, TypeError):
-            return Span(s, cls="cell-number")
+        return Span(_normalize_number_str(s), cls="cell-number")
     if cell_type == "weight":
         return Span(f"{s} ct", cls="cell-weight") if s else Span(EMPTY)
     if cell_type == "tags":
@@ -587,7 +593,6 @@ def data_table(
                   hx_target=sort_target,
                   hx_swap="outerHTML",
                   hx_push_url="true",
-                  hx_include="[name='q'],[name='status'],[name='category'],[name='per_page']",
                   cls="sort-link"),
                 cls=f"col-{key}", data_key=key, draggable="true",
                 title="Drag to reorder columns",
@@ -1310,14 +1315,15 @@ def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> F
     # Swap only the content fragment (avoids double shell render).
     # base_url is e.g. "/inventory"; content endpoint is "/inventory/content".
     content_url = base_url.rstrip("/") + "/content"
+    url_with_state = f"{content_url}?{extra_params}" if extra_params else content_url
     return Select(
         *[Option(f"{n} per page", value=str(n), selected=(n == current)) for n in options],
         name="per_page",
-        hx_get=content_url,
+        hx_get=url_with_state,
         hx_trigger="change",
         hx_target="#inventory-content",
         hx_swap="outerHTML",
-        hx_include="[name='q'],[name='status'],[name='category']",
+        hx_include="this",
         hx_push_url="true",
         cls="filter-select per-page-select",
     )

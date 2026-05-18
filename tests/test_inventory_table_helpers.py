@@ -108,3 +108,88 @@ class TestPairedDisplayCellFormatFn:
         html = td.__html__() if hasattr(td, "__html__") else str(td)
         # Without format_fn, str(7.0) = "7.0" — old behaviour confirmed
         assert "7.0" in html
+
+
+class TestNormalizeNumberStr:
+    """_normalize_number_str drops .0 for integers, uses :g for floats."""
+
+    def test_integer_float_drops_decimal(self):
+        from ui.components.table import _normalize_number_str
+        assert _normalize_number_str("7.0") == "7"
+        assert _normalize_number_str("100.0") == "100"
+
+    def test_real_float_preserves(self):
+        from ui.components.table import _normalize_number_str
+        assert _normalize_number_str("7.5") == "7.5"
+        assert _normalize_number_str("64.25") == "64.25"
+
+    def test_non_numeric_passthrough(self):
+        from ui.components.table import _normalize_number_str
+        assert _normalize_number_str("abc") == "abc"
+
+    def test_integer_string_unchanged(self):
+        from ui.components.table import _normalize_number_str
+        assert _normalize_number_str("7") == "7"
+
+
+class TestEditableCellNumberNormalization:
+    """editable_cell with cell_type=number must show normalized value in input, not '7.0'."""
+
+    def test_float_value_normalized_in_input(self):
+        from ui.components.table import editable_cell
+        td = editable_cell(entity_id="item:1", field="quantity", value=7.0, cell_type="number")
+        html = td.__html__() if hasattr(td, "__html__") else str(td)
+        assert 'value="7"' in html, f"Expected value='7', got: {html}"
+        assert 'value="7.0"' not in html, f"Unexpected '7.0' in: {html}"
+
+    def test_carat_float_normalized(self):
+        from ui.components.table import editable_cell
+        td = editable_cell(entity_id="item:1", field="quantity", value=64.0, cell_type="number")
+        html = td.__html__() if hasattr(td, "__html__") else str(td)
+        assert 'value="64"' in html
+        assert 'value="64.0"' not in html
+
+    def test_real_float_preserved(self):
+        from ui.components.table import editable_cell
+        td = editable_cell(entity_id="item:1", field="quantity", value=7.5, cell_type="number")
+        html = td.__html__() if hasattr(td, "__html__") else str(td)
+        assert 'value="7.5"' in html
+
+
+class TestParseParamsColsFlattening:
+    """_parse_params must correctly flatten cols regardless of encoding."""
+
+    def _make_request(self, query_string: str):
+        from starlette.testclient import TestClient
+        from starlette.applications import Starlette
+        from starlette.routing import Route
+        from starlette.responses import Response
+        import asyncio
+
+        captured = {}
+
+        async def endpoint(request):
+            from ui.routes.inventory import _parse_params
+            captured["result"] = _parse_params(request)
+            return Response("ok")
+
+        app = Starlette(routes=[Route("/", endpoint)])
+        client = TestClient(app, raise_server_exceptions=True)
+        client.get(f"/?{query_string}")
+        return captured["result"]
+
+    def test_comma_joined_single_param(self):
+        result = self._make_request("cols=sku,name,quantity")
+        assert result["cols"] == ["sku", "name", "quantity"]
+
+    def test_multi_param_cols(self):
+        result = self._make_request("cols=sku&cols=name&cols=quantity")
+        assert result["cols"] == ["sku", "name", "quantity"]
+
+    def test_empty_cols(self):
+        result = self._make_request("")
+        assert result["cols"] == []
+
+    def test_single_col(self):
+        result = self._make_request("cols=sku")
+        assert result["cols"] == ["sku"]

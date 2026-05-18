@@ -113,7 +113,8 @@ def _parse_params(request: Request) -> dict:
         page = int(q.get("page", 1))
     except (ValueError, TypeError):
         page = 1
-    cols = q.getlist("cols") or [c for c in q.get("cols", "").split(",") if c]
+    raw_cols = q.getlist("cols") or q.get("cols", "").split(",")
+    cols = [c for part in raw_cols for c in part.split(",") if c]
     return {
         "q": q.get("q", ""),
         "skus": q.get("skus", ""),  # comma-separated exact SKU filter
@@ -2615,39 +2616,26 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
     if not category_counts and not total_scoped:
         return ""
 
-    def _url(category: str = "") -> str:
-        state = _base_state(p)
-        if category:
-            state["category"] = category
-        else:
-            state.pop("category", None)
-        return "/inventory" + (f"?{urlencode(state)}" if state else "")
+    base = {k: v for k, v in _base_state(p).items() if k != "category"}
 
-    # Use total_scoped_count so items without a category still count in "All"
+    def _tab(label: str, cat: str, active: bool) -> FT:
+        state = {**base, "category": cat} if cat else base
+        content_url = "/inventory/content" + (f"?{urlencode(state)}" if state else "")
+        page_url = "/inventory" + (f"?{urlencode(state)}" if state else "")
+        return A(
+            label,
+            href=page_url,
+            hx_get=content_url,
+            hx_target="#inventory-content",
+            hx_swap="outerHTML",
+            hx_push_url=page_url,
+            cls=f"category-tab {'category-tab--active' if active else ''}",
+        )
+
     total = total_scoped if total_scoped is not None else sum(category_counts.values())
-    tabs = [
-        A(
-            f"All ({total})",
-            href=_url(""),
-            hx_get="/inventory/content" + (f"?{urlencode({k: v for k, v in _base_state(p).items() if k != 'category'})}" if _base_state(p) else ""),
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-            hx_push_url=_url(""),
-            cls=f"category-tab {'category-tab--active' if not p.get('category') else ''}",
-        ),
-    ]
+    tabs = [_tab(f"All ({total})", "", not p.get("category"))]
     for cat, count in sorted(category_counts.items()):
-        state = _base_state(p)
-        state["category"] = cat
-        tabs.append(A(
-            f"{cat} ({count})",
-            href=_url(cat),
-            hx_get=f"/inventory/content?{urlencode(state)}",
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-            hx_push_url=_url(cat),
-            cls=f"category-tab {'category-tab--active' if p.get('category') == cat else ''}",
-        ))
+        tabs.append(_tab(f"{cat} ({count})", cat, p.get("category") == cat))
     return Div(*tabs, cls="category-tabs", id="category-tabs")
 
 
@@ -2681,37 +2669,23 @@ def _status_tabs(p: dict, vertical: str = "") -> FT:
     """Status filter tabs. Default view excludes sold/archived. Vertical controls which statuses appear."""
     _TABS = _vertical_status_filter_tabs(vertical)
     active_status = p.get("status", "")
+    base = {k: v for k, v in _base_state(p).items() if k != "status"}
 
-    def _url(s: str) -> str:
-        state = _base_state(p)
-        if s:
-            state["status"] = s
-        else:
-            state.pop("status", None)
-        return "/inventory" + (f"?{urlencode(state)}" if state else "")
-
-    def _htmx_params(s: str) -> dict:
-        state = _base_state(p)
-        if s:
-            state["status"] = s
-        else:
-            state.pop("status", None)
-        return {
-            "hx_get": "/inventory/content" + (f"?{urlencode(state)}" if state else ""),
-            "hx_target": "#inventory-content",
-            "hx_swap": "outerHTML",
-            "hx_push_url": _url(s),
-        }
-
-    tabs = [
-        A(
+    def _tab(s: str, label: str) -> FT:
+        state = {**base, "status": s} if s else base
+        content_url = "/inventory/content" + (f"?{urlencode(state)}" if state else "")
+        page_url = "/inventory" + (f"?{urlencode(state)}" if state else "")
+        return A(
             label,
-            href=_url(s),
+            href=page_url,
             cls=f"category-tab {'category-tab--active' if active_status == s else ''}",
-            **_htmx_params(s),
+            hx_get=content_url,
+            hx_target="#inventory-content",
+            hx_swap="outerHTML",
+            hx_push_url=page_url,
         )
-        for s, label in _TABS
-    ]
+
+    tabs = [_tab(s, label) for s, label in _TABS]
     return Div(*tabs, cls="category-tabs status-tabs", id="status-tabs")
 
 
@@ -2724,28 +2698,23 @@ def _inventory_type_tabs(p: dict) -> FT:
         ("service", "Services"),
         ("non_stocked", "Non-Stocked"),
     ]
+    base = {k: v for k, v in _base_state(p).items() if k != "inventory_type"}
 
-    def _url(it: str) -> str:
-        state = _base_state(p)
-        if it:
-            state["inventory_type"] = it
-        else:
-            state.pop("inventory_type", None)
-        return "/inventory" + (f"?{urlencode(state)}" if state else "")
-
-    tabs = [
-        A(
+    def _tab(it: str, label: str) -> FT:
+        state = {**base, "inventory_type": it} if it else base
+        content_url = "/inventory/content" + (f"?{urlencode(state)}" if state else "")
+        page_url = "/inventory" + (f"?{urlencode(state)}" if state else "")
+        return A(
             label,
-            href=_url(it),
+            href=page_url,
             cls=f"category-tab {'category-tab--active' if active == it else ''}",
-            hx_get="/inventory/content" + (f"?{urlencode({**({k: v for k, v in _base_state(p).items() if k != 'inventory_type'}), **({'inventory_type': it} if it else {})})}"),
+            hx_get=content_url,
             hx_target="#inventory-content",
             hx_swap="outerHTML",
-            hx_push_url=_url(it),
+            hx_push_url=page_url,
         )
-        for it, label in _TABS
-    ]
-    return Div(*tabs, cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
+
+    return Div(*[_tab(it, label) for it, label in _TABS], cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "purchase_unit": "purchase_conversion_factor"}
 
 
