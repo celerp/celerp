@@ -29,6 +29,7 @@ PLUGIN_MANIFEST = {
         ],
         "send_to_targets": [
             {"label": "Invoice", "doc_type": "invoice", "statuses": ["draft", "awaiting_payment"]},
+            {"label": "Consignment Out", "doc_type": "memo", "statuses": ["draft"]},
             {"label": "List/Quotation", "doc_type": "list", "statuses": ["draft", "sent"]},
         ],
     },

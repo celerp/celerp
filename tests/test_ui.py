@@ -8858,7 +8858,7 @@ class TestBulkActionsPhase6SendTo:
 
     @pytest.mark.asyncio
     async def test_docs_module_registers_send_to_targets(self, ui_client):
-        """celerp-docs PLUGIN_MANIFEST declares send_to_targets slots."""
+        """celerp-docs PLUGIN_MANIFEST declares send_to_targets slots including memo."""
         import importlib
         from test_helpers import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
@@ -8870,10 +8870,14 @@ class TestBulkActionsPhase6SendTo:
         labels = [t["label"] for t in targets]
         assert "Invoice" in labels
         assert "List/Quotation" in labels
+        assert "Consignment Out" in labels
+        # Memo target must use doc_type=memo (not CRM memo)
+        memo_target = next(t for t in targets if t["label"] == "Consignment Out")
+        assert memo_target["doc_type"] == "memo"
 
     @pytest.mark.asyncio
-    async def test_crm_module_registers_send_to_target(self, ui_client):
-        """celerp-contacts PLUGIN_MANIFEST declares send_to_targets slot."""
+    async def test_crm_module_does_not_register_send_to_target(self, ui_client):
+        """celerp-contacts PLUGIN_MANIFEST must NOT declare send_to_targets (moved to celerp-docs)."""
         import importlib
         from test_helpers import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
@@ -8882,8 +8886,7 @@ class TestBulkActionsPhase6SendTo:
         spec.loader.exec_module(mod)
         slots = mod.PLUGIN_MANIFEST.get("slots", {})
         targets = slots.get("send_to_targets", [])
-        labels = [t["label"] for t in targets]
-        assert "Consignment Out" in labels
+        assert targets == [], "send_to_targets for memo belongs in celerp-docs, not celerp-contacts"
 
 
 # ---------------------------------------------------------------------------

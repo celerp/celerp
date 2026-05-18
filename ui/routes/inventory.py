@@ -1764,16 +1764,17 @@ function celerpPrintLabel(entityId, templateId) {
                     for d in items
                 ])
             elif doc_type == "memo":
-                params = {"limit": 20}
-                resp = await api.list_memos(token, params)
-                items = resp.get("items", [])
+                params = {"doc_type": "memo", "limit": 20}
                 if q:
-                    ql = q.lower()
-                    items = [m for m in items if ql in str(m.get("memo_number", "")).lower()
-                             or ql in str(m.get("contact_name", "")).lower()][:20]
+                    params["q"] = q
+                else:
+                    params["status"] = "draft"
+                resp = await api.list_docs(token, params)
+                items = resp.get("items", [])
+                items = [d for d in items if d.get("status") in ("draft",)]
                 return JSONResponse([
                     {"id": d.get("id") or d.get("entity_id", ""),
-                     "label": f"Memo {d.get('memo_number') or (d.get('id', '') or '')[:8]}",
+                     "label": d.get("ref_id") or d.get("doc_number") or d.get("id", ""),
                      "status": d.get("status", "")}
                     for d in items
                 ])
@@ -1815,9 +1816,12 @@ function celerpPrintLabel(entityId, templateId) {
                     await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
                 elif doc_type == "memo":
-                    for eid in entity_ids:
-                        await api.add_memo_item(token, target_id, {"item_id": eid})
-                    return Response("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{target_id}"})
+                    new_lines = await _line_items_from_inventory(token, entity_ids)
+                    doc = await api.get_doc(token, target_id)
+                    combined = (doc.get("line_items") or []) + new_lines
+                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
+                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
             else:
                 # Create new document
                 if doc_type == "invoice":
@@ -1833,11 +1837,12 @@ function celerpPrintLabel(entityId, templateId) {
                     list_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
                 elif doc_type == "memo":
-                    result = await api.create_memo(token)
-                    memo_id = result.get("id", "")
-                    for eid in entity_ids:
-                        await api.add_memo_item(token, memo_id, {"item_id": eid})
-                    return Response("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{memo_id}"})
+                    line_items = await _line_items_from_inventory(token, entity_ids)
+                    from ui.routes.documents import _company_doc_taxes
+                    doc_taxes = await _company_doc_taxes(token)
+                    result = await api.create_doc(token, {"doc_type": "memo", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
+                    doc_id = result.get("entity_id") or result.get("id", "")
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         return Div(P(t("inv.unknown_document_type"), cls="flash flash--warning"), id="bulk-action-result")
