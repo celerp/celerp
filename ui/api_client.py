@@ -416,6 +416,11 @@ async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
     """
     _NUMERIC = lambda k: k == "quantity" or k.endswith("_price")
     def _coerce(k, v):
+        if k == "pieces" and v is not None:
+            try:
+                return int(float(v))
+            except (ValueError, TypeError):
+                pass
         if _NUMERIC(k) and v is not None:
             try:
                 return float(v)

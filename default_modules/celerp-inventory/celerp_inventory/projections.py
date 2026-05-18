@@ -68,7 +68,18 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current = _sync_expiry_from_attributes(current)
     elif event_type == "item.updated":
         for field, change in data["fields_changed"].items():
-            current[field] = change.get("new")
+            if field == "pieces":
+                # pieces always lives in attributes["pieces"] — never at top-level
+                attrs = dict(current.get("attributes") or {})
+                new_val = change.get("new")
+                if new_val is None:
+                    attrs.pop("pieces", None)
+                else:
+                    attrs["pieces"] = new_val
+                current["attributes"] = attrs
+                current.pop("pieces", None)
+            else:
+                current[field] = change.get("new")
         current = _sync_expiry_from_attributes(current)
     elif event_type == "item.pricing.set":
         current[data["price_type"]] = data["new_price"]
