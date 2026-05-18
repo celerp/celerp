@@ -103,3 +103,6 @@ logo.png
 *-website-rectification*.md
 26-0418-connectors-phase8-sync.md
 update_categories.py
+
+# Internal working files - never commit
+tmp/

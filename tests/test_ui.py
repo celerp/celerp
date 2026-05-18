@@ -10747,6 +10747,23 @@ class TestInventoryUXFixes:
         html = to_xml(_column_manager(schema, {}))
         assert 'draggable="true"' in html
 
+    def test_data_table_js_no_force_hide_branch(self):
+        """data_table IIFE must NOT contain the force-hide branch (Bug 2 fix).
+
+        The else-if (SCHEMA_DEFAULTS[key] === false) branch overwrites user
+        localStorage prefs when a column's schema default is false, causing
+        user-visible columns (e.g. created_at) to disappear after sort.
+        """
+        from fasthtml.common import to_xml
+        from ui.components.table import data_table
+        schema = [
+            {"key": "name", "label": "Name", "type": "text", "show_in_table": True},
+            {"key": "created_at", "label": "Created", "type": "text", "show_in_table": False},
+        ]
+        html = to_xml(data_table(schema, [], entity_type="inventory"))
+        # The force-hide pattern must not appear
+        assert "prefs[th.dataset.key] = false" not in html
+
     # ── Fix 4: Split/create timestamps ────────────────────────────────────
 
     def test_item_create_data_sets_timestamps(self):

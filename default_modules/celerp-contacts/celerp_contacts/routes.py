@@ -809,6 +809,11 @@ async def get_memo_summary(company_id: str = Depends(get_current_company_id), se
 
 @router.post("/memos/{memo_id}/items")
 async def add_memo_item(memo_id: str, payload: MemoItemAdd, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    memo = await session.get(Projection, {"company_id": company_id, "entity_id": memo_id})
+    if memo is None or memo.entity_type != "memo":
+        raise HTTPException(status_code=404, detail="Memo not found")
+    if memo.state.get("status") != "draft":
+        raise HTTPException(status_code=409, detail="Memo must be in draft status to add items. Please revert it to Draft first.")
     entry = await emit_event(
         session,
         company_id=company_id,

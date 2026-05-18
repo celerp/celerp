@@ -116,12 +116,21 @@ def test_merged_is_noop_marker() -> None:
     assert "expires_at" not in result
 
 
-def test_source_deactivated_zeros_qty_and_marks_unavailable() -> None:
+def test_source_deactivated_preserves_original_qty_and_marks_unavailable() -> None:
     state = {"sku": "RICE-001", "quantity": 300, "is_available": True}
-    result = apply_item_event(state, "item.source_deactivated", {"merged_into": "item:target-1"})
+    result = apply_item_event(state, "item.source_deactivated", {"merged_into": "item:target-1", "original_qty": 300.0})
     assert result["is_available"] is False
-    assert result["quantity"] == 0
+    assert result["quantity"] == 300.0
+    assert result["status"] == "merged"
     assert result["merged_into"] == "item:target-1"
+
+
+def test_source_deactivated_falls_back_to_current_qty_when_no_original_qty() -> None:
+    """If original_qty is absent (old events), current quantity is preserved."""
+    state = {"sku": "RICE-002", "quantity": 50.0, "is_available": True}
+    result = apply_item_event(state, "item.source_deactivated", {"merged_into": "item:target-2"})
+    assert result["quantity"] == 50.0
+    assert result["is_available"] is False
 
 
 

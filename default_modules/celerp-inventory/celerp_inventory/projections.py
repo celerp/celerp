@@ -105,7 +105,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.source_deactivated":
         # Emitted on source items when absorbed by a merge.
         current["is_available"] = False
-        current["quantity"] = 0
+        current["quantity"] = float(data.get("original_qty") or current.get("quantity") or 0)
         current["status"] = "merged"
         current["merged_into"] = data.get("merged_into")
     elif event_type == "item.consumed":

@@ -730,12 +730,9 @@ def data_table(
     }});
   }} else {{
     // Merge: columns not in stored prefs get their schema default
-    // Force-hide any column whose schema default is false (catches renamed/merged columns in old prefs)
     ths.forEach(function(th) {{
       if (!(th.dataset.key in prefs)) {{
         prefs[th.dataset.key] = SCHEMA_DEFAULTS[th.dataset.key] !== false;
-      }} else if (SCHEMA_DEFAULTS[th.dataset.key] === false) {{
-        prefs[th.dataset.key] = false;
       }}
     }});
   }}
@@ -1058,7 +1055,7 @@ function sendToTypeChanged(docType){
       docs.forEach(function(d){
         var opt=document.createElement('option');
         opt.value=d.id||d.entity_id||'';
-        opt.textContent=(d.doc_number||d.number||'')+(d.contact_name?' - '+d.contact_name:'');
+        opt.textContent=(d.label||d.doc_number||d.number||'')+(d.contact_name?' - '+d.contact_name:'');
         targetSel.appendChild(opt);
       });
     }).catch(function(){});

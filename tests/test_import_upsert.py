@@ -199,3 +199,56 @@ async def test_lists_upsert_true_emits_patch(client, session):
     assert body["created"] == 0
     assert body["updated"] == 1
     assert body["skipped"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Cross-company idempotency scoping (Bug 1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_same_idempotency_key_allowed_for_different_companies(client, session):
+    """Same idempotency_key from two different companies must both succeed (Bug 1 fix)."""
+    company_a_id = uuid.uuid4()
+    company_b_id = uuid.uuid4()
+    user_a_id = uuid.uuid4()
+    user_b_id = uuid.uuid4()
+
+    from celerp.models.accounting import UserCompany
+    from celerp.models.company import Company, User
+    from celerp.services.auth import create_access_token
+
+    for cid, uid, name in [
+        (company_a_id, user_a_id, "CompanyA"),
+        (company_b_id, user_b_id, "CompanyB"),
+    ]:
+        session.add(Company(id=cid, name=name, slug=f"co-{cid.hex[:8]}"))
+        session.add(User(id=uid, email=f"admin-{uid.hex[:8]}@xco.test", name="Admin", auth_hash="x", is_active=True))
+        session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
+    await session.commit()
+
+    token_a, _ = create_access_token(subject=str(user_a_id), company_id=str(company_a_id), role="admin")
+    token_b, _ = create_access_token(subject=str(user_b_id), company_id=str(company_b_id), role="admin")
+
+    shared_idem = f"csv:item:shared-key-{uuid.uuid4().hex[:8]}"
+    record = {
+        "entity_id": f"item:{uuid.uuid4().hex}",
+        "event_type": "item.created",
+        "data": {"sku": f"XSK-{shared_idem[-6:]}", "name": "Cross Co Item", "quantity": 1},
+        "source": "csv_import",
+        "idempotency_key": shared_idem,
+    }
+
+    # Company A import
+    ra = await client.post("/items/import/batch",
+        headers={"Authorization": f"Bearer {token_a}"},
+        json={"records": [record]})
+    assert ra.status_code == 200, ra.text
+    assert ra.json()["created"] == 1
+
+    # Company B import with same key and same entity_id - should ALSO create (different scope)
+    record_b = {**record, "entity_id": f"item:{uuid.uuid4().hex}"}
+    rb = await client.post("/items/import/batch",
+        headers={"Authorization": f"Bearer {token_b}"},
+        json={"records": [record_b]})
+    assert rb.status_code == 200, rb.text
+    assert rb.json()["created"] == 1, f"Expected created=1, got {rb.json()}"

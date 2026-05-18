@@ -70,3 +70,35 @@ async def test_cannot_invoice_cancelled_memo(client):
 
     r = await client.post(f"/crm/memos/{memo_id}/convert-to-invoice", headers=_h(token))
     assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_add_memo_item_rejected_when_not_draft(client):
+    """add_memo_item returns 409 for approved/invoiced/returned/cancelled memos."""
+    token = await _register(client)
+    item_id = (await client.post("/items", headers=_h(token), json={"sku": "M-3", "name": "Guard Test", "quantity": 1, "sell_by": "piece"})).json()["id"]
+    memo_id = (await client.post("/crm/memos", headers=_h(token), json={"contact_id": "contact:guard"})).json()["id"]
+
+    # Draft: allowed
+    r = await client.post(f"/crm/memos/{memo_id}/items", headers=_h(token), json={"item_id": item_id, "quantity": 1})
+    assert r.status_code == 200
+
+    # Approve the memo (status -> approved/out)
+    await client.post(f"/crm/memos/{memo_id}/approve", headers=_h(token))
+
+    # Approved: rejected
+    item_id2 = (await client.post("/items", headers=_h(token), json={"sku": "M-3B", "name": "Guard Test B", "quantity": 1, "sell_by": "piece"})).json()["id"]
+    r2 = await client.post(f"/crm/memos/{memo_id}/items", headers=_h(token), json={"item_id": item_id2, "quantity": 1})
+    assert r2.status_code == 409
+    assert "draft" in r2.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_add_memo_item_allowed_when_draft(client):
+    """add_memo_item returns 200 for a draft memo."""
+    token = await _register(client)
+    item_id = (await client.post("/items", headers=_h(token), json={"sku": "M-4", "name": "Draft Test", "quantity": 1, "sell_by": "piece"})).json()["id"]
+    memo_id = (await client.post("/crm/memos", headers=_h(token), json={"contact_id": "contact:draft"})).json()["id"]
+
+    r = await client.post(f"/crm/memos/{memo_id}/items", headers=_h(token), json={"item_id": item_id, "quantity": 1})
+    assert r.status_code == 200

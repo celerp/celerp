@@ -1619,10 +1619,12 @@ async def batch_import_items(
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
 
-    keys = [r.idempotency_key for r in body.records]
+    # Scope keys to company to prevent cross-company idempotency collisions
+    # (LedgerEntry.idempotency_key has a table-wide UNIQUE constraint with no company_id scope)
+    scoped_keys = [f"{company_id}:{r.idempotency_key}" for r in body.records]
     existing = set(
         (await session.execute(
-            select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+            select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(scoped_keys))
         )).scalars().all()
     )
 
@@ -1632,10 +1634,11 @@ async def batch_import_items(
     created_keys: list[str] = []
 
     for rec in body.records:
-        if rec.idempotency_key in existing:
+        scoped_key = f"{company_id}:{rec.idempotency_key}"
+        if scoped_key in existing:
             if body.upsert:
                 # Emit patch event with a upsert-specific idempotency key
-                upsert_idem = f"{rec.idempotency_key}:upsert"
+                upsert_idem = f"{scoped_key}:upsert"
                 upsert_existing = set(
                     (await session.execute(
                         select(LedgerEntry.idempotency_key).where(
@@ -1692,12 +1695,12 @@ async def batch_import_items(
                 actor_id=user.id,
                 location_id=loc_id,
                 source=rec.source,
-                idempotency_key=rec.idempotency_key,
+                idempotency_key=scoped_key,
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
-            existing.add(rec.idempotency_key)
+            existing.add(scoped_key)
             created_entity_ids.append(rec.entity_id)
-            created_keys.append(rec.idempotency_key)
+            created_keys.append(scoped_key)
             created += 1
         except Exception as exc:
             if len(errors) < 10:
