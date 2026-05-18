@@ -198,7 +198,10 @@ async def _inventory_content(
     active_cat = p.get("category", "")
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
-    extra_params = urlencode(_base_state(p))
+    # Inject resolved cols into URL state so sort links and pagination always carry
+    # the exact column set being rendered, even when it came from col_prefs not URL params.
+    p_with_cols = {**p, "cols": visible_cols}
+    extra_params = urlencode(_base_state(p_with_cols))
     total_items = valuation.get("item_count", 0)
 
     return Div(
@@ -219,7 +222,7 @@ async def _inventory_content(
             sort_key=p["sort"],
             sort_dir=p["dir"],
             sort_url="/inventory/content",
-            extra_params=_base_state(p),
+            extra_params=_base_state(p_with_cols),
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
@@ -873,19 +876,20 @@ def setup_routes(app):
         if not entity_id or entity_id.strip() == "":
             return RedirectResponse("/inventory", status_code=302)
         try:
-            schema, item, company, cat_schemas, price_lists = await asyncio.gather(
+            schema, item, company, cat_schemas, price_lists, units_resp = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
                 api.get_company(token),
                 api.get_all_category_schemas(token),
                 api.get_price_lists(token),
+                api.get_units(token),
             )
             ledger = (await api.list_ledger(token, {"entity_id": entity_id, "limit": 10})).get("items", [])
             locations = (await api.get_locations(token)).get("items", [])
         except (APIError, Exception) as e:
             if isinstance(e, APIError) and e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            schema, item, ledger, locations, company, cat_schemas, price_lists = [], {}, [], [], {}, {}, []
+            schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp = [], {}, [], [], {}, {}, [], {}
 
         currency = company.get("currency")
         # Inject category options into the schema's category field
@@ -914,6 +918,11 @@ def setup_routes(app):
 
         active_tab = request.query_params.get("tab", "details")
 
+        units_list = units_resp if isinstance(units_resp, list) else []
+        unit_names = [u["name"] for u in units_list]
+        units_map = {u["name"]: u for u in units_list}
+        detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map)
+
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
             page_header(
@@ -924,7 +933,7 @@ def setup_routes(app):
                     cls="header-actions",
                 ),
             ),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers),
             title="Inventory Item - Celerp",
             nav_active="inventory",
             request=request,
@@ -1231,18 +1240,25 @@ function celerpPrintLabel(entityId, templateId) {
                 sb_val=item.get("sell_by", ""),
             )
         from ui.components.table import paired_display_cell
+        from celerp.services.units import format_qty
         locations = locs.get("items", [])
         peer = _PAIRED_FIELDS[field]
         # Determine which is primary (qty/weight) vs secondary (unit)
         primary, secondary = (field, peer) if field not in ("sell_by", "weight_unit") else (peer, field)
         pri_def, pri_type, pri_opts, _ = _resolve_field_def(primary, schema, cat_schemas, item, locations)
         sec_def, sec_type, sec_opts, _ = _resolve_field_def(secondary, schema, cat_schemas, item, locations)
+        # Build unit map for format_qty; secondary is the unit field (sell_by / weight_unit)
+        units_resp = await api.get_units(token)
+        umap = {u["name"]: u for u in units_resp if u.get("name")}
+        unit_name = item.get(secondary, "")
+        fmt_fn = (lambda v, _u=unit_name, _m=umap: format_qty(v, _u, _m)) if pri_type == "number" else None
         return paired_display_cell(
             entity_id=entity_id,
             primary_field=primary, primary_value=item.get(primary, ""),
             secondary_field=secondary, secondary_value=item.get(secondary, ""),
             primary_type=pri_type, secondary_type=sec_type,
             primary_options=pri_opts, secondary_options=sec_opts,
+            format_fn=fmt_fn,
         )
 
     @app.get("/api/items/{entity_id}/field/{field}/paired-edit")
@@ -3309,6 +3325,7 @@ def _item_detail_tabs(
     currency: str | None,
     active_tab: str,
     price_lists: list[dict] | None = None,
+    cell_renderers: dict | None = None,
 ) -> FT:
     """GemCloud-style tabbed item detail: Details | Pricing | Activity."""
     tabs = [("details", "Details"), ("pricing", "Pricing"), ("activity", "Activity")]
@@ -3345,7 +3362,7 @@ def _item_detail_tabs(
         left = [f for f in detail_fields if f.get("key") in core_keys]
         right = [f for f in detail_fields if f.get("key") not in core_keys]
         panel = Div(
-            _detail_table(entity_id, item, left, title="Core Details", currency=currency),
+            _detail_table(entity_id, item, left, title="Core Details", currency=currency, cell_renderers=cell_renderers),
             Div(
                 _detail_table(entity_id, item, right, title="Attributes", currency=currency),
                 id="item-attributes-section",
@@ -3441,28 +3458,32 @@ function syncPricingUnit(unitId, totalId, qty) {
     )
 
 
-def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "Details", currency: str | None = None) -> FT:
+def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "Details", currency: str | None = None, cell_renderers: dict | None = None) -> FT:
     if not fields:
         return ""
     from ui.components.table import display_cell
+    def _row(f):
+        key = f.get("key", "")
+        if cell_renderers and key in cell_renderers:
+            cell = cell_renderers[key](entity_id, item)
+        else:
+            cell = display_cell(
+                entity_id=entity_id,
+                field=key,
+                value=item.get(key, ""),
+                cell_type=f.get("type", "text"),
+                options=f.get("options"),
+                editable=f.get("editable", True),
+                currency=currency,
+            )
+        return Tr(
+            Td(f.get("label", key), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
+            cell,
+        )
     return Div(
         H3(title, cls="section-title"),
         Table(
-            Tbody(*[
-                Tr(
-                    Td(f.get("label", f.get("key")), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
-                    display_cell(
-                        entity_id=entity_id,
-                        field=f.get("key", ""),
-                        value=item.get(f.get("key", ""), ""),
-                        cell_type=f.get("type", "text"),
-                        options=f.get("options"),
-                        editable=f.get("editable", True),
-                        currency=currency,
-                    ),
-                )
-                for f in fields
-            ]),
+            Tbody(*[_row(f) for f in fields]),
             cls="detail-table",
         ),
         cls="detail-card",

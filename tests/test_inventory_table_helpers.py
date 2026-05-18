@@ -58,3 +58,53 @@ class TestFlattenItemAttrs:
         original_item = dict(item)
         _flatten_item_attrs(item)
         assert item == original_item
+
+
+class TestPairedDisplayCellFormatFn:
+    """paired_display_cell with format_fn applies unit-aware formatting to primary value."""
+
+    def _umap(self):
+        return {
+            "piece": {"name": "piece", "decimals": 0, "unit_type": "pieces"},
+            "carat": {"name": "carat", "decimals": 2, "unit_type": "weight"},
+        }
+
+    def test_piece_float_displays_as_integer(self):
+        from ui.components.table import paired_display_cell
+        from celerp.services.units import format_qty
+        umap = self._umap()
+        fmt = lambda v: format_qty(v, "piece", umap)
+        td = paired_display_cell(
+            entity_id="item:1",
+            primary_field="quantity", primary_value=7.0,
+            secondary_field="sell_by", secondary_value="piece",
+            format_fn=fmt,
+        )
+        html = td.__html__() if hasattr(td, "__html__") else str(td)
+        assert ">7<" in html, f"Expected '7' in HTML, got: {html}"
+        assert "7.0" not in html, f"Expected no '7.0' in HTML, got: {html}"
+
+    def test_carat_float_displays_with_two_decimals(self):
+        from ui.components.table import paired_display_cell
+        from celerp.services.units import format_qty
+        umap = self._umap()
+        fmt = lambda v: format_qty(v, "carat", umap)
+        td = paired_display_cell(
+            entity_id="item:1",
+            primary_field="quantity", primary_value=64.0,
+            secondary_field="sell_by", secondary_value="carat",
+            format_fn=fmt,
+        )
+        html = td.__html__() if hasattr(td, "__html__") else str(td)
+        assert "64.00" in html, f"Expected '64.00' in HTML, got: {html}"
+
+    def test_no_format_fn_preserves_old_behaviour(self):
+        from ui.components.table import paired_display_cell
+        td = paired_display_cell(
+            entity_id="item:1",
+            primary_field="quantity", primary_value=7.0,
+            secondary_field="sell_by", secondary_value="piece",
+        )
+        html = td.__html__() if hasattr(td, "__html__") else str(td)
+        # Without format_fn, str(7.0) = "7.0" — old behaviour confirmed
+        assert "7.0" in html

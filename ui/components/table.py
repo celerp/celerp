@@ -194,16 +194,24 @@ def paired_display_cell(
     secondary_type: str = "text",
     primary_options: list[str] | None = None,
     secondary_options: list[str] | None = None,
+    format_fn=None,
 ) -> FT:
     """Combined cell showing two separately dbl-click-editable values in one TD.
 
     Used for quantity+sell_by and weight+weight_unit so they share a column.
     Each span is independently double-click-to-edit via the paired-edit endpoint,
     which returns an editable_cell whose restore_url points back to paired-display.
+
+    format_fn: optional callable(value) -> str for formatting the primary value.
+    When provided, it is used instead of str(). Callers supply unit-aware formatters
+    (e.g. format_qty) without coupling this generic component to inventory logic.
     """
     pri_edit = f"/api/items/{entity_id}/field/{primary_field}/paired-edit?peer={secondary_field}"
     sec_edit = f"/api/items/{entity_id}/field/{secondary_field}/paired-edit?peer={primary_field}"
-    pri_disp = str(primary_value) if primary_value not in (None, "") else EMPTY
+    if primary_value not in (None, ""):
+        pri_disp = format_fn(primary_value) if format_fn is not None else str(primary_value)
+    else:
+        pri_disp = EMPTY
     sec_disp = str(secondary_value) if secondary_value not in (None, "") else EMPTY
     return Td(
         Span(
@@ -579,7 +587,7 @@ def data_table(
                   hx_target=sort_target,
                   hx_swap="outerHTML",
                   hx_push_url="true",
-                  hx_include="[name='q'],[name='status'],[name='category'],[name='per_page'],[name='cols']",
+                  hx_include="[name='q'],[name='status'],[name='category'],[name='per_page']",
                   cls="sort-link"),
                 cls=f"col-{key}", data_key=key, draggable="true",
                 title="Drag to reorder columns",
@@ -1309,7 +1317,7 @@ def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> F
         hx_trigger="change",
         hx_target="#inventory-content",
         hx_swap="outerHTML",
-        hx_include="[name='q'],[name='status'],[name='category'],[name='cols']",
+        hx_include="[name='q'],[name='status'],[name='category']",
         hx_push_url="true",
         cls="filter-select per-page-select",
     )

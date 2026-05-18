@@ -1362,3 +1362,32 @@ async def test_bulk_transfer_updates_projection(client):
         assert item.get("location_id") == loc2["id"], (
             f"Item {item_id} location_id must be {loc2['id']} after bulk transfer, got {item.get('location_id')!r}"
         )
+
+
+@pytest.mark.asyncio
+async def test_auto_sku_fresh_company(client):
+    """Blank SKU on fresh company (no items) assigns '000001'."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc = (await client.post("/companies/me/locations", json={"name": "WH", "type": "warehouse"}, headers=h)).json()
+    r = await client.post("/items", json={"name": "Auto SKU Item", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item["sku"] == "000001"
+
+
+@pytest.mark.asyncio
+async def test_auto_sku_after_existing_items(client):
+    """Blank SKU when numeric SKUs exist assigns max+1."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc = (await client.post("/companies/me/locations", json={"name": "WH-AS", "type": "warehouse"}, headers=h)).json()
+    # Create items with explicit numeric SKUs
+    for sku in ("000005", "000012", "ALPHA"):
+        await client.post("/items", json={"sku": sku, "name": f"Item {sku}", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+    r = await client.post("/items", json={"name": "Auto next", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item["sku"] == "000013"

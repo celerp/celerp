@@ -2275,6 +2275,60 @@ class TestColumnManager:
         # The show_cols param is passed through to initialise JS column state.
         assert b"col-name" in r.content
 
+    @pytest.mark.asyncio
+    async def test_sort_link_does_not_include_cols_from_dom(self, ui_client):
+        """Sort links must NOT include [name='cols'] in hx-include.
+        Cols must come exclusively from extra_params (URL state), not DOM checkboxes."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        # [name='cols'] must not appear inside any hx-include on sort links
+        content = r.content.decode()
+        import re
+        hx_includes = re.findall(r'hx-include="([^"]*)"', content)
+        for inc in hx_includes:
+            if "sort-link" in content[max(0, content.find(inc) - 200):content.find(inc)]:
+                assert "[name='cols']" not in inc, f"Sort link hx-include must not contain [name='cols']: {inc!r}"
+        # Broader check: no sort-link anchor should have [name='cols'] in its hx-include
+        assert not any("[name='cols']" in inc for inc in hx_includes), (
+            f"hx-include must not reference [name='cols'] (cols come from extra_params): {hx_includes}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cols_from_col_prefs_appear_in_pagination_links(self, ui_client):
+        """When cols come from col_prefs (not URL), pagination links must carry them."""
+        schema_with_cols = [
+            {"key": "name", "label": "Name", "type": "text", "editable": True, "show_in_table": True},
+            {"key": "status", "label": "Status", "type": "status", "editable": True, "show_in_table": False},
+        ]
+        saved_prefs = {"__all__": ["name"]}  # col_prefs has 'name' only
+        valuation_big = {**_VALUATION, "item_count": 100}  # enough for pagination
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema_with_cols)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 100})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation_big)),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value=saved_prefs)),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        content = r.content.decode()
+        # Pagination links must contain cols=name (resolved from col_prefs)
+        assert "cols=name" in content, "Pagination links must carry cols resolved from col_prefs"
+
+
 class TestPhase2DeepPolish:
     @pytest.mark.asyncio
     async def test_inventory_item_detail_page_renders(self, ui_client):

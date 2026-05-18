@@ -549,18 +549,13 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # Auto-assign sequential SKU if not provided
     if not payload.sku:
-        from sqlalchemy import func as _func, cast as _cast, Integer as _Int
-        # DB-side max over numeric-only SKUs; non-numeric values are cast to NULL and ignored
-        max_seq_row = (await session.execute(
-            select(_func.max(_cast(
-                _func.nullif(_func.regexp_replace(Projection.state["sku"].as_string(), r"[^0-9]", "", "g"), ""),
-                _Int,
-            ))).where(
+        sku_rows = (await session.execute(
+            select(Projection.state["sku"].as_string()).where(
                 Projection.company_id == company_id,
                 Projection.entity_type == "item",
             )
-        )).scalar()
-        max_seq = int(max_seq_row) if max_seq_row is not None else 0
+        )).scalars().all()
+        max_seq = max((int(s) for s in sku_rows if s and str(s).isdigit()), default=0)
         payload = payload.model_copy(update={"sku": str(max_seq + 1).zfill(6)})
 
     # SKU uniqueness
