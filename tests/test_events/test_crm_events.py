@@ -43,23 +43,6 @@ def test_crm_deal_flow() -> None:
     assert state["status"] == "lost"
 
 
-def test_crm_memo_flow() -> None:
-    state = apply_contact_event({}, "crm.memo.created", {"contact_id": "contact:1"})
-    assert state["status"] == "draft" and state["is_on_memo"] is True
-
-    state = apply_contact_event(state, "crm.memo.item_added", {"item_id": "item:1", "quantity": 1})
-    assert state["items"][0]["item_id"] == "item:1"
-
-    state = apply_contact_event(state, "crm.memo.item_removed", {"item_id": "item:1"})
-    assert state["items"] == []
-
-    state = apply_contact_event(state, "crm.memo.approved", {})
-    assert state["status"] == "approved" and state["is_on_memo"] is False
-
-    state = apply_contact_event(state, "crm.memo.cancelled", {"reason": "x"})
-    assert state["status"] == "cancelled" and state["is_on_memo"] is False
-
-
 def test_contact_unknown_raises() -> None:
     with pytest.raises(ValueError):
         apply_contact_event({}, "crm.contact.nope", {})

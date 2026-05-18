@@ -52,7 +52,6 @@ def _crm_mocks():
         patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 3})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
         patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": _DEALS, "total": 1})),
-        patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"total": 0, "items": []})),
     )
 
 
@@ -117,7 +116,6 @@ async def test_sales_funnel_renders_authenticated(ui_client):
     with (
         patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": _DEALS, "total": 1})),
         patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
-        patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"total": 0, "items": []})),
     ):
         r = await ui_client.get("/contacts/sales", cookies=_authed())
     assert r.status_code == 200

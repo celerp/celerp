@@ -442,7 +442,7 @@ _DEFAULT_CONFIG: dict = {
 
 
 
-def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict, memo_summary: dict,
+def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict,
                 crm: dict, manufacturing: dict, purchasing: dict, currency: str | None) -> dict:
     """Build a lookup of value_fn/sub_fn name -> rendered string."""
     inv = kpis.get("inventory", {})
@@ -460,8 +460,8 @@ def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict, memo_summary: di
     items_reserved = int(inv.get("items_reserved", 0) or 0)
     low_stock = int(inv.get("low_stock_items", 0) or 0)
 
-    memo_balance = float(memo_summary.get("all_total", 0) or 0)
-    memo_count = int(memo_summary.get("active_count", items_on_memo) or 0)
+    memo_balance = float(doc_summary.get("memo_all_total", 0) or 0)
+    memo_count = int(items_on_memo)
 
     ar_outstanding = float(sales.get("ar_outstanding", doc_summary.get("ar_outstanding", 0)) or 0)
     ar_overdue = float(sales.get("ar_overdue", 0) or 0)
@@ -478,7 +478,7 @@ def _kpi_values(kpis: dict, valuation: dict, doc_summary: dict, memo_summary: di
     deals_won_mtd = int(crm_data.get("deals_won_mtd", 0) or 0)
     deal_value_pipeline = float(crm_data.get("deal_value_pipeline", 0) or 0)
 
-    subscriptions_active = int(kpis.get("subscriptions", {}).get("active_count", memo_summary.get("subscriptions_active", 0)) or 0)
+    subscriptions_active = int(kpis.get("subscriptions", {}).get("active_count", 0) or 0)
 
     margin_pct = f"{((retail_total - cost_total) / retail_total * 100):.1f}%" if retail_total > 0 else "n/a"
 
@@ -554,7 +554,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
 
         try:
-            company, kpis_data, valuation, doc_summary, memo_summary, companies = await _load_dashboard(token)
+            company, kpis_data, valuation, doc_summary, companies = await _load_dashboard(token)
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -597,7 +597,7 @@ def setup_routes(app):
         mfg_data = kpis_data.get("manufacturing", {})
         purchasing_data = kpis_data.get("purchasing", {})
 
-        values = _kpi_values(kpis_data, valuation, doc_summary, memo_summary,
+        values = _kpi_values(kpis_data, valuation, doc_summary,
                              crm_data, mfg_data, purchasing_data, currency)
 
         role = _get_role(request)
@@ -627,14 +627,15 @@ async def _load_dashboard(token: str):
 
     valuation = await _safe(api.get_valuation(token), {})
     doc_summary = await _safe(api.get_doc_summary(token), {})
-    memo_summary = await _safe(api.get_memo_summary(token), {})
+    memo_doc_summary = await _safe(api.get_doc_summary(token, doc_type="memo"), {})
+    doc_summary = {**doc_summary, **memo_doc_summary}
     kpis_data = await _safe(api.get_dashboard_kpis(token), {})
     try:
         companies_resp = await api.my_companies(token)
         companies = companies_resp.get("items", []) if isinstance(companies_resp, dict) else companies_resp
     except APIError:
         companies = []
-    return company, kpis_data, valuation, doc_summary, memo_summary, companies
+    return company, kpis_data, valuation, doc_summary, companies
 
 
 # ---------------------------------------------------------------------------

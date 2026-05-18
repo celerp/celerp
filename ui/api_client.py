@@ -650,17 +650,6 @@ async def create_contact(token: str, data: dict) -> dict:
         return _raise(await c.post("/crm/contacts", json=data)).json()
 
 
-async def list_memos(token: str, params: dict | None = None) -> dict:
-    """Returns {items: [...], total: N}."""
-    async with _client(token) as c:
-        return _raise(await c.get("/crm/memos", params=params or {})).json()
-
-
-async def get_memo_summary(token: str) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.get("/crm/memos/summary")).json()
-
-
 # ---------------------------------------------------------------------------
 # Accounting
 # ---------------------------------------------------------------------------
@@ -1363,58 +1352,6 @@ async def reopen_deal(token: str, deal_id: str) -> dict:
         return _raise(await c.post(f"/crm/deals/{deal_id}/reopen")).json()
 
 
-# ---------------------------------------------------------------------------
-# T6: Memo actions
-# ---------------------------------------------------------------------------
-
-async def get_memo(token: str, memo_id: str) -> dict:
-    """Get a single memo by ID. Falls back to listing and filtering since
-    the backend may not have a dedicated GET /memos/{id} endpoint."""
-    async with _client(token) as c:
-        # Try direct get first
-        r = await c.get(f"/crm/memos/{memo_id}")
-        if not r.is_error:
-            return r.json()
-        # Fall back to list and filter
-        resp = _raise(await c.get("/crm/memos", params={"limit": 500})).json()
-        all_memos = resp.get("items", []) if isinstance(resp, dict) else resp
-        for m in all_memos:
-            mid = m.get("entity_id") or m.get("id")
-            if mid == memo_id:
-                return m
-        raise APIError(404, f"Memo not found: {memo_id}")
-
-
-async def approve_memo(token: str, memo_id: str) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.post(f"/crm/memos/{memo_id}/approve")).json()
-
-
-async def cancel_memo(token: str, memo_id: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.post(f"/crm/memos/{memo_id}/cancel", json={"reason": reason})).json()
-
-
-async def return_memo(token: str, memo_id: str, data: dict) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.post(f"/crm/memos/{memo_id}/return", json=data)).json()
-
-
-async def add_memo_item(token: str, memo_id: str, data: dict) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.post(f"/crm/memos/{memo_id}/items", json=data)).json()
-
-
-async def remove_memo_item(token: str, memo_id: str, item_id: str) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.delete(f"/crm/memos/{memo_id}/items/{item_id}")).json()
-
-
-async def create_memo(token: str, data: dict | None = None) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.post("/crm/memos", json=data or {})).json()
-
-
 async def add_contact_tags(token: str, contact_id: str, tags: list[str]) -> dict:
     async with _client(token) as c:
         return _raise(await c.post(f"/crm/contacts/{contact_id}/tags", json={"tags": tags})).json()
@@ -1552,11 +1489,6 @@ async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.R
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
     async with _client(token) as c:
         return _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
-
-
-async def convert_memo_to_invoice(token: str, memo_id: str) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.post(f"/crm/memos/{memo_id}/convert-to-invoice")).json()
 
 
 # ---------------------------------------------------------------------------

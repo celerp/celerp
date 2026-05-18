@@ -389,6 +389,7 @@ async def get_doc_summary(
     sent_total = 0.0
     draft_total = 0.0
     void_total = 0.0
+    memo_total = 0.0
     unfulfilled_count = 0
     unfulfilled_total = 0.0
     not_restocked_count = 0
@@ -432,6 +433,8 @@ async def get_doc_summary(
         else:
             if st in ("void", "draft"):
                 continue
+            if dt == "memo":
+                memo_total += float(state.get("total", 0) or 0)
             if dt in ("memo", "consignment_in"):
                 due = state.get("due_date") or ""
                 if due and due < today:
@@ -477,6 +480,7 @@ async def get_doc_summary(
         "not_stocked_count": not_stocked_count,
         "converted_to_memo_count": converted_to_memo_count,
         "converted_to_invoice_count": converted_to_invoice_count,
+        "memo_all_total": memo_total,
         "count_by_status": count_by_status,
     }
 

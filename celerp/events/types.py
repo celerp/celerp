@@ -48,14 +48,6 @@ class EventType(StrEnum):
     CRM_DEAL_UPDATED = "crm.deal.updated"
     CRM_DEAL_DELETED = "crm.deal.deleted"
     CRM_DEAL_REOPENED = "crm.deal.reopened"
-    CRM_MEMO_CREATED = "crm.memo.created"
-    CRM_MEMO_ITEM_ADDED = "crm.memo.item_added"
-    CRM_MEMO_ITEM_REMOVED = "crm.memo.item_removed"
-    CRM_MEMO_APPROVED = "crm.memo.approved"
-    CRM_MEMO_CANCELLED = "crm.memo.cancelled"
-    CRM_MEMO_INVOICED = "crm.memo.invoiced"
-    CRM_MEMO_RETURNED = "crm.memo.returned"
-
     # Documents
     DOC_CREATED = "doc.created"
     DOC_UPDATED = "doc.updated"

@@ -192,35 +192,6 @@ class CrmDealReopened(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class CrmMemoCreated(BaseModel):
-    contact_id: str | None = None
-    notes: str | None = None
-
-    model_config = {"extra": "allow"}  # CIF adapters pass total, status, etc.
-
-
-class CrmMemoItemAdded(BaseModel):
-    item_id: str
-    quantity: float | None = None
-
-
-class CrmMemoItemRemoved(BaseModel):
-    item_id: str
-
-
-class CrmMemoApproved(BaseModel):
-    notes: str | None = None
-
-
-class CrmMemoCancelled(BaseModel):
-    reason: str | None = None
-
-
-class CrmMemoInvoiced(BaseModel):
-    doc_id: str
-    items_invoiced: list[str] = Field(default_factory=list)
-
-
 class CrmContactNoteAdded(BaseModel):
     contact_id: str
     note_id: str
@@ -290,10 +261,6 @@ class CrmContactAddressUpdated(BaseModel):
 
 class CrmContactAddressRemoved(BaseModel):
     address_id: str
-
-
-class CrmMemoReturned(BaseModel):
-    items_returned: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # -----------------
@@ -831,13 +798,6 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "crm.deal.updated": CrmDealUpdated,
     "crm.deal.deleted": CrmDealDeleted,
     "crm.deal.reopened": CrmDealReopened,
-    "crm.memo.created": CrmMemoCreated,
-    "crm.memo.item_added": CrmMemoItemAdded,
-    "crm.memo.item_removed": CrmMemoItemRemoved,
-    "crm.memo.approved": CrmMemoApproved,
-    "crm.memo.cancelled": CrmMemoCancelled,
-    "crm.memo.invoiced": CrmMemoInvoiced,
-    "crm.memo.returned": CrmMemoReturned,
 
     # Documents
     "doc.created": DocCreated,

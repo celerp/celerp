@@ -502,56 +502,6 @@ async def test_health_readiness_db_error(client):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_crm_memo_summary_bad_decimal(client):
-    """GET /crm/memos/summary with non-numeric total hits except Exception pass (lines 354-355)."""
-    tok = await _reg(client)
-
-    # Import a memo with a non-numeric total
-    memo_id = f"crm:memo:{uuid.uuid4()}"
-    r = await client.post("/crm/memos/import", headers=_h(tok), json={
-        "entity_id": memo_id,
-        "event_type": "crm.memo.created",
-        "source": "test",
-        "idempotency_key": f"bad-total-{uuid.uuid4().hex}",
-        "data": {"contact_id": "c1", "title": "Bad Total Memo", "total": "not-a-number", "status": "out"},
-    })
-    assert r.status_code == 200, r.text
-
-    # Should not raise — bad decimal is silently skipped
-    r2 = await client.get("/crm/memos/summary", headers=_h(tok))
-    assert r2.status_code == 200
-    body = r2.json()
-    assert "all_total" in body
-    assert body["memo_count"] >= 1
-
-
-# ---------------------------------------------------------------------------
-# crm.py lines 638-640: batch import memos error capture
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_crm_batch_import_memos_error_capture(client):
-    """CRM memos batch import captures per-record errors (lines 638-640)."""
-    tok = await _reg(client)
-    r = await client.post("/crm/memos/import/batch", headers=_h(tok), json={"records": [
-        {
-            "entity_id": f"crm:memo:{uuid.uuid4()}",
-            "event_type": "crm.memo.bad_type",  # unknown → ValueError
-            "data": {},
-            "source": "test",
-            "idempotency_key": f"memo-err-{uuid.uuid4().hex}",
-        },
-    ]})
-    assert r.status_code == 200
-    body = r.json()
-    assert len(body["errors"]) >= 1
-
-
-# ---------------------------------------------------------------------------
-# lists.py lines 135, 137: GET /lists with date_from and date_to filter
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
 async def test_lists_date_filter(client):
     """GET /lists?date_from=...&date_to=... filters by created_at/date (lines 135, 137)."""
     tok = await _reg(client)

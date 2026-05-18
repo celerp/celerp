@@ -89,14 +89,6 @@ async def test_crm_contacts_deals_memos(client):
     assert r.status_code == 200
     assert any(d["id"] == did for d in r.json()["items"])
 
-    r = await client.post("/crm/memos", json={"contact_id": cid, "notes": "Memo note"}, headers=headers)
-    assert r.status_code == 200
-    mid = r.json()["id"]
-
-    r = await client.get("/crm/memos", headers=headers)
-    assert r.status_code == 200
-    assert any(m["id"] == mid for m in r.json()["items"])
-
 
 @_crm_skip
 @pytest.mark.asyncio
