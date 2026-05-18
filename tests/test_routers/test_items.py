@@ -1362,3 +1362,219 @@ async def test_bulk_transfer_updates_projection(client):
         assert item.get("location_id") == loc2["id"], (
             f"Item {item_id} location_id must be {loc2['id']} after bulk transfer, got {item.get('location_id')!r}"
         )
+
+
+@pytest.mark.asyncio
+async def test_auto_sku_fresh_company(client):
+    """Blank SKU on fresh company (no items) assigns '000001'."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc = (await client.post("/companies/me/locations", json={"name": "WH", "type": "warehouse"}, headers=h)).json()
+    r = await client.post("/items", json={"name": "Auto SKU Item", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item["sku"] == "000001"
+
+
+@pytest.mark.asyncio
+async def test_auto_sku_after_existing_items(client):
+    """Blank SKU when numeric SKUs exist assigns max+1."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc = (await client.post("/companies/me/locations", json={"name": "WH-AS", "type": "warehouse"}, headers=h)).json()
+    # Create items with explicit numeric SKUs
+    for sku in ("000005", "000012", "ALPHA"):
+        await client.post("/items", json={"sku": sku, "name": f"Item {sku}", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+    r = await client.post("/items", json={"name": "Auto next", "quantity": 1.0, "sell_by": "piece", "location_id": loc["id"]}, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item["sku"] == "000013"
+
+
+@pytest.mark.asyncio
+async def test_to_int_pieces_handles_float_string():
+    """_to_int_pieces must handle '25.0' without raising ValueError."""
+    from celerp_inventory.routes import _to_int_pieces
+    assert _to_int_pieces("25.0") == 25
+    assert _to_int_pieces("5") == 5
+    assert _to_int_pieces(10.0) == 10
+    assert _to_int_pieces(7) == 7
+
+
+@pytest.mark.asyncio
+async def test_read_pieces_from_top_level_and_attributes():
+    """_read_pieces reads from top-level state first, falls back to attributes."""
+    from celerp_inventory.routes import _read_pieces
+    assert _read_pieces({"pieces": 5}) == 5.0
+    assert _read_pieces({"attributes": {"pieces": "10.0"}}) == 10.0
+    assert _read_pieces({"attributes": {"pieces": 7}}) == 7.0
+    assert _read_pieces({}) is None
+    assert _read_pieces({"attributes": {}}) is None
+
+
+@pytest.mark.asyncio
+async def test_merge_then_split_does_not_500(client):
+    """After merge, split of merged item must not 500 due to float-string pieces."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc = (await client.post("/companies/me/locations", json={"name": "WH-MTS", "type": "warehouse"}, headers=h)).json()
+    r1 = await client.post("/items", json={"sku": "MTS-A", "name": "Parcel A", "quantity": 10.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 10}}, headers=h)
+    r2 = await client.post("/items", json={"sku": "MTS-B", "name": "Parcel B", "quantity": 15.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 15}}, headers=h)
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    id1, id2 = r1.json()["id"], r2.json()["id"]
+    mr = await client.post("/items/merge", json={"source_entity_ids": [id1, id2], "target_sku_from": id1, "idempotency_key": "mts-merge-1"}, headers=h)
+    assert mr.status_code == 200, mr.text
+    merged_id = mr.json()["id"]
+    # Split must not 500 (this was crashing with ValueError: invalid literal for int() '25.0')
+    sr = await client.post(f"/items/{merged_id}/split", json={"children": [{"sku": "MTS-C", "quantity": 5.0, "attributes": {"pieces": 5}}]}, headers=h)
+    assert sr.status_code == 200, sr.text
+
+
+@pytest.mark.asyncio
+async def test_merge_numeric_attrs_stored_as_numbers(client):
+    """After merge, numeric attributes (pieces) must be stored as numbers, not strings."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc = (await client.post("/companies/me/locations", json={"name": "WH-MNA", "type": "warehouse"}, headers=h)).json()
+    r1 = await client.post("/items", json={"sku": "MNA-A", "name": "Item A", "quantity": 8.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 8}}, headers=h)
+    r2 = await client.post("/items", json={"sku": "MNA-B", "name": "Item B", "quantity": 12.0, "sell_by": "carat", "location_id": loc["id"], "attributes": {"pieces": 12}}, headers=h)
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    id1, id2 = r1.json()["id"], r2.json()["id"]
+    mr = await client.post("/items/merge", json={"source_entity_ids": [id1, id2], "target_sku_from": id1, "idempotency_key": "mna-merge-1"}, headers=h)
+    assert mr.status_code == 200, mr.text
+    merged_id = mr.json()["id"]
+    item = (await client.get(f"/items/{merged_id}", headers=h)).json()
+    pieces_val = (item.get("attributes") or {}).get("pieces") or item.get("pieces")
+    assert isinstance(pieces_val, (int, float)), f"pieces should be numeric, got {type(pieces_val)}: {pieces_val!r}"
+    assert int(float(pieces_val)) == 20
+
+
+# ---------------------------------------------------------------------------
+# SKU/barcode auto-assignment
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_new_item_barcode_copies_sku(client):
+    """New item with auto-assigned numeric SKU gets barcode == SKU."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"name": "AutoBarcode", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item.get("barcode") is not None, "barcode should be auto-assigned"
+    assert item["barcode"] == item["sku"], f"barcode {item['barcode']!r} should equal SKU {item['sku']!r}"
+    assert item["barcode"].isdigit(), "barcode must be digits-only"
+
+
+@pytest.mark.asyncio
+async def test_new_item_explicit_barcode_not_overridden(client):
+    """When caller supplies a barcode, it must not be overridden by auto-copy."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"name": "ExplicitBC", "quantity": 1, "sell_by": "piece", "barcode": "9999999999"}, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item["barcode"] == "9999999999"
+
+
+@pytest.mark.asyncio
+async def test_new_item_non_numeric_sku_no_barcode(client):
+    """Non-numeric SKU with no barcode supplied → barcode stays null (no auto-copy would 422)."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "GOLD-001", "name": "Gold Bar", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    # Non-numeric SKU - barcode should be None (digits-only rule prevents copying)
+    assert item.get("barcode") is None
+
+
+@pytest.mark.asyncio
+async def test_split_children_get_unique_barcodes(client):
+    """Each split child must receive a unique auto-assigned barcode from the shared sequence."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"name": "SplitParent", "quantity": 30, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+    parent = (await client.get(f"/items/{parent_id}", headers=h)).json()
+    parent_barcode = parent["barcode"]
+    parent_sku = parent["sku"]
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [
+            {"sku": f"{parent_sku}.1", "quantity": 10},
+            {"sku": f"{parent_sku}.2", "quantity": 10},
+        ]
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    child_ids = [c["id"] for c in r.json()["children"]]
+    assert len(child_ids) == 2
+
+    barcodes = []
+    for cid in child_ids:
+        item = (await client.get(f"/items/{cid}", headers=h)).json()
+        bc = item.get("barcode")
+        assert bc is not None, f"child {cid} has no barcode"
+        assert bc.isdigit(), f"child barcode {bc!r} must be digits-only"
+        barcodes.append(bc)
+
+    assert len(barcodes) == len(set(barcodes)), f"duplicate barcodes: {barcodes}"
+    assert parent_barcode not in barcodes, f"child barcode collides with parent: {parent_barcode}"
+
+
+@pytest.mark.asyncio
+async def test_split_barcode_no_overlap_with_sku_sequence(client):
+    """Barcode assigned during split must not collide with next auto-SKU on item creation."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    r = await client.post("/items", json={"name": "SeqParent", "quantity": 20, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+    parent = (await client.get(f"/items/{parent_id}", headers=h)).json()
+    parent_sku_int = int(parent["sku"])
+    parent_sku = parent["sku"]
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{parent_sku}.1", "quantity": 5}]
+    }, headers=h)
+    assert r.status_code == 200
+    child_id = r.json()["children"][0]["id"]
+    child_barcode = (await client.get(f"/items/{child_id}", headers=h)).json()["barcode"]
+    assert int(child_barcode) == parent_sku_int + 1
+
+    r = await client.post("/items", json={"name": "NextItem", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    next_id = r.json()["id"]
+    next_item = (await client.get(f"/items/{next_id}", headers=h)).json()
+    assert int(next_item["sku"]) == parent_sku_int + 2, (
+        f"Expected SKU {parent_sku_int + 2}, got {next_item['sku']} — sequence should skip barcode N+1"
+    )
+
+
+@pytest.mark.asyncio
+async def test_split_child_explicit_barcode_not_overridden(client):
+    """If a split child explicitly provides a barcode, it must not be auto-assigned."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"name": "ExplicitBCParent", "quantity": 20, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    parent_id = r.json()["id"]
+    parent = (await client.get(f"/items/{parent_id}", headers=h)).json()
+
+    r = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{parent['sku']}.1", "quantity": 5, "barcode": "8888888888"}]
+    }, headers=h)
+    assert r.status_code == 200
+    child_id = r.json()["children"][0]["id"]
+    child = (await client.get(f"/items/{child_id}", headers=h)).json()
+    assert child["barcode"] == "8888888888"

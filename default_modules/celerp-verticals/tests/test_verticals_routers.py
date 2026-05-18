@@ -76,7 +76,11 @@ async def test_apply_preset_not_found(client):
 
 @pytest.mark.asyncio
 async def test_apply_preset_diamond_fields(client):
-    """Diamond category from gemstones preset has core grading fields."""
+    """Diamond category from gemstones preset has core grading fields.
+
+    Note: carat weight is tracked via sell_by=carat + quantity, not a custom
+    attribute field. The custom schema covers gem quality attributes only.
+    """
     tok = await _reg(client)
     await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=_h(tok))
     r = await client.get("/companies/me/category-schemas", headers=_h(tok))
@@ -84,7 +88,6 @@ async def test_apply_preset_diamond_fields(client):
     diamond_keys = {f["key"] for f in schemas["Diamond"]}
     # Core grading fields must be present
     assert "grade" in diamond_keys
-    assert "carat" in diamond_keys
     assert "cut" in diamond_keys
     assert "clarity" in diamond_keys
 

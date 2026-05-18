@@ -29,10 +29,3 @@ def test_document_received_status_partial_vs_full() -> None:
     s = apply_documents_event(s, "doc.received", {"location_id": "loc", "received_items": [{"po_line_index": 1, "quantity_received": 1}]})
     assert s["status"] == "received"
 
-
-def test_crm_memo_invoiced_and_returned() -> None:
-    s = apply_contact_event({}, "crm.memo.created", {"contact_id": "contact:1"})
-    s = apply_contact_event(s, "crm.memo.invoiced", {"doc_id": "doc:1", "items_invoiced": ["item:1"]})
-    assert s["status"] == "invoiced"
-    s = apply_contact_event(s, "crm.memo.returned", {"items_returned": [{"item_id": "item:1"}]})
-    assert s["status"] == "returned"

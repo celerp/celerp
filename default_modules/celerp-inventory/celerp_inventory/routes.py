@@ -45,6 +45,19 @@ async def _get_company_units(session: AsyncSession, company_id) -> list[dict]:
     return DEFAULT_UNITS
 
 
+def _to_int_pieces(val) -> int:
+    """Convert a pieces value to int, tolerating float strings like '25.0'."""
+    return int(float(val))
+
+
+def _read_pieces(state: dict) -> float | None:
+    """Read pieces from item state, checking top-level then attributes (single source of truth)."""
+    raw = state.get("pieces")
+    if raw is None:
+        raw = (state.get("attributes") or {}).get("pieces")
+    return float(raw) if raw is not None else None
+
+
 def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields."""
     flat = dict(state)
@@ -121,6 +134,7 @@ class SplitChild(BaseModel):
     sku: str
     quantity: float
     weight: float | None = None
+    barcode: str | None = None  # auto-assigned from shared sequence if omitted
     attributes: dict = Field(default_factory=dict)
 
 
@@ -524,6 +538,34 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return filtered[0]
 
 
+async def _next_seq(session: AsyncSession, company_id: uuid.UUID) -> int:
+    """Return the next integer in the shared SKU/barcode sequence for a company.
+
+    Scans all integer-valued SKUs and barcodes together so the two namespaces
+    never collide (e.g. a barcode assigned during a split won't be re-used as
+    a SKU on the next new item creation).
+
+    Only barcodes with ≤9 digits are considered - this excludes EAN-13/GTIN
+    barcodes imported from external sources while still covering all internally
+    assigned barcodes (which start at 6 digits and grow slowly).
+    """
+    sku_vals = (await session.execute(
+        select(Projection.state["sku"].as_string()).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    barcode_vals = (await session.execute(
+        select(Projection.state["barcode"].as_string()).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    _MAX_SEQ_DIGITS = 9  # excludes EAN-13/GTIN-14 imported barcodes
+    all_vals = list(sku_vals) + [v for v in barcode_vals if v and len(v) <= _MAX_SEQ_DIGITS]
+    return max((int(v) for v in all_vals if v and str(v).isdigit()), default=0) + 1
+
+
 @router.post("")
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: operator/viewer cannot set cost_price on creation (manager+ required)
@@ -549,19 +591,11 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # Auto-assign sequential SKU if not provided
     if not payload.sku:
-        from sqlalchemy import func as _func, cast as _cast, Integer as _Int
-        # DB-side max over numeric-only SKUs; non-numeric values are cast to NULL and ignored
-        max_seq_row = (await session.execute(
-            select(_func.max(_cast(
-                _func.nullif(_func.regexp_replace(Projection.state["sku"].as_string(), r"[^0-9]", "", "g"), ""),
-                _Int,
-            ))).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-            )
-        )).scalar()
-        max_seq = int(max_seq_row) if max_seq_row is not None else 0
-        payload = payload.model_copy(update={"sku": str(max_seq + 1).zfill(6)})
+        payload = payload.model_copy(update={"sku": str(await _next_seq(session, company_id)).zfill(6)})
+
+    # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric
+    if payload.barcode is None and payload.sku.isdigit():
+        payload = payload.model_copy(update={"barcode": payload.sku})
 
     # SKU uniqueness
     existing_sku = (await session.execute(
@@ -928,10 +962,7 @@ async def split_preview(
     parent_sell_by = parent.state.get("sell_by") or "piece"
     parent_weight_raw = parent.state.get("weight")
     parent_weight = float(parent_weight_raw) if parent_weight_raw is not None else None
-    _pieces_raw = parent.state.get("pieces")
-    if _pieces_raw is None:
-        _pieces_raw = (parent.state.get("attributes") or {}).get("pieces")
-    parent_pieces = float(_pieces_raw) if _pieces_raw is not None else None
+    parent_pieces = _read_pieces(parent.state)
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -1040,10 +1071,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         )
 
     # Pieces conservation: if parent has pieces, validate and compute mother
-    _pieces_raw = parent.state.get("pieces") if "pieces" in parent.state else parent_attrs.get("pieces")
-    parent_pieces: int | None = int(_pieces_raw) if _pieces_raw is not None else None
+    _pieces_float = _read_pieces(parent.state)
+    parent_pieces: int | None = _to_int_pieces(_pieces_float) if _pieces_float is not None else None
     if parent_pieces is not None:
-        total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
+        total_child_pieces = sum(_to_int_pieces(c.attributes.get("pieces", 0)) for c in children)
         if total_child_pieces >= parent_pieces:
             raise HTTPException(
                 status_code=422,
@@ -1073,6 +1104,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Create child items
     child_eids: list[str] = []
     child_qty_list: list[float] = []
+    next_barcode_seq = await _next_seq(session, company_id)  # single DB scan; incremented in-memory per child
     for child in children:
         child_eid = f"item:{uuid.uuid4()}"
         child_eids.append(child_eid)
@@ -1106,6 +1138,9 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             child_data["tax_codes"] = parent_tax_codes
         if parent_expires_at:
             child_data["expires_at"] = parent_expires_at
+        # Auto-assign barcode from shared sequence (or use caller-supplied override)
+        child_data["barcode"] = child.barcode if child.barcode is not None else str(next_barcode_seq).zfill(6)
+        next_barcode_seq += 1
         await emit_event(
             session,
             company_id=company_id,
@@ -1155,7 +1190,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
     if parent_pieces is not None:
-        total_child_pieces = sum(int(c.attributes.get("pieces", 0)) for c in children)
+        total_child_pieces = sum(_to_int_pieces(c.attributes.get("pieces", 0)) for c in children)
         computed_mother_pieces = parent_pieces - total_child_pieces
 
     computed_mother_weight: float | None = None
@@ -1300,14 +1335,17 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     resolved_attrs: dict = {}
     unresolved_conflicts: list[str] = []
     for key in all_attr_keys:
-        values = [str((p.state.get("attributes") or {}).get(key, "")) for p in source_projections if key in (p.state.get("attributes") or {})]
-        unique_vals = set(values)
-        if len(unique_vals) == 1:
-            # No conflict — carry forward.
-            resolved_attrs[key] = values[0]
-        elif all(_is_numeric(v) for v in unique_vals):
-            # Numeric conflict — sum.
-            resolved_attrs[key] = str(sum(float(v) for v in values))
+        # Collect raw attribute values (preserve original type for numeric fields)
+        raw_values = [(p.state.get("attributes") or {}).get(key) for p in source_projections if key in (p.state.get("attributes") or {})]
+        str_values = [str(v) for v in raw_values]
+        unique_str_vals = set(str_values)
+        if len(unique_str_vals) == 1:
+            # No conflict — carry forward the original typed value.
+            resolved_attrs[key] = raw_values[0]
+        elif all(_is_numeric(v) for v in unique_str_vals):
+            # Numeric conflict — sum. Store as number to preserve type through round-trips.
+            total = sum(float(v) for v in str_values)
+            resolved_attrs[key] = int(total) if total == int(total) else total
         else:
             # String conflict — require user resolution.
             if payload.resolved_attributes and key in payload.resolved_attributes:
@@ -1611,10 +1649,12 @@ async def batch_import_items(
     from celerp_inventory.models_import_batch import ImportBatch
     from celerp.models.ledger import LedgerEntry
 
-    keys = [r.idempotency_key for r in body.records]
+    # Scope keys to company to prevent cross-company idempotency collisions
+    # (LedgerEntry.idempotency_key has a table-wide UNIQUE constraint with no company_id scope)
+    scoped_keys = [f"{company_id}:{r.idempotency_key}" for r in body.records]
     existing = set(
         (await session.execute(
-            select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+            select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(scoped_keys))
         )).scalars().all()
     )
 
@@ -1624,10 +1664,11 @@ async def batch_import_items(
     created_keys: list[str] = []
 
     for rec in body.records:
-        if rec.idempotency_key in existing:
+        scoped_key = f"{company_id}:{rec.idempotency_key}"
+        if scoped_key in existing:
             if body.upsert:
                 # Emit patch event with a upsert-specific idempotency key
-                upsert_idem = f"{rec.idempotency_key}:upsert"
+                upsert_idem = f"{scoped_key}:upsert"
                 upsert_existing = set(
                     (await session.execute(
                         select(LedgerEntry.idempotency_key).where(
@@ -1684,12 +1725,12 @@ async def batch_import_items(
                 actor_id=user.id,
                 location_id=loc_id,
                 source=rec.source,
-                idempotency_key=rec.idempotency_key,
+                idempotency_key=scoped_key,
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
-            existing.add(rec.idempotency_key)
+            existing.add(scoped_key)
             created_entity_ids.append(rec.entity_id)
-            created_keys.append(rec.idempotency_key)
+            created_keys.append(scoped_key)
             created += 1
         except Exception as exc:
             if len(errors) < 10:

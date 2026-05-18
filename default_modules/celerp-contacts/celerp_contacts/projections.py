@@ -141,36 +141,7 @@ def apply_contact_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type in ("crm.contact.file_deleted", "crm.contact.file_removed"):
         current["files"] = [f for f in current.get("files", []) if f.get("id") != data["file_id"]]
 
-    elif event_type == "crm.memo.created":
-        current.update({"entity_type": "memo", **data})
-        current.setdefault("status", "draft")
-        current.setdefault("items", [])
-        current.setdefault("is_on_memo", True)
-    elif event_type == "crm.memo.item_added":
-        current.setdefault("items", [])
-        current["items"].append({"item_id": data["item_id"], "quantity": data.get("quantity")})
-    elif event_type == "crm.memo.item_removed":
-        current.setdefault("items", [])
-        current["items"] = [i for i in current["items"] if i.get("item_id") != data["item_id"]]
-    elif event_type == "crm.memo.approved":
-        current["status"] = "approved"
-        current["is_on_memo"] = False
-    elif event_type == "crm.memo.cancelled":
-        current["status"] = "cancelled"
-        current["is_on_memo"] = False
-        if data.get("reason"):
-            current["cancel_reason"] = data["reason"]
-    elif event_type == "crm.memo.invoiced":
-        current["status"] = "invoiced"
-        current["is_on_memo"] = False
-        current["doc_id"] = data["doc_id"]
-        current["items_invoiced"] = data.get("items_invoiced", [])
-    elif event_type == "crm.memo.returned":
-        current["status"] = "returned"
-        current["is_on_memo"] = False
-        current.setdefault("returned_items", [])
-        current["returned_items"].extend(data.get("items_returned", []))
     else:
-        raise ValueError(f"Unsupported contact/memo event: {event_type}")
+        raise ValueError(f"Unsupported contact event: {event_type}")
 
     return current

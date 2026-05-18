@@ -35,16 +35,6 @@ def test_documents_received_partial_and_full_branches():
     assert s["status"] == "received"
 
 
-def test_crm_new_branches():
-    s = apply_contact_event({}, "crm.memo.created", {"contact_id": "contact:1"})
-    s = apply_contact_event(s, "crm.memo.invoiced", {"doc_id": "doc:1", "items_invoiced": ["item:1"]})
-    assert s["status"] == "invoiced"
-    assert s["doc_id"] == "doc:1"
-    s = apply_contact_event(s, "crm.memo.returned", {"items_returned": [{"item_id": "item:1"}]})
-    assert s["status"] == "returned"
-    assert len(s["returned_items"]) == 1
-
-
 def test_manufacturing_completed_metadata_branches():
     s = apply_manufacturing_event({}, "mfg.order.created", {"description": "d"})
     s = apply_manufacturing_event(s, "mfg.order.completed", {"actual_outputs": [{"sku": "X"}], "waste": {"quantity": 1}, "labor_hours": 2})

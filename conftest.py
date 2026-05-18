@@ -211,14 +211,6 @@ _SLOT_CONTRIBUTIONS = [
     {
         "slot": "projection_handler",
         "contrib": {
-            "prefix": "crm.memo.",
-            "handler": "celerp_contacts.projections:apply_contact_event",
-            "_module": "celerp-contacts",
-        },
-    },
-    {
-        "slot": "projection_handler",
-        "contrib": {
             "prefix": "acc.",
             "handler": "celerp_accounting.projections:apply_accounting_event",
             "_module": "celerp-accounting",

@@ -9,6 +9,25 @@ from ui.i18n import t, get_lang
 # Canonical empty-value placeholder (rule k)
 EMPTY = "--"
 
+# Default column widths for fixed-layout tables.
+# Keys are schema field keys; "_attr_default" applies to any column not listed here.
+_DEFAULT_COL_WIDTHS: dict[str, str] = {
+    "sku": "110px",
+    "name": "200px",
+    "barcode": "130px",
+    "category": "130px",
+    "quantity": "110px",
+    "status": "90px",
+    "weight": "100px",
+    "weight_unit": "80px",
+    "sell_by": "90px",
+    "location_name": "140px",
+    "pieces": "80px",
+    "created_at": "120px",
+    "updated_at": "120px",
+    "_attr_default": "120px",
+}
+
 
 def format_value(v, fmt: str = "text", currency: str | None = None) -> str | FT:
     """Universal display formatter for table cells and detail pages.
@@ -194,16 +213,24 @@ def paired_display_cell(
     secondary_type: str = "text",
     primary_options: list[str] | None = None,
     secondary_options: list[str] | None = None,
+    format_fn=None,
 ) -> FT:
     """Combined cell showing two separately dbl-click-editable values in one TD.
 
     Used for quantity+sell_by and weight+weight_unit so they share a column.
     Each span is independently double-click-to-edit via the paired-edit endpoint,
     which returns an editable_cell whose restore_url points back to paired-display.
+
+    format_fn: optional callable(value) -> str for formatting the primary value.
+    When provided, it is used instead of str(). Callers supply unit-aware formatters
+    (e.g. format_qty) without coupling this generic component to inventory logic.
     """
     pri_edit = f"/api/items/{entity_id}/field/{primary_field}/paired-edit?peer={secondary_field}"
     sec_edit = f"/api/items/{entity_id}/field/{secondary_field}/paired-edit?peer={primary_field}"
-    pri_disp = str(primary_value) if primary_value not in (None, "") else EMPTY
+    if primary_value not in (None, ""):
+        pri_disp = format_fn(primary_value) if format_fn is not None else str(primary_value)
+    else:
+        pri_disp = EMPTY
     sec_disp = str(secondary_value) if secondary_value not in (None, "") else EMPTY
     return Td(
         Span(
@@ -286,6 +313,8 @@ def editable_cell(
     """Table cell in edit mode. Fires HTMX PATCH on blur/change, swaps itself back to display_cell.
     label_map: optional {slug: display_name} - if set, select renders option labels from map."""
     display_val = str(value) if value is not None else ""
+    if cell_type == "number" and display_val:
+        display_val = _normalize_number_str(display_val)
     patch_url = f"/api/items/{entity_id}/field/{field}"
     restore_url = restore_url or f"/api/items/{entity_id}/field/{field}/display"
     swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
@@ -376,6 +405,15 @@ def editable_cell(
     return Td(input_el, cls=f"cell cell--editing cell--{cell_type}")
 
 
+def _normalize_number_str(s: str) -> str:
+    """Format a numeric string for display: drop .0 for integers, use :g for floats."""
+    try:
+        n = float(s)
+        return str(int(n)) if n == int(n) else f"{n:g}"
+    except (ValueError, TypeError):
+        return s
+
+
 def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
     """Format a value for display. Empty/null → EMPTY constant."""
     s = str(value).strip() if value is not None else ""
@@ -392,12 +430,7 @@ def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
     if cell_type == "number":
         if not s:
             return Span(EMPTY)
-        try:
-            n = float(s)
-            display = str(int(n)) if n == int(n) else f"{n:g}"
-            return Span(display, cls="cell-number")
-        except (ValueError, TypeError):
-            return Span(s, cls="cell-number")
+        return Span(_normalize_number_str(s), cls="cell-number")
     if cell_type == "weight":
         return Span(f"{s} ct", cls="cell-weight") if s else Span(EMPTY)
     if cell_type == "tags":
@@ -565,6 +598,8 @@ def data_table(
 
     def _th(f: dict) -> FT:
         key = f["key"]
+        default_width = _DEFAULT_COL_WIDTHS.get(key, _DEFAULT_COL_WIDTHS["_attr_default"])
+        th_style = f"width:{default_width}"
         if sort_url:
             params = {**(extra_params or {}), "sort": key}
             new_dir = "asc" if (sort_key == key and sort_dir == "desc") else "desc"
@@ -579,13 +614,13 @@ def data_table(
                   hx_target=sort_target,
                   hx_swap="outerHTML",
                   hx_push_url="true",
-                  hx_include="[name='q'],[name='status'],[name='category'],[name='per_page'],[name='cols']",
                   cls="sort-link"),
                 cls=f"col-{key}", data_key=key, draggable="true",
                 title="Drag to reorder columns",
+                style=th_style,
             )
         return Th(f["label"], cls=f"col-{key}", data_key=key, draggable="true",
-                   title="Drag to reorder columns")
+                   title="Drag to reorder columns", style=th_style)
 
     checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
     header = Thead(Tr(
@@ -695,12 +730,9 @@ def data_table(
     }});
   }} else {{
     // Merge: columns not in stored prefs get their schema default
-    // Force-hide any column whose schema default is false (catches renamed/merged columns in old prefs)
     ths.forEach(function(th) {{
       if (!(th.dataset.key in prefs)) {{
         prefs[th.dataset.key] = SCHEMA_DEFAULTS[th.dataset.key] !== false;
-      }} else if (SCHEMA_DEFAULTS[th.dataset.key] === false) {{
-        prefs[th.dataset.key] = false;
       }}
     }});
   }}
@@ -730,11 +762,11 @@ def data_table(
     ths.forEach(function(th) {{ if (th.style.width) w[th.dataset.key] = th.style.width; }});
     localStorage.setItem(WIDTH_KEY, JSON.stringify(w));
   }}
-  // Restore persisted widths on load
-  (function() {{
+  // Restore persisted widths on load — defer to rAF so HTMX-swapped DOM has committed layout
+  requestAnimationFrame(function() {{
     var saved = loadWidths();
     if (saved) ths.forEach(function(th) {{ if (saved[th.dataset.key]) th.style.width = saved[th.dataset.key]; }});
-  }})();
+  }});
   ths.forEach(function(th) {{
     var handle = document.createElement('div');
     handle.className = 'col-resize-handle';
@@ -1023,7 +1055,7 @@ function sendToTypeChanged(docType){
       docs.forEach(function(d){
         var opt=document.createElement('option');
         opt.value=d.id||d.entity_id||'';
-        opt.textContent=(d.doc_number||d.number||'')+(d.contact_name?' - '+d.contact_name:'');
+        opt.textContent=(d.label||d.doc_number||d.number||'')+(d.contact_name?' - '+d.contact_name:'');
         targetSel.appendChild(opt);
       });
     }).catch(function(){});
@@ -1302,14 +1334,15 @@ def _per_page_selector(current: int, base_url: str, extra_params: str = "") -> F
     # Swap only the content fragment (avoids double shell render).
     # base_url is e.g. "/inventory"; content endpoint is "/inventory/content".
     content_url = base_url.rstrip("/") + "/content"
+    url_with_state = f"{content_url}?{extra_params}" if extra_params else content_url
     return Select(
         *[Option(f"{n} per page", value=str(n), selected=(n == current)) for n in options],
         name="per_page",
-        hx_get=content_url,
+        hx_get=url_with_state,
         hx_trigger="change",
         hx_target="#inventory-content",
         hx_swap="outerHTML",
-        hx_include="[name='q'],[name='status'],[name='category'],[name='cols']",
+        hx_include="this",
         hx_push_url="true",
         cls="filter-select per-page-select",
     )

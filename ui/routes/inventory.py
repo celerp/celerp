@@ -113,7 +113,8 @@ def _parse_params(request: Request) -> dict:
         page = int(q.get("page", 1))
     except (ValueError, TypeError):
         page = 1
-    cols = q.getlist("cols") or [c for c in q.get("cols", "").split(",") if c]
+    raw_cols = q.getlist("cols") or q.get("cols", "").split(",")
+    cols = [c for part in raw_cols for c in part.split(",") if c]
     return {
         "q": q.get("q", ""),
         "skus": q.get("skus", ""),  # comma-separated exact SKU filter
@@ -198,7 +199,10 @@ async def _inventory_content(
     active_cat = p.get("category", "")
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
-    extra_params = urlencode(_base_state(p))
+    # Inject resolved cols into URL state so sort links and pagination always carry
+    # the exact column set being rendered, even when it came from col_prefs not URL params.
+    p_with_cols = {**p, "cols": visible_cols}
+    extra_params = urlencode(_base_state(p_with_cols))
     total_items = valuation.get("item_count", 0)
 
     return Div(
@@ -219,7 +223,7 @@ async def _inventory_content(
             sort_key=p["sort"],
             sort_dir=p["dir"],
             sort_url="/inventory/content",
-            extra_params=_base_state(p),
+            extra_params=_base_state(p_with_cols),
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
@@ -873,19 +877,20 @@ def setup_routes(app):
         if not entity_id or entity_id.strip() == "":
             return RedirectResponse("/inventory", status_code=302)
         try:
-            schema, item, company, cat_schemas, price_lists = await asyncio.gather(
+            schema, item, company, cat_schemas, price_lists, units_resp = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
                 api.get_company(token),
                 api.get_all_category_schemas(token),
                 api.get_price_lists(token),
+                api.get_units(token),
             )
             ledger = (await api.list_ledger(token, {"entity_id": entity_id, "limit": 10})).get("items", [])
             locations = (await api.get_locations(token)).get("items", [])
         except (APIError, Exception) as e:
             if isinstance(e, APIError) and e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            schema, item, ledger, locations, company, cat_schemas, price_lists = [], {}, [], [], {}, {}, []
+            schema, item, ledger, locations, company, cat_schemas, price_lists, units_resp = [], {}, [], [], {}, {}, [], {}
 
         currency = company.get("currency")
         # Inject category options into the schema's category field
@@ -909,10 +914,15 @@ def setup_routes(app):
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
         pl_conventional = {f"{n.lower()}_price" for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS]
         pricing_fields = [f for f in schema if f.get("key") in pricing_keys]
 
         active_tab = request.query_params.get("tab", "details")
+
+        units_list = units_resp if isinstance(units_resp, list) else []
+        unit_names = [u["name"] for u in units_list]
+        units_map = {u["name"]: u for u in units_list}
+        detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map)
 
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
@@ -924,7 +934,7 @@ def setup_routes(app):
                     cls="header-actions",
                 ),
             ),
-            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists),
+            _item_detail_tabs(entity_id, item, detail_fields, pricing_fields, ledger, currency, active_tab, price_lists=price_lists, cell_renderers=detail_renderers),
             title="Inventory Item - Celerp",
             nav_active="inventory",
             request=request,
@@ -985,6 +995,14 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
+        # Apply unit-field override (sell_by, purchase_unit → searchable select)
+        if field in ("sell_by", "purchase_unit"):
+            try:
+                units_resp = await api.get_units(token)
+                unit_names = [u["name"] for u in units_resp if u.get("name")]
+            except Exception:
+                unit_names = []
+            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names)
         label_map: dict | None = None
         if field == "category":
             try:
@@ -1152,9 +1170,8 @@ function celerpPrintLabel(entityId, templateId) {
         pl_names = {pl.get("name", "") for pl in price_lists}
         pl_conventional = {f"{n.lower()}_price" for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        core_keys = {"sku", "name", "status", "category", "quantity", "weight", "weight_unit", "sell_by", "allow_splitting", "barcode", "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys]
-        right = [f for f in detail_fields if f.get("key") not in core_keys]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS]
+        right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
         currency = None
         try:
             company = await api.get_company(token)
@@ -1231,18 +1248,25 @@ function celerpPrintLabel(entityId, templateId) {
                 sb_val=item.get("sell_by", ""),
             )
         from ui.components.table import paired_display_cell
+        from celerp.services.units import format_qty
         locations = locs.get("items", [])
         peer = _PAIRED_FIELDS[field]
         # Determine which is primary (qty/weight) vs secondary (unit)
         primary, secondary = (field, peer) if field not in ("sell_by", "weight_unit") else (peer, field)
         pri_def, pri_type, pri_opts, _ = _resolve_field_def(primary, schema, cat_schemas, item, locations)
         sec_def, sec_type, sec_opts, _ = _resolve_field_def(secondary, schema, cat_schemas, item, locations)
+        # Build unit map for format_qty; secondary is the unit field (sell_by / weight_unit)
+        units_resp = await api.get_units(token)
+        umap = {u["name"]: u for u in units_resp if u.get("name")}
+        unit_name = item.get(secondary, "")
+        fmt_fn = (lambda v, _u=unit_name, _m=umap: format_qty(v, _u, _m)) if pri_type == "number" else None
         return paired_display_cell(
             entity_id=entity_id,
             primary_field=primary, primary_value=item.get(primary, ""),
             secondary_field=secondary, secondary_value=item.get(secondary, ""),
             primary_type=pri_type, secondary_type=sec_type,
             primary_options=pri_opts, secondary_options=sec_opts,
+            format_fn=fmt_fn,
         )
 
     @app.get("/api/items/{entity_id}/field/{field}/paired-edit")
@@ -1264,14 +1288,12 @@ function celerpPrintLabel(entityId, templateId) {
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Field-specific overrides
         if field in ("sell_by", "purchase_unit"):
-            # Unit dropdown with add-new option
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
             except Exception:
                 unit_names = []
-            options = [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")]
-            cell_type, allow_custom = "select", True
+            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names)
         elif field == "purchase_conversion_factor":
             # Plain number input
             cell_type = "number"
@@ -1742,16 +1764,17 @@ function celerpPrintLabel(entityId, templateId) {
                     for d in items
                 ])
             elif doc_type == "memo":
-                params = {"limit": 20}
-                resp = await api.list_memos(token, params)
-                items = resp.get("items", [])
+                params = {"doc_type": "memo", "limit": 20}
                 if q:
-                    ql = q.lower()
-                    items = [m for m in items if ql in str(m.get("memo_number", "")).lower()
-                             or ql in str(m.get("contact_name", "")).lower()][:20]
+                    params["q"] = q
+                else:
+                    params["status"] = "draft"
+                resp = await api.list_docs(token, params)
+                items = resp.get("items", [])
+                items = [d for d in items if d.get("status") in ("draft",)]
                 return JSONResponse([
                     {"id": d.get("id") or d.get("entity_id", ""),
-                     "label": f"Memo {d.get('memo_number') or (d.get('id', '') or '')[:8]}",
+                     "label": d.get("ref_id") or d.get("doc_number") or d.get("id", ""),
                      "status": d.get("status", "")}
                     for d in items
                 ])
@@ -1793,9 +1816,12 @@ function celerpPrintLabel(entityId, templateId) {
                     await api.patch_list(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{target_id}"})
                 elif doc_type == "memo":
-                    for eid in entity_ids:
-                        await api.add_memo_item(token, target_id, {"item_id": eid})
-                    return Response("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{target_id}"})
+                    new_lines = await _line_items_from_inventory(token, entity_ids)
+                    doc = await api.get_doc(token, target_id)
+                    combined = (doc.get("line_items") or []) + new_lines
+                    subtotal = sum(l.get("quantity", 0) * l.get("unit_price", 0) for l in combined)
+                    await api.patch_doc(token, target_id, {"line_items": combined, "subtotal": subtotal, "total": subtotal})
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
             else:
                 # Create new document
                 if doc_type == "invoice":
@@ -1811,11 +1837,12 @@ function celerpPrintLabel(entityId, templateId) {
                     list_id = result.get("entity_id") or result.get("id", "")
                     return Response("", status_code=204, headers={"HX-Redirect": f"/lists/{list_id}"})
                 elif doc_type == "memo":
-                    result = await api.create_memo(token)
-                    memo_id = result.get("id", "")
-                    for eid in entity_ids:
-                        await api.add_memo_item(token, memo_id, {"item_id": eid})
-                    return Response("", status_code=204, headers={"HX-Redirect": f"/crm/memos/{memo_id}"})
+                    line_items = await _line_items_from_inventory(token, entity_ids)
+                    from ui.routes.documents import _company_doc_taxes
+                    doc_taxes = await _company_doc_taxes(token)
+                    result = await api.create_doc(token, {"doc_type": "memo", "status": "draft", "line_items": line_items, "doc_taxes": doc_taxes})
+                    doc_id = result.get("entity_id") or result.get("id", "")
+                    return Response("", status_code=204, headers={"HX-Redirect": f"/docs/{doc_id}"})
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         return Div(P(t("inv.unknown_document_type"), cls="flash flash--warning"), id="bulk-action-result")
@@ -2599,39 +2626,26 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
     if not category_counts and not total_scoped:
         return ""
 
-    def _url(category: str = "") -> str:
-        state = _base_state(p)
-        if category:
-            state["category"] = category
-        else:
-            state.pop("category", None)
-        return "/inventory" + (f"?{urlencode(state)}" if state else "")
+    base = {k: v for k, v in _base_state(p).items() if k != "category"}
 
-    # Use total_scoped_count so items without a category still count in "All"
+    def _tab(label: str, cat: str, active: bool) -> FT:
+        state = {**base, "category": cat} if cat else base
+        content_url = "/inventory/content" + (f"?{urlencode(state)}" if state else "")
+        page_url = "/inventory" + (f"?{urlencode(state)}" if state else "")
+        return A(
+            label,
+            href=page_url,
+            hx_get=content_url,
+            hx_target="#inventory-content",
+            hx_swap="outerHTML",
+            hx_push_url=page_url,
+            cls=f"category-tab {'category-tab--active' if active else ''}",
+        )
+
     total = total_scoped if total_scoped is not None else sum(category_counts.values())
-    tabs = [
-        A(
-            f"All ({total})",
-            href=_url(""),
-            hx_get="/inventory/content" + (f"?{urlencode({k: v for k, v in _base_state(p).items() if k != 'category'})}" if _base_state(p) else ""),
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-            hx_push_url=_url(""),
-            cls=f"category-tab {'category-tab--active' if not p.get('category') else ''}",
-        ),
-    ]
+    tabs = [_tab(f"All ({total})", "", not p.get("category"))]
     for cat, count in sorted(category_counts.items()):
-        state = _base_state(p)
-        state["category"] = cat
-        tabs.append(A(
-            f"{cat} ({count})",
-            href=_url(cat),
-            hx_get=f"/inventory/content?{urlencode(state)}",
-            hx_target="#inventory-content",
-            hx_swap="outerHTML",
-            hx_push_url=_url(cat),
-            cls=f"category-tab {'category-tab--active' if p.get('category') == cat else ''}",
-        ))
+        tabs.append(_tab(f"{cat} ({count})", cat, p.get("category") == cat))
     return Div(*tabs, cls="category-tabs", id="category-tabs")
 
 
@@ -2665,37 +2679,23 @@ def _status_tabs(p: dict, vertical: str = "") -> FT:
     """Status filter tabs. Default view excludes sold/archived. Vertical controls which statuses appear."""
     _TABS = _vertical_status_filter_tabs(vertical)
     active_status = p.get("status", "")
+    base = {k: v for k, v in _base_state(p).items() if k != "status"}
 
-    def _url(s: str) -> str:
-        state = _base_state(p)
-        if s:
-            state["status"] = s
-        else:
-            state.pop("status", None)
-        return "/inventory" + (f"?{urlencode(state)}" if state else "")
-
-    def _htmx_params(s: str) -> dict:
-        state = _base_state(p)
-        if s:
-            state["status"] = s
-        else:
-            state.pop("status", None)
-        return {
-            "hx_get": "/inventory/content" + (f"?{urlencode(state)}" if state else ""),
-            "hx_target": "#inventory-content",
-            "hx_swap": "outerHTML",
-            "hx_push_url": _url(s),
-        }
-
-    tabs = [
-        A(
+    def _tab(s: str, label: str) -> FT:
+        state = {**base, "status": s} if s else base
+        content_url = "/inventory/content" + (f"?{urlencode(state)}" if state else "")
+        page_url = "/inventory" + (f"?{urlencode(state)}" if state else "")
+        return A(
             label,
-            href=_url(s),
+            href=page_url,
             cls=f"category-tab {'category-tab--active' if active_status == s else ''}",
-            **_htmx_params(s),
+            hx_get=content_url,
+            hx_target="#inventory-content",
+            hx_swap="outerHTML",
+            hx_push_url=page_url,
         )
-        for s, label in _TABS
-    ]
+
+    tabs = [_tab(s, label) for s, label in _TABS]
     return Div(*tabs, cls="category-tabs status-tabs", id="status-tabs")
 
 
@@ -2708,29 +2708,33 @@ def _inventory_type_tabs(p: dict) -> FT:
         ("service", "Services"),
         ("non_stocked", "Non-Stocked"),
     ]
+    base = {k: v for k, v in _base_state(p).items() if k != "inventory_type"}
 
-    def _url(it: str) -> str:
-        state = _base_state(p)
-        if it:
-            state["inventory_type"] = it
-        else:
-            state.pop("inventory_type", None)
-        return "/inventory" + (f"?{urlencode(state)}" if state else "")
-
-    tabs = [
-        A(
+    def _tab(it: str, label: str) -> FT:
+        state = {**base, "inventory_type": it} if it else base
+        content_url = "/inventory/content" + (f"?{urlencode(state)}" if state else "")
+        page_url = "/inventory" + (f"?{urlencode(state)}" if state else "")
+        return A(
             label,
-            href=_url(it),
+            href=page_url,
             cls=f"category-tab {'category-tab--active' if active == it else ''}",
-            hx_get="/inventory/content" + (f"?{urlencode({**({k: v for k, v in _base_state(p).items() if k != 'inventory_type'}), **({'inventory_type': it} if it else {})})}"),
+            hx_get=content_url,
             hx_target="#inventory-content",
             hx_swap="outerHTML",
-            hx_push_url=_url(it),
+            hx_push_url=page_url,
         )
-        for it, label in _TABS
-    ]
-    return Div(*tabs, cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
+
+    return Div(*[_tab(it, label) for it, label in _TABS], cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
 _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "purchase_unit": "purchase_conversion_factor"}
+# Derived from _PAIRED_TABLE — secondary fields already rendered inside paired cells; exclude from standalone rows
+_PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
+# Core item fields shown in the left (core details) panel on the detail page — single definition
+_ITEM_CORE_KEYS: frozenset[str] = frozenset({
+    "sku", "name", "status", "category", "quantity", "weight", "weight_unit",
+    "sell_by", "allow_splitting", "barcode", "hs_code", "location_name",
+    "short_description", "purchase_sku", "purchase_name", "purchase_unit",
+    "purchase_conversion_factor",
+})
 
 
 def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None) -> dict:
@@ -3241,6 +3245,21 @@ _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
 }
 
 
+def _apply_unit_field_override(
+    field: str, cell_type: str, options, allow_custom: bool, unit_names: list[str]
+) -> tuple[str, list | None, bool]:
+    """Return (cell_type, options, allow_custom) with unit-field overrides applied.
+    sell_by and purchase_unit become searchable selects populated from company units.
+    """
+    if field in ("sell_by", "purchase_unit"):
+        return (
+            "select",
+            [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
+            True,
+        )
+    return cell_type, options, allow_custom
+
+
 def _resolve_field_def(
     field: str,
     schema: list[dict],
@@ -3309,6 +3328,7 @@ def _item_detail_tabs(
     currency: str | None,
     active_tab: str,
     price_lists: list[dict] | None = None,
+    cell_renderers: dict | None = None,
 ) -> FT:
     """GemCloud-style tabbed item detail: Details | Pricing | Activity."""
     tabs = [("details", "Details"), ("pricing", "Pricing"), ("activity", "Activity")]
@@ -3341,11 +3361,10 @@ def _item_detail_tabs(
         )
     else:
         # Details tab: two-column layout — core fields left, attributes right
-        core_keys = {"sku", "name", "status", "category", "quantity", "weight", "weight_unit", "sell_by", "allow_splitting", "barcode", "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor"}
-        left = [f for f in detail_fields if f.get("key") in core_keys]
-        right = [f for f in detail_fields if f.get("key") not in core_keys]
+        left = [f for f in detail_fields if f.get("key") in _ITEM_CORE_KEYS]
+        right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
         panel = Div(
-            _detail_table(entity_id, item, left, title="Core Details", currency=currency),
+            _detail_table(entity_id, item, left, title="Core Details", currency=currency, cell_renderers=cell_renderers),
             Div(
                 _detail_table(entity_id, item, right, title="Attributes", currency=currency),
                 id="item-attributes-section",
@@ -3441,28 +3460,32 @@ function syncPricingUnit(unitId, totalId, qty) {
     )
 
 
-def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "Details", currency: str | None = None) -> FT:
+def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "Details", currency: str | None = None, cell_renderers: dict | None = None) -> FT:
     if not fields:
         return ""
     from ui.components.table import display_cell
+    def _row(f):
+        key = f.get("key", "")
+        if cell_renderers and key in cell_renderers:
+            cell = cell_renderers[key](entity_id, item)
+        else:
+            cell = display_cell(
+                entity_id=entity_id,
+                field=key,
+                value=item.get(key, ""),
+                cell_type=f.get("type", "text"),
+                options=f.get("options"),
+                editable=f.get("editable", True),
+                currency=currency,
+            )
+        return Tr(
+            Td(f.get("label", key), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
+            cell,
+        )
     return Div(
         H3(title, cls="section-title"),
         Table(
-            Tbody(*[
-                Tr(
-                    Td(f.get("label", f.get("key")), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
-                    display_cell(
-                        entity_id=entity_id,
-                        field=f.get("key", ""),
-                        value=item.get(f.get("key", ""), ""),
-                        cell_type=f.get("type", "text"),
-                        options=f.get("options"),
-                        editable=f.get("editable", True),
-                        currency=currency,
-                    ),
-                )
-                for f in fields
-            ]),
+            Tbody(*[_row(f) for f in fields]),
             cls="detail-table",
         ),
         cls="detail-card",

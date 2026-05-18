@@ -55,9 +55,6 @@ _DOC_PO = {"entity_id": "doc:po1", "doc_type": "purchase_order", "ref": "PO20260
 _DOC_QUOT = {"entity_id": "doc:quo1", "doc_type": "quotation", "ref": "QUO2026001",
              "status": "draft", "total": 2000, "amount_outstanding": 2000,
              "contact_external_id": "contact:1", "created_at": "2026-02-01", "line_items": []}
-_MEMO = {"entity_id": "memo:1", "contact_id": "contact:1", "contact_name": "Alice",
-         "status": "active", "items": [{"item_id": "item:1", "name": "Ruby"}],
-         "total": 500, "created_at": "2026-01-10"}
 _SUB = {"entity_id": "sub:1", "name": "Monthly Invoice", "frequency": "monthly",
         "status": "active", "doc_type": "invoice", "contact_id": "contact:1",
         "start_date": "2026-01-01", "next_date": "2026-03-01", "line_items": []}
@@ -73,7 +70,6 @@ _VALUATION = {"item_count": 100, "active_item_count": 95, "cost_total": 50000,
               "retail_total": 200000, "wholesale_total": 120000,
               "category_counts": {"Parcel": 50, "Single": 30, "Pair": 15, "Set": 5}}
 _DOC_SUMMARY = {"ar_outstanding": 25000, "ar_gross": 100000}
-_MEMO_SUMMARY = {"active_total": 5000}
 _ACTIVITY = {"activities": [
     {"ts": "2026-02-25T10:00:00Z", "event_type": "document.invoice.created",
      "entity_id": "doc:inv1", "summary": "Invoice INV2026001 created", "actor": "admin"},
@@ -107,7 +103,6 @@ def _dashboard_mocks():
         "ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
         "ui.api_client.get_valuation": AsyncMock(return_value=_VALUATION),
         "ui.api_client.get_doc_summary": AsyncMock(return_value=_DOC_SUMMARY),
-        "ui.api_client.get_memo_summary": AsyncMock(return_value=_MEMO_SUMMARY),
         "ui.api_client.my_companies": AsyncMock(return_value={"items": [_COMPANY], "total": 1}),
         "ui.api_client.get_ar_aging": AsyncMock(return_value=_AR_AGING),
         "ui.api_client.get_activity": AsyncMock(return_value=_ACTIVITY["activities"]),
@@ -135,15 +130,12 @@ def _docs_mocks(docs=None):
     }
 
 
-def _crm_mocks(contacts=None, memos=None, deals=None):
+def _crm_mocks(contacts=None, deals=None):
     c = contacts if contacts is not None else [_CONTACT]
-    m = memos if memos is not None else [_MEMO]
     d = deals if deals is not None else [_DEAL]
     return {
         "ui.api_client.list_contacts": AsyncMock(return_value={"items": c, "total": len(c)}),
-        "ui.api_client.list_memos": AsyncMock(return_value={"items": m, "total": len(m)}),
         "ui.api_client.list_deals": AsyncMock(return_value={"items": d, "total": len(d)}),
-        "ui.api_client.get_memo_summary": AsyncMock(return_value=_MEMO_SUMMARY),
         "ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
     }
 
@@ -343,14 +335,6 @@ class TestDiscovery:
         assert b"Customer" in r.content or b"Contact" in r.content
 
     @pytest.mark.asyncio
-    async def test_crm_page_has_memos_tab(self, ui):
-        # Memos live at /contacts/vendors (memos tab) - just verify the memos section renders
-        with _Patches(_crm_mocks()):
-            r = await ui.get("/contacts/vendors", cookies=_c())
-        assert r.status_code == 200
-        # Vendors page links to memos
-        assert b"Memo" in r.content or b"memo" in r.content or b"Vendor" in r.content
-
     @pytest.mark.asyncio
     @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
     async def test_crm_page_has_deals_tab(self, ui):
@@ -459,24 +443,12 @@ class TestCRUDRead:
 
     @pytest.mark.asyncio
     async def test_contact_detail(self, ui):
-        with _Patches({"ui.api_client.get_contact": AsyncMock(return_value=_CONTACT),
-                       "ui.api_client.list_memos": AsyncMock(return_value={"items": [], "total": 0})}):
+        with _Patches({"ui.api_client.get_contact": AsyncMock(return_value=_CONTACT)}):
             r = await ui.get("/contacts/contact:1", cookies=_c())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
-    async def test_memo_list(self, ui):
-        with _Patches(_crm_mocks()):
-            r = await ui.get("/crm", follow_redirects=False, cookies=_c())
-        assert r.status_code == 302  # /crm redirects to /contacts/customers
-
     @pytest.mark.asyncio
-    async def test_memo_detail(self, ui):
-        with _Patches({"ui.api_client.get_memo": AsyncMock(return_value=_MEMO),
-                       "ui.api_client.list_items": AsyncMock(return_value={"items": [_ITEM], "total": 1})}):
-            r = await ui.get("/crm/memos/memo:1", cookies=_c())
-        assert r.status_code == 200
-
     @pytest.mark.asyncio
     async def test_subscription_list(self, ui):
         with _Patches({"ui.api_client.list_subscriptions": AsyncMock(return_value=[_SUB])}):
@@ -564,11 +536,6 @@ class TestCRUDCreate:
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
-    async def test_create_memo_blank_first(self, ui):
-        with _Patches({"ui.api_client.create_memo": AsyncMock(return_value={"id": "memo:new", "event_id": 1})}):
-            r = await ui.post("/crm/memos/new", cookies=_c())
-        assert r.status_code in (200, 204, 302, 303)
-
     @pytest.mark.asyncio
     async def test_create_mfg_order(self, ui):
         with _Patches({"ui.api_client.create_mfg_order": AsyncMock(return_value={"id": "mfg:new", "event_id": 1})}):
@@ -645,23 +612,8 @@ class TestWorkflows:
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
-    async def test_memo_approve(self, ui):
-        with _Patches({"ui.api_client.approve_memo": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/crm/memos/memo:1/approve", cookies=_c())
-        assert r.status_code in (200, 204, 302, 303)
-
     @pytest.mark.asyncio
-    async def test_memo_cancel(self, ui):
-        with _Patches({"ui.api_client.cancel_memo": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/crm/memos/memo:1/cancel", cookies=_c(), data={"reason": "changed mind"})
-        assert r.status_code in (200, 204, 302, 303)
-
     @pytest.mark.asyncio
-    async def test_memo_convert_to_invoice(self, ui):
-        with _Patches({"ui.api_client.convert_memo_to_invoice": AsyncMock(return_value={"target_doc_id": "doc:frommemo"})}):
-            r = await ui.post("/crm/memos/memo:1/convert-to-invoice", cookies=_c())
-        assert r.status_code in (200, 204, 302, 303)
-
     @pytest.mark.asyncio
     async def test_item_adjust_stock(self, ui):
         with _Patches({"ui.api_client.adjust_item": AsyncMock(return_value={"ok": True})}):
@@ -984,7 +936,7 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_empty_crm(self, ui):
-        with _Patches(_crm_mocks(contacts=[], memos=[], deals=[])):
+        with _Patches(_crm_mocks(contacts=[], deals=[])):
             r = await ui.get("/contacts/customers", cookies=_c())
         assert r.status_code == 200
 
@@ -1037,7 +989,6 @@ class TestEdgeCases:
         with _Patches({"ui.api_client.get_company": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.get_valuation": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.get_doc_summary": AsyncMock(side_effect=APIError(401, "expired")),
-                       "ui.api_client.get_memo_summary": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.my_companies": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.get_ar_aging": AsyncMock(side_effect=APIError(401, "expired")),
                        "ui.api_client.get_activity": AsyncMock(side_effect=APIError(401, "expired"))}):
@@ -1225,8 +1176,7 @@ class TestDataEntry:
 
     @pytest.mark.asyncio
     async def test_contact_detail_shows_email(self, ui):
-        with _Patches({"ui.api_client.get_contact": AsyncMock(return_value=_CONTACT),
-                       "ui.api_client.list_memos": AsyncMock(return_value={"items": [], "total": 0})}):
+        with _Patches({"ui.api_client.get_contact": AsyncMock(return_value=_CONTACT)}):
             r = await ui.get("/contacts/contact:1", cookies=_c())
         assert r.status_code == 200
         assert b"alice@test.com" in r.content

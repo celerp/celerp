@@ -389,6 +389,7 @@ async def get_doc_summary(
     sent_total = 0.0
     draft_total = 0.0
     void_total = 0.0
+    memo_total = 0.0
     unfulfilled_count = 0
     unfulfilled_total = 0.0
     not_restocked_count = 0
@@ -432,6 +433,8 @@ async def get_doc_summary(
         else:
             if st in ("void", "draft"):
                 continue
+            if dt == "memo":
+                memo_total += float(state.get("total", 0) or 0)
             if dt in ("memo", "consignment_in"):
                 due = state.get("due_date") or ""
                 if due and due < today:
@@ -477,6 +480,7 @@ async def get_doc_summary(
         "not_stocked_count": not_stocked_count,
         "converted_to_memo_count": converted_to_memo_count,
         "converted_to_invoice_count": converted_to_invoice_count,
+        "memo_all_total": memo_total,
         "count_by_status": count_by_status,
     }
 
@@ -733,6 +737,10 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
     row = await _get_doc(session, company_id, entity_id)
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot send void document")
+    from celerp_docs.doc_constants import NO_SEND_DOC_TYPES
+    doc_type = row.state.get("doc_type", "")
+    if doc_type in NO_SEND_DOC_TYPES:
+        raise HTTPException(status_code=409, detail=f"Document type '{doc_type}' cannot be sent")
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.sent",
         data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
@@ -2882,6 +2890,7 @@ async def unfulfill_doc(
         company_id=company_id,
         user_id=user.id,
         reason="manual",
+        doc_type=state.get("doc_type", ""),
     )
     from celerp.modules.slots import fire_lifecycle_strict
     await fire_lifecycle_strict("post_unfulfill_hook", doc_id=entity_id, company_id=company_id, session=session)

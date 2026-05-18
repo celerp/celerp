@@ -290,13 +290,13 @@ a:hover { text-decoration: underline; }
   padding: 8px 10px; text-align: center; font-weight: 600; font-size: 11px;
   color: var(--c-text2); text-transform: uppercase; letter-spacing: 0.04em;
   border-bottom: 1px solid var(--c-border); white-space: nowrap;
-  user-select: none;
+  user-select: none; overflow: hidden;
 }
 .data-table th[draggable="true"] { cursor: grab; }
 .data-table th[draggable="true"]:active { cursor: grabbing; }
 .data-table th.col-dragging { opacity: 0.5; }
 .data-table th.col-drag-over { border-left: 2px solid var(--c-accent); }
-.data-table td { text-align: left; }
+.data-table td { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .data-table td.cell--money, .data-table td.cell--number, .cell--number { text-align: right; font-family: var(--font-mono); }
 .data-table td { padding: 0 10px; height: var(--c-row-h); border-bottom: 1px solid var(--c-border); vertical-align: middle; }
 .data-row:last-child td { border-bottom: none; }

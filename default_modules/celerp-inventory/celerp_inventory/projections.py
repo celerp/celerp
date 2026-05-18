@@ -68,7 +68,18 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current = _sync_expiry_from_attributes(current)
     elif event_type == "item.updated":
         for field, change in data["fields_changed"].items():
-            current[field] = change.get("new")
+            if field == "pieces":
+                # pieces always lives in attributes["pieces"] — never at top-level
+                attrs = dict(current.get("attributes") or {})
+                new_val = change.get("new")
+                if new_val is None:
+                    attrs.pop("pieces", None)
+                else:
+                    attrs["pieces"] = new_val
+                current["attributes"] = attrs
+                current.pop("pieces", None)
+            else:
+                current[field] = change.get("new")
         current = _sync_expiry_from_attributes(current)
     elif event_type == "item.pricing.set":
         current[data["price_type"]] = data["new_price"]
@@ -94,7 +105,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.source_deactivated":
         # Emitted on source items when absorbed by a merge.
         current["is_available"] = False
-        current["quantity"] = 0
+        current["quantity"] = float(data.get("original_qty") or current.get("quantity") or 0)
         current["status"] = "merged"
         current["merged_into"] = data.get("merged_into")
     elif event_type == "item.consumed":
@@ -109,7 +120,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["quantity"] = float(data.get("quantity_fulfilled", 0))
         current["quantity_fulfilled"] = float(data.get("quantity_fulfilled", 0))
         current["is_available"] = False
-        current["status"] = "sold"
+        current["status"] = "memo_out" if data.get("doc_type") == "memo" else "sold"
         current.setdefault("fulfilled_for_docs", [])
         current["fulfilled_for_docs"].append(data["source_doc_id"])
     elif event_type == "item.fulfillment_reversed":

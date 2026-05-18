@@ -149,13 +149,6 @@ async def test_nav_crm_deals(client):
 
 
 @pytest.mark.asyncio
-async def test_nav_crm_memos(client):
-    token = await _reg(client)
-    r = await client.get("/crm/memos", headers=_h(token))
-    assert r.status_code == 200
-
-
-@pytest.mark.asyncio
 async def test_nav_docs_list(client):
     token = await _reg(client)
     r = await client.get("/docs", headers=_h(token))
@@ -696,29 +689,6 @@ async def test_crud_deal_lost(client):
 
 
 @pytest.mark.asyncio
-async def test_crud_memo_create_add_item(client):
-    token = await _reg(client)
-    h = _h(token)
-    contact = (await client.post("/crm/contacts", headers=h, json={"name": "Memo Contact"})).json()
-    r = await client.post("/crm/memos", headers=h, json={"contact_id": contact["id"]})
-    assert r.status_code == 200
-    mid = r.json()["id"]
-    r2 = await client.post(f"/crm/memos/{mid}/items", headers=h, json={"item_id": "item:1", "quantity": 2})
-    assert r2.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_crud_memo_remove_item(client):
-    token = await _reg(client)
-    h = _h(token)
-    contact = (await client.post("/crm/contacts", headers=h, json={"name": "Memo2"})).json()
-    mid = (await client.post("/crm/memos", headers=h, json={"contact_id": contact["id"]})).json()["id"]
-    await client.post(f"/crm/memos/{mid}/items", headers=h, json={"item_id": "item:x", "quantity": 1})
-    r = await client.delete(f"/crm/memos/{mid}/items/item:x", headers=h)
-    assert r.status_code == 200
-
-
-@pytest.mark.asyncio
 async def test_crud_items_export_csv_content_type(client):
     token = await _reg(client)
     await _item(client, token, sku="EXP-CSV-1")
@@ -782,7 +752,7 @@ async def test_crud_item_merge(client):
         r3 = await client.get(f"/items/{eid}", headers=h)
         assert r3.status_code == 200
         assert r3.json()["is_available"] is False
-        assert r3.json()["quantity"] == 0
+        assert r3.json()["quantity"] > 0  # original qty preserved for audit; merged status excludes from live counts
         assert r3.json()["status"] == "merged"
         assert r3.json()["merged_into"] == new_id
     # Default list should show new item but not merged sources.
@@ -1263,29 +1233,6 @@ async def test_wf_po_receive_creates_new_item(client):
 
 
 @pytest.mark.asyncio
-async def test_wf_memo_approve_and_convert_to_invoice(client):
-    token = await _reg(client)
-    h = _h(token)
-    contact = (await client.post("/crm/contacts", headers=h, json={"name": "Memo Client"})).json()
-    mid = (await client.post("/crm/memos", headers=h, json={"contact_id": contact["id"]})).json()["id"]
-    await client.post(f"/crm/memos/{mid}/items", headers=h, json={"item_id": "item:prod-1", "quantity": 3})
-    assert (await client.post(f"/crm/memos/{mid}/approve", headers=h)).status_code == 200
-    r = await client.post(f"/crm/memos/{mid}/convert-to-invoice", headers=h)
-    assert r.status_code == 200
-    doc_id = r.json().get("doc_id")
-    assert doc_id is not None
-
-
-@pytest.mark.asyncio
-async def test_wf_memo_cancel(client):
-    token = await _reg(client)
-    h = _h(token)
-    contact = (await client.post("/crm/contacts", headers=h, json={"name": "Cancel Memo Contact"})).json()
-    mid = (await client.post("/crm/memos", headers=h, json={"contact_id": contact["id"]})).json()["id"]
-    assert (await client.post(f"/crm/memos/{mid}/cancel", headers=h)).status_code == 200
-
-
-@pytest.mark.asyncio
 async def test_wf_manufacturing_full_cycle(client):
     token = await _reg(client)
     h = _h(token)
@@ -1453,18 +1400,6 @@ async def test_wf_docs_list_shows_all_types(client):
 
 
 @pytest.mark.asyncio
-async def test_wf_crm_memo_list(client):
-    token = await _reg(client)
-    h = _h(token)
-    contact = (await client.post("/crm/contacts", headers=h, json={"name": "List Memo Contact"})).json()
-    mid = (await client.post("/crm/memos", headers=h, json={"contact_id": contact["id"]})).json()["id"]
-    memos = (await client.get("/crm/memos", headers=h)).json()["items"]
-    assert any(m["id"] == mid for m in memos)
-
-
-
-
-@pytest.mark.asyncio
 async def test_wf_import_csv_items_count_increases(client):
     token = await _reg(client)
     h = _h(token)
@@ -1487,20 +1422,6 @@ async def test_wf_import_csv_items_count_increases(client):
     # Demo item is auto-wiped on first real import; after = exactly the 3 imported items
     assert after == 3
 
-
-@pytest.mark.asyncio
-async def test_wf_memo_summary(client):
-    token = await _reg(client)
-    h = _h(token)
-    contact = (await client.post("/crm/contacts", headers=h, json={"name": "Summary Contact"})).json()
-    await client.post("/crm/memos", headers=h, json={"contact_id": contact["id"]})
-    r = await client.get("/crm/memos/summary", headers=h)
-    assert r.status_code == 200
-
-
-# ===========================================================================
-# Category 5: Search & Filter
-# ===========================================================================
 
 @pytest.mark.asyncio
 async def test_sf_item_search_by_sku_exact(client):

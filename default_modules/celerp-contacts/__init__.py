@@ -25,11 +25,8 @@ PLUGIN_MANIFEST = {
         ],
         "projection_handler": [
             {"prefix": "crm.contact.", "handler": "celerp_contacts.projections:apply_contact_event"},
-            {"prefix": "crm.memo.", "handler": "celerp_contacts.projections:apply_contact_event"},
         ],
-        "send_to_targets": [
-            {"label": "Consignment Out", "doc_type": "memo", "statuses": ["out"]},
-        ],
+        "send_to_targets": [],
     },
     "migrations": None,
     "requires": [],

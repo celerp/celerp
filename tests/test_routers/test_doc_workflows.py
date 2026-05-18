@@ -1769,3 +1769,43 @@ async def test_status_only_reachable_via_lifecycle(client, session):
     state = (await client.get(f"/docs/{inv}", headers=h)).json()
     assert state["status"] == "final"
     # (full payment flow tested in test_payments.py)
+
+
+@pytest.mark.asyncio
+async def test_memo_fulfill_sets_memo_out_status(client, session):
+    """Fulfilling a memo doc sets item status to memo_out, not sold."""
+    token = await _register(client)
+    h = _h(token)
+
+    # Create an item
+    item_r = await client.post("/items", headers=h, json={"name": "Gem A", "quantity": 1, "sku": "GEM-MEMO-001", "sell_by": "piece"})
+    assert item_r.status_code == 200
+    item_id = item_r.json()["id"]
+
+    # Create and finalize a memo doc
+    doc_r = await client.post("/docs", headers=h, json={
+        "doc_type": "memo",
+        "contact_id": "contact:1",
+        "line_items": [{"name": "Gem A", "sku": "GEM-MEMO-001", "item_id": item_id, "quantity": 1, "unit_price": 100, "line_total": 100}],
+        "subtotal": 100, "tax": 0, "total": 100,
+    })
+    assert doc_r.status_code == 200
+    doc_id = doc_r.json()["id"]
+
+    await client.post(f"/docs/{doc_id}/finalize", headers=h)
+
+    # Fulfill (deliver to consignee)
+    fulfill_r = await client.post(f"/docs/{doc_id}/fulfill", headers=h)
+    assert fulfill_r.status_code == 200
+
+    item_state = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item_state["status"] == "memo_out", f"Expected memo_out, got {item_state['status']}"
+    assert item_state["is_available"] is False
+
+    # Unfulfill (item comes back)
+    unfulfill_r = await client.post(f"/docs/{doc_id}/unfulfill", headers=h)
+    assert unfulfill_r.status_code == 200
+
+    item_state2 = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item_state2["status"] == "available", f"Expected available, got {item_state2['status']}"
+    assert item_state2["is_available"] is True

@@ -731,7 +731,6 @@ _COMPANY = {"name": "Test Corp", "currency": "THB", "timezone": "Asia/Bangkok", 
 _VALUATION = {"item_count": 10, "active_item_count": 8, "total_cost": 5000.0, "total_retail": 8000.0,
               "total_wholesale": 6000.0, "cost_total": 5000.0, "retail_total": 8000.0, "wholesale_total": 6000.0}
 _DOC_SUMMARY = {"ar_outstanding": 100.0, "ar_total": 500.0, "ar_gross": 500.0, "invoice_count": 3}
-_MEMO_SUMMARY = {"total_balance": 200.0, "count": 2, "active_total": 200.0}
 _COMPANIES = [{"company_id": "c1", "company_name": "Test Corp", "role": "admin"}]
 _CONTACTS = [{"entity_id": "ct:1", "name": "Alice", "phone": "555", "email": "a@b.c",
               "tax_id": "T1", "credit_limit": 1000, "contact_type": "customer"}]
@@ -764,7 +763,6 @@ class TestDashboardPage:
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value=_DOC_SUMMARY)),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value=_COMPANIES)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {"current": 100, "1-30": 50}, "lines": []})),
@@ -975,7 +973,6 @@ class TestCRMPage:
     async def test_crm_renders(self, ui_client):
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": len(_CONTACTS)})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
         ):
             r = await ui_client.get("/contacts/customers", cookies=_authed())
@@ -994,7 +991,6 @@ class TestCRMPage:
     async def test_crm_empty(self, ui_client):
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
         ):
             r = await ui_client.get("/contacts/customers", cookies=_authed())
@@ -2275,6 +2271,60 @@ class TestColumnManager:
         # The show_cols param is passed through to initialise JS column state.
         assert b"col-name" in r.content
 
+    @pytest.mark.asyncio
+    async def test_sort_link_does_not_include_cols_from_dom(self, ui_client):
+        """Sort links must NOT include [name='cols'] in hx-include.
+        Cols must come exclusively from extra_params (URL state), not DOM checkboxes."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 1})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=_VALUATION)),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        # [name='cols'] must not appear inside any hx-include on sort links
+        content = r.content.decode()
+        import re
+        hx_includes = re.findall(r'hx-include="([^"]*)"', content)
+        for inc in hx_includes:
+            if "sort-link" in content[max(0, content.find(inc) - 200):content.find(inc)]:
+                assert "[name='cols']" not in inc, f"Sort link hx-include must not contain [name='cols']: {inc!r}"
+        # Broader check: no sort-link anchor should have [name='cols'] in its hx-include
+        assert not any("[name='cols']" in inc for inc in hx_includes), (
+            f"hx-include must not reference [name='cols'] (cols come from extra_params): {hx_includes}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cols_from_col_prefs_appear_in_pagination_links(self, ui_client):
+        """When cols come from col_prefs (not URL), pagination links must carry them."""
+        schema_with_cols = [
+            {"key": "name", "label": "Name", "type": "text", "editable": True, "show_in_table": True},
+            {"key": "status", "label": "Status", "type": "status", "editable": True, "show_in_table": False},
+        ]
+        saved_prefs = {"__all__": ["name"]}  # col_prefs has 'name' only
+        valuation_big = {**_VALUATION, "item_count": 100}  # enough for pagination
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema_with_cols)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [_ITEM], "total": 100})),
+            patch("ui.api_client.get_valuation", new=AsyncMock(return_value=valuation_big)),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value=saved_prefs)),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.get("/inventory", cookies=_authed())
+        assert r.status_code == 200
+        content = r.content.decode()
+        # Pagination links must contain cols=name (resolved from col_prefs)
+        assert "cols=name" in content, "Pagination links must carry cols resolved from col_prefs"
+
+
 class TestPhase2DeepPolish:
     @pytest.mark.asyncio
     async def test_inventory_item_detail_page_renders(self, ui_client):
@@ -2405,7 +2455,6 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"active_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -2425,7 +2474,6 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"active_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -2440,7 +2488,6 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"active_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -2454,7 +2501,6 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"active_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -2474,7 +2520,6 @@ class TestCollapsibleSidebar:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"active_total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
@@ -2641,7 +2686,6 @@ class TestGlobalSearch:
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Test"})),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={"item_count": 0, "cost_total": 0, "retail_total": 0, "wholesale_total": 0, "active_item_count": 0})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={"ar_outstanding": 0, "ar_gross": 0})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"active_total": 0})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_ar_aging", new=AsyncMock(return_value={"buckets": {}, "lines": []})),
         ):
@@ -2669,7 +2713,6 @@ class TestSortableColumns:
         contacts = [{"entity_id": "c:1", "name": "Acme", "phone": "1", "email": "a@a.com", "tax_id": "", "credit_limit": 1000, "contact_type": "customer"}]
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": contacts, "total": len(contacts)})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={"count": 1, "total_balance": 0})),
         ):
             r = await ui_client.get("/contacts/customers", cookies=_authed())
         assert r.status_code == 200
@@ -2796,7 +2839,6 @@ class TestCSVExport:
     async def test_crm_page_has_export_button(self, ui_client):
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={})),
         ):
             r = await ui_client.get("/contacts/customers", cookies=_authed())
         assert b"Export CSV" in r.content
@@ -3416,16 +3458,6 @@ _DEAL = {
     "status": "open",
 }
 
-_MEMO = {
-    "entity_id": "memo:m1",
-    "memo_number": "MEM-001",
-    "status": "draft",
-    "contact_id": "ct:1",
-    "notes": "Test memo",
-    "items": [
-        {"item_id": "item:r1", "quantity": 2, "price": 5000},
-    ],
-}
 
 _MFG_ORDER_WITH_STEPS = {
     "entity_id": "mfg:abc123",
@@ -5370,7 +5402,6 @@ class TestSprint5ContactCreation:
         """CRM page has a New Contact button."""
         with (
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": len(_CONTACTS)})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
         ):
             r = await ui_client.get("/contacts/customers", cookies=_authed())
         assert r.status_code == 200
@@ -5403,7 +5434,6 @@ class TestSprint5Deals:
         """Sales funnel page renders deals."""
         with (
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
         assert r.status_code == 200
@@ -5413,7 +5443,6 @@ class TestSprint5Deals:
     async def test_deals_tab_renders_kanban(self, ui_client):
         """Deals tab renders kanban board."""
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -5424,7 +5453,6 @@ class TestSprint5Deals:
     @pytest.mark.asyncio
     async def test_deals_tab_has_new_deal_button(self, ui_client):
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -5460,7 +5488,6 @@ class TestSprint5Deals:
     async def test_deals_show_value_formatted(self, ui_client):
         """Deal card shows value formatted with ฿."""
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -5470,7 +5497,6 @@ class TestSprint5Deals:
     async def test_deals_show_stage_columns(self, ui_client):
         """Deals board has stage columns."""
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -5581,7 +5607,6 @@ class TestDealsRedesign:
     async def test_deal_kanban_has_column_totals(self, ui_client):
         """Column header shows deal count and total value."""
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -5592,7 +5617,6 @@ class TestDealsRedesign:
     async def test_deal_card_links_to_detail(self, ui_client):
         """Deal card is wrapped in a link to the detail page."""
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -5602,7 +5626,6 @@ class TestDealsRedesign:
     async def test_deal_new_button_links_to_form(self, ui_client):
         """New Deal button links to /crm/deals/new, not create-blank."""
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -5612,7 +5635,6 @@ class TestDealsRedesign:
     async def test_deal_card_has_delete_button(self, ui_client):
         """Deal card has delete (×) button."""
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -5638,105 +5660,6 @@ class TestDealsRedesign:
         ):
             r = await ui_client.get("/crm/deals/deal:d1", cookies=_authed())
         assert b"Mark Won" in r.content
-
-
-class TestSprint5MemoActions:
-    """T6: Memo actions."""
-
-    @pytest.mark.asyncio
-    async def test_memo_detail_page_renders(self, ui_client):
-        """GET /crm/memos/{id} renders memo detail."""
-        with (
-            patch("ui.api_client.get_memo", new=AsyncMock(return_value=_MEMO)),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/crm/memos/memo:m1", cookies=_authed())
-        assert r.status_code == 200
-        assert b"MEM-001" in r.content
-
-    @pytest.mark.asyncio
-    async def test_draft_memo_shows_approve_button(self, ui_client):
-        with (
-            patch("ui.api_client.get_memo", new=AsyncMock(return_value=_MEMO)),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/crm/memos/memo:m1", cookies=_authed())
-        assert b"Approve" in r.content
-
-    @pytest.mark.asyncio
-    async def test_approved_memo_shows_convert_button(self, ui_client):
-        approved = {**_MEMO, "status": "approved"}
-        with (
-            patch("ui.api_client.get_memo", new=AsyncMock(return_value=approved)),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/crm/memos/memo:m1", cookies=_authed())
-        assert b"Convert to Invoice" in r.content
-        assert b"Cancel" in r.content
-        assert b"Return Items" in r.content
-
-    @pytest.mark.asyncio
-    async def test_memo_shows_line_items(self, ui_client):
-        with (
-            patch("ui.api_client.get_memo", new=AsyncMock(return_value=_MEMO)),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/crm/memos/memo:m1", cookies=_authed())
-        assert b"Line Items" in r.content
-        assert b"item:r1" in r.content
-
-    @pytest.mark.asyncio
-    async def test_draft_memo_has_add_item(self, ui_client):
-        with (
-            patch("ui.api_client.get_memo", new=AsyncMock(return_value=_MEMO)),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/crm/memos/memo:m1", cookies=_authed())
-        assert b"Add Item" in r.content
-
-    @pytest.mark.asyncio
-    async def test_approve_memo_route(self, ui_client):
-        with patch("ui.api_client.approve_memo", new=AsyncMock(return_value={})):
-            r = await ui_client.post("/crm/memos/memo:m1/approve", cookies=_authed())
-        assert r.status_code == 204
-
-    @pytest.mark.asyncio
-    async def test_cancel_memo_route(self, ui_client):
-        with patch("ui.api_client.cancel_memo", new=AsyncMock(return_value={})):
-            r = await ui_client.post("/crm/memos/memo:m1/cancel", data={"reason": "no longer needed"}, cookies=_authed())
-        assert r.status_code == 204
-
-    @pytest.mark.asyncio
-    async def test_convert_memo_to_invoice_route(self, ui_client):
-        with patch("ui.api_client.convert_memo_to_invoice",
-                   new=AsyncMock(return_value={"doc_id": "doc:INV-2026-0050"})):
-            r = await ui_client.post("/crm/memos/memo:m1/convert-to-invoice", cookies=_authed())
-        assert r.status_code == 204
-        assert "/docs/doc:INV-2026-0050" in r.headers["HX-Redirect"]
-
-    @pytest.mark.asyncio
-    async def test_add_memo_item_route(self, ui_client):
-        with patch("ui.api_client.add_memo_item", new=AsyncMock(return_value={})):
-            r = await ui_client.post("/crm/memos/memo:m1/add-item", data={"item_id": "item:r2", "quantity": "3"}, cookies=_authed())
-        assert r.status_code == 204
-
-    @pytest.mark.asyncio
-    async def test_remove_memo_item_route(self, ui_client):
-        with patch("ui.api_client.remove_memo_item", new=AsyncMock(return_value={})):
-            r = await ui_client.post("/crm/memos/memo:m1/remove-item/item:r1", cookies=_authed())
-        assert r.status_code == 204
-
-    @pytest.mark.asyncio
-    async def test_memo_no_popup_or_modal(self, ui_client):
-        """Memo detail must not use popups or modals."""
-        with (
-            patch("ui.api_client.get_memo", new=AsyncMock(return_value=_MEMO)),
-            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/crm/memos/memo:m1", cookies=_authed())
-        content = r.content.lower()
-        assert b"<dialog" not in content
-        assert b"modal" not in content
 
 
 class TestSprint5PaymentRefund:
@@ -5872,7 +5795,6 @@ class TestSprint5NoPopups:
     @pytest.mark.asyncio
     async def test_no_dialog_in_deals(self, ui_client):
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value=_MEMO_SUMMARY)),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={"items": [_DEAL], "total": 1})),
         ):
             r = await ui_client.get("/contacts/sales", cookies=_authed())
@@ -6782,7 +6704,6 @@ class TestCurrencyThreading:
     async def test_crm_deal_value_uses_fmt_money(self, ui_client):
         """Deals value column must use fmt_money, not hardcoded symbol."""
         with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_deals", new=AsyncMock(return_value={
                 "items": [{"id": "d1", "name": "Big Deal", "stage": "Lead",
                            "value": 50000, "contact_name": "Acme", "status": "open"}],
@@ -7380,7 +7301,6 @@ class TestDashboardCurrencyThreading:
             })),
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_doc_summary", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(return_value={})),
             patch("ui.api_client.my_companies", new=AsyncMock(return_value={"items": [], "total": 0})),
         ):
             r = await ui_client.get("/", cookies=_authed())
@@ -7474,17 +7394,6 @@ class TestApiErrorHandling:
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         # Must not 500 — redirect or graceful error page
-        assert r.status_code in (200, 302, 303)
-
-    @pytest.mark.asyncio
-    async def test_crm_memo_summary_error_falls_back_gracefully(self, ui_client):
-        """If get_memo_summary raises APIError(503), CRM must still load with empty memo_summary."""
-        from ui.api_client import APIError
-        with (
-            patch("ui.api_client.get_memo_summary", new=AsyncMock(side_effect=APIError(503, "Service unavailable"))),
-            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/crm?tab=contacts", cookies=_authed())
         assert r.status_code in (200, 302, 303)
 
     @pytest.mark.asyncio
@@ -8722,63 +8631,6 @@ class TestBulkActionsPhase6SendTo:
     # -- Memos modal + create + add --
 
     @pytest.mark.asyncio
-    async def test_memos_from_items_shows_modal(self, ui_client):
-        with patch("ui.api_client.list_memos", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.post(
-                "/crm/memos/from-items",
-                content=b"selected=item%3Aa",
-                headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 200
-        assert b"Send to Memo" in r.content
-
-    @pytest.mark.asyncio
-    async def test_memos_from_items_new_creates_memo(self, ui_client):
-        mock_create = AsyncMock(return_value={"id": "memo:M-001"})
-        mock_add = AsyncMock(return_value={"event_id": "e1"})
-        with (
-            patch("ui.api_client.create_memo", new=mock_create),
-            patch("ui.api_client.add_memo_item", new=mock_add),
-        ):
-            r = await ui_client.post(
-                "/crm/memos/from-items/new",
-                content=b"selected=item%3Aa&selected=item%3Ab",
-                headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 204
-        assert "memo:M-001" in r.headers.get("hx-redirect", "")
-        assert mock_add.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_memos_from_items_add_to_existing(self, ui_client):
-        mock_add = AsyncMock(return_value={"event_id": "e1"})
-        with patch("ui.api_client.add_memo_item", new=mock_add):
-            r = await ui_client.post(
-                "/crm/memos/from-items/add",
-                content=b"selected=item%3Aa&selected=item%3Ab&target_id=memo%3AM-001",
-                headers={"content-type": "application/x-www-form-urlencoded"},
-                cookies=_authed(),
-            )
-        assert r.status_code == 204
-        assert "memo:M-001" in r.headers.get("hx-redirect", "")
-        assert mock_add.call_count == 2
-
-    @pytest.mark.asyncio
-    async def test_memos_from_items_no_selection(self, ui_client):
-        r = await ui_client.post(
-            "/crm/memos/from-items",
-            content=b"",
-            headers={"content-type": "application/x-www-form-urlencoded"},
-            cookies=_authed(),
-        )
-        assert r.status_code == 200
-        assert b"No items selected" in r.content
-
-    # -- Search endpoints --
-
-    @pytest.mark.asyncio
     async def test_docs_from_items_search_returns_options(self, ui_client):
         docs = [{"id": "doc:INV-001", "ref_id": "INV-001", "status": "draft", "contact_name": "Alice"}]
         with patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": docs, "total": 1})):
@@ -8804,7 +8656,7 @@ class TestBulkActionsPhase6SendTo:
 
     @pytest.mark.asyncio
     async def test_docs_module_registers_send_to_targets(self, ui_client):
-        """celerp-docs PLUGIN_MANIFEST declares send_to_targets slots."""
+        """celerp-docs PLUGIN_MANIFEST declares send_to_targets slots including memo."""
         import importlib
         from test_helpers import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
@@ -8816,10 +8668,14 @@ class TestBulkActionsPhase6SendTo:
         labels = [t["label"] for t in targets]
         assert "Invoice" in labels
         assert "List/Quotation" in labels
+        assert "Consignment Out" in labels
+        # Memo target must use doc_type=memo (not CRM memo)
+        memo_target = next(t for t in targets if t["label"] == "Consignment Out")
+        assert memo_target["doc_type"] == "memo"
 
     @pytest.mark.asyncio
-    async def test_crm_module_registers_send_to_target(self, ui_client):
-        """celerp-contacts PLUGIN_MANIFEST declares send_to_targets slot."""
+    async def test_crm_module_does_not_register_send_to_target(self, ui_client):
+        """celerp-contacts PLUGIN_MANIFEST must NOT declare send_to_targets (moved to celerp-docs)."""
         import importlib
         from test_helpers import REPO_ROOT
         spec = importlib.util.spec_from_file_location(
@@ -8828,8 +8684,7 @@ class TestBulkActionsPhase6SendTo:
         spec.loader.exec_module(mod)
         slots = mod.PLUGIN_MANIFEST.get("slots", {})
         targets = slots.get("send_to_targets", [])
-        labels = [t["label"] for t in targets]
-        assert "Consignment Out" in labels
+        assert targets == [], "send_to_targets for memo belongs in celerp-docs, not celerp-contacts"
 
 
 # ---------------------------------------------------------------------------
@@ -10692,6 +10547,23 @@ class TestInventoryUXFixes:
         ]
         html = to_xml(_column_manager(schema, {}))
         assert 'draggable="true"' in html
+
+    def test_data_table_js_no_force_hide_branch(self):
+        """data_table IIFE must NOT contain the force-hide branch (Bug 2 fix).
+
+        The else-if (SCHEMA_DEFAULTS[key] === false) branch overwrites user
+        localStorage prefs when a column's schema default is false, causing
+        user-visible columns (e.g. created_at) to disappear after sort.
+        """
+        from fasthtml.common import to_xml
+        from ui.components.table import data_table
+        schema = [
+            {"key": "name", "label": "Name", "type": "text", "show_in_table": True},
+            {"key": "created_at", "label": "Created", "type": "text", "show_in_table": False},
+        ]
+        html = to_xml(data_table(schema, [], entity_type="inventory"))
+        # The force-hide pattern must not appear
+        assert "prefs[th.dataset.key] = false" not in html
 
     # ── Fix 4: Split/create timestamps ────────────────────────────────────
 

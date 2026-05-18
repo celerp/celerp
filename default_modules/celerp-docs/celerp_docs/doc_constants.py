@@ -18,7 +18,7 @@ TEMPLATE_DOC_TYPES: frozenset[str] = frozenset({"subscription_invoice", "subscri
 # Doc types where Send and Mark as Sent must be hidden entirely.
 # Bills and consignment_in are internal receiving documents - never sent to external parties.
 # Purchase orders are outbound to vendors and DO need send/mark-as-sent.
-NO_SEND_DOC_TYPES: frozenset[str] = frozenset({"bill", "consignment_in"})
+NO_SEND_DOC_TYPES: frozenset[str] = frozenset({"bill", "consignment_in", "purchase_order"})
 
 # Statuses where Send is suppressed even for sendable doc types.
 NO_SEND_STATUSES: frozenset[str] = frozenset({"paid", "void"})

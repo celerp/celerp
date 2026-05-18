@@ -1468,6 +1468,58 @@ def setup_ui_routes(app) -> None:
             template = templates[0] if templates else None
         return _printable_label_sheet([item_data] if item_data else [], template)
 
+    @app.get("/labels/print-doc/{doc_id}")
+    async def labels_print_doc(request: Request, doc_id: str):
+        """Printable HTML label sheet for all line-item items on a document.
+
+        Fetches the doc's line items, resolves each to an item entity_id,
+        fetches item data, and renders a label sheet ready for window.print().
+        """
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        template_id = request.query_params.get("template_id") or None
+        api_base = _api_base(request)
+        headers = {"Authorization": f"Bearer {token}"}
+        items_data: list[dict] = []
+        try:
+            async with httpx.AsyncClient(timeout=10) as c:
+                doc_r = await c.get(f"{api_base}/docs/{doc_id}", headers=headers)
+                if doc_r.status_code == 200:
+                    line_items = doc_r.json().get("line_items") or []
+                    entity_ids: list[str] = []
+                    skus_to_resolve: list[str] = []
+                    for li in line_items:
+                        eid = li.get("entity_id") or li.get("item_entity_id") or li.get("item_id")
+                        if eid:
+                            entity_ids.append(eid)
+                        elif li.get("sku"):
+                            skus_to_resolve.append(li["sku"])
+                    # Resolve SKU fallbacks
+                    if skus_to_resolve:
+                        for sku in dict.fromkeys(skus_to_resolve):  # dedup, preserve order
+                            inv_r = await c.get(f"{api_base}/items", params={"sku": sku}, headers=headers)
+                            if inv_r.status_code == 200:
+                                found = inv_r.json().get("items") or []
+                                if found:
+                                    eid = found[0].get("entity_id") or found[0].get("id")
+                                    if eid:
+                                        entity_ids.append(eid)
+                    for eid in dict.fromkeys(entity_ids):  # dedup, preserve order
+                        item_r = await c.get(f"{api_base}/items/{eid}", headers=headers)
+                        if item_r.status_code == 200:
+                            items_data.append(item_r.json())
+        except Exception as exc:
+            log.warning("Could not fetch doc %s for label print: %s", doc_id, exc)
+        template: dict | None = None
+        if template_id:
+            templates = await _fetch_templates(request)
+            template = next((tpl for tpl in templates if tpl["id"] == template_id), None)
+        if not template:
+            templates = await _seed_presets_if_empty(request)
+            template = templates[0] if templates else None
+        return _printable_label_sheet(items_data, template)
+
     @app.get("/labels/template-options")
     async def labels_template_options(request: Request):
         """Return <option> elements for label templates (HTMX fragment for bulk toolbar select)."""

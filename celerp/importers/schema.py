@@ -34,7 +34,6 @@ class CIFEntityType(StrEnum):
     CONTACT = "contact"
     INVOICE = "invoice"
     PURCHASE_ORDER = "purchase_order"
-    MEMO = "memo"
     PRODUCTION = "production"
     SHIPPING_DOC = "shipping_doc"
     LOCATION = "location"
@@ -84,7 +83,6 @@ class CIFRecord(BaseModel):
             CIFEntityType.CONTACT: "crm",
             CIFEntityType.INVOICE: "doc",
             CIFEntityType.PURCHASE_ORDER: "doc",
-            CIFEntityType.MEMO: "crm",
             CIFEntityType.PRODUCTION: "mfg",
             CIFEntityType.SHIPPING_DOC: "doc",
         }
@@ -172,22 +170,11 @@ class CIFDocument(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-class CIFMemo(BaseModel):
-    """A customer memo (consignment out)."""
-    external_id: str
-    status: Literal["draft", "out", "returned", "invoiced"]
-    contact_external_id: str | None = None
-    total: Decimal
-    created_at: datetime | None = None
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
-
 class CIFImportBundle(BaseModel):
     """Complete set of entities for one import batch."""
     items: list[CIFItem] = Field(default_factory=list)
     contacts: list[CIFContact] = Field(default_factory=list)
     documents: list[CIFDocument] = Field(default_factory=list)
-    memos: list[CIFMemo] = Field(default_factory=list)
 
 
 class CIFImportManifest(BaseModel):

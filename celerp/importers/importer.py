@@ -41,7 +41,6 @@ _BATCH_ENDPOINTS = {
     "item": "/items/import/batch",
     "contact": "/crm/contacts/import/batch",
     "invoice": "/docs/import/batch",
-    "memo": "/crm/memos/import/batch",
 }
 
 
@@ -274,28 +273,7 @@ class BundleImporter:
             stats = await self._import_entity_type(client, "Documents", "invoice", doc_records, result)
             result.entity_stats.append(stats)
 
-            # ── Memos ─────────────────────────────────────────────────────────
-            memo_records = [
-                {
-                    "entity_id": f"memo:{m.external_id}",
-                    "event_type": "crm.memo.created",
-                    "data": {
-                        "external_id": m.external_id,
-                        "status": m.status,
-                        "contact_external_id": m.contact_external_id,
-                        "total": str(m.total),
-                        "created_at": m.created_at.isoformat() if m.created_at else None,
-                        **m.metadata,
-                    },
-                    "source": source,
-                    "idempotency_key": f"cif:memo:{m.external_id}",
-                }
-                for m in bundle.memos
-            ]
-            stats = await self._import_entity_type(client, "Memos", "memo", memo_records, result)
-            result.entity_stats.append(stats)
-
-        t_total = time.monotonic() - t_total_start
+            t_total = time.monotonic() - t_total_start
         print(f"\n  Total import time: {t_total:.1f}s")
 
         return result
@@ -309,7 +287,6 @@ class BundleImporter:
             (len(bundle.items) + bs - 1) // bs
             + (len(bundle.contacts) + bs - 1) // bs
             + (len(bundle.documents) + bs - 1) // bs
-            + (len(bundle.memos) + bs - 1) // bs
         )
 
         print("\n── CIF Dry Run Report ──────────────────────────────────────")
@@ -319,7 +296,6 @@ class BundleImporter:
         print(f"    Items:     {len(bundle.items)}")
         print(f"    Contacts:  {len(bundle.contacts)}")
         print(f"    Documents: {len(bundle.documents)}")
-        print(f"    Memos:     {len(bundle.memos)}")
         print(f"\n  Stats from manifest:")
         for k, v in stats.items():
             print(f"    {k}: {v}")

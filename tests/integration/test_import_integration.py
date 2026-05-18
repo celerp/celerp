@@ -83,13 +83,3 @@ async def test_contact_count(api):
     assert isinstance(total, int)
     assert total >= CONTACT_COUNT, f"Expected >= {CONTACT_COUNT} contacts, got {total}"
 
-
-async def test_memo_total(api):
-    """All memos total (face value at creation) must match truth anchor."""
-    r = await api.get("/crm/memos/summary")
-    assert r.status_code == 200, r.text
-    data = r.json()
-    all_total = data["all_total"]
-    assert abs(all_total - MEMO_TOTAL) <= TOLERANCE, (
-        f"Memo total diff: {all_total - MEMO_TOTAL:.2f}"
-    )

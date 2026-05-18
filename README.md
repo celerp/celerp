@@ -2,7 +2,9 @@
 
 **Free business management software for you and your office. Setup in minutes. Easy enough for solo entrepreneurs and powerful enough for large enterprises**
 
-Inventory, invoicing, purchasing, consignment, manufacturing, accounting, and CRM - in one app, on your computer. No subscription. No cloud required. 
+Inventory, invoicing, purchasing, consignment, manufacturing, accounting, and CRM - in one app, on your computer. No subscription. No cloud required.
+
+Website: [www.celerp.com](https://www.celerp.com)
 
 Celerp is simple to use, flexible, customizable, and designed to transition your business into the AI age with no technical knowledge needed to setup your whole office. We want to put businesses back in charge of their data.
 
@@ -19,7 +21,7 @@ Celerp is simple to use, flexible, customizable, and designed to transition your
 |----------|------|
 | Windows (.exe) | [Latest release](https://github.com/celerp/celerp/releases/latest) |
 | Linux (.AppImage) | [Latest release](https://github.com/celerp/celerp/releases/latest) |
-| macOS (.dmg) | Coming soon |
+| macOS (.dmg) | [Latest release](https://github.com/celerp/celerp/releases/latest) |
 
 **Double-click. No account. No credit card. Your computer securely becomes the server for your office**
 
