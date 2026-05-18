@@ -134,6 +134,7 @@ class SplitChild(BaseModel):
     sku: str
     quantity: float
     weight: float | None = None
+    barcode: str | None = None  # auto-assigned from shared sequence if omitted
     attributes: dict = Field(default_factory=dict)
 
 
@@ -537,6 +538,34 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     return filtered[0]
 
 
+async def _next_seq(session: AsyncSession, company_id: uuid.UUID) -> int:
+    """Return the next integer in the shared SKU/barcode sequence for a company.
+
+    Scans all integer-valued SKUs and barcodes together so the two namespaces
+    never collide (e.g. a barcode assigned during a split won't be re-used as
+    a SKU on the next new item creation).
+
+    Only barcodes with ≤9 digits are considered - this excludes EAN-13/GTIN
+    barcodes imported from external sources while still covering all internally
+    assigned barcodes (which start at 6 digits and grow slowly).
+    """
+    sku_vals = (await session.execute(
+        select(Projection.state["sku"].as_string()).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    barcode_vals = (await session.execute(
+        select(Projection.state["barcode"].as_string()).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+        )
+    )).scalars().all()
+    _MAX_SEQ_DIGITS = 9  # excludes EAN-13/GTIN-14 imported barcodes
+    all_vals = list(sku_vals) + [v for v in barcode_vals if v and len(v) <= _MAX_SEQ_DIGITS]
+    return max((int(v) for v in all_vals if v and str(v).isdigit()), default=0) + 1
+
+
 @router.post("")
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: operator/viewer cannot set cost_price on creation (manager+ required)
@@ -562,14 +591,11 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # Auto-assign sequential SKU if not provided
     if not payload.sku:
-        sku_rows = (await session.execute(
-            select(Projection.state["sku"].as_string()).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "item",
-            )
-        )).scalars().all()
-        max_seq = max((int(s) for s in sku_rows if s and str(s).isdigit()), default=0)
-        payload = payload.model_copy(update={"sku": str(max_seq + 1).zfill(6)})
+        payload = payload.model_copy(update={"sku": str(await _next_seq(session, company_id)).zfill(6)})
+
+    # Auto-copy SKU to barcode when barcode omitted and SKU is purely numeric
+    if payload.barcode is None and payload.sku.isdigit():
+        payload = payload.model_copy(update={"barcode": payload.sku})
 
     # SKU uniqueness
     existing_sku = (await session.execute(
@@ -1078,6 +1104,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     # Create child items
     child_eids: list[str] = []
     child_qty_list: list[float] = []
+    next_barcode_seq = await _next_seq(session, company_id)  # single DB scan; incremented in-memory per child
     for child in children:
         child_eid = f"item:{uuid.uuid4()}"
         child_eids.append(child_eid)
@@ -1111,6 +1138,9 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             child_data["tax_codes"] = parent_tax_codes
         if parent_expires_at:
             child_data["expires_at"] = parent_expires_at
+        # Auto-assign barcode from shared sequence (or use caller-supplied override)
+        child_data["barcode"] = child.barcode if child.barcode is not None else str(next_barcode_seq).zfill(6)
+        next_barcode_seq += 1
         await emit_event(
             session,
             company_id=company_id,
