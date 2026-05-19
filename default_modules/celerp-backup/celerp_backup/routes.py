@@ -103,12 +103,15 @@ def _backup_table(items: list[dict]):
 @router.post("/trigger")
 async def trigger_backup(type: str = "database"):
     """Run a backup (database or files). Returns flash + HX-Trigger to refresh list."""
+    from celerp.services import backup_scheduler
     if type == "database":
         from celerp.services.backup import run_backup
         result: BackupResult = await run_backup(label="manual")
+        backup_scheduler.record_db_result(result.ok, result.error, result.size_bytes or 0)
     elif type == "files":
         from celerp.services.backup_files import run_file_backup
         result = await run_file_backup(label="manual")
+        backup_scheduler.record_file_result(result.ok, result.error, result.size_bytes or 0)
     else:
         raise HTTPException(status_code=400, detail="type must be 'database' or 'files'")
 

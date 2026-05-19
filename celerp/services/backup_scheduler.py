@@ -45,6 +45,18 @@ def last_file_result() -> SchedulerStatus:
     return _last_file
 
 
+def record_db_result(ok: bool, error: str | None = None, size_bytes: int = 0) -> None:
+    """Update last DB backup status (called by manual triggers and scheduler)."""
+    global _last_db
+    _last_db = SchedulerStatus(last_run=datetime.now(timezone.utc), ok=ok, error=error, size_bytes=size_bytes)
+
+
+def record_file_result(ok: bool, error: str | None = None, size_bytes: int = 0) -> None:
+    """Update last file backup status (called by manual triggers and scheduler)."""
+    global _last_file
+    _last_file = SchedulerStatus(last_run=datetime.now(timezone.utc), ok=ok, error=error, size_bytes=size_bytes)
+
+
 def _seconds_until(target_hour: int, target_minute: int = 0) -> float:
     """Seconds from now until the next occurrence of target_hour:target_minute UTC."""
     now = datetime.now(timezone.utc)
@@ -86,7 +98,6 @@ def next_file_run_utc() -> datetime | None:
 
 async def _db_backup_loop() -> None:
     """Daily DB backup at configured hour."""
-    global _last_db
     from celerp.config import settings
     while True:
         wait = _seconds_until(settings.backup_hour)
@@ -95,12 +106,7 @@ async def _db_backup_loop() -> None:
 
         from celerp.services.backup import run_backup
         result = await run_backup(label="daily")
-        _last_db = SchedulerStatus(
-            last_run=datetime.now(timezone.utc),
-            ok=result.ok,
-            error=result.error,
-            size_bytes=result.size_bytes,
-        )
+        record_db_result(result.ok, result.error, result.size_bytes or 0)
         if result.ok:
             log.info("Daily DB backup succeeded (%d bytes)", result.size_bytes)
         elif result.error and "Relay not connected" in result.error:
@@ -109,12 +115,7 @@ async def _db_backup_loop() -> None:
             log.error("Daily DB backup failed: %s - retrying in 1 hour", result.error)
             await asyncio.sleep(3600)
             result = await run_backup(label="daily-retry")
-            _last_db = SchedulerStatus(
-                last_run=datetime.now(timezone.utc),
-                ok=result.ok,
-                error=result.error,
-                size_bytes=result.size_bytes,
-            )
+            record_db_result(result.ok, result.error, result.size_bytes or 0)
             if result.ok:
                 log.info("Daily DB backup retry succeeded (%d bytes)", result.size_bytes)
             else:
@@ -123,7 +124,6 @@ async def _db_backup_loop() -> None:
 
 async def _file_backup_loop() -> None:
     """Weekly file backup on Sunday at backup_hour + 1."""
-    global _last_file
     from celerp.config import settings
     while True:
         wait = _seconds_until_weekday(6, settings.backup_hour + 1)  # Sunday
@@ -132,12 +132,7 @@ async def _file_backup_loop() -> None:
 
         from celerp.services.backup_files import run_file_backup
         result = await run_file_backup(label="weekly")
-        _last_file = SchedulerStatus(
-            last_run=datetime.now(timezone.utc),
-            ok=result.ok,
-            error=result.error,
-            size_bytes=result.size_bytes,
-        )
+        record_file_result(result.ok, result.error, result.size_bytes or 0)
         if result.ok:
             log.info("Weekly file backup succeeded (%d bytes)", result.size_bytes)
         elif result.error and "Relay not connected" in result.error:
@@ -146,12 +141,7 @@ async def _file_backup_loop() -> None:
             log.error("Weekly file backup failed: %s - retrying in 1 hour", result.error)
             await asyncio.sleep(3600)
             result = await run_file_backup(label="weekly-retry")
-            _last_file = SchedulerStatus(
-                last_run=datetime.now(timezone.utc),
-                ok=result.ok,
-                error=result.error,
-                size_bytes=result.size_bytes,
-            )
+            record_file_result(result.ok, result.error, result.size_bytes or 0)
             if result.ok:
                 log.info("Weekly file backup retry succeeded (%d bytes)", result.size_bytes)
             else:

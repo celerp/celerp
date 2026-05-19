@@ -429,7 +429,7 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
 
     cloud_section = Div(
         Div(
-            H4(t("settings.tab_backup"), style="margin:0;"),
+            H4(t("page.backup"), style="margin:0;"),
             A(t("settings.view_full_backup_settings"), href="/settings/general?tab=backup",
               cls="settings-hint", style="font-size:0.82rem;"),
             style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;",
@@ -444,7 +444,6 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
     )
 
     return Div(
-        H3(t("page.backup"), cls="settings-section-title"),
         cloud_section,
         cls="settings-card",
     )
