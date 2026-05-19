@@ -362,9 +362,13 @@ async def download_contact_file(
 
     match = _get_contact_file(row.state.get("files", []), file_id)
     url = match.get("url", "")
+    from celerp.config import settings
     # Local backend: url = /static/attachments/<company_id>/<file>
     # Resolve against data_dir — url is web-relative, not cwd-relative.
-    from celerp.config import settings
+    # Legacy records (pre-fix) have no url stored; reconstruct from file_id + filename.
+    if not url:
+        ext = Path(match.get("filename", "")).suffix
+        url = f"/static/attachments/{company_id}/{file_id}{ext}"
     dest = settings.data_dir / url.lstrip("/")
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File missing from disk")
