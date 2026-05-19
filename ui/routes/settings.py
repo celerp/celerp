@@ -2250,6 +2250,18 @@ def setup_routes(app):
     # The HTMX targets on the backup tab (/backup/list, /backup/trigger,
     # /backup/export, /backup/import) point here; we call the API with the
     # user's JWT just like every other settings route handler.
+    #
+    # Error handling rule: HTMX requests must ALWAYS return an HTML fragment
+    # (never a redirect). Any 401 from the relay means "cloud not connected"
+    # — show an error fragment. Only redirect to /login when the user's own
+    # token is missing.
+
+    def _backup_error(detail: str, lang: str = "en") -> Response:
+        from fasthtml.common import Div, to_xml
+        return Response(
+            content=to_xml(Div(detail, cls="empty-state-msg")),
+            media_type="text/html",
+        )
 
     @app.get("/backup/list")
     async def backup_list(request: Request):
@@ -2264,23 +2276,15 @@ def setup_routes(app):
         try:
             data = await _api.list_backups(token, backup_type=backup_type)
         except _api.APIError as exc:
-            if exc.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Response(
-                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
-                media_type="text/html",
-                status_code=exc.status,
-            )
+            # Any error (including relay 401) renders as a fragment — never redirect.
+            return _backup_error(t("settings.cloud_not_connected", lang), lang)
         items = data.get("items", []) if isinstance(data, dict) else []
         if not items:
             return Response(
                 content=to_xml(Div(t("settings.no_backups_yet", lang), cls="empty-state-msg")),
                 media_type="text/html",
             )
-        # Delegate HTML rendering to the API module's helper via the same
-        # api_client response — render a simple table here to avoid importing
-        # private API-process helpers into the UI process.
-        from fasthtml.common import Table, Thead, Tbody, Tr, Th, Td, Span
+        from fasthtml.common import Table, Thead, Tbody, Tr, Th, Td
         def _fmt(iso: str | None) -> str:
             if not iso:
                 return "-"
@@ -2318,14 +2322,8 @@ def setup_routes(app):
         backup_type = request.query_params.get("type", "database")
         try:
             await _api.trigger_backup(token, backup_type=backup_type)
-        except _api.APIError as exc:
-            if exc.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Response(
-                content=to_xml(Div(str(exc.detail), cls="flash flash--error", id="backup-flash")),
-                media_type="text/html",
-                status_code=exc.status,
-            )
+        except _api.APIError:
+            return _backup_error(t("settings.cloud_not_connected", lang), lang)
         msg = t("settings.backup_triggered", lang) if backup_type == "database" else t("settings.file_backup_triggered", lang)
         resp = Response(
             content=to_xml(Div(msg, cls="flash flash--success", id="backup-flash")),
@@ -2344,13 +2342,10 @@ def setup_routes(app):
         try:
             content, content_type, content_disp = await _api.export_backup(token)
         except _api.APIError as exc:
-            if exc.status == 401:
-                return RedirectResponse("/login", status_code=302)
             from fasthtml.common import Div, to_xml
             return Response(
                 content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
                 media_type="text/html",
-                status_code=exc.status,
             )
         return Response(
             content=content,
@@ -2364,12 +2359,11 @@ def setup_routes(app):
         import ui.api_client as _api
         import httpx
         from fasthtml.common import Div, to_xml
-        from ui.config import API_BASE, get_token as _gt
-        token = _gt(request)
+        from ui.config import API_BASE
+        token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         lang = get_lang(request)
-        # Multipart pass-through: re-stream the file to the API.
         form = await request.form()
         file_field = form.get("file")
         if file_field is None:
@@ -2381,14 +2375,11 @@ def setup_routes(app):
         try:
             async with httpx.AsyncClient(base_url=API_BASE, headers={"Authorization": f"Bearer {token}"}, timeout=300) as c:
                 r = await c.post("/backup/import", files={"file": (file_field.filename, file_bytes, file_field.content_type or "application/octet-stream")})
-            if r.status_code == 401:
-                return RedirectResponse("/login", status_code=302)
             if r.status_code >= 400:
                 detail = r.json().get("detail", r.text[:200]) if r.headers.get("content-type", "").startswith("application/json") else r.text[:200]
                 return Response(
                     content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
                     media_type="text/html",
-                    status_code=r.status_code,
                 )
         except httpx.HTTPError as exc:
             return Response(
