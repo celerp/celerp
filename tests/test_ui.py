@@ -11900,3 +11900,101 @@ def test_split_weight_has_onblur_clamp():
     assert "splitClampWeight" in src or "onblur" in src.split("child_weight")[1][:200], (
         "child_weight input must have an onblur clamp handler"
     )
+
+
+# ── Backup proxy routes ────────────────────────────────────────────────────────
+
+class TestBackupProxyRoutes:
+    """Regression: /backup/* HTMX calls from the settings page go to the UI
+    process (8080). Without proxy routes on the UI app, every request returns
+    404 even though the routes exist on the API process (8000).
+    """
+
+    @pytest.mark.asyncio
+    async def test_backup_list_database_not_404(self, ui_client):
+        """GET /backup/list?backup_type=database must NOT return 404."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/html"}
+        mock_resp.content = b'<div class="empty-state-msg">No backups</div>'
+        with patch("httpx.AsyncClient") as mock_cls:
+            inst = AsyncMock()
+            inst.__aenter__ = AsyncMock(return_value=inst)
+            inst.__aexit__ = AsyncMock(return_value=False)
+            inst.get = AsyncMock(return_value=mock_resp)
+            mock_cls.return_value = inst
+            r = await ui_client.get(
+                "/backup/list?backup_type=database",
+                headers={"HX-Request": "true"},
+                cookies=_authed(),
+            )
+        assert r.status_code != 404, (
+            f"/backup/list returned 404 — backup proxy routes are missing from the UI app. "
+            f"Got {r.status_code}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_list_files_not_404(self, ui_client):
+        """GET /backup/list?backup_type=files must NOT return 404."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/html"}
+        mock_resp.content = b'<div class="empty-state-msg">No backups</div>'
+        with patch("httpx.AsyncClient") as mock_cls:
+            inst = AsyncMock()
+            inst.__aenter__ = AsyncMock(return_value=inst)
+            inst.__aexit__ = AsyncMock(return_value=False)
+            inst.get = AsyncMock(return_value=mock_resp)
+            mock_cls.return_value = inst
+            r = await ui_client.get(
+                "/backup/list?backup_type=files",
+                headers={"HX-Request": "true"},
+                cookies=_authed(),
+            )
+        assert r.status_code != 404, (
+            f"/backup/list?backup_type=files returned 404 — backup proxy routes are missing. "
+            f"Got {r.status_code}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_trigger_not_404(self, ui_client):
+        """POST /backup/trigger must NOT return 404."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/html"}
+        mock_resp.content = b'<div class="flash flash--success" id="backup-flash">Backup complete</div>'
+        with patch("httpx.AsyncClient") as mock_cls:
+            inst = AsyncMock()
+            inst.__aenter__ = AsyncMock(return_value=inst)
+            inst.__aexit__ = AsyncMock(return_value=False)
+            inst.post = AsyncMock(return_value=mock_resp)
+            mock_cls.return_value = inst
+            r = await ui_client.post(
+                "/backup/trigger?type=database",
+                cookies=_authed(),
+            )
+        assert r.status_code != 404, (
+            f"/backup/trigger returned 404 — backup proxy routes missing. Got {r.status_code}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_export_not_404(self, ui_client):
+        """GET /backup/export must NOT return 404."""
+        from unittest.mock import AsyncMock, MagicMock, patch
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/gzip", "content-disposition": "attachment; filename=backup.celerp-backup"}
+        mock_resp.content = b"fakearchive"
+        with patch("httpx.AsyncClient") as mock_cls:
+            inst = AsyncMock()
+            inst.__aenter__ = AsyncMock(return_value=inst)
+            inst.__aexit__ = AsyncMock(return_value=False)
+            inst.get = AsyncMock(return_value=mock_resp)
+            mock_cls.return_value = inst
+            r = await ui_client.get("/backup/export", cookies=_authed())
+        assert r.status_code != 404, (
+            f"/backup/export returned 404 — backup proxy routes missing. Got {r.status_code}"
+        )
