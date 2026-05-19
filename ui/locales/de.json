@@ -511,7 +511,7 @@
   "inv.splitting_disabled_hint": "Das Aufteilen ist für diesen Artikel deaktiviert. Aktiviere es über „Aufteilen erlauben“ oben.",
   "inv.target_item_selection_is_required": "Zielartikelauswahl ist erforderlich.",
   "inv.these_category_schemas_are_active_on_your_inventor": "Diese Kategorieschemata sind in Ihrem Lager aktiv.",
-  "inv.to_merge_items_select_multiple_from_the_inventory": "Zum Zusammenführen von Artikeln mehrere aus der Lagerliste auswählen und Zusammenführen in der Massenaktionsleiste verwenden.",
+  "inv.to_merge_items_select_multiple_from_the_inventory": "Note: Merging items can only be done from the inventory page by using the bulk actions toolbar.",
   "inv.u0001f4c1": "📁",
   "inv.u0001f4cb_duplicate": "📋 Duplikat",
   "inv.u1f4e6_archive": "📦 Archivieren / Entsorgen",

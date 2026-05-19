@@ -31,6 +31,17 @@ _DOCUMENT_TAGS: tuple[str, ...] = (
     "view_360",
 )
 
+# Tags shown for inventory items - product-focused, excludes business-doc tags
+_ITEM_TAGS: tuple[str, ...] = (
+    "product_images",
+    "spec_sheets",
+    "safety_docs",
+    "view_360",
+    "certificates",
+    "photos",
+    "other",
+)
+
 # Page size for file list pagination
 FILES_PAGE_SIZE = 20
 
@@ -65,6 +76,7 @@ def _files_section(
     can_tag: bool = True,
     can_describe: bool = True,
     can_set_hero: bool = False,
+    show_linked: bool = True,
     page: int = 1,
     sort_dir: str = "desc",
     tag_filter: str = "",
@@ -81,6 +93,7 @@ def _files_section(
         can_tag:      whether to show tag editing controls
         can_set_hero: whether to show hero star toggle (items only)
         can_describe: whether to show description editing controls
+        show_linked:  whether to show the "Linked To" column (False for items)
         page:         current page (1-indexed)
         sort_dir:     "desc" (newest first) or "asc"
         tag_filter:   filter to this tag slug
@@ -90,6 +103,7 @@ def _files_section(
     """
     base_url = f"/{entity_type}s/{entity_id}/files"
     sid = _safe_id(entity_id)  # safe DOM id fragment (no colons)
+    _tags = _ITEM_TAGS if entity_type == "item" else _DOCUMENT_TAGS
 
     # ── Sort ─────────────────────────────────────────────────────────────────
     def _uploaded_at_key(f: dict) -> str:
@@ -123,7 +137,7 @@ def _files_section(
     # ── Filter bar ───────────────────────────────────────────────────────────
     tag_opts = [Option(t("label.all_tags"), value="")] + [
         Option(_tag_label(slug), value=slug, selected=(slug == tag_filter))
-        for slug in _DOCUMENT_TAGS
+        for slug in _tags
     ]
 
     next_sort = "asc" if sort_dir == "desc" else "desc"
@@ -192,8 +206,8 @@ def _files_section(
         style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;",
     )
 
-    # ── "Linked To" column is always shown (GDR: don't hide structure) ────────
-    has_linked = True
+    # ── "Linked To" column ───────────────────────────────────────────────────
+    has_linked = show_linked
 
     # ── Column resize JS ─────────────────────────────────────────────────────
     # Vanilla JS: drag resize handles between <th> elements.
@@ -240,7 +254,7 @@ def _files_section(
         if can_tag:
             tag_opts_row = [Option(t("label.no_tag"), value="")] + [
                 Option(_tag_label(slug), value=slug, selected=(slug == doc_tag))
-                for slug in _DOCUMENT_TAGS
+                for slug in _tags
             ]
             tag_cell = Td(
                 Select(
@@ -268,14 +282,16 @@ def _files_section(
                             f"inp.type='text';"
                             f"var cur=el.textContent.trim();inp.value=cur==='--'?'':cur;"
                             f"inp.className='form-input form-input--sm';inp.style='width:100%';"
-                            f"inp.onblur=function(){{var fd=new FormData();fd.append('description',inp.value);"
+                            f"var cancelled=false;"
+                            f"inp.onblur=function(){{if(cancelled)return;"
+                            f"var fd=new FormData();fd.append('description',inp.value);"
                             f"fetch('{base_url}/{fid}/description',{{method:'POST',body:fd}})"
                             f".then(function(r){{return r.text();}}).then(function(html){{"
                             f"var sec=document.getElementById('files-section-{sid}');"
                             f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
                             f"}})}};"
                             f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
-                            f"if(e.key==='Escape'){{el.textContent=inp.value=el.dataset.orig;inp.blur();}}}};"
+                            f"if(e.key==='Escape'){{cancelled=true;var orig=el.dataset.orig;el.textContent=orig;inp.replaceWith(el);}}}};"
                             f"el.dataset.orig=el.textContent;el.replaceWith(inp);inp.focus();"
                             f"}})(this)"
                         )

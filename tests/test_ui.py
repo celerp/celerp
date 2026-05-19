@@ -3768,9 +3768,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
-        assert b"Merge" in r.content
-
-    @pytest.mark.asyncio
+        assert b"Merging" in r.content
     async def test_merge_items_route_success(self, ui_client):
         with patch("ui.api_client.merge_items", new=AsyncMock(return_value={"id": "item:new123"})):
             r = await ui_client.post(

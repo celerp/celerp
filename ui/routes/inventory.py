@@ -3437,7 +3437,7 @@ def _item_files_section(entity_id: str, item: dict) -> FT:
                 "uploaded_at": None,
                 "is_hero": is_hero,
             })
-    return _shared_files_section("item", entity_id, files, can_set_hero=True)
+    return _shared_files_section("item", entity_id, files, can_set_hero=True, show_linked=False)
 
 
 def _item_detail_tabs(

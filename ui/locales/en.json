@@ -546,7 +546,7 @@
   "inv.splitting_disabled_hint": "Splitting is disabled for this item. Enable it in Allow Splitting above.",
   "inv.target_item_selection_is_required": "Target item selection is required.",
   "inv.these_category_schemas_are_active_on_your_inventor": "These category schemas are active on your inventory.",
-  "inv.to_merge_items_select_multiple_from_the_inventory": "To merge items, select multiple from the inventory list and use Merge in the bulk toolbar.",
+  "inv.to_merge_items_select_multiple_from_the_inventory": "Note: Merging items can only be done from the inventory page by using the bulk actions toolbar.",
   "inv.u0001f4c1": "📁",
   "inv.u0001f4cb_duplicate": "📋 Duplicate",
   "inv.u1f4e6_archive": "📦 Archive / Dispose",

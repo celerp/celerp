@@ -511,7 +511,7 @@
   "inv.splitting_disabled_hint": "تقسيم هذا العنصر معطّل. فعّله من خيار «السماح بالتقسيم» أعلاه.",
   "inv.target_item_selection_is_required": "مطلوب اختيار العنصر المستهدف.",
   "inv.these_category_schemas_are_active_on_your_inventor": "مخططات الفئات هذه نشطة في مخزونك.",
-  "inv.to_merge_items_select_multiple_from_the_inventory": "لدمج العناصر، حدد عدة عناصر من قائمة المخزون واستخدم الدمج في شريط الأدوات المجمع.",
+  "inv.to_merge_items_select_multiple_from_the_inventory": "Note: Merging items can only be done from the inventory page by using the bulk actions toolbar.",
   "inv.u0001f4c1": "📁",
   "inv.u0001f4cb_duplicate": "📋 نسخ",
   "inv.u1f4e6_archive": "📦 أرشفة / التخلص",
