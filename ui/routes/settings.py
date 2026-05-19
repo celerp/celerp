@@ -3717,7 +3717,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     from ui.components.backup import local_backup_buttons
     from ui.components.cloud_gate import upgrade_banner
 
-    enc_ok = bool(_cfg.backup_encryption_key)
+    enc_ok = bool(backup_data and backup_data.get("enc_ok")) if backup_data is not None else bool(_cfg.backup_encryption_key)
     # gw_ok is derived from the API response - reading get_client() here would
     # always return None because the gateway client lives in the API process.
     gw_ok = bool(backup_data and backup_data.get("gateway_token_set"))

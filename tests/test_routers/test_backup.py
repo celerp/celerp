@@ -282,3 +282,32 @@ def test_backup_routes_are_registered():
 
 async def _async_return(value):
     return value
+
+
+# ── GET /settings/backup-status ───────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_backup_status_includes_enc_ok(auth_client, monkeypatch):
+    """GET /settings/backup-status must include enc_ok derived from API process settings.
+
+    Regression: UI read backup_encryption_key from its own settings object, which
+    is stale if the key was generated post-startup in the API process. The API must
+    report enc_ok so the UI buttons are not incorrectly disabled.
+    """
+    from celerp.config import settings as _s
+    monkeypatch.setattr(_s, "backup_encryption_key", "dGVzdGtleQ==")
+    r = await auth_client.get("/settings/backup-status")
+    assert r.status_code == 200
+    data = r.json()
+    assert "enc_ok" in data, f"enc_ok missing from backup-status response: {data}"
+    assert data["enc_ok"] is True, f"enc_ok should be True when key is set. Got: {data}"
+
+
+@pytest.mark.asyncio
+async def test_backup_status_enc_ok_false_when_no_key(auth_client, monkeypatch):
+    """enc_ok must be False when no backup_encryption_key is configured."""
+    from celerp.config import settings as _s
+    monkeypatch.setattr(_s, "backup_encryption_key", "")
+    r = await auth_client.get("/settings/backup-status")
+    assert r.status_code == 200
+    assert r.json()["enc_ok"] is False
