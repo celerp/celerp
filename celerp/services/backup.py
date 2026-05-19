@@ -99,11 +99,16 @@ def _relay_base_url() -> str:
 
 
 def _session_headers() -> dict[str, str]:
-    """Return auth headers for relay API calls."""
-    from celerp.gateway.state import get_session_token
+    """Return auth headers for relay API calls.
+
+    Always use the relay-canonical instance_id from gateway.state (set on
+    hello_ack), NOT settings.gateway_instance_id. The relay keys its session
+    table on the canonical id; using the config id causes 401 when they differ.
+    """
+    from celerp.gateway.state import get_session_token, get_instance_id
     return {
         "X-Session-Token": get_session_token(),
-        "X-Instance-ID": settings.gateway_instance_id,
+        "X-Instance-ID": get_instance_id() or settings.gateway_instance_id,
     }
 
 
