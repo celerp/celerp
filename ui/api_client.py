@@ -1843,10 +1843,10 @@ async def list_backups(token: str, backup_type: str | None = None) -> dict:
         return _raise(await c.get("/backup/list", params=params)).json()
 
 
-async def trigger_backup(token: str, backup_type: str = "database") -> dict:
+async def trigger_backup(token: str, backup_type: str = "database") -> None:
     """POST /backup/trigger — trigger an immediate backup on the API process."""
     async with _client(token) as c:
-        return _raise(await c.post("/backup/trigger", params={"type": backup_type})).json()
+        _raise(await c.post("/backup/trigger", params={"type": backup_type}))
 
 
 async def export_backup(token: str) -> tuple[bytes, str, str]:
