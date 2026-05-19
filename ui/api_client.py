@@ -1872,6 +1872,30 @@ async def export_backup(token: str) -> tuple[bytes, str, str]:
             r.headers.get("content-disposition", "attachment; filename=backup.celerp-backup"),
         )
 
+
+async def export_cloud_backup(token: str, backup_id: str) -> tuple[bytes, str, str]:
+    """GET /backup/export/{backup_id} — download a specific cloud backup.
+
+    Returns (content_bytes, content_type, content_disposition).
+    """
+    import httpx
+    from ui.config import API_BASE
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as c:
+        r = _raise(await c.get(f"/backup/export/{backup_id}", headers={"Authorization": f"Bearer {token}"}))
+        return (
+            r.content,
+            r.headers.get("content-type", "application/octet-stream"),
+            r.headers.get("content-disposition", f"attachment; filename={backup_id}.celerp-backup"),
+        )
+
+
+async def restore_cloud_backup(token: str, backup_id: str) -> dict:
+    """POST /backup/restore/{backup_id} — restore a cloud backup."""
+    import httpx
+    from ui.config import API_BASE
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as c:
+        return _raise(await c.post(f"/backup/restore/{backup_id}", headers={"Authorization": f"Bearer {token}"})).json()
+
 async def disconnect_relay(token: str) -> dict:
     """POST /settings/cloud-disconnect — stop gateway client, clear config."""
     async with _client(token) as c:

@@ -2287,7 +2287,7 @@ def setup_routes(app):
                 content=to_xml(Div(t("settings.no_backups_yet", lang), cls="empty-state-msg")),
                 media_type="text/html",
             )
-        from fasthtml.common import Table, Thead, Tbody, Tr, Th, Td
+        from fasthtml.common import A, Button, Div, Table, Thead, Tbody, Tr, Th, Td
         def _fmt(iso: str | None) -> str:
             if not iso:
                 return "-"
@@ -2301,13 +2301,28 @@ def setup_routes(app):
         for item in items:
             sz = item.get("size_bytes") or 0
             mb = f"{sz / 1024**2:.1f} MB" if sz else "-"
+            bid = item.get("id", "")
             rows.append(Tr(
                 Td(_fmt(item.get("created_at")), cls="cell"),
-                Td(mb, cls="cell"),
+                Td(mb, cls="cell cell--number"),
                 Td(item.get("backup_type", "-"), cls="cell"),
+                Td(
+                    Div(
+                        A(t("btn.export"), href=f"/backup/export/{bid}",
+                          cls="btn btn--xs btn--secondary"),
+                        Button(t("btn.restore"),
+                               hx_post=f"/backup/restore/{bid}",
+                               hx_confirm=t("settings.restore_confirm", lang),
+                               hx_target="#backup-flash",
+                               hx_swap="outerHTML",
+                               cls="btn btn--xs btn--outline btn--danger"),
+                        cls="cell-actions",
+                    ),
+                    cls="cell",
+                ),
             ))
         table = Table(
-            Thead(Tr(Th(t("th.date")), Th(t("th.size")), Th(t("th.type")))),
+            Thead(Tr(Th(t("th.date")), Th(t("th.size")), Th(t("th.type")), Th(t("th.actions")))),
             Tbody(*rows),
             cls="data-table",
         )
@@ -2361,9 +2376,51 @@ def setup_routes(app):
             headers={"Content-Disposition": content_disp},
         )
 
+    @app.get("/backup/export/{backup_id}")
+    async def backup_export_cloud(request: Request, backup_id: str):
+        """Download a specific cloud backup by ID."""
+        import ui.api_client as _api
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            content, content_type, content_disp = await _api.export_cloud_backup(token, backup_id)
+        except _api.APIError as exc:
+            from fasthtml.common import Div, to_xml
+            return Response(
+                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
+                media_type="text/html",
+            )
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={"Content-Disposition": content_disp},
+        )
+
+    @app.post("/backup/restore/{backup_id}")
+    async def backup_restore_cloud(request: Request, backup_id: str):
+        """Restore a cloud backup. Returns HTMX flash fragment."""
+        import ui.api_client as _api
+        from fasthtml.common import Div, to_xml
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        try:
+            await _api.restore_cloud_backup(token, backup_id)
+        except _api.APIError as exc:
+            return _backup_error(str(exc.detail), lang, flash_id="backup-flash")
+        except Exception as exc:
+            return _backup_error(str(exc), lang, flash_id="backup-flash")
+        return Response(
+            content=to_xml(Div(t("settings.backup_restored", lang), cls="flash flash--success", id="backup-flash")),
+            media_type="text/html",
+        )
+
     @app.post("/backup/import")
     async def backup_import(request: Request):
         """Import a .celerp-backup archive. Multipart upload forwarded to API."""
+
         import ui.api_client as _api
         import httpx
         from fasthtml.common import Div, to_xml
