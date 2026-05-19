@@ -252,31 +252,74 @@ def _files_section(
         uploaded_at = _fmt_date(f.get("uploaded_at"))
         linked_ref = f.get("linked_ref") or ""
         linked_url = f.get("linked_url") or ""
-        # Files merged from a foreign entity (e.g. doc files shown on contact page)
-        # carry their own download URL and should not be editable/deletable here.
+        # Files from a foreign entity carry their own URL overrides.
         file_download_url = f.get("_download_url") or f"{base_url}/{fid}/download"
-        is_readonly = bool(f.get("_readonly"))
+        # Action base: tag/describe/hero/delete target (defaults to this entity's base_url)
+        file_action_base = f.get("_action_base_url") or base_url
+        no_delete = bool(f.get("_no_delete"))
+        # When actions target a different entity, refresh via base_url/_section after mutation
+        cross_entity = file_action_base != base_url
 
-        if can_tag and not is_readonly:
+        def _refresh_section_js() -> str:
+            """JS snippet: re-fetch the section after a cross-entity mutation."""
+            return (
+                f"fetch('{base_url}/_section')"
+                f".then(function(r){{return r.text();}}).then(function(html){{"
+                f"var sec=document.getElementById('files-section-{sid}');"
+                f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
+                f"}});"
+            )
+
+        if can_tag:
             tag_opts_row = [Option(t("label.no_tag"), value="")] + [
                 Option(_tag_label(slug), value=slug, selected=(slug == doc_tag))
                 for slug in _tags
             ]
-            tag_cell = Td(
-                Select(
-                    *tag_opts_row,
-                    name="document_tag",
-                    cls="form-input form-input--xs file-tag-select",
-                    hx_post=f"{base_url}/{fid}/tag",
-                    hx_target=f"#files-section-{sid}",
-                    hx_swap="outerHTML",
-                    hx_trigger="change",
-                ),
-            )
+            if cross_entity:
+                tag_cell = Td(
+                    Select(
+                        *tag_opts_row,
+                        name="document_tag",
+                        cls="form-input form-input--xs file-tag-select",
+                        onchange=(
+                            f"(function(sel){{var fd=new FormData();fd.append('document_tag',sel.value);"
+                            f"fetch('{file_action_base}/{fid}/tag',{{method:'PATCH',body:fd}})"
+                            f".then(function(){{" + _refresh_section_js() + f"}})}})this"
+                        ),
+                    ),
+                )
+            else:
+                tag_cell = Td(
+                    Select(
+                        *tag_opts_row,
+                        name="document_tag",
+                        cls="form-input form-input--xs file-tag-select",
+                        hx_post=f"{file_action_base}/{fid}/tag",
+                        hx_target=f"#files-section-{sid}",
+                        hx_swap="outerHTML",
+                        hx_trigger="change",
+                    ),
+                )
         else:
             tag_cell = Td(Span(_tag_label(doc_tag), cls="badge badge--muted") if doc_tag else Span())
 
-        if can_describe and not is_readonly:
+        if can_describe:
+            _desc_fetch_then = (
+                _refresh_section_js() if cross_entity else
+                f".then(function(r){{return r.text();}}).then(function(html){{"
+                f"var sec=document.getElementById('files-section-{sid}');"
+                f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
+                f"}})"
+            )
+            _desc_fetch = (
+                f"var fd=new FormData();fd.append('description',inp.value);"
+                f"fetch('{file_action_base}/{fid}/description',{{method:'POST',body:fd}})"
+                + (_refresh_section_js() if cross_entity else
+                   f".then(function(r){{return r.text();}}).then(function(html){{"
+                   f"var sec=document.getElementById('files-section-{sid}');"
+                   f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
+                   f"}});")
+            )
             desc_cell = Td(
                 Span(
                     desc if desc else "--",
@@ -290,12 +333,8 @@ def _files_section(
                             f"inp.className='form-input form-input--sm';inp.style='width:100%';"
                             f"var cancelled=false;"
                             f"inp.onblur=function(){{if(cancelled)return;"
-                            f"var fd=new FormData();fd.append('description',inp.value);"
-                            f"fetch('{base_url}/{fid}/description',{{method:'POST',body:fd}})"
-                            f".then(function(r){{return r.text();}}).then(function(html){{"
-                            f"var sec=document.getElementById('files-section-{sid}');"
-                            f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
-                            f"}})}};"
+                            + _desc_fetch +
+                            f"}};"
                             f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
                             f"if(e.key==='Escape'){{cancelled=true;var orig=el.dataset.orig;el.textContent=orig;inp.replaceWith(el);}}}};"
                             f"el.dataset.orig=el.textContent;el.replaceWith(inp);inp.focus();"
@@ -331,14 +370,14 @@ def _files_section(
         ]
         if has_linked:
             row_cells.append(linked_cell)
-        if can_set_hero and not is_readonly:
+        if can_set_hero:
             is_hero = f.get("is_hero", False)
             is_image = (f.get("mime", "").startswith("image/"))
             if is_image:
                 hero_cell = Td(
                     Button(
                         "⭐" if is_hero else "☆",
-                        hx_post=f"{base_url}/{fid}/hero",
+                        hx_post=f"{file_action_base}/{fid}/hero",
                         hx_target=f"#files-section-{sid}",
                         hx_swap="outerHTML",
                         cls=f"btn btn--ghost btn--xs{'  btn--hero-active' if is_hero else ''}",
@@ -348,20 +387,18 @@ def _files_section(
             else:
                 hero_cell = Td()
             row_cells.append(hero_cell)
-        elif can_set_hero and is_readonly:
-            row_cells.append(Td())
         row_cells += [
             Td(Span(_fmt_size(size), cls="muted")),
             Td(
                 Button(
                     "×",
-                    hx_delete=f"{base_url}/{fid}",
+                    hx_delete=f"{file_action_base}/{fid}",
                     hx_target=f"#files-section-{sid}",
                     hx_swap="outerHTML",
                     hx_confirm=f"{t('action.delete_file')}: {fname}?",
                     cls="btn btn--ghost btn--xs",
                     title=t("action.delete_file"),
-                ) if not is_readonly else Span(),
+                ) if not no_delete else Span(),
             ),
         ]
         row_cls = "files-row--hero" if f.get("is_hero") else ""
