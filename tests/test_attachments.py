@@ -406,10 +406,10 @@ async def test_bulk_cert_label_preserved(client: AsyncClient, small_pdf: bytes):
     )
     assert resp.status_code == 200
     item = (await client.get(f"/items/{item_id}", headers=_h(token))).json()
-    atts = item.get("attachments") or []
-    cert = next((a for a in atts if a.get("type") == "certificate"), None)
+    files = item.get("files") or []
+    cert = next((f for f in files if f.get("document_tag") == "certificates"), None)
     assert cert is not None
-    assert cert.get("label") == "gia"
+    assert cert.get("description") == "gia"
 
 
 @pytest.mark.asyncio
@@ -426,10 +426,10 @@ async def test_bulk_doc_label_backward_compat(client: AsyncClient, small_pdf: by
     )
     assert resp.status_code == 200
     item = (await client.get(f"/items/{item_id}", headers=_h(token))).json()
-    atts = item.get("attachments") or []
-    doc = next((a for a in atts if a.get("type") == "certificate"), None)
+    files = item.get("files") or []
+    doc = next((f for f in files if f.get("document_tag") == "certificates"), None)
     assert doc is not None
-    assert doc.get("label") == "cert"
+    assert doc.get("description") == "cert"
 
 
 @pytest.mark.asyncio
@@ -445,10 +445,10 @@ async def test_bulk_360_typed_correctly(client: AsyncClient, small_png: bytes):
     )
     assert resp.status_code == 200
     item = (await client.get(f"/items/{item_id}", headers=_h(token))).json()
-    atts = item.get("attachments") or []
-    att_360 = next((a for a in atts if a.get("type") == "view_360"), None)
+    files = item.get("files") or []
+    att_360 = next((f for f in files if f.get("document_tag") == "view_360"), None)
     assert att_360 is not None
-    assert att_360.get("label") == "front"
+    assert att_360.get("description") == "front"
 
 
 @pytest.mark.asyncio
