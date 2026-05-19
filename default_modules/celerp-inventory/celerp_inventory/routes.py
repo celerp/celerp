@@ -1930,7 +1930,8 @@ def setup_api_routes(app) -> None:
     # Scanning module disabled until properly finished
     # from celerp_inventory.routes_scanning import router as scanning_router
     from celerp_inventory.routes_attachments import router as attachments_router
-    app.include_router(router, prefix="/items", tags=["items"])
-    # app.include_router(scanning_router, prefix="/scanning", tags=["scanning"])
+    # attachments_router first: its specific sub-paths (e.g. /files/{id}) must
+    # be registered before the catch-all /{entity_id} route in the main router.
     app.include_router(attachments_router, prefix="/items", tags=["attachments"])
+    app.include_router(router, prefix="/items", tags=["items"])
 
