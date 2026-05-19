@@ -2256,10 +2256,13 @@ def setup_routes(app):
     # — show an error fragment. Only redirect to /login when the user's own
     # token is missing.
 
-    def _backup_error(detail: str, lang: str = "en") -> Response:
+    def _backup_error(detail: str, lang: str = "en", flash_id: str | None = None) -> Response:
         from fasthtml.common import Div, to_xml
+        kwargs = {"cls": "empty-state-msg"}
+        if flash_id:
+            kwargs["id"] = flash_id
         return Response(
-            content=to_xml(Div(detail, cls="empty-state-msg")),
+            content=to_xml(Div(detail, **kwargs)),
             media_type="text/html",
         )
 
@@ -2323,7 +2326,9 @@ def setup_routes(app):
         try:
             await _api.trigger_backup(token, backup_type=backup_type)
         except _api.APIError:
-            return _backup_error(t("settings.cloud_not_connected", lang), lang)
+            return _backup_error(t("settings.cloud_not_connected", lang), lang, flash_id="backup-flash")
+        except Exception:
+            return _backup_error(t("settings.cloud_not_connected", lang), lang, flash_id="backup-flash")
         msg = t("settings.backup_triggered", lang) if backup_type == "database" else t("settings.file_backup_triggered", lang)
         resp = Response(
             content=to_xml(Div(msg, cls="flash flash--success", id="backup-flash")),

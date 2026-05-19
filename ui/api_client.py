@@ -1844,8 +1844,18 @@ async def list_backups(token: str, backup_type: str | None = None) -> dict:
 
 
 async def trigger_backup(token: str, backup_type: str = "database") -> None:
-    """POST /backup/trigger — trigger an immediate backup on the API process."""
-    async with _client(token) as c:
+    """POST /backup/trigger — trigger an immediate backup on the API process.
+
+    Backup (pg_dump + relay upload) can take well over 10 s; use a generous
+    timeout so the UI handler gets a real success/error rather than a timeout
+    exception that it can't distinguish from a connection failure.
+    """
+    async with httpx.AsyncClient(
+        base_url=API_BASE,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=120.0,
+        follow_redirects=True,
+    ) as c:
         _raise(await c.post("/backup/trigger", params={"type": backup_type}))
 
 

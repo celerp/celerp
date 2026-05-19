@@ -11984,6 +11984,57 @@ class TestBackupRoutes:
         )
 
     @pytest.mark.asyncio
+    async def test_backup_trigger_timeout_shows_inline_error_not_500(self, ui_client):
+        """POST /backup/trigger must return inline error HTML (not 500) on timeout.
+
+        Regression: httpx.TimeoutException was uncaught → 500 → HTMX discards
+        the response → button appears to do nothing (silent failure).
+        """
+        import httpx
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+
+        async def fake_trigger_timeout(token: str, backup_type: str = "database"):
+            raise httpx.TimeoutException("timed out", request=None)
+
+        with patch.object(_api, "trigger_backup", fake_trigger_timeout):
+            async with ui_client as c:
+                r = await c.post(
+                    "/backup/trigger?type=database",
+                    cookies={"celerp_token": test_token},
+                )
+
+        assert r.status_code == 200, (
+            f"Expected 200 inline error, got {r.status_code}. "
+            "Timeout must NOT bubble as a 500 — HTMX silently discards non-2xx on fragment swaps."
+        )
+        assert b"backup-flash" in r.content, (
+            f"Response must contain #backup-flash div for HTMX swap. Got: {r.text[:300]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_trigger_success_returns_flash_and_hx_trigger(self, ui_client):
+        """POST /backup/trigger must return flash div + HX-Trigger: backupDone on success."""
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+
+        async def fake_trigger_ok(token: str, backup_type: str = "database"):
+            return None  # trigger_backup returns None on success
+
+        with patch.object(_api, "trigger_backup", fake_trigger_ok):
+            async with ui_client as c:
+                r = await c.post(
+                    "/backup/trigger?type=database",
+                    cookies={"celerp_token": test_token},
+                )
+
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+        assert b"flash--success" in r.content, f"Expected success flash in response. Got: {r.text[:300]}"
+        assert r.headers.get("HX-Trigger") == "backupDone", (
+            f"Expected HX-Trigger: backupDone header. Got: {dict(r.headers)}"
+        )
+
+    @pytest.mark.asyncio
     async def test_backup_export_uses_api_client_not_raw_proxy(self, ui_client):
         """GET /backup/export must call ui.api_client.export_backup with the token."""
         import ui.api_client as _api
