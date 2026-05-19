@@ -3815,8 +3815,6 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
 
     # ── Encryption key ────────────────────────────────────────────────
     key_val = _cfg.backup_encryption_key or ""
-    # Escape for JS string literal
-    key_escaped = key_val.replace("\\", "\\\\").replace("'", "\\'")
     key_section = Div(
         H4(t("page.encryption_key"), cls="settings-section-title"),
         P(
@@ -3825,9 +3823,9 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
             cls="settings-hint",
         ),
         Div(
-            Code(key_val, cls="cell--mono"),
+            Code(key_val, cls="cell--mono", id="backup-enc-key"),
             Button(t("btn.copy"),
-                onclick=f"navigator.clipboard.writeText('{key_escaped}')",
+                **{"data-copy": "#backup-enc-key"},
                 cls="btn btn--xs btn--secondary ml-sm",
             ),
             cls="flex-row align-center gap-sm",

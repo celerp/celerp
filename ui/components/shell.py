@@ -110,6 +110,23 @@ function toggleRowMenu(id) {
   }
 }
 document.addEventListener('click', function(e) {
+  // data-copy button: copy sibling/target text to clipboard with "Copied!" feedback
+  var copyBtn = e.target.closest('[data-copy]');
+  if (copyBtn) {
+    var targetSel = copyBtn.getAttribute('data-copy');
+    var text = targetSel
+      ? (document.querySelector(targetSel) || {}).textContent || ''
+      : copyBtn.getAttribute('data-copy-text') || '';
+    var original = copyBtn.textContent;
+    (navigator.clipboard
+      ? navigator.clipboard.writeText(text)
+      : Promise.resolve(document.execCommand('copy', false, text))
+    ).then(function() {
+      copyBtn.textContent = 'Copied!';
+      setTimeout(function() { copyBtn.textContent = original; }, 2000);
+    }).catch(function() {});
+  }
+
   if (!e.target.closest('.row-menu')) {
     document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) {
       m.classList.remove('open');
