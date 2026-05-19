@@ -4628,7 +4628,7 @@ class TestAttachmentRoutes:
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "files": [{"id": "file:1", "filename": "photo.jpg", "url": "/static/files/photo.jpg", "mime": "image/jpeg", "size": 15, "document_tag": "product_images", "is_hero": False, "uploaded_at": None, "description": None}]})),
         ):
             r = await ui_client.post(
-                "/api/items/gc:123/files",
+                "/items/gc:123/files",
                 files={"file": ("photo.jpg", io.BytesIO(file_content), "image/jpeg")},
                 cookies=_authed(),
             )
@@ -4640,7 +4640,7 @@ class TestAttachmentRoutes:
     async def test_upload_attachment_no_file_returns_error(self, ui_client):
         """POST /api/items/{id}/files with no file field returns an error message."""
         r = await ui_client.post(
-            "/api/items/gc:123/files",
+            "/items/gc:123/files",
             data={},
             cookies=_authed(),
         )
@@ -4652,7 +4652,7 @@ class TestAttachmentRoutes:
         """POST without auth redirects to /login."""
         import io
         r = await ui_client.post(
-            "/api/items/gc:123/files",
+            "/items/gc:123/files",
             files={"file": ("photo.jpg", io.BytesIO(b"data"), "image/jpeg")},
         )
         assert r.status_code == 302
@@ -4664,7 +4664,7 @@ class TestAttachmentRoutes:
         import io
         with patch("ui.api_client.upload_item_file", new=AsyncMock(side_effect=APIError(413, "file too large"))):
             r = await ui_client.post(
-                "/api/items/gc:123/files",
+                "/items/gc:123/files",
                 files={"file": ("big.jpg", io.BytesIO(b"data"), "image/jpeg")},
                 cookies=_authed(),
             )

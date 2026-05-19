@@ -2242,7 +2242,7 @@ function celerpPrintLabel(entityId, templateId) {
 
     # ── Item file routes (unified file system) ───────────────────────────────
 
-    @app.post("/api/items/{entity_id}/files")
+    @app.post("/items/{entity_id}/files")
     async def item_upload_file(request: Request, entity_id: str):
         token = _token(request)
         if not token:
@@ -2258,7 +2258,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _item_files_section(entity_id, item)
 
-    @app.post("/api/items/{entity_id}/files/{file_id}/tag")
+    @app.post("/items/{entity_id}/files/{file_id}/tag")
     async def item_tag_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
@@ -2272,7 +2272,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _item_files_section(entity_id, item)
 
-    @app.patch("/api/items/{entity_id}/files/{file_id}/description")
+    @app.patch("/items/{entity_id}/files/{file_id}/description")
     async def item_describe_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
@@ -2286,7 +2286,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _item_files_section(entity_id, item)
 
-    @app.post("/api/items/{entity_id}/files/{file_id}/hero")
+    @app.post("/items/{entity_id}/files/{file_id}/hero")
     async def item_set_file_hero(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
@@ -2298,7 +2298,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _item_files_section(entity_id, item)
 
-    @app.delete("/api/items/{entity_id}/files/{file_id}")
+    @app.delete("/items/{entity_id}/files/{file_id}")
     async def item_delete_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
@@ -2310,7 +2310,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _item_files_section(entity_id, item)
 
-    @app.get("/api/items/{entity_id}/files/_section")
+    @app.get("/items/{entity_id}/files/_section")
     async def item_files_section_partial(request: Request, entity_id: str):
         token = _token(request)
         if not token:
