@@ -1239,5 +1239,9 @@
   "th.version": "バージョン",
   "th.weight": "重さ",
   "th.when": "いつ",
-  "th.wholesale": "卸売"
+  "th.wholesale": "卸売",
+  "file_tag.product_images": "製品画像",
+  "file_tag.spec_sheets": "仕様書",
+  "file_tag.safety_docs": "安全書類",
+  "file_tag.view_360": "360°メディア"
 }

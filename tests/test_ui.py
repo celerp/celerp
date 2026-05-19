@@ -4620,28 +4620,27 @@ class TestAttachmentRoutes:
 
     @pytest.mark.asyncio
     async def test_upload_attachment_success_returns_panel(self, ui_client):
-        """POST /api/items/{id}/attachments returns updated attachments panel on success."""
+        """POST /api/items/{id}/files returns updated files panel on success."""
         import io
-        from starlette.datastructures import UploadFile as SF
         file_content = b"fake image data"
         with (
-            patch("ui.api_client.upload_attachment", new=AsyncMock(return_value={"id": "att:1"})),
-            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "attachments": [{"id": "att:1", "filename": "photo.jpg", "url": "/static/attachments/c/photo.jpg"}]})),
+            patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "file:1"})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "files": [{"id": "file:1", "filename": "photo.jpg", "url": "/static/files/photo.jpg", "mime": "image/jpeg", "size": 15, "document_tag": "product_images", "is_hero": False, "uploaded_at": None, "description": None}]})),
         ):
             r = await ui_client.post(
-                "/api/items/gc:123/attachments",
+                "/api/items/gc:123/files",
                 files={"file": ("photo.jpg", io.BytesIO(file_content), "image/jpeg")},
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        # Returns the attachments panel HTML (not a redirect)
-        assert b"photo.jpg" in r.content or b"attachment" in r.content.lower()
+        # Returns the files panel HTML (not a redirect)
+        assert b"photo.jpg" in r.content or b"file" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_upload_attachment_no_file_returns_error(self, ui_client):
-        """POST /api/items/{id}/attachments with no file field returns an error message."""
+        """POST /api/items/{id}/files with no file field returns an error message."""
         r = await ui_client.post(
-            "/api/items/gc:123/attachments",
+            "/api/items/gc:123/files",
             data={},
             cookies=_authed(),
         )
@@ -4653,7 +4652,7 @@ class TestAttachmentRoutes:
         """POST without auth redirects to /login."""
         import io
         r = await ui_client.post(
-            "/api/items/gc:123/attachments",
+            "/api/items/gc:123/files",
             files={"file": ("photo.jpg", io.BytesIO(b"data"), "image/jpeg")},
         )
         assert r.status_code == 302
@@ -4663,9 +4662,9 @@ class TestAttachmentRoutes:
     async def test_upload_attachment_api_error_shown(self, ui_client):
         from ui.api_client import APIError
         import io
-        with patch("ui.api_client.upload_attachment", new=AsyncMock(side_effect=APIError(413, "file too large"))):
+        with patch("ui.api_client.upload_item_file", new=AsyncMock(side_effect=APIError(413, "file too large"))):
             r = await ui_client.post(
-                "/api/items/gc:123/attachments",
+                "/api/items/gc:123/files",
                 files={"file": ("big.jpg", io.BytesIO(b"data"), "image/jpeg")},
                 cookies=_authed(),
             )

@@ -1239,5 +1239,9 @@
   "th.version": "Phiên bản",
   "th.weight": "Cân nặng",
   "th.when": "Khi",
-  "th.wholesale": "Bán buôn"
+  "th.wholesale": "Bán buôn",
+  "file_tag.product_images": "Hình ảnh sản phẩm",
+  "file_tag.spec_sheets": "Tờ thông số kỹ thuật",
+  "file_tag.safety_docs": "Tài liệu an toàn",
+  "file_tag.view_360": "Phương tiện 360°"
 }

@@ -1239,5 +1239,9 @@
   "th.version": "Versão",
   "th.weight": "Peso",
   "th.when": "Quando",
-  "th.wholesale": "Atacado"
+  "th.wholesale": "Atacado",
+  "file_tag.product_images": "Imagens do produto",
+  "file_tag.spec_sheets": "Fichas técnicas",
+  "file_tag.safety_docs": "Documentos de segurança",
+  "file_tag.view_360": "Mídia 360°"
 }

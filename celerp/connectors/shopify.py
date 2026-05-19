@@ -15,6 +15,7 @@ API version: 2024-01 (stable)
 """
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Any
@@ -136,6 +137,8 @@ class ShopifyConnector(ConnectorBase):
                         result.created += 1
                     else:
                         result.skipped += 1
+                    # Pull product images after upsert (idempotent)
+                    await self._pull_product_images(ctx, product, sku)
                 except Exception as exc:
                     errors.append(f"SKU {sku}: {exc}")
 
@@ -145,6 +148,37 @@ class ShopifyConnector(ConnectorBase):
             ctx.company_id, result.created, result.skipped, len(errors),
         )
         return result
+
+    async def _pull_product_images(self, ctx: ConnectorContext, product: dict[str, Any], sku: str) -> None:
+        """Pull images from a Shopify product and store as item files."""
+        from celerp.db import get_async_session
+        from celerp.models.projections import Projection
+        from celerp.connectors.images import download_and_emit_file
+        from sqlalchemy import select
+
+        images: list[dict] = product.get("images", [])
+
+        async with get_async_session() as session:
+            rows = (await session.execute(
+                select(Projection).where(
+                    Projection.company_id == ctx.company_id,
+                    Projection.entity_type == "item",
+                )
+            )).scalars().all()
+            row = next((r for r in rows if str(r.state.get("sku", "")).strip().lower() == sku.strip().lower()), None)
+            if row is None:
+                return
+
+            for img in sorted(images, key=lambda x: x.get("position", 99)):
+                src = img.get("src")
+                if not src:
+                    continue
+                fname = img.get("alt") or f"product-{img.get('id', '')}.jpg"
+                await download_and_emit_file(
+                    session, ctx.company_id, row.entity_id,
+                    "system", src, fname, "product_images", is_hero=(img.get("position", 99) == 1)
+                )
+            await session.commit()
 
     # -- Orders ----------------------------------------------------------------
 
@@ -261,7 +295,9 @@ class ShopifyConnector(ConnectorBase):
     # -- Outbound: Products push -----------------------------------------------
 
     async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
-        """Push Celerp item updates -> Shopify products."""
+        """Push Celerp item updates -> Shopify products (fields, images, certificates)."""
+        from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
+
         result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
         errors: list[str] = []
 
@@ -285,12 +321,40 @@ class ShopifyConnector(ConnectorBase):
                         payload["product"]["body_html"] = item["description"]
                     if item.get("sale_price") is not None:
                         payload["product"]["variants"] = [{"price": str(item["sale_price"])}]
+
+                    # Push images
+                    files: list[dict] = item.get("files") or []
+                    image_payload = build_platform_image_payload(files)
+                    if image_payload["hero_url"]:
+                        payload["product"]["images"] = [{"src": image_payload["hero_url"]}] + [
+                            {"src": u} for u in image_payload["additional_urls"]
+                        ]
+
                     resp = await client.put(
                         f"{_base_url(ctx)}/products/{product_id}.json",
                         headers=_headers(ctx),
                         json=payload,
                     )
                     resp.raise_for_status()
+
+                    # Push certificate metafields (separate calls per metafield)
+                    cert_payload = build_platform_cert_payload(files)
+                    for tag_key, certs in cert_payload.items():
+                        try:
+                            mf_resp = await client.post(
+                                f"{_base_url(ctx)}/products/{product_id}/metafields.json",
+                                headers=_headers(ctx),
+                                json={"metafield": {
+                                    "namespace": "custom",
+                                    "key": tag_key,
+                                    "value": json.dumps(certs),
+                                    "type": "json",
+                                }},
+                            )
+                            mf_resp.raise_for_status()
+                        except Exception as mf_exc:
+                            log.warning("shopify: metafield push failed product=%s tag=%s: %s", product_id, tag_key, mf_exc)
+
                     result.updated += 1
                 except Exception as exc:
                     errors.append(f"Product {product_id}: {exc}")

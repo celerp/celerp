@@ -21,6 +21,11 @@ class EventType(StrEnum):
     ITEM_PRODUCED = "item.produced"
     ITEM_RESERVED = "item.reserved"
     ITEM_UNRESERVED = "item.unreserved"
+    ITEM_FILE_ATTACHED = "item.file.attached"
+    ITEM_FILE_TAGGED = "item.file.tagged"
+    ITEM_FILE_DELETED = "item.file.deleted"
+    ITEM_FILE_DESCRIPTION_UPDATED = "item.file.description_updated"
+    ITEM_FILE_HERO_SET = "item.file.hero_set"
 
     # CRM
     CRM_CONTACT_CREATED = "crm.contact.created"

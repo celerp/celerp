@@ -17,6 +17,8 @@ from typing import Any
 
 import httpx
 
+import json
+
 from celerp.connectors.http import RateLimitedClient
 from celerp.connectors.base import (
     ConnectorBase,
@@ -147,6 +149,8 @@ class WooCommerceConnector(ConnectorBase):
                     result.created += 1
                 else:
                     result.skipped += 1
+                # Pull images and certificates after upsert (idempotent)
+                await self._pull_product_files(ctx, product, sku)
             except Exception as exc:
                 errors.append(f"SKU {sku}: {exc}")
 
@@ -154,6 +158,114 @@ class WooCommerceConnector(ConnectorBase):
         log.info(
             "woocommerce.sync_products company=%s created=%d skipped=%d errors=%d",
             ctx.company_id, result.created, result.skipped, len(errors),
+        )
+        return result
+
+    async def _pull_product_files(self, ctx: ConnectorContext, product: dict[str, Any], sku: str) -> None:
+        """Pull images and cert metafields from a WC product and store as item files."""
+        from celerp.db import get_async_session
+        from celerp.models.projections import Projection
+        from celerp.connectors.images import download_and_emit_file, _CERT_TAGS
+        from sqlalchemy import select
+
+        images: list[dict] = product.get("images", [])
+        meta_data: list[dict] = product.get("meta_data", [])
+
+        async with get_async_session() as session:
+            rows = (await session.execute(
+                select(Projection).where(
+                    Projection.company_id == ctx.company_id,
+                    Projection.entity_type == "item",
+                )
+            )).scalars().all()
+            row = next((r for r in rows if str(r.state.get("sku", "")).strip().lower() == sku.strip().lower()), None)
+            if row is None:
+                return
+
+            for i, img in enumerate(images):
+                src = img.get("src")
+                if not src:
+                    continue
+                fname = img.get("name") or f"product-{i}.jpg"
+                await download_and_emit_file(
+                    session, ctx.company_id, row.entity_id,
+                    "system", src, fname, "product_images", is_hero=(i == 0)
+                )
+
+            # Certificate metafields
+            meta = {m["key"]: m["value"] for m in meta_data}
+            for tag_key in _CERT_TAGS:
+                raw = meta.get(tag_key)
+                if not raw:
+                    continue
+                try:
+                    certs = json.loads(raw) if isinstance(raw, str) else raw
+                    for cert in (certs if isinstance(certs, list) else []):
+                        cert_url = cert.get("url")
+                        cert_name = cert.get("name", "cert.pdf")
+                        if cert_url:
+                            await download_and_emit_file(
+                                session, ctx.company_id, row.entity_id,
+                                "system", cert_url, cert_name, tag_key, is_hero=False
+                            )
+                except Exception as exc:
+                    log.warning("woocommerce: failed to pull cert metafield %s: %s", tag_key, exc)
+
+            await session.commit()
+
+    async def sync_products_out(self, ctx: ConnectorContext) -> SyncResult:
+        """Push Celerp item updates (images + certs) -> WooCommerce products."""
+        from celerp.connectors.images import build_platform_image_payload, build_platform_cert_payload
+
+        result = SyncResult(entity=SyncEntity.PRODUCTS, direction=SyncDirection.OUTBOUND)
+        errors: list[str] = []
+
+        try:
+            items = await _upsert.list_items_with_external_id(ctx.company_id, platform="woocommerce")
+        except Exception as exc:
+            result.errors = [f"Failed to load items: {exc}"]
+            return result
+
+        base_url = _base_url(ctx)
+        auth = _auth(ctx)
+
+        async with RateLimitedClient() as client:
+            for item in items:
+                wc_id = item.get("woocommerce_product_id")
+                if not wc_id:
+                    result.skipped += 1
+                    continue
+                try:
+                    files: list[dict] = item.get("files") or []
+                    image_payload = build_platform_image_payload(files)
+                    cert_payload = build_platform_cert_payload(files)
+
+                    product_patch: dict = {}
+                    if image_payload["hero_url"]:
+                        product_patch["images"] = [{"src": image_payload["hero_url"]}] + [
+                            {"src": u} for u in image_payload["additional_urls"]
+                        ]
+                    if cert_payload:
+                        product_patch["meta_data"] = [
+                            {"key": tag_key, "value": json.dumps(certs)}
+                            for tag_key, certs in cert_payload.items()
+                        ]
+                    if not product_patch:
+                        result.skipped += 1
+                        continue
+
+                    resp = await client.put(
+                        f"{base_url}/products/{wc_id}", auth=auth, json=product_patch
+                    )
+                    resp.raise_for_status()
+                    result.updated += 1
+                except Exception as exc:
+                    errors.append(f"WC product {wc_id}: {exc}")
+
+        result.errors = errors or None
+        log.info(
+            "woocommerce.sync_products_out company=%s updated=%d skipped=%d errors=%d",
+            ctx.company_id, result.updated, result.skipped, len(errors),
         )
         return result
 

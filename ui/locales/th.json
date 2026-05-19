@@ -1239,5 +1239,9 @@
   "th.version": "เวอร์ชัน",
   "th.weight": "น้ำหนัก",
   "th.when": "เมื่อไร",
-  "th.wholesale": "ขายส่ง"
+  "th.wholesale": "ขายส่ง",
+  "file_tag.product_images": "รูปภาพสินค้า",
+  "file_tag.spec_sheets": "แผ่นข้อมูล",
+  "file_tag.safety_docs": "เอกสารความปลอดภัย",
+  "file_tag.view_360": "สื่อ 360°"
 }

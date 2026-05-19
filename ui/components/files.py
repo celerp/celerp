@@ -24,6 +24,11 @@ _DOCUMENT_TAGS: tuple[str, ...] = (
     "shipping",
     "legal",
     "other",
+    # inventory product tags (harmless in contacts/docs - unused in practice)
+    "product_images",
+    "spec_sheets",
+    "safety_docs",
+    "view_360",
 )
 
 # Page size for file list pagination
@@ -59,6 +64,7 @@ def _files_section(
     *,
     can_tag: bool = True,
     can_describe: bool = True,
+    can_set_hero: bool = False,
     page: int = 1,
     sort_dir: str = "desc",
     tag_filter: str = "",
@@ -69,10 +75,11 @@ def _files_section(
     """Render the files section for any entity.
 
     Args:
-        entity_type:  e.g. "contact", "doc"
+        entity_type:  e.g. "contact", "doc", "item"
         entity_id:    the entity's id
         files:        list of file dicts from the projection
         can_tag:      whether to show tag editing controls
+        can_set_hero: whether to show hero star toggle (items only)
         can_describe: whether to show description editing controls
         page:         current page (1-indexed)
         sort_dir:     "desc" (newest first) or "asc"
@@ -298,6 +305,23 @@ def _files_section(
         ]
         if has_linked:
             row_cells.append(linked_cell)
+        if can_set_hero:
+            is_hero = f.get("is_hero", False)
+            is_image = (f.get("mime", "").startswith("image/"))
+            if is_image:
+                hero_cell = Td(
+                    Button(
+                        "⭐" if is_hero else "☆",
+                        hx_post=f"{base_url}/{fid}/hero",
+                        hx_target=f"#files-section-{sid}",
+                        hx_swap="outerHTML",
+                        cls=f"btn btn--ghost btn--xs{'  btn--hero-active' if is_hero else ''}",
+                        title="Set as hero image" if not is_hero else "Hero image",
+                    ),
+                )
+            else:
+                hero_cell = Td()
+            row_cells.append(hero_cell)
         row_cells += [
             Td(Span(_fmt_size(size), cls="muted")),
             Td(
@@ -312,10 +336,11 @@ def _files_section(
                 ),
             ),
         ]
-        file_rows.append(Tr(*row_cells))
+        row_cls = "files-row--hero" if f.get("is_hero") else ""
+        file_rows.append(Tr(*row_cells, cls=row_cls) if row_cls else Tr(*row_cells))
 
     # Date column header with sort arrow (clickable)
-    col_count = 6 + (1 if has_linked else 0)
+    col_count = 6 + (1 if has_linked else 0) + (1 if can_set_hero else 0)
     date_th = Th(
         A(
             f"{t('label.upload_date')} {sort_arrow}",
@@ -340,6 +365,8 @@ def _files_section(
     ]
     if has_linked:
         header_cells.append(Th(t("label.linked_to")))
+    if can_set_hero:
+        header_cells.append(Th("Hero", style="text-align:center;width:48px;"))
     header_cells += [Th(t("th.size")), Th()]
 
     table = Table(

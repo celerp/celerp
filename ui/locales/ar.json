@@ -1239,5 +1239,9 @@
   "th.version": "إصدار",
   "th.weight": "وزن",
   "th.when": "متى",
-  "th.wholesale": "بالجملة"
+  "th.wholesale": "بالجملة",
+  "file_tag.product_images": "صور المنتج",
+  "file_tag.spec_sheets": "أوراق المواصفات",
+  "file_tag.safety_docs": "وثائق السلامة",
+  "file_tag.view_360": "وسائط 360°"
 }

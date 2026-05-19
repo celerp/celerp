@@ -1239,5 +1239,9 @@
   "th.version": "Versi",
   "th.weight": "Berat",
   "th.when": "Kapan",
-  "th.wholesale": "Grosir"
+  "th.wholesale": "Grosir",
+  "file_tag.product_images": "Gambar Produk",
+  "file_tag.spec_sheets": "Lembar Spesifikasi",
+  "file_tag.safety_docs": "Dokumen Keselamatan",
+  "file_tag.view_360": "Media 360°"
 }

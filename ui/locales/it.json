@@ -1239,5 +1239,9 @@
   "th.version": "Versione",
   "th.weight": "Peso",
   "th.when": "Quando",
-  "th.wholesale": "Ingrosso"
+  "th.wholesale": "Ingrosso",
+  "file_tag.product_images": "Immagini prodotto",
+  "file_tag.spec_sheets": "Schede tecniche",
+  "file_tag.safety_docs": "Documenti di sicurezza",
+  "file_tag.view_360": "Media 360°"
 }

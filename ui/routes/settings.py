@@ -1383,7 +1383,8 @@ def setup_routes(app):
         if file is None:
             return Div(P(t("error.no_file"), cls="error-banner"), id="bulk-attach-result")
         try:
-            result = await api.bulk_attach(token, file)
+            override_hero = bool(form.get("override_hero"))
+            result = await api.bulk_attach(token, file, override_hero=override_hero)
         except APIError as e:
             return Div(P(str(e.detail), cls="error-banner"), id="bulk-attach-result")
 
@@ -1392,11 +1393,13 @@ def setup_routes(app):
         def _row(r: dict) -> FT:
             status = r.get("status", "")
             cls = {"ok": "status-ok", "unmatched": "status-warn", "error": "status-error"}.get(status, "")
+            hero_icon = "⭐" if r.get("is_hero") else ""
             return Tr(
                 Td(r.get("sku", "")),
                 Td(r.get("file", "")),
                 Td(Span(status, cls=f"badge badge--{cls}") if cls else Span(status)),
-                Td(r.get("detail", r.get("url", ""))),
+                Td(r.get("tag", "") or r.get("detail", "")),
+                Td(hero_icon, style="text-align:center;"),
             )
 
         return Div(
@@ -1407,7 +1410,7 @@ def setup_routes(app):
                 cls="bulk-result-summary",
             ),
             Table(
-                Thead(Tr(Th("SKU"), Th(t("th.file")), Th(t("th.status")), Th(t("th.detail")))),
+                Thead(Tr(Th("SKU"), Th(t("th.file")), Th(t("th.status")), Th(t("label.tag")), Th("Hero", style="text-align:center;"))),
                 Tbody(*[_row(r) for r in report]),
                 cls="data-table",
             ) if report else "",
@@ -3871,18 +3874,7 @@ def _import_history_tab(batches: list[dict]) -> FT:
 
 
 def _bulk_attach_tab() -> FT:
-    """Bulk Attachments tab.
-
-    Upload a ZIP file containing images/documents named by SKU.
-
-    Naming convention:
-      <SKU>.jpg / .png / .webp          → primary image
-      <SKU>-doc-<label>.pdf             → document with label
-      <SKU>-doc-warranty.pdf            → document labelled "warranty"
-
-    The endpoint matches files to items by SKU and attaches them.
-    A report table is returned showing matched/unmatched/error per file.
-    """
+    """Bulk Attachments tab - upload a ZIP of files named by SKU."""
     return Div(
         H3(t("page.bulk_attach_images_documents"), cls="section-title"),
         Div(
@@ -3890,10 +3882,13 @@ def _bulk_attach_tab() -> FT:
             Table(
                 Thead(Tr(Th(t("th.filename_pattern")), Th(t("th.result")))),
                 Tbody(
-                    Tr(Td(Code("SKU1234.jpg")), Td(t("settings.primary_image_on_item_sku1234"))),
-                    Tr(Td(Code("SKU1234.png")), Td(t("settings.primary_image_on_item_sku1234"))),
-                    Tr(Td(Code("SKU1234-doc-cert.pdf")), Td(t("settings.document_labelled_cert_on_item_sku1234"))),
-                    Tr(Td(Code("SKU1234-doc-warranty.pdf")), Td(t("settings.document_labelled_warranty_on_item_sku1234"))),
+                    Tr(Td(Code("SKU1234.jpg / .png / .webp")), Td("Hero product image ⭐")),
+                    Tr(Td(Code("SKU1234-img-2.jpg")), Td("Additional product image")),
+                    Tr(Td(Code("SKU1234-cert-grs.pdf")), Td("Certificate (tag: certificates)")),
+                    Tr(Td(Code("SKU1234-doc-warranty.pdf")), Td("Certificate - alias for -cert-")),
+                    Tr(Td(Code("SKU1234-spec-datasheet.pdf")), Td("Spec sheet (tag: spec_sheets)")),
+                    Tr(Td(Code("SKU1234-safety-msds.pdf")), Td("Safety document (tag: safety_docs)")),
+                    Tr(Td(Code("SKU1234-360-exterior.mp4")), Td("360° media (tag: view_360)")),
                 ),
                 cls="data-table",
             ),
@@ -3910,6 +3905,16 @@ def _bulk_attach_tab() -> FT:
                     cls="field-input",
                 ),
                 cls="field-group",
+            ),
+            Div(
+                Label(
+                    Input(type="checkbox", name="override_hero", value="1"),
+                    " Override existing hero images",
+                    cls="field-label",
+                    style="display:flex;align-items:center;gap:6px;font-weight:normal;",
+                ),
+                cls="field-group",
+                style="margin-bottom:8px;",
             ),
             Button(t("btn.upload_attach"), cls="btn btn--primary", type="submit"),
             hx_post="/settings/bulk-attach",

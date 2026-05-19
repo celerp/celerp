@@ -17,6 +17,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
+from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
 from ui.config import get_token as _token, API_BASE as _api_base
@@ -1981,8 +1982,10 @@ function celerpPrintLabel(entityId, templateId) {
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        reason = str(form.get("reason", "")).strip() or None
         try:
-            await api.set_item_status(token, entity_id, "available")
+            await api.set_item_status(token, entity_id, "available", reason=reason)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
@@ -2237,10 +2240,10 @@ function celerpPrintLabel(entityId, templateId) {
         new_id = result.get("id", "")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
 
-    # ── Attachment upload (single file) ──────────────────────────────────────
+    # ── Item file routes (unified file system) ───────────────────────────────
 
-    @app.post("/api/items/{entity_id}/attachments")
-    async def item_upload_attachment(request: Request, entity_id: str):
+    @app.post("/api/items/{entity_id}/files")
+    async def item_upload_file(request: Request, entity_id: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
@@ -2249,11 +2252,81 @@ function celerpPrintLabel(entityId, templateId) {
         if file is None:
             return P(t("msg.no_file_provided"), cls="cell-error")
         try:
-            await api.upload_attachment(token, entity_id, file)
+            await api.upload_item_file(token, entity_id, file)
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _attachments_panel(entity_id, item)
+        return _item_files_section(entity_id, item)
+
+    @app.post("/api/items/{entity_id}/files/{file_id}/tag")
+    async def item_tag_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        form = await request.form()
+        tag = str(form.get("document_tag", ""))
+        try:
+            await api.tag_item_file(token, entity_id, file_id, tag)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.patch("/api/items/{entity_id}/files/{file_id}/description")
+    async def item_describe_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        form = await request.form()
+        description = str(form.get("description", ""))
+        try:
+            await api.describe_item_file(token, entity_id, file_id, description)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.post("/api/items/{entity_id}/files/{file_id}/hero")
+    async def item_set_file_hero(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            await api.set_item_file_hero(token, entity_id, file_id)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.delete("/api/items/{entity_id}/files/{file_id}")
+    async def item_delete_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            await api.delete_item_file(token, entity_id, file_id)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.get("/api/items/{entity_id}/files/_section")
+    async def item_files_section_partial(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    # ── Legacy attachment upload (redirects to new files endpoint) ────────────
+
+    @app.post("/api/items/{entity_id}/attachments")
+    async def item_upload_attachment_legacy(request: Request, entity_id: str):
+        """Deprecated: use /api/items/{entity_id}/files instead."""
+        return Response("", status_code=308, headers={"Location": f"/api/items/{entity_id}/files"})
 
     @app.delete("/api/items/{entity_id}")
     async def item_delete(request: Request, entity_id: str):
@@ -3333,6 +3406,40 @@ def _print_label_dropdown(entity_id: str) -> FT:
     )
 
 
+def _item_files_section(entity_id: str, item: dict) -> FT:
+    """Render the shared files section for an item, with hero toggle enabled."""
+    files = item.get("files") or []
+    if not files and item.get("attachments"):
+        # Display-side adapter: convert old attachment format for display until
+        # the lazy migration fires on the first real file event.
+        from celerp_inventory.projections import _ATTACHMENT_TYPE_TO_TAG, _is_image_mime
+        existing_preview = item.get("preview_image_id")
+        first_image_done = False
+        for att in item["attachments"]:
+            att_type = att.get("type", "image")
+            tag = _ATTACHMENT_TYPE_TO_TAG.get(att_type, "product_images")
+            att_id = att.get("id", "")
+            is_hero = False
+            if tag == "product_images" and _is_image_mime(att.get("mime", "")):
+                if existing_preview:
+                    is_hero = att_id == existing_preview
+                elif not first_image_done:
+                    is_hero = True
+                    first_image_done = True
+            files.append({
+                "id": att_id,
+                "filename": att.get("filename", ""),
+                "mime": att.get("mime", ""),
+                "size": att.get("size", 0),
+                "url": att.get("url", ""),
+                "document_tag": tag,
+                "description": att.get("label") or None,
+                "uploaded_at": None,
+                "is_hero": is_hero,
+            })
+    return _shared_files_section("item", entity_id, files, can_set_hero=True)
+
+
 def _item_detail_tabs(
     entity_id: str,
     item: dict,
@@ -3388,7 +3495,7 @@ def _item_detail_tabs(
     return Div(
         tab_bar,
         panel,
-        _attachments_panel(entity_id, item),
+        _item_files_section(entity_id, item),
         _advanced_panel(entity_id, item),
     )
 
@@ -3840,6 +3947,7 @@ function addSplitRow(btn) {{
         Form(
             Strong(t("inv.u21a9_restore"), cls="action-card-title"),
             Div(
+                Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
                 cls="action-card-row",
             ),

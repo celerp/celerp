@@ -747,6 +747,12 @@ class EntityFileDeleted(BaseModel):
     file_id: str
 
 
+class EntityFileHeroSet(BaseModel):
+    entity_id: str
+    entity_type: str  # always "item"
+    file_id: str  # the file to mark as hero (must be an image MIME)
+
+
 EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     # Items
     "item.created": ItemCreated,
@@ -767,6 +773,11 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.produced": ItemProduced,
     "item.reserved": ItemReserved,
     "item.unreserved": ItemUnreserved,
+    "item.file.attached": EntityFileAttached,
+    "item.file.tagged": EntityFileTagged,
+    "item.file.deleted": EntityFileDeleted,
+    "item.file.description_updated": EntityFileDescriptionUpdated,
+    "item.file.hero_set": EntityFileHeroSet,
 
     # CRM
     "crm.contact.created": CrmContactCreated,

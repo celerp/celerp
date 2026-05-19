@@ -1289,5 +1289,9 @@
   "th.version": "Version",
   "th.weight": "Weight",
   "th.when": "When",
-  "th.wholesale": "Wholesale"
+  "th.wholesale": "Wholesale",
+  "file_tag.product_images": "Product Images",
+  "file_tag.spec_sheets": "Spec Sheets",
+  "file_tag.safety_docs": "Safety Documents",
+  "file_tag.view_360": "360° Media"
 }

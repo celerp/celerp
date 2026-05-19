@@ -443,18 +443,57 @@ async def upload_attachment(token: str, entity_id: str, file) -> dict:
         )).json()
 
 
+async def upload_item_file(token: str, entity_id: str, file) -> dict:
+    async with _client(token) as c:
+        content = await file.read() if hasattr(file, "read") else file.file.read()
+        filename = getattr(file, "filename", "upload")
+        content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
+        return _raise(await c.post(
+            f"/items/{entity_id}/files",
+            files={"file": (filename, content, content_type)},
+        )).json()
+
+
+async def tag_item_file(token: str, entity_id: str, file_id: str, tag: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(
+            f"/items/{entity_id}/files/{file_id}/tag",
+            data={"document_tag": tag},
+        )).json()
+
+
+async def describe_item_file(token: str, entity_id: str, file_id: str, description: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(
+            f"/items/{entity_id}/files/{file_id}/description",
+            data={"description": description},
+        )).json()
+
+
+async def set_item_file_hero(token: str, entity_id: str, file_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/items/{entity_id}/files/{file_id}/hero")).json()
+
+
+async def delete_item_file(token: str, entity_id: str, file_id: str) -> None:
+    async with _client(token) as c:
+        _raise(await c.delete(f"/items/{entity_id}/files/{file_id}"))
+
+
 async def delete_attachment(token: str, entity_id: str, att_id: str) -> None:
     async with _client(token) as c:
         _raise(await c.delete(f"/items/{entity_id}/attachments/{att_id}"))
 
 
-async def bulk_attach(token: str, file) -> dict:
+async def bulk_attach(token: str, file, override_hero: bool = False) -> dict:
     async with _client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "attachments.zip")
+        params = {"override_hero": "1"} if override_hero else {}
         return _raise(await c.post(
-            "/items/attachments/bulk",
+            "/items/files/bulk",
             files={"file": (filename, content, "application/zip")},
+            params=params,
         )).json()
 
 
