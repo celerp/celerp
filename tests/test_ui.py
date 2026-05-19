@@ -12035,6 +12035,32 @@ class TestBackupRoutes:
         )
 
     @pytest.mark.asyncio
+    async def test_backup_trigger_api_failure_shows_real_error_message(self, ui_client):
+        """POST /backup/trigger must show the real error from the API, not a generic message.
+
+        Regression: API returned 422 with detail but UI showed generic 'cloud not connected'
+        because it didn't distinguish 422 (backup failed) from other errors.
+        """
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+
+        async def fake_trigger_fail(token: str, backup_type: str = "database"):
+            raise _api.APIError(422, "pg_dump not found in PATH")
+
+        with patch.object(_api, "trigger_backup", fake_trigger_fail):
+            async with ui_client as c:
+                r = await c.post(
+                    "/backup/trigger?type=database",
+                    cookies={"celerp_token": test_token},
+                )
+
+        assert r.status_code == 200, f"Expected 200 inline error, got {r.status_code}"
+        assert b"backup-flash" in r.content, "Response must contain #backup-flash for HTMX swap"
+        assert b"pg_dump" in r.content, (
+            f"Expected real error message in response, got generic message. Body: {r.text[:300]}"
+        )
+
+    @pytest.mark.asyncio
     async def test_backup_export_uses_api_client_not_raw_proxy(self, ui_client):
         """GET /backup/export must call ui.api_client.export_backup with the token."""
         import ui.api_client as _api

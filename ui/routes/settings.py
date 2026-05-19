@@ -2325,8 +2325,11 @@ def setup_routes(app):
         backup_type = request.query_params.get("type", "database")
         try:
             await _api.trigger_backup(token, backup_type=backup_type)
-        except _api.APIError:
-            return _backup_error(t("settings.cloud_not_connected", lang), lang, flash_id="backup-flash")
+        except _api.APIError as exc:
+            # 422 = backup ran but failed (pg_dump error, relay error, etc.) — show real message
+            # Other codes = cloud not connected or auth failure
+            msg = exc.detail if exc.status == 422 else t("settings.cloud_not_connected", lang)
+            return _backup_error(msg, lang, flash_id="backup-flash")
         except Exception:
             return _backup_error(t("settings.cloud_not_connected", lang), lang, flash_id="backup-flash")
         msg = t("settings.backup_triggered", lang) if backup_type == "database" else t("settings.file_backup_triggered", lang)

@@ -113,7 +113,7 @@ async def trigger_backup(type: str = "database"):
         raise HTTPException(status_code=400, detail="type must be 'database' or 'files'")
 
     if not result.ok:
-        return _flash(f"Backup failed: {result.error or 'Unknown error'}", "error")
+        raise HTTPException(status_code=422, detail=result.error or "Unknown error")
 
     resp = _flash(f"Backup complete ({_fmt_size(result.size_bytes)})")
     resp.headers["HX-Trigger"] = "backupDone"

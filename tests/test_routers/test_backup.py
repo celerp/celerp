@@ -103,9 +103,8 @@ async def test_trigger_db_failure(auth_client, monkeypatch):
         lambda **kw: _async_return(BackupResult(ok=False, size_bytes=0, error="pg_dump not found")),
     )
     r = await auth_client.post("/backup/trigger?type=database")
-    assert r.status_code == 200
-    assert "pg_dump" in r.text
-    assert "flash--error" in r.text
+    assert r.status_code == 422, f"Expected 422 so UI can show real error. Got {r.status_code}: {r.text[:100]}"
+    assert "pg_dump" in r.json()["detail"]
     # No HX-Trigger on failure
     assert "HX-Trigger" not in r.headers
 
