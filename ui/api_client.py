@@ -1519,6 +1519,11 @@ async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.R
         return _raise(await c.get(f"/docs/{entity_id}/files/{file_id}"))
 
 
+async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
+    async with _client(token) as c:
+        return _raise(await c.get(f"/items/{entity_id}/files/{file_id}"))
+
+
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
     async with _client(token) as c:
         return _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()

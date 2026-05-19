@@ -318,7 +318,7 @@ def _files_section(
         row_cells = [
             Td(Span(uploaded_at, cls="muted")),
             Td(
-                Img(src=f"{base_url}/{fid}/download", style="height:36px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
+                Img(src=f"{base_url}/{fid}/download", style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
                 if f.get("mime", "").startswith("image/") else "",
                 A(fname, href=f"{base_url}/{fid}/download", cls="file-link"),
             ),

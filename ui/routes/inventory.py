@@ -2321,6 +2321,30 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _item_files_section(entity_id, item)
 
+    @app.get("/items/{entity_id}/files/{file_id}/download")
+    async def item_download_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            resp = await api.download_item_file(token, entity_id, file_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            from starlette.responses import Response as _R
+            return _R(str(e.detail), status_code=e.status)
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        cd = resp.headers.get("content-disposition", "")
+        filename = "download"
+        if "filename=" in cd:
+            filename = cd.split("filename=")[-1].strip('"').strip("'")
+        from starlette.responses import Response as _R
+        return _R(
+            content=resp.content,
+            media_type=content_type,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+
     # ── Legacy attachment upload (redirects to new files endpoint) ────────────
 
     @app.post("/api/items/{entity_id}/attachments")
