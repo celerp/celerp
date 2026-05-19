@@ -2245,6 +2245,161 @@ def setup_routes(app):
         resp.delete_cookie("token")
         return resp
 
+    # ── Backup HTMX handlers ──────────────────────────────────────────────
+    # These forward to the API process via api_client (standard auth pattern).
+    # The HTMX targets on the backup tab (/backup/list, /backup/trigger,
+    # /backup/export, /backup/import) point here; we call the API with the
+    # user's JWT just like every other settings route handler.
+
+    @app.get("/backup/list")
+    async def backup_list(request: Request):
+        """HTMX fragment: list cloud backups for a given type."""
+        import ui.api_client as _api
+        from fasthtml.common import Div, to_xml
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        backup_type = request.query_params.get("backup_type")
+        try:
+            data = await _api.list_backups(token, backup_type=backup_type)
+        except _api.APIError as exc:
+            if exc.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return Response(
+                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
+                media_type="text/html",
+                status_code=exc.status,
+            )
+        items = data.get("items", []) if isinstance(data, dict) else []
+        if not items:
+            return Response(
+                content=to_xml(Div(t("settings.no_backups_yet", lang), cls="empty-state-msg")),
+                media_type="text/html",
+            )
+        # Delegate HTML rendering to the API module's helper via the same
+        # api_client response — render a simple table here to avoid importing
+        # private API-process helpers into the UI process.
+        from fasthtml.common import Table, Thead, Tbody, Tr, Th, Td, Span
+        def _fmt(iso: str | None) -> str:
+            if not iso:
+                return "-"
+            from datetime import datetime, timezone
+            try:
+                dt = datetime.fromisoformat(iso).astimezone(timezone.utc)
+                return dt.strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                return iso
+        rows = []
+        for item in items:
+            sz = item.get("size_bytes") or 0
+            mb = f"{sz / 1024**2:.1f} MB" if sz else "-"
+            rows.append(Tr(
+                Td(_fmt(item.get("created_at")), cls="cell"),
+                Td(mb, cls="cell"),
+                Td(item.get("backup_type", "-"), cls="cell"),
+            ))
+        table = Table(
+            Thead(Tr(Th(t("th.date")), Th(t("th.size")), Th(t("th.type")))),
+            Tbody(*rows),
+            cls="data-table",
+        )
+        return Response(content=to_xml(table), media_type="text/html")
+
+    @app.post("/backup/trigger")
+    async def backup_trigger(request: Request):
+        """Trigger an immediate backup (database or files)."""
+        import ui.api_client as _api
+        from fasthtml.common import Div, to_xml
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        backup_type = request.query_params.get("type", "database")
+        try:
+            await _api.trigger_backup(token, backup_type=backup_type)
+        except _api.APIError as exc:
+            if exc.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return Response(
+                content=to_xml(Div(str(exc.detail), cls="flash flash--error", id="backup-flash")),
+                media_type="text/html",
+                status_code=exc.status,
+            )
+        msg = t("settings.backup_triggered", lang) if backup_type == "database" else t("settings.file_backup_triggered", lang)
+        resp = Response(
+            content=to_xml(Div(msg, cls="flash flash--success", id="backup-flash")),
+            media_type="text/html",
+        )
+        resp.headers["HX-Trigger"] = "backupDone"
+        return resp
+
+    @app.get("/backup/export")
+    async def backup_export(request: Request):
+        """Download full local backup archive (.celerp-backup)."""
+        import ui.api_client as _api
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            content, content_type, content_disp = await _api.export_backup(token)
+        except _api.APIError as exc:
+            if exc.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            from fasthtml.common import Div, to_xml
+            return Response(
+                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
+                media_type="text/html",
+                status_code=exc.status,
+            )
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={"Content-Disposition": content_disp},
+        )
+
+    @app.post("/backup/import")
+    async def backup_import(request: Request):
+        """Import a .celerp-backup archive. Multipart upload forwarded to API."""
+        import ui.api_client as _api
+        import httpx
+        from fasthtml.common import Div, to_xml
+        from ui.config import API_BASE, get_token as _gt
+        token = _gt(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        # Multipart pass-through: re-stream the file to the API.
+        form = await request.form()
+        file_field = form.get("file")
+        if file_field is None:
+            return Response(
+                content=to_xml(Div(t("msg.no_file_selected", lang), cls="flash flash--error", id="backup-flash")),
+                media_type="text/html",
+            )
+        file_bytes = await file_field.read()
+        try:
+            async with httpx.AsyncClient(base_url=API_BASE, headers={"Authorization": f"Bearer {token}"}, timeout=300) as c:
+                r = await c.post("/backup/import", files={"file": (file_field.filename, file_bytes, file_field.content_type or "application/octet-stream")})
+            if r.status_code == 401:
+                return RedirectResponse("/login", status_code=302)
+            if r.status_code >= 400:
+                detail = r.json().get("detail", r.text[:200]) if r.headers.get("content-type", "").startswith("application/json") else r.text[:200]
+                return Response(
+                    content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
+                    media_type="text/html",
+                    status_code=r.status_code,
+                )
+        except httpx.HTTPError as exc:
+            return Response(
+                content=to_xml(Div(str(exc), cls="flash flash--error", id="backup-flash")),
+                media_type="text/html",
+            )
+        return Response(
+            content=to_xml(Div(t("settings.backup_imported", lang), cls="flash flash--success", id="backup-flash")),
+            media_type="text/html",
+        )
+
 
 # ── Display cell helpers (click-to-edit pattern) ─────────────────────────
 

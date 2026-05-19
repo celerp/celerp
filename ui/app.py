@@ -305,39 +305,6 @@ async def proxy_attachment(request: Request, path: str) -> Response:
 
 app.mount("/static", StaticFiles(directory=_static_dir), name="static")
 
-# Proxy /backup/* to the API process.
-# The backup HTMX targets (/backup/list, /backup/trigger, /backup/export,
-# /backup/restore, /backup/import) live on the API (8000), not the UI (8080).
-# Without this proxy, every request returns 404.
-@app.route("/backup/{path:path}", methods=["GET", "POST"])
-async def proxy_backup(request: Request, path: str) -> Response:
-    if not request.cookies.get(COOKIE_NAME):
-        return RedirectResponse("/login", status_code=302)
-    from ui.config import API_BASE
-    import httpx
-    token = request.cookies.get(COOKIE_NAME, "")
-    headers = {
-        "Authorization": f"Bearer {token}",
-        **{k: v for k, v in request.headers.items()
-           if k.lower() not in ("host", "content-length")},
-    }
-    url = f"{API_BASE}/backup/{path}"
-    qs = str(request.url.query)
-    if qs:
-        url = f"{url}?{qs}"
-    async with httpx.AsyncClient(timeout=120) as c:
-        if request.method == "POST":
-            body = await request.body()
-            r = await c.post(url, headers=headers, content=body)
-        else:
-            r = await c.get(url, headers=headers)
-    # Preserve HX-Trigger and other HTMX response headers
-    resp_headers = {k: v for k, v in r.headers.items()
-                    if k.lower() not in ("transfer-encoding",)}
-    return Response(content=r.content,
-                    status_code=r.status_code,
-                    headers=resp_headers)
-
 # In dev mode (MODULE_DIR not set), default_modules live next to the repo root.
 # Add each default module package dir to sys.path so _CONDITIONAL_UI imports work.
 # In production, the module loader (load_all) handles sys.path itself.

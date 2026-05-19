@@ -1836,6 +1836,32 @@ async def get_backup_status(token: str) -> dict:
         return _raise(await c.get("/settings/backup-status")).json()
 
 
+async def list_backups(token: str, backup_type: str | None = None) -> dict:
+    """GET /backup/list — list cloud backups (proxied to relay by API)."""
+    params = {"backup_type": backup_type} if backup_type else {}
+    async with _client(token) as c:
+        return _raise(await c.get("/backup/list", params=params)).json()
+
+
+async def trigger_backup(token: str, backup_type: str = "database") -> dict:
+    """POST /backup/trigger — trigger an immediate backup on the API process."""
+    async with _client(token) as c:
+        return _raise(await c.post("/backup/trigger", params={"type": backup_type})).json()
+
+
+async def export_backup(token: str) -> tuple[bytes, str, str]:
+    """GET /backup/export — fetch full local backup archive from the API process.
+
+    Returns (content_bytes, content_type, content_disposition).
+    """
+    async with _client(token) as c:
+        r = _raise(await c.get("/backup/export"))
+        return (
+            r.content,
+            r.headers.get("content-type", "application/octet-stream"),
+            r.headers.get("content-disposition", "attachment; filename=backup.celerp-backup"),
+        )
+
 async def disconnect_relay(token: str) -> dict:
     """POST /settings/cloud-disconnect — stop gateway client, clear config."""
     async with _client(token) as c:
