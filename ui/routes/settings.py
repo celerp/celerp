@@ -3814,7 +3814,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     )
 
     # ── Encryption key ────────────────────────────────────────────────
-    key_val = _cfg.backup_encryption_key or ""
+    key_val = (backup_data or {}).get("enc_key") or ""
     key_section = Div(
         H4(t("page.encryption_key"), cls="settings-section-title"),
         P(

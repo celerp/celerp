@@ -131,6 +131,7 @@ async def backup_status() -> dict:
         "running": running,
         "gateway_token_set": bool(settings.gateway_token),
         "enc_ok": bool(settings.backup_encryption_key),
+        "enc_key": settings.backup_encryption_key or "",
         "db": {"ok": db.ok, "error": db.error, "size_bytes": db.size_bytes,
                "last_run": db.last_run.isoformat() if db.last_run else None},
         "file": {"ok": fl.ok, "error": fl.error, "size_bytes": fl.size_bytes,
