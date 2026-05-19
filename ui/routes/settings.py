@@ -1410,7 +1410,7 @@ def setup_routes(app):
                 cls="bulk-result-summary",
             ),
             Table(
-                Thead(Tr(Th("SKU"), Th(t("th.file")), Th(t("th.status")), Th(t("label.tag")), Th("Hero", style="text-align:center;"))),
+                Thead(Tr(Th("SKU"), Th(t("th.file")), Th(t("th.status")), Th(t("label.tag")), Th(t("th.hero"), style="text-align:center;"))),
                 Tbody(*[_row(r) for r in report]),
                 cls="data-table",
             ) if report else "",
@@ -2280,7 +2280,8 @@ def setup_routes(app):
             data = await _api.list_backups(token, backup_type=backup_type)
         except _api.APIError as exc:
             # Any error (including relay 401) renders as a fragment — never redirect.
-            return _backup_error(t("settings.cloud_not_connected", lang), lang)
+            msg = exc.detail if exc.detail and exc.status_code != 401 else t("settings.cloud_not_connected", lang)
+            return _backup_error(msg, lang)
         items = data.get("items", []) if isinstance(data, dict) else []
         if not items:
             return Response(
@@ -3893,7 +3894,6 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     )
 
     # ── Local export / import ─────────────────────────────────────────
-    from ui.components.backup import local_backup_buttons
     local_section = Div(
         H4(t("page.local_backup"), cls="settings-section-title"),
         P(t("settings.export_and_import_full_backups_locally_no_cloud_su"), cls="settings-hint"),
@@ -4073,13 +4073,13 @@ def _bulk_attach_tab() -> FT:
             Table(
                 Thead(Tr(Th(t("th.filename_pattern")), Th(t("th.result")))),
                 Tbody(
-                    Tr(Td(Code("SKU1234.jpg / .png / .webp")), Td("Hero product image ⭐")),
-                    Tr(Td(Code("SKU1234-img-2.jpg")), Td("Additional product image")),
-                    Tr(Td(Code("SKU1234-cert-grs.pdf")), Td("Certificate (tag: certificates)")),
-                    Tr(Td(Code("SKU1234-doc-warranty.pdf")), Td("Certificate - alias for -cert-")),
-                    Tr(Td(Code("SKU1234-spec-datasheet.pdf")), Td("Spec sheet (tag: spec_sheets)")),
-                    Tr(Td(Code("SKU1234-safety-msds.pdf")), Td("Safety document (tag: safety_docs)")),
-                    Tr(Td(Code("SKU1234-360-exterior.mp4")), Td("360° media (tag: view_360)")),
+                    Tr(Td(Code("SKU1234.jpg / .png / .webp")), Td(t("inv.hero_product_image"))),
+                    Tr(Td(Code("SKU1234-img-2.jpg")), Td(t("inv.additional_product_image"))),
+                    Tr(Td(Code("SKU1234-cert-grs.pdf")), Td(t("file_tag.certificates"))),
+                    Tr(Td(Code("SKU1234-doc-warranty.pdf")), Td(t("file_tag.certificate_alias"))),
+                    Tr(Td(Code("SKU1234-spec-datasheet.pdf")), Td(t("file_tag.spec_sheets"))),
+                    Tr(Td(Code("SKU1234-safety-msds.pdf")), Td(t("file_tag.safety_docs"))),
+                    Tr(Td(Code("SKU1234-360-exterior.mp4")), Td(t("file_tag.view_360"))),
                 ),
                 cls="data-table",
             ),
@@ -4100,7 +4100,7 @@ def _bulk_attach_tab() -> FT:
             Div(
                 Label(
                     Input(type="checkbox", name="override_hero", value="1"),
-                    " Override existing hero images",
+                    f" {t('inv.override_hero_images')}",
                     cls="field-label",
                     style="display:flex;align-items:center;gap:6px;font-weight:normal;",
                 ),
