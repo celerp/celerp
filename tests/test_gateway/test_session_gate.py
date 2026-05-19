@@ -24,10 +24,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import celerp.gateway.state as gw_state
-from celerp.gateway.state import relay_subscribe_url
 from celerp.session_gate import require_session_token
 
-_SUBSCRIBE_BASE = relay_subscribe_url()
+_SUBSCRIBE_BASE = "https://celerp.com/subscribe"
 
 
 # Minimal FastAPI app with one gated route
