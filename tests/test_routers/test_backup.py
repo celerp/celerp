@@ -4,6 +4,9 @@
 """Tests for celerp-backup module routes.
 
 Covers:
+  - Router registration: /backup/* routes are present on the app (regression for
+    ImportError-silenced path bug — routes must be registered at startup, not
+    conditionally on sys.path state)
   - POST /backup/trigger: database + files success/failure + invalid type
   - GET  /backup/list: no session (empty state), relay success (HTML + JSON), relay error
   - POST /backup/restore: success + failure
@@ -255,6 +258,25 @@ async def test_restore_failure(auth_client, monkeypatch):
     assert r.status_code == 200
     assert "flash--error" in r.text
     assert "Decrypt failed" in r.text
+
+
+# ── Router registration (regression: ImportError must not silence registration) ─
+
+def test_backup_routes_are_registered():
+    """Regression: /backup/* routes must be present on the app.
+
+    Previously a module-level try/except ImportError in main.py silently ate
+    the ModuleNotFoundError for celerp_backup (which is only importable after
+    the module loader patches sys.path during lifespan startup). This caused
+    all /backup/* requests to return 404 in production.
+    """
+    registered = {route.path for route in app.routes}
+    assert "/backup/trigger" in registered, "/backup/trigger not registered"
+    assert "/backup/list" in registered, "/backup/list not registered"
+    assert "/backup/restore/{backup_id}" in registered, "/backup/restore/{backup_id} not registered"
+    assert "/backup/export" in registered, "/backup/export not registered"
+    assert "/backup/export/{backup_id}" in registered, "/backup/export/{backup_id} not registered"
+    assert "/backup/import" in registered, "/backup/import not registered"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
