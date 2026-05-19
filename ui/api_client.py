@@ -1226,14 +1226,10 @@ async def expire_item(token: str, entity_id: str, reason: str | None = None) -> 
         return _raise(await c.post(f"/items/{entity_id}/expire", json={"reason": reason})).json()
 
 
-async def dispose_item(token: str, entity_id: str, reason: str | None = None, notes: str | None = None) -> dict:
-    async with _client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/dispose", json={"reason": reason, "notes": notes})).json()
 
-
-async def set_item_status(token: str, entity_id: str, status: str) -> dict:
+async def set_item_status(token: str, entity_id: str, status: str, reason: str | None = None) -> dict:
     async with _client(token) as c:
-        return _raise(await c.post("/items/bulk/status", json={"entity_ids": [entity_id], "status": status})).json()
+        return _raise(await c.post("/items/bulk/status", json={"entity_ids": [entity_id], "status": status, "reason": reason})).json()
 
 
 async def create_item(token: str, data: dict) -> dict:
@@ -1299,13 +1295,6 @@ async def bulk_expire(token: str, entity_ids: list[str]) -> dict:
     async with _client(token) as c:
         return _raise(await c.post("/items/bulk/expire", json={"entity_ids": entity_ids})).json()
 
-
-async def bulk_dispose(token: str, entity_ids: list[str], reason: str | None = None) -> dict:
-    async with _client(token) as c:
-        body: dict = {"entity_ids": entity_ids}
-        if reason:
-            body["reason"] = reason
-        return _raise(await c.post("/items/bulk/dispose", json=body)).json()
 
 
 # ---------------------------------------------------------------------------

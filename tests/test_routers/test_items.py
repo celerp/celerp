@@ -92,7 +92,7 @@ async def test_items_happy_path(client):
     r = await client.post(f"/items/{merged_id}/expire", headers=headers)
     assert r.status_code == 200
 
-    r = await client.post(f"/items/{merged_id}/dispose", headers=headers)
+    r = await client.post("/items/bulk/status", json={"entity_ids": [merged_id], "status": "archived"}, headers=headers)
     assert r.status_code == 200
 
 

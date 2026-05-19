@@ -3663,9 +3663,9 @@ class TestSprint5ItemActions:
         assert r.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_dispose_item_route(self, ui_client):
-        with patch("ui.api_client.dispose_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/dispose", data={"reason": "damaged", "notes": "dropped"}, cookies=_authed())
+    async def test_archive_item_route(self, ui_client):
+        with patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"updated": 1})):
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "damaged"}, cookies=_authed())
         assert r.status_code == 204
 
     # ── Split ─────────────────────────────────────────────────────────────────
@@ -4101,42 +4101,42 @@ class TestItemActionRouteCompleteness:
         assert r.status_code == 200
         assert b"already expired" in r.content
 
-    # ── dispose ──────────────────────────────────────────────────────────────
+    # ── archive (replaces dispose - merged into single archived status) ────────
 
     @pytest.mark.asyncio
-    async def test_dispose_redirects_to_item(self, ui_client):
-        with patch("ui.api_client.dispose_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/dispose", data={"reason": "broken", "notes": ""}, cookies=_authed())
-        assert r.headers.get("HX-Redirect") == "/inventory"
+    async def test_archive_redirects_to_item(self, ui_client):
+        with patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"updated": 1})):
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "broken"}, cookies=_authed())
+        assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
-    async def test_dispose_passes_reason_and_notes(self, ui_client):
+    async def test_archive_passes_reason(self, ui_client):
         captured = {}
-        async def _mock(token, entity_id, reason, notes):
-            captured.update({"reason": reason, "notes": notes})
-            return {"event_id": "e1"}
-        with patch("ui.api_client.dispose_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/dispose", data={"reason": "cracked", "notes": "dropped on floor"}, cookies=_authed())
-        assert captured["reason"] == "cracked"
-        assert captured["notes"] == "dropped on floor"
+        async def _mock(token, entity_id, status, reason=None):
+            captured.update({"status": status, "reason": reason})
+            return {"updated": 1}
+        with patch("ui.api_client.set_item_status", new=_mock):
+            await ui_client.post("/api/items/gc:123/archive", data={"reason": "damaged"}, cookies=_authed())
+        assert captured["status"] == "archived"
+        assert captured["reason"] == "damaged"
 
     @pytest.mark.asyncio
-    async def test_dispose_empty_notes_passes_none(self, ui_client):
+    async def test_archive_empty_reason_passes_none(self, ui_client):
         captured = {}
-        async def _mock(token, entity_id, reason, notes):
-            captured["notes"] = notes
-            return {"event_id": "e1"}
-        with patch("ui.api_client.dispose_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/dispose", data={"reason": "damaged", "notes": ""}, cookies=_authed())
-        assert captured["notes"] is None
+        async def _mock(token, entity_id, status, reason=None):
+            captured["reason"] = reason
+            return {"updated": 1}
+        with patch("ui.api_client.set_item_status", new=_mock):
+            await ui_client.post("/api/items/gc:123/archive", data={"reason": ""}, cookies=_authed())
+        assert captured["reason"] is None
 
     @pytest.mark.asyncio
-    async def test_dispose_api_error_shown(self, ui_client):
+    async def test_archive_api_error_shown(self, ui_client):
         from ui.api_client import APIError
-        with patch("ui.api_client.dispose_item", new=AsyncMock(side_effect=APIError(400, "already disposed"))):
-            r = await ui_client.post("/api/items/gc:123/dispose", data={"reason": "broken", "notes": ""}, cookies=_authed())
+        with patch("ui.api_client.set_item_status", new=AsyncMock(side_effect=APIError(400, "already archived"))):
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "broken"}, cookies=_authed())
         assert r.status_code == 200
-        assert b"already disposed" in r.content
+        assert b"already archived" in r.content
 
     # ── DELETE /api/items/{entity_id} (row-menu delete) ──────────────────
 
@@ -4342,8 +4342,8 @@ class TestItemActionHtmlContracts:
         assert b'hx-swap="outerHTML"' in r.content
 
     @pytest.mark.asyncio
-    async def test_action_card_dispose_url(self, ui_client):
-        """Item detail page renders dispose form targeting /api/items/{id}/dispose."""
+    async def test_action_card_archive_url(self, ui_client):
+        """Item detail page renders archive form targeting /api/items/{id}/archive."""
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4356,7 +4356,7 @@ class TestItemActionHtmlContracts:
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
-        assert b'hx-post="/api/items/gc:123/dispose"' in r.content
+        assert b'hx-post="/api/items/gc:123/archive"' in r.content
         assert b'hx-target="#item-action-error"' in r.content
         assert b'hx-swap="outerHTML"' in r.content
 

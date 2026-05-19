@@ -15,7 +15,6 @@ class EventType(StrEnum):
     ITEM_TRANSFERRED = "item.transferred"
     ITEM_QUANTITY_ADJUSTED = "item.quantity.adjusted"
     ITEM_EXPIRED = "item.expired"
-    ITEM_DISPOSED = "item.disposed"
     ITEM_SPLIT = "item.split"
     ITEM_MERGED = "item.merged"
     ITEM_CONSUMED = "item.consumed"

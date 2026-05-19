@@ -655,10 +655,10 @@ class TestWorkflows:
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
-    async def test_item_dispose(self, ui):
-        with _Patches({"ui.api_client.dispose_item": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/api/items/item:1/dispose", cookies=_c(),
-                             data={"reason": "broken", "notes": "cracked"})
+    async def test_item_archive(self, ui):
+        with _Patches({"ui.api_client.set_item_status": AsyncMock(return_value={"updated": 1})}):
+            r = await ui.post("/api/items/item:1/archive", cookies=_c(),
+                             data={"reason": "broken"})
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio

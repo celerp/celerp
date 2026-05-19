@@ -22,7 +22,6 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "item.quantity_adjusted": "Quantity adjusted",
     "item.transferred": "Item transferred",
     "item.expired": "Item expired",
-    "item.disposed": "Item disposed",
     "item.reserved": "Item reserved",
     "item.unreserved": "Item unreserved",
     "item.pricing.set": "Price updated",
@@ -122,7 +121,7 @@ def detail_from_entry(data: dict, event_type: str) -> str:
     if event_type == "item.transferred":
         loc = data.get("location_name") or data.get("location_id", "")
         return f"→ {loc}" if loc else ""
-    if event_type in ("item.expired", "item.disposed"):
+    if event_type == "item.expired":
         reason = data.get("reason", "")
         return str(reason)[:60] if reason else ""
     if event_type == "item.pricing.set":

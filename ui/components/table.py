@@ -938,7 +938,7 @@ function bulkActionChanged(action){
   var n=CelerpSelection.count();
   // Immediate actions (no context UI)
   if(action==='archive'){
-    if(!confirm('Archive selected items? They will be hidden from the default view.')) return;
+    if(!confirm('Archive / Dispose selected items? They will be hidden from the default view.')) return;
     _bulkImmediate('/api/items/bulk/status','bulk_status','archived');return;
   }
   if(action==='restore'){

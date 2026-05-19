@@ -89,10 +89,6 @@ class ItemExpired(BaseModel):
     reason: str | None = None
 
 
-class ItemDisposed(BaseModel):
-    reason: str | None = None
-
-
 class ItemSplit(BaseModel):
     child_ids: list[str]
     child_skus: list[str] = Field(default_factory=list)
@@ -763,7 +759,6 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.fulfilled": ItemFulfilled,
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
-    "item.disposed": ItemDisposed,
     "item.split": ItemSplit,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,

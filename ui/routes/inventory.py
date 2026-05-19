@@ -1963,27 +1963,15 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
-    @app.post("/api/items/{entity_id}/dispose")
-    async def item_dispose(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
-        form = await request.form()
-        reason = str(form.get("reason", "")).strip() or None
-        notes = str(form.get("notes", "")).strip() or None
-        try:
-            await api.dispose_item(token, entity_id, reason, notes)
-        except APIError as e:
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return Response("", status_code=204, headers={"HX-Redirect": "/inventory"})
-
     @app.post("/api/items/{entity_id}/archive")
     async def item_archive(request: Request, entity_id: str):
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        reason = str(form.get("reason", "")).strip() or None
         try:
-            await api.set_item_status(token, entity_id, "archived")
+            await api.set_item_status(token, entity_id, "archived", reason=reason)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
@@ -2622,7 +2610,7 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
 
     # When viewing a specific hidden/archived status, the available/reserved card
     # defs are irrelevant. Show a single total card instead.
-    _HIDDEN = {"sold", "archived", "merged", "expired", "disposed"}
+    _HIDDEN = {"sold", "archived", "merged", "expired"}
     if active_status and active_status not in ("", "all"):
         total = sum(count_by_status.values())
         cards = [{"label": t("chip.total", lang), "count": total, "status": active_status, "color": "gray"}]
@@ -3837,26 +3825,11 @@ function addSplitRow(btn) {{
         Form(
             Strong(t("inv.u1f4e6_archive"), cls="action-card-title"),
             Div(
+                Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
                 cls="action-card-row",
             ),
             hx_post=f"/api/items/{entity_id}/archive",
-            hx_target="#item-action-error",
-            hx_swap="outerHTML",
-        ),
-        cls="action-card",
-    )
-
-    dispose_card = Div(
-        Form(
-            Strong(t("inv.u0001f5d1_dispose"), cls="action-card-title"),
-            P(t("inv.dispose_permanent_warning") if "inv.dispose_permanent_warning" in [] else "Permanently deletes item and all records.", cls="action-card-hint"),
-            Div(
-                Input(type="text", name="reason", placeholder="Reason", cls="form-input form-input--sm"),
-                Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
-                cls="action-card-row",
-            ),
-            hx_post=f"/api/items/{entity_id}/dispose",
             hx_target="#item-action-error",
             hx_swap="outerHTML",
         ),
@@ -3877,13 +3850,13 @@ function addSplitRow(btn) {{
         cls="action-card",
     )
 
-    # Items already in a terminal/hidden state: show restore instead of expire/dispose
+    # Items already in a terminal/hidden state: show restore instead of expire/archive
     item_status = item.get("status", "available")
     _RESTORABLE = {"archived", "expired"}
     if item_status in _RESTORABLE:
-        lifecycle_cards = [restore_card, dispose_card]
+        lifecycle_cards = [restore_card]
     else:
-        lifecycle_cards = [expire_card, archive_card, dispose_card]
+        lifecycle_cards = [expire_card, archive_card]
 
     # Return to Vendor (conditional)
     rtv_card = ""
