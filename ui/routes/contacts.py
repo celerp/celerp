@@ -154,7 +154,11 @@ def _collect_contact_files(contact: dict, docs: list[dict]) -> list[dict]:
             fid = f.get("id", "")
             if fid not in seen:
                 seen.add(fid)
-                result.append({**f, "linked_ref": ref, "linked_url": url})
+                # Override download URL to the docs route — the file lives under
+                # the doc entity, not the contact.
+                download_url = f"/docs/{doc_id}/files/{fid}/download" if doc_id else ""
+                result.append({**f, "linked_ref": ref, "linked_url": url,
+                                "_download_url": download_url, "_readonly": True})
 
     return result
 

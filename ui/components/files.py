@@ -252,8 +252,12 @@ def _files_section(
         uploaded_at = _fmt_date(f.get("uploaded_at"))
         linked_ref = f.get("linked_ref") or ""
         linked_url = f.get("linked_url") or ""
+        # Files merged from a foreign entity (e.g. doc files shown on contact page)
+        # carry their own download URL and should not be editable/deletable here.
+        file_download_url = f.get("_download_url") or f"{base_url}/{fid}/download"
+        is_readonly = bool(f.get("_readonly"))
 
-        if can_tag:
+        if can_tag and not is_readonly:
             tag_opts_row = [Option(t("label.no_tag"), value="")] + [
                 Option(_tag_label(slug), value=slug, selected=(slug == doc_tag))
                 for slug in _tags
@@ -272,7 +276,7 @@ def _files_section(
         else:
             tag_cell = Td(Span(_tag_label(doc_tag), cls="badge badge--muted") if doc_tag else Span())
 
-        if can_describe:
+        if can_describe and not is_readonly:
             desc_cell = Td(
                 Span(
                     desc if desc else "--",
@@ -318,16 +322,16 @@ def _files_section(
         row_cells = [
             Td(Span(uploaded_at, cls="muted")),
             Td(
-                Img(src=f"{base_url}/{fid}/download", style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
+                Img(src=file_download_url, style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
                 if f.get("mime", "").startswith("image/") else "",
-                A(fname, href=f"{base_url}/{fid}/download", cls="file-link"),
+                A(fname, href=file_download_url, cls="file-link"),
             ),
             tag_cell,
             desc_cell,
         ]
         if has_linked:
             row_cells.append(linked_cell)
-        if can_set_hero:
+        if can_set_hero and not is_readonly:
             is_hero = f.get("is_hero", False)
             is_image = (f.get("mime", "").startswith("image/"))
             if is_image:
@@ -344,6 +348,8 @@ def _files_section(
             else:
                 hero_cell = Td()
             row_cells.append(hero_cell)
+        elif can_set_hero and is_readonly:
+            row_cells.append(Td())
         row_cells += [
             Td(Span(_fmt_size(size), cls="muted")),
             Td(
@@ -355,7 +361,7 @@ def _files_section(
                     hx_confirm=f"{t('action.delete_file')}: {fname}?",
                     cls="btn btn--ghost btn--xs",
                     title=t("action.delete_file"),
-                ),
+                ) if not is_readonly else Span(),
             ),
         ]
         row_cls = "files-row--hero" if f.get("is_hero") else ""
