@@ -3895,11 +3895,11 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     # ── Local export / import ─────────────────────────────────────────
     from ui.components.backup import local_backup_buttons
     local_section = Div(
-        Hr(cls="section-divider mt-lg"),
-        H4(t("page.local_backup"), cls="settings-section-title mt-lg"),
+        H4(t("page.local_backup"), cls="settings-section-title"),
         P(t("settings.export_and_import_full_backups_locally_no_cloud_su"), cls="settings-hint"),
         local_backup_buttons(),
-        cls="mt-md",
+        Hr(cls="section-divider mt-lg"),
+        cls="mb-md",
     )
 
     # ── How it works ──────────────────────────────────────────────────
@@ -3918,13 +3918,13 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
 
     return Div(
         H3(t("settings.tab_backup"), cls="settings-section-title"),
+        local_section,
         how_it_works,
         status_section,
         key_section,
         actions,
         flash_target,
         history_section,
-        local_section,
         cls="settings-card",
     )
 

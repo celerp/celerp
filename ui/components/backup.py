@@ -25,10 +25,9 @@ def cloud_backup_buttons(
     enc_ok: bool,
     gw_ok: bool,
     flash_target_id: str = "backup-flash",
-    import_input_id: str = "backup-import-input",
     cls: str = "flex-row gap-sm flex-wrap mt-lg",
 ) -> Div:
-    """Full set of backup action buttons (cloud + local). For connected state."""
+    """Cloud backup trigger buttons only (Backup Database Now / Backup Files Now)."""
     return Div(
         Button(t("btn.backup_database_now"),
             hx_post="/backup/trigger?type=database",
@@ -47,11 +46,6 @@ def cloud_backup_buttons(
             cls="btn btn--secondary",
             disabled=not (enc_ok and gw_ok),
             title=_TOOLTIPS["files"],
-        ),
-        *local_backup_buttons(
-            import_input_id=import_input_id,
-            flash_target_id=flash_target_id,
-            as_list=True,
         ),
         cls=cls,
     )
