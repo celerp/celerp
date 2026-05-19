@@ -110,6 +110,8 @@ def _files_section(
         return f.get("uploaded_at") or ""
 
     sorted_files = sorted(files, key=_uploaded_at_key, reverse=(sort_dir == "desc"))
+    # Hero always at top regardless of date sort
+    sorted_files = sorted(sorted_files, key=lambda f: 0 if f.get("is_hero") else 1)
 
     # ── Filter ───────────────────────────────────────────────────────────────
     if tag_filter:
@@ -315,7 +317,11 @@ def _files_section(
 
         row_cells = [
             Td(Span(uploaded_at, cls="muted")),
-            Td(A(fname, href=f"{base_url}/{fid}/download", cls="file-link")),
+            Td(
+                Img(src=f"{base_url}/{fid}/download", style="height:36px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
+                if f.get("mime", "").startswith("image/") else "",
+                A(fname, href=f"{base_url}/{fid}/download", cls="file-link"),
+            ),
             tag_cell,
             desc_cell,
         ]
@@ -413,33 +419,51 @@ def _files_section(
         pagination = Div(*pager_items, cls="pagination", style="margin-top:8px;display:flex;gap:4px;")
 
     # ── Upload dropzone ───────────────────────────────────────────────────────
+    # Named init function keyed by sid so it survives outerHTML swaps.
+    # After each swap (htmx or plain fetch) we re-call it on the new zone.
+    # The global _celerpDZ registry lets the new section call its own init
+    # once inserted (htmx:afterSettle fires for hx-* swaps; for plain fetch
+    # swaps we call it directly after setting outerHTML).
     drop_js = f"""
 (function(){{
-  var zone=document.getElementById('file-drop-zone-{sid}');
-  var inp=document.getElementById('file-drop-input-{sid}');
-  if(!zone||!inp) return;
-  function upload(file){{
-    var fd=new FormData(); fd.append('file',file);
-    var txt=zone.querySelector('.file-drop-text');
-    if(txt) txt.textContent='{t("msg.uploading")}...';
-    fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
-      .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.text();}})
-      .then(function(html){{
-        var sec=document.getElementById('files-section-{sid}');
-        if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}
-        else location.reload();
-      }})
-      .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
+  if(!window._celerpDZ) window._celerpDZ={{}};
+  function initDropZone(){{
+    var zone=document.getElementById('file-drop-zone-{sid}');
+    var inp=document.getElementById('file-drop-input-{sid}');
+    if(!zone||!inp||zone._dzInited) return;
+    zone._dzInited=true;
+    function upload(file){{
+      var fd=new FormData(); fd.append('file',file);
+      var txt=zone.querySelector('.file-drop-text');
+      if(txt) txt.textContent='{t("msg.uploading")}...';
+      fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
+        .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.text();}})
+        .then(function(html){{
+          var sec=document.getElementById('files-section-{sid}');
+          if(sec){{
+            sec.outerHTML=html;
+            var ns=document.getElementById('files-section-{sid}');
+            if(ns&&window.htmx) htmx.process(ns);
+            if(window._celerpDZ['{sid}']) window._celerpDZ['{sid}']();
+          }} else location.reload();
+        }})
+        .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
+    }}
+    zone.addEventListener('click',function(e){{
+      if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
+    }});
+    inp.addEventListener('change',function(){{ if(inp.files.length) upload(inp.files[0]); }});
+    zone.addEventListener('dragover',function(e){{e.preventDefault();zone.classList.add('file-drop-zone--active');}});
+    zone.addEventListener('dragleave',function(){{zone.classList.remove('file-drop-zone--active');}});
+    zone.addEventListener('drop',function(e){{
+      e.preventDefault(); zone.classList.remove('file-drop-zone--active');
+      if(e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
+    }});
   }}
-  zone.addEventListener('click',function(e){{
-    if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
-  }});
-  inp.addEventListener('change',function(){{ if(inp.files.length) upload(inp.files[0]); }});
-  zone.addEventListener('dragover',function(e){{e.preventDefault();zone.classList.add('file-drop-zone--active');}});
-  zone.addEventListener('dragleave',function(){{zone.classList.remove('file-drop-zone--active');}});
-  zone.addEventListener('drop',function(e){{
-    e.preventDefault(); zone.classList.remove('file-drop-zone--active');
-    if(e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
+  window._celerpDZ['{sid}']=initDropZone;
+  initDropZone();
+  document.addEventListener('htmx:afterSettle',function(e){{
+    if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-{sid}') initDropZone();
   }});
 }})();
 """
