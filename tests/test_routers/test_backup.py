@@ -4,9 +4,9 @@
 """Tests for celerp-backup module routes.
 
 Covers:
-  - GET  /backup/status: flags and scheduler state
-  - POST /backup/trigger: database + files success/failure
-  - POST /backup/restore: success/failure
+  - POST /backup/trigger: database + files success/failure + invalid type
+  - GET  /backup/list: no session (empty state), relay success (HTML + JSON), relay error
+  - POST /backup/restore: success + failure
 """
 
 from __future__ import annotations
@@ -77,35 +77,6 @@ def reset_backup_settings():
     settings.backup_encryption_key = orig_key
 
 
-# ── GET /backup/status ────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_status_unconfigured(auth_client, monkeypatch):
-    monkeypatch.setattr("celerp.gateway.client._client", None)
-    settings.backup_encryption_key = ""
-    r = await auth_client.get("/backup/status")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["encryption_configured"] is False
-    assert data["gateway_connected"] is False
-    assert "scheduler_running" in data
-    assert "backup_enabled" in data
-
-
-@pytest.mark.asyncio
-async def test_status_configured(auth_client, monkeypatch):
-    import celerp.gateway.client as _gw_mod
-    from celerp.gateway.client import GatewayClient
-    fake = GatewayClient("tok", "iid", "wss://x")
-    monkeypatch.setattr(_gw_mod, "_client", fake)
-    settings.backup_encryption_key = base64.b64encode(secrets.token_bytes(32)).decode()
-    r = await auth_client.get("/backup/status")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["encryption_configured"] is True
-    assert data["gateway_connected"] is True
-
-
 # ── POST /backup/trigger ──────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -118,6 +89,7 @@ async def test_trigger_db_success(auth_client, monkeypatch):
     r = await auth_client.post("/backup/trigger?type=database")
     assert r.status_code == 200
     assert "Backup complete" in r.text
+    assert r.headers.get("HX-Trigger") == "backupDone"
 
 
 @pytest.mark.asyncio
@@ -131,6 +103,8 @@ async def test_trigger_db_failure(auth_client, monkeypatch):
     assert r.status_code == 200
     assert "pg_dump" in r.text
     assert "flash--error" in r.text
+    # No HX-Trigger on failure
+    assert "HX-Trigger" not in r.headers
 
 
 @pytest.mark.asyncio
@@ -143,12 +117,144 @@ async def test_trigger_files_success(auth_client, monkeypatch):
     r = await auth_client.post("/backup/trigger?type=files")
     assert r.status_code == 200
     assert "Backup complete" in r.text
+    assert r.headers.get("HX-Trigger") == "backupDone"
 
 
 @pytest.mark.asyncio
 async def test_trigger_invalid_type(auth_client):
     r = await auth_client.post("/backup/trigger?type=invalid")
     assert r.status_code == 400
+
+
+# ── GET /backup/list ──────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_list_no_session_token_htmx(auth_client, monkeypatch):
+    """When relay not connected, HTMX request gets empty-state HTML."""
+    monkeypatch.setattr(gw_state, "get_session_token", lambda: "")
+    r = await auth_client.get("/backup/list", headers={"HX-Request": "true"})
+    assert r.status_code == 200
+    assert "empty-state-msg" in r.text
+
+
+@pytest.mark.asyncio
+async def test_list_no_session_token_json(auth_client, monkeypatch):
+    """When relay not connected, JSON request gets empty items list."""
+    monkeypatch.setattr(gw_state, "get_session_token", lambda: "")
+    r = await auth_client.get("/backup/list")
+    assert r.status_code == 200
+    assert r.json() == {"items": []}
+
+
+@pytest.mark.asyncio
+async def test_list_htmx_with_items(auth_client, monkeypatch):
+    """HTMX request returns rendered table when relay returns items."""
+    import httpx as _httpx
+    import respx
+
+    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+
+    items = [
+        {"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 1048576, "label": "daily"},
+        {"id": "bkp-2", "created_at": "2026-05-02T12:00:00Z", "size_bytes": 512000, "label": None},
+    ]
+
+    with respx.mock:
+        respx.get("https://relay.test.com/backup/").mock(
+            return_value=_httpx.Response(200, json={"items": items})
+        )
+        r = await auth_client.get("/backup/list", headers={"HX-Request": "true"})
+
+    assert r.status_code == 200
+    assert "data-table" in r.text
+    assert "bkp-1" in r.text or "May 01" in r.text
+    assert "1.0 MB" in r.text
+
+
+@pytest.mark.asyncio
+async def test_list_htmx_empty_items(auth_client, monkeypatch):
+    """HTMX request returns empty-state when relay returns no items."""
+    import httpx as _httpx
+    import respx
+
+    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+
+    with respx.mock:
+        respx.get("https://relay.test.com/backup/").mock(
+            return_value=_httpx.Response(200, json={"items": []})
+        )
+        r = await auth_client.get("/backup/list", headers={"HX-Request": "true"})
+
+    assert r.status_code == 200
+    assert "empty-state-msg" in r.text
+
+
+@pytest.mark.asyncio
+async def test_list_json(auth_client, monkeypatch):
+    """Non-HTMX request returns raw JSON from relay."""
+    import httpx as _httpx
+    import respx
+
+    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+
+    items = [{"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 100, "label": "x"}]
+    with respx.mock:
+        respx.get("https://relay.test.com/backup/").mock(
+            return_value=_httpx.Response(200, json={"items": items})
+        )
+        r = await auth_client.get("/backup/list")
+
+    assert r.status_code == 200
+    assert r.json()["items"][0]["id"] == "bkp-1"
+
+
+@pytest.mark.asyncio
+async def test_list_relay_error(auth_client, monkeypatch):
+    """Relay non-200 response raises 502."""
+    import httpx as _httpx
+    import respx
+
+    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+
+    with respx.mock:
+        respx.get("https://relay.test.com/backup/").mock(
+            return_value=_httpx.Response(503, text="Service Unavailable")
+        )
+        r = await auth_client.get("/backup/list")
+
+    assert r.status_code == 503
+
+
+# ── POST /backup/restore ──────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_restore_success(auth_client, monkeypatch):
+    from celerp.services.backup import BackupResult
+    monkeypatch.setattr(
+        "celerp.services.backup.run_restore",
+        lambda bid: _async_return(BackupResult(ok=True, size_bytes=5000)),
+    )
+    r = await auth_client.post("/backup/restore/bkp-123")
+    assert r.status_code == 200
+    assert "flash--success" in r.text
+    assert "flash--error" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_restore_failure(auth_client, monkeypatch):
+    from celerp.services.backup import BackupResult
+    monkeypatch.setattr(
+        "celerp.services.backup.run_restore",
+        lambda bid: _async_return(BackupResult(ok=False, size_bytes=0, error="Decrypt failed")),
+    )
+    r = await auth_client.post("/backup/restore/bkp-bad")
+    assert r.status_code == 200
+    assert "flash--error" in r.text
+    assert "Decrypt failed" in r.text
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

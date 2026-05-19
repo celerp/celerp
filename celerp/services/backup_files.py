@@ -155,8 +155,11 @@ async def run_file_backup(label: str | None = None):
         return BackupResult(ok=False, size_bytes=0, error="Relay not connected - skipping backup")
 
     try:
-        dirs = [Path("static/attachments"), Path("data/ai_uploads")]
-        manifest_path = Path("data/backup_manifest.json")
+        dirs = [
+            settings.data_dir / "static" / "attachments",
+            settings.data_dir / "ai_uploads",
+        ]
+        manifest_path = settings.data_dir / "backup_manifest.json"
 
         current = build_manifest(dirs)
         previous = load_manifest(manifest_path)

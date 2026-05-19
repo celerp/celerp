@@ -312,6 +312,15 @@ app.include_router(system.router, prefix="/system", tags=["system"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
 
+# Backup router — always registered; individual endpoints gate on cloud connection.
+# Lazy import: celerp_backup is a sibling package that may not be on sys.path at
+# module-load time in test environments (conftest patches sys.path after importing app).
+try:
+    from celerp_backup.setup import setup_api_routes as _setup_backup
+    _setup_backup(app)
+except ImportError:
+    pass  # module not installed; conftest will register it separately
+
 # Debug router — only active when CELERP_DEBUG=1 (never in production by default)
 import os as _os
 if _os.environ.get("CELERP_DEBUG") == "1":
