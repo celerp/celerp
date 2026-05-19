@@ -244,3 +244,39 @@ async def test_doc_file_has_uploaded_at(client):
     match = next((f for f in files if f.get("id") == fid), None)
     assert match is not None
     assert match.get("uploaded_at"), f"uploaded_at missing from doc file entry: {match}"
+
+
+@pytest.mark.asyncio
+async def test_contact_file_download_resolves_data_dir(client):
+    """GET /crm/contacts/{cid}/files/{fid} must return the file.
+
+    Regression: url stored in the projection is /static/attachments/... (a
+    web-relative path). The download handler was resolving it as a bare
+    filesystem path relative to cwd, giving ./static/attachments/... - but
+    the actual file lives under settings.data_dir / static/attachments/...
+    Also: url was not stored in the contact file projection at all (missing
+    from event data), so match.get("url") returned "" causing unconditional 404.
+    """
+    from celerp.config import settings
+
+    h = await _headers(client)
+
+    r = await client.post("/crm/contacts", json={"name": "DownloadTest"}, headers=h)
+    assert r.status_code == 200
+    cid = r.json()["id"]
+
+    fake_pdf = b"%PDF-1.0\ntest-content"
+    r = await client.post(
+        f"/crm/contacts/{cid}/files",
+        files={"file": ("dl_test.pdf", fake_pdf, "application/pdf")},
+        headers=h,
+    )
+    assert r.status_code == 200, f"Upload failed: {r.text}"
+    fid = r.json()["id"]
+
+    r = await client.get(f"/crm/contacts/{cid}/files/{fid}", headers=h)
+    assert r.status_code == 200, (
+        f"Download returned {r.status_code}. "
+        "Route likely resolves path relative to cwd instead of settings.data_dir."
+    )
+    assert r.content == fake_pdf
