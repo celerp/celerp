@@ -2307,17 +2307,8 @@ def setup_routes(app):
                 Td(mb, cls="cell cell--number"),
                 Td(item.get("backup_type", "-"), cls="cell"),
                 Td(
-                    Div(
-                        A(t("btn.export"), href=f"/backup/export/{bid}",
-                          cls="btn btn--xs btn--secondary"),
-                        Button(t("btn.restore"),
-                               hx_post=f"/backup/restore/{bid}",
-                               hx_confirm=t("settings.restore_confirm", lang),
-                               hx_target="#backup-flash",
-                               hx_swap="outerHTML",
-                               cls="btn btn--xs btn--outline btn--danger"),
-                        cls="cell-actions",
-                    ),
+                    A(t("btn.export"), href=f"/backup/export/{bid}",
+                      cls="btn btn--xs btn--secondary"),
                     cls="cell",
                 ),
             ))
@@ -2395,26 +2386,6 @@ def setup_routes(app):
             content=content,
             media_type=content_type,
             headers={"Content-Disposition": content_disp},
-        )
-
-    @app.post("/backup/restore/{backup_id}")
-    async def backup_restore_cloud(request: Request, backup_id: str):
-        """Restore a cloud backup. Returns HTMX flash fragment."""
-        import ui.api_client as _api
-        from fasthtml.common import Div, to_xml
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        lang = get_lang(request)
-        try:
-            await _api.restore_cloud_backup(token, backup_id)
-        except _api.APIError as exc:
-            return _backup_error(str(exc.detail), lang, flash_id="backup-flash")
-        except Exception as exc:
-            return _backup_error(str(exc), lang, flash_id="backup-flash")
-        return Response(
-            content=to_xml(Div(t("settings.backup_restored", lang), cls="flash flash--success", id="backup-flash")),
-            media_type="text/html",
         )
 
     @app.post("/backup/import")
@@ -3921,6 +3892,16 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
         cls="mt-lg",
     )
 
+    # ── Local export / import ─────────────────────────────────────────
+    from ui.components.backup import local_backup_buttons
+    local_section = Div(
+        Hr(cls="section-divider mt-lg"),
+        H4(t("page.local_backup"), cls="settings-section-title mt-lg"),
+        P(t("settings.export_and_import_full_backups_locally_no_cloud_su"), cls="settings-hint"),
+        local_backup_buttons(),
+        cls="mt-md",
+    )
+
     # ── How it works ──────────────────────────────────────────────────
     how_it_works = Div(
         H4(t("page.how_cloud_backup_works"), cls="settings-section-title"),
@@ -3932,17 +3913,18 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
             "After cancellation, backups remain accessible for 30 days.",
             cls="settings-hint",
         ),
-        cls="mt-lg",
+        cls="mb-lg",
     )
 
     return Div(
         H3(t("settings.tab_backup"), cls="settings-section-title"),
+        how_it_works,
         status_section,
         key_section,
         actions,
         flash_target,
         history_section,
-        how_it_works,
+        local_section,
         cls="settings-card",
     )
 
