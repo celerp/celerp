@@ -4938,7 +4938,7 @@ class TestInventoryBulkActions:
 
 
 class TestBulkActionsPhase1to5:
-    """Phases 1-5: persistent selection, context-sensitive toolbar, merge/split/expire/dispose."""
+    """Phases 1-5: persistent selection, context-sensitive toolbar, merge/split/expire/archive."""
 
     # ── Phase 1: data attributes on row checkboxes ───────────────────────
 
@@ -5075,7 +5075,7 @@ class TestBulkActionsPhase1to5:
         assert r.status_code == 200
         assert b"Invalid split quantity" in r.content
 
-    # ── Phase 5: bulk expire/dispose ─────────────────────────────────────
+    # ── Phase 5: bulk expire/archive ─────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_bulk_expire_success(self, ui_client):

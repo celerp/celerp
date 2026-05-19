@@ -95,9 +95,9 @@ async def test_inventory_reserve_unreserve_transfer_and_status_changes(journey_a
     expire = await journey_api.post(f"/items/{item_id}/expire")
     assert expire.status_code == 200, expire.text
     expired = await _get_item(journey_api, item_id)
-    assert expired.get("status") in {"expired", "disposed"} or expired.get("is_expired") is True
+    assert expired.get("status") in {"expired", "archived"} or expired.get("is_expired") is True
 
-    dispose = await journey_api.post(f"/items/{item_id}/dispose")
-    assert dispose.status_code == 200, dispose.text
-    disposed = await _get_item(journey_api, item_id)
-    assert disposed.get("is_available") is False
+    archive = await journey_api.post("/items/bulk/status", json={"entity_ids": [item_id], "status": "archived"})
+    assert archive.status_code == 200, archive.text
+    archived = await _get_item(journey_api, item_id)
+    assert archived.get("is_available") is False

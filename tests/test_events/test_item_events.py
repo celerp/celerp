@@ -51,8 +51,8 @@ def test_item_all_events() -> None:
     state4 = apply_item_event(state, "item.expired", {})
     assert state4["is_available"] is False and state4["is_expired"] is True
 
-    state5 = apply_item_event(state, "item.disposed", {})
-    assert state5["is_available"] is False and state5["is_expired"] is False
+    state5 = apply_item_event(state, "item.status.set", {"new_status": "archived"})
+    assert state5["status"] == "archived"
 
 
 def test_item_snapshot_is_like_create() -> None:

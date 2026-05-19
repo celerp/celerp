@@ -221,7 +221,7 @@ async def list_items(
     ]
 
     # Status filtering: default excludes hidden statuses; "all" skips filtering;
-    # "archived" expands to include merged/expired/disposed.
+    # "archived" expands to include merged/expired (and legacy disposed events).
     if status == "all":
         pass  # no filter
     elif status == "archived":
@@ -797,7 +797,7 @@ class BulkDeleteBody(BaseModel):
 
 
 @router.post("/bulk/status")
-async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     event_ids = []
@@ -853,7 +853,7 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
     from celerp.models.ledger import LedgerEntry as _LE
     # Hard delete: remove projection rows and all ledger events for these items.
     # This is the correct behaviour for a user-initiated "Delete" action —
-    # the item should vanish from the catalog entirely, not just be marked disposed.
+    # the item should vanish from the catalog entirely (hard delete, no event trail).
     await session.execute(
         _sa.delete(_Proj).where(
             _Proj.company_id == company_id,

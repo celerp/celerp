@@ -3138,8 +3138,8 @@ async def undo_receive_return(
         for r in received_items
     )
 
-    # Pre-flight: verify every returned item is still "available" before disposing.
-    # If an item was re-sold or otherwise disposed, we cannot silently remove it.
+    # Pre-flight: verify every returned item is still "available" before archiving.
+    # If an item was re-sold or already archived, we cannot silently remove it.
     if item_ids:
         rows = await session.execute(
             select(Projection).where(
@@ -3157,7 +3157,7 @@ async def undo_receive_return(
             elif item_state.get("status") != "available":
                 sku = item_state.get("sku") or iid
                 status = item_state.get("status") or "unknown"
-                blocked.append(f"SKU '{sku}' is '{status}' - cannot dispose")
+                blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
         if blocked:
             raise HTTPException(
                 status_code=409,
@@ -3171,7 +3171,7 @@ async def undo_receive_return(
     # Unique suffix ensures each undo gets its own JE - prevents idempotency collision on repeated attempts
     undo_suffix = str(uuid.uuid4())
 
-    # Dispose each returned inventory item (item.deleted does not exist; disposed hides from inventory)
+    # Archive each returned inventory item (sets status=archived, preserving audit trail)
     for iid in item_ids:
         await emit_event(
             session,
@@ -3257,7 +3257,7 @@ async def undo_receive(
         elif item_state.get("status") != "available":
             sku = item_state.get("sku") or iid
             status = item_state.get("status") or "unknown"
-            blocked.append(f"SKU '{sku}' is '{status}' - cannot dispose")
+            blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
     if blocked:
         raise HTTPException(
             status_code=409,

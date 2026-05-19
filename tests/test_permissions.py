@@ -246,14 +246,14 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_dispose_item(self, client, session):
+    async def test_staff_cannot_archive_item(self, client, session):
         ctx = await _setup(client, session)
-        r = await client.post(f"/items/{ctx['item_id']}/dispose", headers=ctx["staff_h"])
+        r = await client.post("/items/bulk/status", json={"entity_ids": [ctx["item_id"]], "status": "archived"}, headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_dispose_item(self, client, session):
+    async def test_manager_can_archive_item(self, client, session):
         ctx = await _setup(client, session)
-        r = await client.post(f"/items/{ctx['item_id']}/dispose", headers=ctx["manager_h"])
+        r = await client.post("/items/bulk/status", json={"entity_ids": [ctx["item_id"]], "status": "archived"}, headers=ctx["manager_h"])
         assert r.status_code == 200
 
     async def test_staff_cannot_expire_item(self, client, session):
@@ -861,14 +861,14 @@ class TestManagerRequiredItemOps:
         )
         assert r.status_code == 200
 
-    async def test_staff_cannot_dispose_item(self, client, session):
+    async def test_staff_cannot_archive_item(self, client, session):
         ctx = await _setup(client, session)
-        r = await client.post(f"/items/{ctx['item_id']}/dispose", headers=ctx["staff_h"])
+        r = await client.post("/items/bulk/status", json={"entity_ids": [ctx["item_id"]], "status": "archived"}, headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_manager_can_dispose_item(self, client, session):
+    async def test_manager_can_archive_item(self, client, session):
         ctx = await _setup(client, session)
-        r = await client.post(f"/items/{ctx['item_id']}/dispose", headers=ctx["manager_h"])
+        r = await client.post("/items/bulk/status", json={"entity_ids": [ctx["item_id"]], "status": "archived"}, headers=ctx["manager_h"])
         assert r.status_code == 200
 
     async def test_staff_cannot_expire_item(self, client, session):

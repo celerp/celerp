@@ -91,7 +91,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             current["updated_at"] = data["updated_at"]
     elif event_type == "item.quantity.adjusted":
         current["quantity"] = data["new_qty"]
-    elif event_type in {"item.expired", "item.disposed"}:
+    elif event_type in {"item.expired", "item.disposed"}:  # item.disposed is legacy; maps to archived
         current["is_available"] = False
         current["is_expired"] = event_type == "item.expired"
         current["status"] = "expired" if event_type == "item.expired" else "archived"

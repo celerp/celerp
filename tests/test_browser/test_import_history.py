@@ -157,7 +157,7 @@ def test_import_history_undo_removes_items(api, import_location):
     assert r_after.status_code in {404, 200}, f"Unexpected status after undo: {r_after.status_code}"
     if r_after.status_code == 200:
         status = r_after.json().get("status", "")
-        assert status in ("deleted", "disposed"), \
+        assert status in ("deleted", "archived"), \
             f"Expected item deleted after undo, got status={status!r}"
 
 
