@@ -556,6 +556,10 @@ async def download_item_file(
     if match is None:
         raise HTTPException(status_code=404, detail="File not found")
     url = match.get("url", "")
+    # If stored as an absolute URL (cloud/S3 backend), redirect directly
+    if url.startswith("http://") or url.startswith("https://"):
+        from fastapi.responses import RedirectResponse as _Redir
+        return _Redir(url)
     dest = _FilePath(url.lstrip("/"))
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File missing from disk")
