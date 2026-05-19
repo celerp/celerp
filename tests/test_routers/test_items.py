@@ -1740,3 +1740,38 @@ async def test_bulk_attach_override_hero_true(client):
     assert result.status_code == 200
     second_row = result.json()["report"][0]
     assert second_row["is_hero"] is True
+
+
+@pytest.mark.asyncio
+async def test_download_item_file_route_exists(client):
+    """GET /items/{entity_id}/files/{file_id} must return the file, not 404.
+
+    Regression: attachments_router was registered AFTER the main items router,
+    causing GET /{entity_id} to shadow GET /{entity_id}/files/{file_id}.
+    """
+    from celerp.config import settings
+
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Create item and upload a file via the new /files endpoint
+    r = await client.post("/items", json={"sku": "DL-TEST-001", "name": "Download Test", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+
+    fake_jpg = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+    ru = await client.post(
+        f"/items/{item_id}/files",
+        files={"file": ("test.jpg", fake_jpg, "image/jpeg")},
+        headers=h,
+    )
+    assert ru.status_code == 200, f"Upload failed: {ru.text}"
+    file_id = ru.json()["file_id"]
+
+    # Download the file — must NOT return 404
+    rd = await client.get(f"/items/{item_id}/files/{file_id}", headers=h)
+    assert rd.status_code == 200, (
+        f"GET /items/{{entity_id}}/files/{{file_id}} returned {rd.status_code}. "
+        "Route is likely shadowed by GET /{entity_id} from the main items router."
+    )
+    assert rd.content == fake_jpg

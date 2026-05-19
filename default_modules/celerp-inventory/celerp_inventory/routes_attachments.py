@@ -544,7 +544,6 @@ async def download_item_file(
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ):
-    from pathlib import Path as _FilePath
     from fastapi.responses import FileResponse
     row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     if row is None:
@@ -560,7 +559,8 @@ async def download_item_file(
     if url.startswith("http://") or url.startswith("https://"):
         from fastapi.responses import RedirectResponse as _Redir
         return _Redir(url)
-    dest = _FilePath(url.lstrip("/"))
+    from celerp.config import settings as _settings
+    dest = _settings.data_dir / url.lstrip("/")
     if not dest.exists():
         raise HTTPException(status_code=404, detail="File missing from disk")
     return FileResponse(
