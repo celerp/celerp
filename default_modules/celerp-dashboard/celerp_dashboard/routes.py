@@ -48,7 +48,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
 
     # For KPI sub-fields that need per-item access, re-use already-loaded items list.
     _CONSIGNMENT_IN = "in"
-    _INACTIVE_STATUSES = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "disposed"})
+    _INACTIVE_STATUSES = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired"})
     active_items = []
     for i in items:
         s = i.state

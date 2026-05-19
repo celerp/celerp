@@ -244,3 +244,76 @@ async def test_doc_file_has_uploaded_at(client):
     match = next((f for f in files if f.get("id") == fid), None)
     assert match is not None
     assert match.get("uploaded_at"), f"uploaded_at missing from doc file entry: {match}"
+
+
+@pytest.mark.asyncio
+async def test_contact_file_download_resolves_data_dir(client):
+    """GET /crm/contacts/{cid}/files/{fid} must return the file.
+
+    Regression: url stored in the projection is /static/attachments/... (a
+    web-relative path). The download handler was resolving it as a bare
+    filesystem path relative to cwd, giving ./static/attachments/... - but
+    the actual file lives under settings.data_dir / static/attachments/...
+    Also: url was not stored in the contact file projection at all (missing
+    from event data), so match.get("url") returned "" causing unconditional 404.
+    """
+    from celerp.config import settings
+
+    h = await _headers(client)
+
+    r = await client.post("/crm/contacts", json={"name": "DownloadTest"}, headers=h)
+    assert r.status_code == 200
+    cid = r.json()["id"]
+
+    fake_pdf = b"%PDF-1.0\ntest-content"
+    r = await client.post(
+        f"/crm/contacts/{cid}/files",
+        files={"file": ("dl_test.pdf", fake_pdf, "application/pdf")},
+        headers=h,
+    )
+    assert r.status_code == 200, f"Upload failed: {r.text}"
+    fid = r.json()["id"]
+
+    r = await client.get(f"/crm/contacts/{cid}/files/{fid}", headers=h)
+    assert r.status_code == 200, (
+        f"Download returned {r.status_code}. "
+        "Route likely resolves path relative to cwd instead of settings.data_dir."
+    )
+    assert r.content == fake_pdf
+
+
+@pytest.mark.asyncio
+async def test_doc_file_download_resolves_data_dir(client):
+    """GET /docs/{doc_id}/files/{fid} must return the file.
+
+    Regression: url was missing from doc file event data and projection,
+    and the GET download route did not exist at all. Both are now fixed.
+    Also verifies the data_dir path resolution (not cwd-relative).
+    """
+    h = await _headers(client)
+    doc_id = await _create_draft_doc(client, h)
+
+    fake_img = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+    r = await client.post(
+        f"/docs/{doc_id}/files",
+        files={"file": ("receipt.png", fake_img, "image/png")},
+        headers=h,
+    )
+    assert r.status_code == 200, f"Upload failed: {r.text}"
+    fid = r.json()["id"]
+
+    # Verify url is now stored in the projection
+    r = await client.get(f"/docs/{doc_id}", headers=h)
+    assert r.status_code == 200
+    files = r.json().get("files", [])
+    match = next((f for f in files if f.get("id") == fid), None)
+    assert match is not None
+    assert match.get("url"), f"url not stored in doc file projection: {match}"
+
+    # Download must succeed
+    r = await client.get(f"/docs/{doc_id}/files/{fid}", headers=h)
+    assert r.status_code == 200, (
+        f"Download returned {r.status_code}. "
+        "GET /docs/{{entity_id}}/files/{{file_id}} route may be missing or broken."
+    )
+    assert r.content == fake_img

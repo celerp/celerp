@@ -27,7 +27,7 @@ import zipfile
 from pathlib import Path as _Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -165,23 +165,71 @@ async def set_preview_image(
 
 
 @router.post("/attachments/bulk")
-async def bulk_attach(
+async def bulk_attach_legacy(
     file: UploadFile = File(...),
+    override_hero: bool = Query(False),
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Bulk-attach files from a ZIP archive.
+    """Deprecated: redirects to /items/files/bulk."""
+    return await bulk_attach_files(file=file, override_hero=override_hero, company_id=company_id, user=user, session=session)
+
+
+def _detect_tag_and_label(stem: str) -> tuple[str, str | None, bool]:
+    """Parse a ZIP entry stem into (document_tag, label, is_hero_candidate).
+
+    Markers (checked in priority order, last occurrence wins for ambiguous SKUs):
+      -cert-   → certificates
+      -spec-   → spec_sheets
+      -safety- → safety_docs
+      -360-    → view_360
+      -img-    → product_images, not hero
+      -doc-    → certificates (alias, backward compat)
+    Bare SKU (no marker) → product_images, hero candidate
+    """
+    for marker, tag in (
+        ("-cert-", "certificates"),
+        ("-spec-", "spec_sheets"),
+        ("-safety-", "safety_docs"),
+        ("-360-", "view_360"),
+        ("-img-", "product_images"),
+        ("-doc-", "certificates"),
+    ):
+        idx = stem.rfind(marker)
+        if idx != -1:
+            sku_part = stem[:idx]
+            label = stem[idx + len(marker):]
+            return tag, label, False
+    return "product_images", None, True  # bare SKU → hero candidate
+
+
+@router.post("/files/bulk")
+async def bulk_attach_files(
+    file: UploadFile = File(...),
+    override_hero: bool = Query(False, description="If true, override existing hero image for matched items"),
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Bulk-attach files from a ZIP archive via item.file.attached events.
 
     File naming convention inside the ZIP:
-      <SKU>.<ext>                    — type inferred from MIME
-      <SKU>-cert-<label>.<ext>       — explicitly typed as certificate
-      <SKU>-360-<label>.<ext>        — explicitly typed as view_360
-      <SKU>-doc-<label>.<ext>        — alias for certificate (backward compat)
+      <SKU>.jpg / .png / .webp        — hero product image (first bare image per SKU)
+      <SKU>-img-<n>.<ext>             — additional product image (not hero)
+      <SKU>-cert-<label>.<ext>        — certificates tag
+      <SKU>-doc-<label>.<ext>         — certificates tag (alias for -cert-, backward compat)
+      <SKU>-spec-<label>.<ext>        — spec_sheets tag
+      <SKU>-safety-<label>.<ext>      — safety_docs tag
+      <SKU>-360-<label>.<ext>         — view_360 tag
 
     Returns:
-      {matched: int, unmatched: int, errors: [...], report: [{sku, file, status}]}
+      {matched, unmatched, errors, report: [{sku, file, status, url, tag, is_hero}]}
     """
+    from datetime import datetime, timezone
+    import mimetypes as _mt
+    from starlette.datastructures import Headers as _Headers
+
     content = await file.read()
     if not zipfile.is_zipfile(io.BytesIO(content)):
         raise HTTPException(status_code=422, detail="Uploaded file is not a valid ZIP archive")
@@ -203,27 +251,27 @@ async def bulk_attach(
     matched = unmatched = 0
     errors: list[str] = []
     report: list[dict] = []
+    # Track which SKUs have already had a hero assigned in this batch
+    hero_assigned: set[str] = set()
 
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
-        for name in zf.namelist():
+        for name in sorted(zf.namelist()):  # sorted for deterministic hero selection
             if name.endswith("/") or name.startswith("__") or name.startswith("."):
                 continue
 
             stem = _Path(name).stem
-            label: str | None = None
-            explicit_type: AttachmentType | None = None
+            tag, label, is_hero_candidate = _detect_tag_and_label(stem)
 
-            # Detect typed suffix: <SKU>-cert-<label>, <SKU>-360-<label>, <SKU>-doc-<label>
-            # Split on last occurrence so SKUs containing the marker string still work.
-            for marker, atype in (("-cert-", "certificate"), ("-360-", "view_360"), ("-doc-", "certificate")):
+            # SKU is always the stem up to the first marker (or full stem for bare)
+            # _detect_tag_and_label returns the full stem as sku for bare files.
+            # For marked files it returns sku_part inside the function but we need it here.
+            # Re-derive sku_part:
+            sku_part = stem
+            for marker in ("-cert-", "-spec-", "-safety-", "-360-", "-img-", "-doc-"):
                 idx = stem.rfind(marker)
                 if idx != -1:
                     sku_part = stem[:idx]
-                    label = stem[idx + len(marker):]
-                    explicit_type = atype  # type: ignore[assignment]
                     break
-            else:
-                sku_part = stem
 
             sku_key = sku_part.strip().lower()
             row = sku_index.get(sku_key)
@@ -234,31 +282,289 @@ async def bulk_attach(
 
             try:
                 raw = zf.read(name)
-                import mimetypes as _mt
-                from starlette.datastructures import Headers as _Headers
                 guessed_mime = _mt.guess_type(name)[0] or "application/octet-stream"
                 upload = UploadFile(
                     file=io.BytesIO(raw),
                     filename=name.split("/")[-1],
                     headers=_Headers({"content-type": guessed_mime}),
                 )
-                att = await store_upload(company_id, upload, attachment_type=explicit_type)
-                if label:
-                    att["label"] = label
+                meta = await store_upload(company_id, upload)
 
-                existing: list[dict] = row.state.get("attachments") or []
-                updated = merge_attachments(existing, att)
-                existing_preview: str | None = row.state.get("preview_image_id")
-                new_preview = resolve_preview_image_id(existing_preview, updated)
-                await _patch_item_attachments(session, company_id, row.entity_id, user.id, updated, new_preview)
-                # Keep projection in sync for subsequent files in same SKU
-                row.state = row.state | {"attachments": updated, "preview_image_id": new_preview}
+                # Determine is_hero: hero candidate + no hero yet in batch +
+                # (no existing hero OR override_hero) + must be image MIME
+                is_image = guessed_mime.startswith("image/")
+                existing_hero = any(
+                    f.get("is_hero") for f in (row.state.get("files") or [])
+                )
+                is_hero = (
+                    is_hero_candidate
+                    and is_image
+                    and sku_key not in hero_assigned
+                    and (not existing_hero or override_hero)
+                )
+                if is_hero:
+                    hero_assigned.add(sku_key)
+
+                await emit_event(
+                    session,
+                    company_id=company_id,
+                    entity_id=row.entity_id,
+                    entity_type="item",
+                    event_type="item.file.attached",
+                    data={
+                        "entity_id": row.entity_id,
+                        "entity_type": "item",
+                        "file_id": meta["id"],
+                        "filename": meta["filename"],
+                        "mime": meta["mime"],
+                        "size": meta["size"],
+                        "url": meta.get("url", ""),
+                        "document_tag": tag,
+                        "description": label,
+                        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                        "is_hero": is_hero,
+                    },
+                    actor_id=user.id,
+                    location_id=None,
+                    source="api",
+                    idempotency_key=str(uuid.uuid4()),
+                    metadata_={},
+                )
+                # Keep in-memory projection current for subsequent files on same SKU
+                from celerp_inventory.projections import apply_item_event as _apply
+                row.state = _apply(dict(row.state), "item.file.attached", {
+                    "entity_id": row.entity_id, "entity_type": "item",
+                    "file_id": meta["id"], "filename": meta["filename"],
+                    "mime": meta["mime"], "size": meta["size"],
+                    "url": meta.get("url", ""), "document_tag": tag,
+                    "description": label, "uploaded_at": datetime.now(timezone.utc).isoformat(),
+                    "is_hero": is_hero,
+                })
 
                 matched += 1
-                report.append({"sku": sku_part, "file": name, "status": "ok", "url": att["url"]})
+                report.append({"sku": sku_part, "file": name, "status": "ok",
+                                "url": meta.get("url", ""), "tag": tag, "is_hero": is_hero})
             except Exception as exc:
                 errors.append(f"{name}: {exc}")
                 report.append({"sku": sku_part, "file": name, "status": "error", "detail": str(exc)})
 
     await session.commit()
     return {"matched": matched, "unmatched": unmatched, "errors": errors, "report": report}
+
+
+# ── New file-event endpoints (Phase 1: unified file system) ──────────────────
+
+def _get_item_file(files: list[dict], file_id: str) -> dict:
+    match = next((f for f in files if f.get("id") == file_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return match
+
+
+@router.post("/{entity_id}/files")
+async def upload_item_file(
+    entity_id: str,
+    file: UploadFile = File(...),
+    document_tag: str | None = None,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Upload a file and attach it to an item via item.file.attached event."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    try:
+        meta = await store_upload(company_id, file)
+    except ValueError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+
+    # First image uploaded → auto-set as hero if no hero exists
+    existing_files: list[dict] = row.state.get("files", [])
+    has_hero = any(f.get("is_hero") for f in existing_files)
+    is_hero = (not has_hero) and meta.get("mime", "").startswith("image/")
+
+    from datetime import datetime, timezone
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.file.attached",
+        data={
+            "entity_id": entity_id,
+            "entity_type": "item",
+            "file_id": meta["id"],
+            "filename": meta["filename"],
+            "mime": meta["mime"],
+            "size": meta["size"],
+            "url": meta.get("url", ""),
+            "document_tag": document_tag,
+            "description": None,
+            "uploaded_at": datetime.now(timezone.utc).isoformat(),
+            "is_hero": is_hero,
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    return {"file_id": meta["id"], **meta, "is_hero": is_hero}
+
+
+@router.post("/{entity_id}/files/{file_id}/tag")
+async def tag_item_file(
+    entity_id: str,
+    file_id: str,
+    document_tag: str = Form(""),
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    _get_item_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.file.tagged",
+        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "document_tag": document_tag},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    return (updated.state if updated else {}) | {"id": entity_id}
+
+
+@router.patch("/{entity_id}/files/{file_id}/description")
+async def update_item_file_description(
+    entity_id: str,
+    file_id: str,
+    description: str = Form(""),
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    _get_item_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.file.description_updated",
+        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id, "description": description},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    return (updated.state if updated else {}) | {"id": entity_id}
+
+
+@router.post("/{entity_id}/files/{file_id}/hero")
+async def set_item_file_hero(
+    entity_id: str,
+    file_id: str,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Mark a file as the hero (featured) image. Must be an image MIME type."""
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    target = _get_item_file(row.state.get("files", []), file_id)
+    if not target.get("mime", "").startswith("image/"):
+        raise HTTPException(status_code=422, detail="Hero can only be set on an image file")
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.file.hero_set",
+        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    return {"preview_image_id": file_id}
+
+
+@router.delete("/{entity_id}/files/{file_id}", status_code=204)
+async def delete_item_file(
+    entity_id: str,
+    file_id: str,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    _get_item_file(row.state.get("files", []), file_id)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.file.deleted",
+        data={"entity_id": entity_id, "entity_type": "item", "file_id": file_id},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+
+
+@router.get("/{entity_id}/files/{file_id}")
+async def download_item_file(
+    entity_id: str,
+    file_id: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+):
+    from fastapi.responses import FileResponse
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if row is None:
+        raise HTTPException(status_code=404, detail="Item not found")
+    # Check new files first, fall back to old attachments
+    files = row.state.get("files") or []
+    atts = row.state.get("attachments") or []
+    match = next((f for f in files + atts if f.get("id") == file_id), None)
+    if match is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    url = match.get("url", "")
+    # If stored as an absolute URL (cloud/S3 backend), redirect directly
+    if url.startswith("http://") or url.startswith("https://"):
+        from fastapi.responses import RedirectResponse as _Redir
+        return _Redir(url)
+    from celerp.config import settings as _settings
+    dest = _settings.data_dir / url.lstrip("/")
+    if not dest.exists():
+        raise HTTPException(status_code=404, detail="File missing from disk")
+    return FileResponse(
+        path=str(dest),
+        filename=match["filename"],
+        media_type=match.get("mime", "application/octet-stream"),
+    )

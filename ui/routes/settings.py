@@ -1383,7 +1383,8 @@ def setup_routes(app):
         if file is None:
             return Div(P(t("error.no_file"), cls="error-banner"), id="bulk-attach-result")
         try:
-            result = await api.bulk_attach(token, file)
+            override_hero = bool(form.get("override_hero"))
+            result = await api.bulk_attach(token, file, override_hero=override_hero)
         except APIError as e:
             return Div(P(str(e.detail), cls="error-banner"), id="bulk-attach-result")
 
@@ -1392,11 +1393,13 @@ def setup_routes(app):
         def _row(r: dict) -> FT:
             status = r.get("status", "")
             cls = {"ok": "status-ok", "unmatched": "status-warn", "error": "status-error"}.get(status, "")
+            hero_icon = "⭐" if r.get("is_hero") else ""
             return Tr(
                 Td(r.get("sku", "")),
                 Td(r.get("file", "")),
                 Td(Span(status, cls=f"badge badge--{cls}") if cls else Span(status)),
-                Td(r.get("detail", r.get("url", ""))),
+                Td(r.get("tag", "") or r.get("detail", "")),
+                Td(hero_icon, style="text-align:center;"),
             )
 
         return Div(
@@ -1407,7 +1410,7 @@ def setup_routes(app):
                 cls="bulk-result-summary",
             ),
             Table(
-                Thead(Tr(Th("SKU"), Th(t("th.file")), Th(t("th.status")), Th(t("th.detail")))),
+                Thead(Tr(Th("SKU"), Th(t("th.file")), Th(t("th.status")), Th(t("label.tag")), Th(t("th.hero"), style="text-align:center;"))),
                 Tbody(*[_row(r) for r in report]),
                 cls="data-table",
             ) if report else "",
@@ -2241,6 +2244,189 @@ def setup_routes(app):
         resp = RedirectResponse(url="/login?deactivated=1", status_code=303)
         resp.delete_cookie("token")
         return resp
+
+    # ── Backup HTMX handlers ──────────────────────────────────────────────
+    # These forward to the API process via api_client (standard auth pattern).
+    # The HTMX targets on the backup tab (/backup/list, /backup/trigger,
+    # /backup/export, /backup/import) point here; we call the API with the
+    # user's JWT just like every other settings route handler.
+    #
+    # Error handling rule: HTMX requests must ALWAYS return an HTML fragment
+    # (never a redirect). Any 401 from the relay means "cloud not connected"
+    # — show an error fragment. Only redirect to /login when the user's own
+    # token is missing.
+
+    def _backup_error(detail: str, lang: str = "en", flash_id: str | None = None) -> Response:
+        from fasthtml.common import Div, to_xml
+        kwargs = {"cls": "empty-state-msg"}
+        if flash_id:
+            kwargs["id"] = flash_id
+        return Response(
+            content=to_xml(Div(detail, **kwargs)),
+            media_type="text/html",
+        )
+
+    @app.get("/backup/list")
+    async def backup_list(request: Request):
+        """HTMX fragment: list cloud backups for a given type."""
+        import ui.api_client as _api
+        from fasthtml.common import Div, to_xml
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        backup_type = request.query_params.get("backup_type")
+        try:
+            data = await _api.list_backups(token, backup_type=backup_type)
+        except _api.APIError as exc:
+            # Any error (including relay 401) renders as a fragment — never redirect.
+            msg = exc.detail if exc.detail and exc.status_code != 401 else t("settings.cloud_not_connected", lang)
+            return _backup_error(msg, lang)
+        items = data.get("items", []) if isinstance(data, dict) else []
+        if not items:
+            return Response(
+                content=to_xml(Div(t("settings.no_backups_yet", lang), cls="empty-state-msg")),
+                media_type="text/html",
+            )
+        from fasthtml.common import A, Button, Div, Table, Thead, Tbody, Tr, Th, Td
+        def _fmt(iso: str | None) -> str:
+            if not iso:
+                return "-"
+            from datetime import datetime, timezone
+            try:
+                dt = datetime.fromisoformat(iso).astimezone(timezone.utc)
+                return dt.strftime("%Y-%m-%d %H:%M UTC")
+            except Exception:
+                return iso
+        rows = []
+        for item in items:
+            sz = item.get("size_bytes") or 0
+            mb = f"{sz / 1024**2:.1f} MB" if sz else "-"
+            bid = item.get("id", "")
+            rows.append(Tr(
+                Td(_fmt(item.get("created_at")), cls="cell"),
+                Td(mb, cls="cell cell--number"),
+                Td(item.get("backup_type", "-"), cls="cell"),
+                Td(
+                    A(t("btn.export"), href=f"/backup/export/{bid}",
+                      cls="btn btn--xs btn--secondary"),
+                    cls="cell",
+                ),
+            ))
+        table = Table(
+            Thead(Tr(Th(t("th.date")), Th(t("th.size")), Th(t("th.type")), Th(t("th.actions")))),
+            Tbody(*rows),
+            cls="data-table",
+        )
+        return Response(content=to_xml(table), media_type="text/html")
+
+    @app.post("/backup/trigger")
+    async def backup_trigger(request: Request):
+        """Trigger an immediate backup (database or files)."""
+        import ui.api_client as _api
+        from fasthtml.common import Div, to_xml
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        backup_type = request.query_params.get("type", "database")
+        try:
+            await _api.trigger_backup(token, backup_type=backup_type)
+        except _api.APIError as exc:
+            # 422 = backup ran but failed (pg_dump error, relay error, etc.) — show real message
+            # Other codes = cloud not connected or auth failure
+            msg = exc.detail if exc.status == 422 else t("settings.cloud_not_connected", lang)
+            return _backup_error(msg, lang, flash_id="backup-flash")
+        except Exception:
+            return _backup_error(t("settings.cloud_not_connected", lang), lang, flash_id="backup-flash")
+        msg = t("settings.backup_triggered", lang) if backup_type == "database" else t("settings.file_backup_triggered", lang)
+        resp = Response(
+            content=to_xml(Div(msg, cls="flash flash--success", id="backup-flash")),
+            media_type="text/html",
+        )
+        resp.headers["HX-Trigger"] = "backupDone"
+        return resp
+
+    @app.get("/backup/export")
+    async def backup_export(request: Request):
+        """Download full local backup archive (.celerp-backup)."""
+        import ui.api_client as _api
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            content, content_type, content_disp = await _api.export_backup(token)
+        except _api.APIError as exc:
+            from fasthtml.common import Div, to_xml
+            return Response(
+                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
+                media_type="text/html",
+            )
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={"Content-Disposition": content_disp},
+        )
+
+    @app.get("/backup/export/{backup_id}")
+    async def backup_export_cloud(request: Request, backup_id: str):
+        """Download a specific cloud backup by ID."""
+        import ui.api_client as _api
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            content, content_type, content_disp = await _api.export_cloud_backup(token, backup_id)
+        except _api.APIError as exc:
+            from fasthtml.common import Div, to_xml
+            return Response(
+                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
+                media_type="text/html",
+            )
+        return Response(
+            content=content,
+            media_type=content_type,
+            headers={"Content-Disposition": content_disp},
+        )
+
+    @app.post("/backup/import")
+    async def backup_import(request: Request):
+        """Import a .celerp-backup archive. Multipart upload forwarded to API."""
+
+        import ui.api_client as _api
+        import httpx
+        from fasthtml.common import Div, to_xml
+        from ui.config import API_BASE
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        lang = get_lang(request)
+        form = await request.form()
+        file_field = form.get("file")
+        if file_field is None:
+            return Response(
+                content=to_xml(Div(t("msg.no_file_selected", lang), cls="flash flash--error", id="backup-flash")),
+                media_type="text/html",
+            )
+        file_bytes = await file_field.read()
+        try:
+            async with httpx.AsyncClient(base_url=API_BASE, headers={"Authorization": f"Bearer {token}"}, timeout=300) as c:
+                r = await c.post("/backup/import", files={"file": (file_field.filename, file_bytes, file_field.content_type or "application/octet-stream")})
+            if r.status_code >= 400:
+                detail = r.json().get("detail", r.text[:200]) if r.headers.get("content-type", "").startswith("application/json") else r.text[:200]
+                return Response(
+                    content=to_xml(Div(detail, cls="flash flash--error", id="backup-flash")),
+                    media_type="text/html",
+                )
+        except httpx.HTTPError as exc:
+            return Response(
+                content=to_xml(Div(str(exc), cls="flash flash--error", id="backup-flash")),
+                media_type="text/html",
+            )
+        return Response(
+            content=to_xml(Div(t("settings.backup_imported", lang), cls="flash flash--success", id="backup-flash")),
+            media_type="text/html",
+        )
 
 
 # ── Display cell helpers (click-to-edit pattern) ─────────────────────────
@@ -3560,7 +3746,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     from ui.components.backup import local_backup_buttons
     from ui.components.cloud_gate import upgrade_banner
 
-    enc_ok = bool(_cfg.backup_encryption_key)
+    enc_ok = bool(backup_data and backup_data.get("enc_ok")) if backup_data is not None else bool(_cfg.backup_encryption_key)
     # gw_ok is derived from the API response - reading get_client() here would
     # always return None because the gateway client lives in the API process.
     gw_ok = bool(backup_data and backup_data.get("gateway_token_set"))
@@ -3657,9 +3843,7 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
     )
 
     # ── Encryption key ────────────────────────────────────────────────
-    key_val = _cfg.backup_encryption_key or ""
-    # Escape for JS string literal
-    key_escaped = key_val.replace("\\", "\\\\").replace("'", "\\'")
+    key_val = (backup_data or {}).get("enc_key") or ""
     key_section = Div(
         H4(t("page.encryption_key"), cls="settings-section-title"),
         P(
@@ -3668,9 +3852,9 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
             cls="settings-hint",
         ),
         Div(
-            Code(key_val, cls="cell--mono"),
+            Code(key_val, cls="cell--mono", id="backup-enc-key"),
             Button(t("btn.copy"),
-                onclick=f"navigator.clipboard.writeText('{key_escaped}')",
+                **{"data-copy": "#backup-enc-key"},
                 cls="btn btn--xs btn--secondary ml-sm",
             ),
             cls="flex-row align-center gap-sm",
@@ -3709,6 +3893,15 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
         cls="mt-lg",
     )
 
+    # ── Local export / import ─────────────────────────────────────────
+    local_section = Div(
+        H4(t("page.local_backup"), cls="settings-section-title"),
+        P(t("settings.export_and_import_full_backups_locally_no_cloud_su"), cls="settings-hint"),
+        local_backup_buttons(),
+        Hr(cls="section-divider mt-lg"),
+        cls="mb-md",
+    )
+
     # ── How it works ──────────────────────────────────────────────────
     how_it_works = Div(
         H4(t("page.how_cloud_backup_works"), cls="settings-section-title"),
@@ -3720,17 +3913,18 @@ def _backup_tab(lang: str = "en", backup_data: dict | None = None) -> FT:
             "After cancellation, backups remain accessible for 30 days.",
             cls="settings-hint",
         ),
-        cls="mt-lg",
+        cls="mb-lg",
     )
 
     return Div(
         H3(t("settings.tab_backup"), cls="settings-section-title"),
+        local_section,
+        how_it_works,
         status_section,
         key_section,
         actions,
         flash_target,
         history_section,
-        how_it_works,
         cls="settings-card",
     )
 
@@ -3871,18 +4065,7 @@ def _import_history_tab(batches: list[dict]) -> FT:
 
 
 def _bulk_attach_tab() -> FT:
-    """Bulk Attachments tab.
-
-    Upload a ZIP file containing images/documents named by SKU.
-
-    Naming convention:
-      <SKU>.jpg / .png / .webp          → primary image
-      <SKU>-doc-<label>.pdf             → document with label
-      <SKU>-doc-warranty.pdf            → document labelled "warranty"
-
-    The endpoint matches files to items by SKU and attaches them.
-    A report table is returned showing matched/unmatched/error per file.
-    """
+    """Bulk Attachments tab - upload a ZIP of files named by SKU."""
     return Div(
         H3(t("page.bulk_attach_images_documents"), cls="section-title"),
         Div(
@@ -3890,10 +4073,13 @@ def _bulk_attach_tab() -> FT:
             Table(
                 Thead(Tr(Th(t("th.filename_pattern")), Th(t("th.result")))),
                 Tbody(
-                    Tr(Td(Code("SKU1234.jpg")), Td(t("settings.primary_image_on_item_sku1234"))),
-                    Tr(Td(Code("SKU1234.png")), Td(t("settings.primary_image_on_item_sku1234"))),
-                    Tr(Td(Code("SKU1234-doc-cert.pdf")), Td(t("settings.document_labelled_cert_on_item_sku1234"))),
-                    Tr(Td(Code("SKU1234-doc-warranty.pdf")), Td(t("settings.document_labelled_warranty_on_item_sku1234"))),
+                    Tr(Td(Code("SKU1234.jpg / .png / .webp")), Td(t("inv.hero_product_image"))),
+                    Tr(Td(Code("SKU1234-img-2.jpg")), Td(t("inv.additional_product_image"))),
+                    Tr(Td(Code("SKU1234-cert-grs.pdf")), Td(t("file_tag.certificates"))),
+                    Tr(Td(Code("SKU1234-doc-warranty.pdf")), Td(t("file_tag.certificate_alias"))),
+                    Tr(Td(Code("SKU1234-spec-datasheet.pdf")), Td(t("file_tag.spec_sheets"))),
+                    Tr(Td(Code("SKU1234-safety-msds.pdf")), Td(t("file_tag.safety_docs"))),
+                    Tr(Td(Code("SKU1234-360-exterior.mp4")), Td(t("file_tag.view_360"))),
                 ),
                 cls="data-table",
             ),
@@ -3910,6 +4096,16 @@ def _bulk_attach_tab() -> FT:
                     cls="field-input",
                 ),
                 cls="field-group",
+            ),
+            Div(
+                Label(
+                    Input(type="checkbox", name="override_hero", value="1"),
+                    f" {t('inv.override_hero_images')}",
+                    cls="field-label",
+                    style="display:flex;align-items:center;gap:6px;font-weight:normal;",
+                ),
+                cls="field-group",
+                style="margin-bottom:8px;",
             ),
             Button(t("btn.upload_attach"), cls="btn btn--primary", type="submit"),
             hx_post="/settings/bulk-attach",

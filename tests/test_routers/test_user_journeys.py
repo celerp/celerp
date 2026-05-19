@@ -474,11 +474,11 @@ async def test_crud_item_expire(client):
 
 
 @pytest.mark.asyncio
-async def test_crud_item_dispose(client):
+async def test_crud_item_archive(client):
     token = await _reg(client)
     h = _h(token)
     eid = await _item(client, token)
-    r = await client.post(f"/items/{eid}/dispose", headers=h)
+    r = await client.post("/items/bulk/status", json={"entity_ids": [eid], "status": "archived"}, headers=h)
     assert r.status_code == 200
 
 

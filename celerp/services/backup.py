@@ -21,6 +21,7 @@ import subprocess
 from dataclasses import dataclass
 
 from celerp.config import settings
+from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
 
 _NONCE_BYTES = 12
 
@@ -88,25 +89,6 @@ def decrypt(blob: bytes, key: bytes) -> bytes:
     return aesgcm.decrypt(nonce, ciphertext, associated_data=None)
 
 
-def _relay_base_url() -> str:
-    """Derive the relay HTTP base URL from gateway settings."""
-    if settings.gateway_http_url:
-        return settings.gateway_http_url.rstrip("/")
-    url = settings.gateway_url
-    url = url.replace("wss://", "https://").replace("ws://", "http://")
-    url = url.split("/ws/")[0]
-    return url.rstrip("/")
-
-
-def _session_headers() -> dict[str, str]:
-    """Return auth headers for relay API calls."""
-    from celerp.gateway.state import get_session_token
-    return {
-        "X-Session-Token": get_session_token(),
-        "X-Instance-ID": settings.gateway_instance_id,
-    }
-
-
 async def upload_to_relay(
     blob: bytes,
     backup_type: str = "database",
@@ -114,7 +96,7 @@ async def upload_to_relay(
 ) -> dict:
     """Upload encrypted blob to relay REST API. Returns response dict."""
     import httpx
-    url = f"{_relay_base_url()}/backup/upload"
+    url = f"{relay_http_url()}/backup/upload"
     params: dict[str, str] = {"backup_type": backup_type}
     if label:
         params["label"] = label
@@ -122,7 +104,7 @@ async def upload_to_relay(
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
             url,
-            headers=_session_headers(),
+            headers=relay_session_headers(),
             params=params,
             files={"file": ("backup.bin", io.BytesIO(blob), "application/octet-stream")},
         )
@@ -136,9 +118,9 @@ async def upload_to_relay(
 async def download_from_relay(backup_id: str) -> bytes:
     """Download encrypted backup blob from relay via presigned URL."""
     import httpx
-    url = f"{_relay_base_url()}/backup/{backup_id}"
+    url = f"{relay_http_url()}/backup/{backup_id}"
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(url, headers=_session_headers())
+        response = await client.get(url, headers=relay_session_headers())
     if response.status_code != 200:
         raise RuntimeError(f"Failed to get download URL: HTTP {response.status_code}")
 
@@ -182,7 +164,6 @@ async def run_backup(label: str | None = None) -> BackupResult:
     if not settings.backup_encryption_key:
         return BackupResult(ok=False, size_bytes=0, error="BACKUP_ENCRYPTION_KEY is not configured")
 
-    from celerp.gateway.state import get_session_token
     if not get_session_token():
         return BackupResult(ok=False, size_bytes=0, error="Relay not connected - skipping backup")
 

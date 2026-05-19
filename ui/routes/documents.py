@@ -209,7 +209,7 @@ def _render_receive_return_section(doc: dict):
                 title="Revert the received return. Disposes the returned inventory items and reverses the COGS journal entry.",
             ),
             hx_delete=f"/docs/{entity_id}/receive-return",
-            hx_confirm="Revert the received return? This will dispose the returned inventory items and reverse the accounting entry.",
+            hx_confirm="Revert the received return? This will archive the returned inventory items and reverse the accounting entry.",
             hx_target=f"#{cid_safe}",
             hx_swap="outerHTML",
         )
@@ -274,7 +274,7 @@ def _render_receive_goods_section(doc: dict) -> FT:
         return Div(
             Button(t("btn.revert_goods_received"),
                 hx_delete=f"/docs/{entity_id}/receive-goods",
-                hx_confirm="Revert goods received? This will dispose all created inventory items and reverse the accounting entry.",
+                hx_confirm="Revert goods received? This will archive all created inventory items and reverse the accounting entry.",
                 hx_target=f"#{cid_safe}",
                 hx_swap="outerHTML",
                 cls="btn btn--danger btn--sm",

@@ -108,6 +108,7 @@ async def run_import(path: Path):
             restore_database(dump_bytes, settings.database_url)
 
             # Extract files (attachments, ai_uploads)
+            from celerp.config import settings as _settings
             _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/")
             for member in tar.getmembers():
                 if member.name in ("database.dump", "meta.json"):
@@ -117,8 +118,11 @@ async def run_import(path: Path):
                 if not any(member.name.startswith(p) for p in _ALLOWED_PREFIXES):
                     continue
                 if member.isfile():
-                    dest = Path("static") / member.name if member.name.startswith("attachments/") \
-                        else Path("data") / member.name
+                    dest = (
+                        _settings.data_dir / "static" / member.name
+                        if member.name.startswith("attachments/")
+                        else _settings.data_dir / member.name
+                    )
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     src = tar.extractfile(member)
                     if src:

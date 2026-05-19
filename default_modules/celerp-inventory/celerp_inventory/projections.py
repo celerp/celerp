@@ -12,6 +12,58 @@ _WEIGHT_UNIT_MAP: dict[str, str] = {
     "lb": "lb",
 }
 
+_IMAGE_MIME_PREFIXES = ("image/",)
+
+# Old attachment type → new document_tag mapping (for lazy migration)
+_ATTACHMENT_TYPE_TO_TAG: dict[str, str] = {
+    "image": "product_images",
+    "video": "product_images",
+    "certificate": "certificates",
+    "view_360": "view_360",
+}
+
+
+def _is_image_mime(mime: str) -> bool:
+    return mime.startswith("image/")
+
+
+def _maybe_migrate_attachments(current: dict) -> None:
+    """Lazily migrate item.state["attachments"] (old format) to item.state["files"].
+
+    Runs only when "attachments" is non-empty and "files" is absent/empty.
+    Idempotent: safe to call multiple times.
+    """
+    old = current.get("attachments") or []
+    if not old or current.get("files"):
+        return
+    existing_preview = current.get("preview_image_id")
+    files: list[dict] = []
+    first_image_done = False
+    for att in old:
+        att_type = att.get("type", "image")
+        tag = _ATTACHMENT_TYPE_TO_TAG.get(att_type, "product_images")
+        att_id = att.get("id", "")
+        is_hero = False
+        if tag == "product_images" and _is_image_mime(att.get("mime", "")):
+            if existing_preview:
+                is_hero = att_id == existing_preview
+            elif not first_image_done:
+                is_hero = True
+                first_image_done = True
+        files.append({
+            "id": att_id,
+            "filename": att.get("filename", ""),
+            "mime": att.get("mime", ""),
+            "size": att.get("size", 0),
+            "url": att.get("url", ""),
+            "document_tag": tag,
+            "description": att.get("label") or None,
+            "uploaded_at": None,
+            "is_hero": is_hero,
+        })
+    current["files"] = files
+    current["attachments"] = []
+
 
 def _sync_expiry_from_attributes(state: dict) -> dict:
     """Promote attributes.expiry_date → expires_at so the projection column stays current.
@@ -91,10 +143,10 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             current["updated_at"] = data["updated_at"]
     elif event_type == "item.quantity.adjusted":
         current["quantity"] = data["new_qty"]
-    elif event_type in {"item.expired", "item.disposed"}:
+    elif event_type in {"item.expired", "item.disposed"}:  # item.disposed is legacy; maps to archived
         current["is_available"] = False
         current["is_expired"] = event_type == "item.expired"
-        current["status"] = "expired" if event_type == "item.expired" else "disposed"
+        current["status"] = "expired" if event_type == "item.expired" else "archived"
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])
@@ -137,6 +189,50 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current.update(data)
         current = _migrate_sell_by(current)
         current = _sync_expiry_from_attributes(current)
+    elif event_type == "item.file.attached":
+        _maybe_migrate_attachments(current)
+        current.setdefault("files", [])
+        entry: dict = {
+            "id": data["file_id"],
+            "filename": data["filename"],
+            "mime": data["mime"],
+            "size": data["size"],
+            "url": data.get("url", ""),
+            "document_tag": data.get("document_tag"),
+            "description": data.get("description"),
+            "uploaded_at": data.get("uploaded_at"),
+            "is_hero": bool(data.get("is_hero", False)),
+        }
+        if entry["is_hero"]:
+            for f in current["files"]:
+                f["is_hero"] = False
+            current["preview_image_id"] = entry["id"]
+        current["files"].append(entry)
+    elif event_type == "item.file.tagged":
+        for f in current.get("files", []):
+            if f.get("id") == data["file_id"]:
+                f["document_tag"] = data["document_tag"]
+    elif event_type == "item.file.description_updated":
+        for f in current.get("files", []):
+            if f.get("id") == data["file_id"]:
+                f["description"] = data["description"]
+    elif event_type == "item.file.deleted":
+        fid = data["file_id"]
+        was_hero = any(f.get("is_hero") and f.get("id") == fid for f in current.get("files", []))
+        current["files"] = [f for f in current.get("files", []) if f.get("id") != fid]
+        if was_hero:
+            imgs = [f for f in current["files"] if _is_image_mime(f.get("mime", ""))]
+            if imgs:
+                imgs[0]["is_hero"] = True
+                current["preview_image_id"] = imgs[0]["id"]
+            else:
+                current["preview_image_id"] = None
+    elif event_type == "item.file.hero_set":
+        fid = data["file_id"]
+        for f in current.get("files", []):
+            f["is_hero"] = f.get("id") == fid
+        hero = next((f for f in current.get("files", []) if f.get("is_hero")), None)
+        current["preview_image_id"] = hero["id"] if hero else None
     else:
         raise ValueError(f"Unsupported item event: {event_type}")
     return current

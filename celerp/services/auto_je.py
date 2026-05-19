@@ -605,7 +605,7 @@ async def upsert_opening_inventory_je(
     ).scalars().all()
 
     # Inactive statuses: items no longer owned. Must match get_valuation()'s filter.
-    _INACTIVE = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired", "disposed"})
+    _INACTIVE = frozenset({"archived", "deleted", "void", "sold", "fulfilled", "merged", "expired"})
 
     catalog_total = _Dec("0")
     for row in item_rows:

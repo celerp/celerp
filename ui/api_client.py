@@ -443,18 +443,57 @@ async def upload_attachment(token: str, entity_id: str, file) -> dict:
         )).json()
 
 
+async def upload_item_file(token: str, entity_id: str, file) -> dict:
+    async with _client(token) as c:
+        content = await file.read() if hasattr(file, "read") else file.file.read()
+        filename = getattr(file, "filename", "upload")
+        content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
+        return _raise(await c.post(
+            f"/items/{entity_id}/files",
+            files={"file": (filename, content, content_type)},
+        )).json()
+
+
+async def tag_item_file(token: str, entity_id: str, file_id: str, tag: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(
+            f"/items/{entity_id}/files/{file_id}/tag",
+            data={"document_tag": tag},
+        )).json()
+
+
+async def describe_item_file(token: str, entity_id: str, file_id: str, description: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.patch(
+            f"/items/{entity_id}/files/{file_id}/description",
+            data={"description": description},
+        )).json()
+
+
+async def set_item_file_hero(token: str, entity_id: str, file_id: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post(f"/items/{entity_id}/files/{file_id}/hero")).json()
+
+
+async def delete_item_file(token: str, entity_id: str, file_id: str) -> None:
+    async with _client(token) as c:
+        _raise(await c.delete(f"/items/{entity_id}/files/{file_id}"))
+
+
 async def delete_attachment(token: str, entity_id: str, att_id: str) -> None:
     async with _client(token) as c:
         _raise(await c.delete(f"/items/{entity_id}/attachments/{att_id}"))
 
 
-async def bulk_attach(token: str, file) -> dict:
+async def bulk_attach(token: str, file, override_hero: bool = False) -> dict:
     async with _client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "attachments.zip")
+        params = {"override_hero": "1"} if override_hero else {}
         return _raise(await c.post(
-            "/items/attachments/bulk",
+            "/items/files/bulk",
             files={"file": (filename, content, "application/zip")},
+            params=params,
         )).json()
 
 
@@ -1226,9 +1265,10 @@ async def expire_item(token: str, entity_id: str, reason: str | None = None) -> 
         return _raise(await c.post(f"/items/{entity_id}/expire", json={"reason": reason})).json()
 
 
-async def dispose_item(token: str, entity_id: str, reason: str | None = None, notes: str | None = None) -> dict:
+
+async def set_item_status(token: str, entity_id: str, status: str, reason: str | None = None) -> dict:
     async with _client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/dispose", json={"reason": reason, "notes": notes})).json()
+        return _raise(await c.post("/items/bulk/status", json={"entity_ids": [entity_id], "status": status, "reason": reason})).json()
 
 
 async def create_item(token: str, data: dict) -> dict:
@@ -1294,13 +1334,6 @@ async def bulk_expire(token: str, entity_ids: list[str]) -> dict:
     async with _client(token) as c:
         return _raise(await c.post("/items/bulk/expire", json={"entity_ids": entity_ids})).json()
 
-
-async def bulk_dispose(token: str, entity_ids: list[str], reason: str | None = None) -> dict:
-    async with _client(token) as c:
-        body: dict = {"entity_ids": entity_ids}
-        if reason:
-            body["reason"] = reason
-        return _raise(await c.post("/items/bulk/dispose", json=body)).json()
 
 
 # ---------------------------------------------------------------------------
@@ -1484,6 +1517,11 @@ async def delete_doc_file(token: str, entity_id: str, file_id: str) -> dict:
 async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
     async with _client(token) as c:
         return _raise(await c.get(f"/docs/{entity_id}/files/{file_id}"))
+
+
+async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
+    async with _client(token) as c:
+        return _raise(await c.get(f"/items/{entity_id}/files/{file_id}"))
 
 
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
@@ -1797,6 +1835,58 @@ async def get_backup_status(token: str) -> dict:
     async with _client(token) as c:
         return _raise(await c.get("/settings/backup-status")).json()
 
+
+async def list_backups(token: str, backup_type: str | None = None) -> dict:
+    """GET /backup/list — list cloud backups (proxied to relay by API)."""
+    params = {"backup_type": backup_type} if backup_type else {}
+    async with _client(token) as c:
+        return _raise(await c.get("/backup/list", params=params)).json()
+
+
+async def trigger_backup(token: str, backup_type: str = "database") -> None:
+    """POST /backup/trigger — trigger an immediate backup on the API process.
+
+    Backup (pg_dump + relay upload) can take well over 10 s; use a generous
+    timeout so the UI handler gets a real success/error rather than a timeout
+    exception that it can't distinguish from a connection failure.
+    """
+    async with httpx.AsyncClient(
+        base_url=API_BASE,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=120.0,
+        follow_redirects=True,
+    ) as c:
+        _raise(await c.post("/backup/trigger", params={"type": backup_type}))
+
+
+async def export_backup(token: str) -> tuple[bytes, str, str]:
+    """GET /backup/export — fetch full local backup archive from the API process.
+
+    Returns (content_bytes, content_type, content_disposition).
+    """
+    async with _client(token) as c:
+        r = _raise(await c.get("/backup/export"))
+        return (
+            r.content,
+            r.headers.get("content-type", "application/octet-stream"),
+            r.headers.get("content-disposition", "attachment; filename=backup.celerp-backup"),
+        )
+
+
+async def export_cloud_backup(token: str, backup_id: str) -> tuple[bytes, str, str]:
+    """GET /backup/export/{backup_id} — download a specific cloud backup.
+
+    Returns (content_bytes, content_type, content_disposition).
+    """
+    import httpx
+    from ui.config import API_BASE
+    async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as c:
+        r = _raise(await c.get(f"/backup/export/{backup_id}", headers={"Authorization": f"Bearer {token}"}))
+        return (
+            r.content,
+            r.headers.get("content-type", "application/octet-stream"),
+            r.headers.get("content-disposition", f"attachment; filename={backup_id}.celerp-backup"),
+        )
 
 async def disconnect_relay(token: str) -> dict:
     """POST /settings/cloud-disconnect — stop gateway client, clear config."""

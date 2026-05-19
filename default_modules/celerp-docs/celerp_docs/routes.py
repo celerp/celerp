@@ -3138,8 +3138,8 @@ async def undo_receive_return(
         for r in received_items
     )
 
-    # Pre-flight: verify every returned item is still "available" before disposing.
-    # If an item was re-sold or otherwise disposed, we cannot silently remove it.
+    # Pre-flight: verify every returned item is still "available" before archiving.
+    # If an item was re-sold or already archived, we cannot silently remove it.
     if item_ids:
         rows = await session.execute(
             select(Projection).where(
@@ -3157,7 +3157,7 @@ async def undo_receive_return(
             elif item_state.get("status") != "available":
                 sku = item_state.get("sku") or iid
                 status = item_state.get("status") or "unknown"
-                blocked.append(f"SKU '{sku}' is '{status}' - cannot dispose")
+                blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
         if blocked:
             raise HTTPException(
                 status_code=409,
@@ -3171,15 +3171,15 @@ async def undo_receive_return(
     # Unique suffix ensures each undo gets its own JE - prevents idempotency collision on repeated attempts
     undo_suffix = str(uuid.uuid4())
 
-    # Dispose each returned inventory item (item.deleted does not exist; disposed hides from inventory)
+    # Archive each returned inventory item (sets status=archived, preserving audit trail)
     for iid in item_ids:
         await emit_event(
             session,
             company_id=company_id,
             entity_id=iid,
             entity_type="item",
-            event_type="item.disposed",
-            data={"reason": f"undo receive-return on {entity_id}"},
+            event_type="item.status.set",
+            data={"new_status": "archived", "reason": f"undo receive-return on {entity_id}"},
             actor_id=user.id,
             location_id=None,
             source="return_undo",
@@ -3257,7 +3257,7 @@ async def undo_receive(
         elif item_state.get("status") != "available":
             sku = item_state.get("sku") or iid
             status = item_state.get("status") or "unknown"
-            blocked.append(f"SKU '{sku}' is '{status}' - cannot dispose")
+            blocked.append(f"SKU '{sku}' is '{status}' - cannot archive")
     if blocked:
         raise HTTPException(
             status_code=409,
@@ -3276,8 +3276,8 @@ async def undo_receive(
             company_id=company_id,
             entity_id=iid,
             entity_type="item",
-            event_type="item.disposed",
-            data={"reason": f"undo receive on {entity_id}"},
+            event_type="item.status.set",
+            data={"new_status": "archived", "reason": f"undo receive on {entity_id}"},
             actor_id=user.id,
             location_id=None,
             source="receive_undo",
@@ -3356,6 +3356,7 @@ async def upload_doc_file(
             "filename": meta["filename"],
             "mime": meta["mime"],
             "size": meta["size"],
+            "url": meta["url"],
             "document_tag": None,
             "description": None,
             "uploaded_at": datetime.now(UTC).isoformat(),
@@ -3368,6 +3369,42 @@ async def upload_doc_file(
     )
     await session.commit()
     return {"event_id": entry.id, **meta}
+
+
+@router.get("/{entity_id}/files/{file_id}")
+async def download_doc_file(
+    entity_id: str,
+    file_id: str,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+):
+    """Download a file attached to a doc (invoice, bill, etc.)."""
+    from fastapi.responses import FileResponse, RedirectResponse
+    from pathlib import Path
+    from celerp.config import settings
+
+    row = await _get_doc(session, company_id, entity_id)
+    match = _get_doc_file(row.state.get("files", []), file_id)
+
+    url = match.get("url", "")
+    # Cloud/S3: redirect to the signed URL directly
+    if url.startswith("http://") or url.startswith("https://"):
+        return RedirectResponse(url)
+
+    # Legacy records (pre-fix) have no url stored; reconstruct from file_id + filename.
+    if not url:
+        ext = Path(match.get("filename", "")).suffix
+        url = f"/static/attachments/{company_id}/{file_id}{ext}"
+
+    dest = settings.data_dir / url.lstrip("/")
+    if not dest.exists():
+        raise HTTPException(status_code=404, detail="File missing from disk")
+
+    return FileResponse(
+        path=str(dest),
+        filename=match["filename"],
+        media_type=match.get("mime", "application/octet-stream"),
+    )
 
 
 @router.patch("/{entity_id}/files/{file_id}/tag")

@@ -396,33 +396,26 @@ def _infrastructure_tab() -> FT:
 
 
 def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -> FT:
-    """Compact backup status card for the cloud settings page.
-
-    Always shows local export/import. When cloud-connected, also shows last
-    backup results and next run times sourced from the API process via
-    ``backup_data`` (the response of GET /settings/backup-status).
-    """
-    from ui.components.backup import local_backup_buttons
-
-    # Local backup section (always visible)
-    local_section = Div(
-        H4(t("page.local_backup"), style="margin:0 0 6px;"),
-        P(t("settings.export_or_import_a_full_backup_of_your_database_an"), cls="settings-hint", style="margin-bottom:10px;"),
-        local_backup_buttons(
-            import_input_id="cloud-page-import-input",
-            flash_target_id="cloud-page-backup-flash",
-            btn_size="sm",
-        ),
-        Div(id="cloud-page-backup-flash", cls="mt-sm"),
-    )
+    """Compact backup status card for the cloud settings page."""
 
     if not gw_ok or backup_data is None:
-        return Div(local_section, cls="settings-card")
+        return Div(cls="settings-card")  # nothing to show when not connected
 
-    def _status_badge(ok: bool | None) -> FT:
-        if ok is None:
-            return Span(t("settings.pending"), cls="badge badge--inactive")
-        return Span("OK", cls="badge badge--active") if ok else Span(t("settings.failed"), cls="badge badge--error")
+    def _last_run(entry: dict) -> str:
+        last = entry.get("last_run")
+        ok = entry.get("ok")
+        if last is None:
+            return t("settings.pending")
+        from datetime import datetime, timezone
+        try:
+            dt = datetime.fromisoformat(last).astimezone(timezone.utc)
+            stamp = dt.strftime("%Y-%m-%d %H:%M UTC")
+        except Exception:
+            stamp = last
+        if ok is False:
+            err = entry.get("error") or ""
+            return f"{stamp} - {t('settings.failed')}{': ' + err if err else ''}"
+        return stamp
 
     def _time_until(iso: str | None) -> str:
         if iso is None:
@@ -436,26 +429,22 @@ def _backup_summary_card(gw_ok: bool = False, backup_data: dict | None = None) -
 
     cloud_section = Div(
         Div(
-            H4(t("settings.tab_backup"), style="margin:0;"),
-            A(t("settings.view_full_backup_settings"), href="/settings?tab=backup",
+            H4(t("page.backup"), style="margin:0;"),
+            A(t("settings.view_full_backup_settings"), href="/settings/general?tab=backup",
               cls="settings-hint", style="font-size:0.82rem;"),
             style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;",
         ),
         Table(
-            Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(_status_badge(backup_data["db"]["ok"]))),
-            Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(_status_badge(backup_data["file"]["ok"]))),
+            Tr(Td(t("settings.last_db_backup"), cls="detail-label"), Td(_last_run(backup_data["db"]))),
+            Tr(Td(t("settings.last_file_backup"), cls="detail-label"), Td(_last_run(backup_data["file"]))),
             Tr(Td(t("settings.next_db_backup"), cls="detail-label"), Td(_time_until(backup_data["next_db_utc"]))),
             Tr(Td(t("settings.next_file_backup"), cls="detail-label"), Td(_time_until(backup_data["next_file_utc"]))),
             cls="detail-table",
         ),
-        style="margin-bottom:1rem;",
     )
 
     return Div(
-        H3(t("page.backup"), cls="settings-section-title"),
         cloud_section,
-        Hr(style="margin:1rem 0;border-color:var(--c-border);"),
-        local_section,
         cls="settings-card",
     )
 

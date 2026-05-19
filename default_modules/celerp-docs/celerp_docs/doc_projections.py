@@ -245,6 +245,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
             "filename": data["filename"],
             "mime": data.get("mime"),
             "size": data.get("size"),
+            "url": data.get("url", ""),
             "description": data.get("description") or "",
             "document_tag": data.get("document_tag") or "",
             "uploaded_at": data.get("uploaded_at") or "",

@@ -17,6 +17,7 @@ from starlette.responses import RedirectResponse, Response
 
 import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
+from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
 from ui.config import get_token as _token, API_BASE as _api_base
@@ -1963,16 +1964,28 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
-    @app.post("/api/items/{entity_id}/dispose")
-    async def item_dispose(request: Request, entity_id: str):
+    @app.post("/api/items/{entity_id}/archive")
+    async def item_archive(request: Request, entity_id: str):
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
         form = await request.form()
         reason = str(form.get("reason", "")).strip() or None
-        notes = str(form.get("notes", "")).strip() or None
         try:
-            await api.dispose_item(token, entity_id, reason, notes)
+            await api.set_item_status(token, entity_id, "archived", reason=reason)
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+
+    @app.post("/api/items/{entity_id}/restore")
+    async def item_restore(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        reason = str(form.get("reason", "")).strip() or None
+        try:
+            await api.set_item_status(token, entity_id, "available", reason=reason)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
@@ -2227,10 +2240,10 @@ function celerpPrintLabel(entityId, templateId) {
         new_id = result.get("id", "")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{new_id}"})
 
-    # ── Attachment upload (single file) ──────────────────────────────────────
+    # ── Item file routes (unified file system) ───────────────────────────────
 
-    @app.post("/api/items/{entity_id}/attachments")
-    async def item_upload_attachment(request: Request, entity_id: str):
+    @app.post("/items/{entity_id}/files")
+    async def item_upload_file(request: Request, entity_id: str):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
@@ -2239,11 +2252,105 @@ function celerpPrintLabel(entityId, templateId) {
         if file is None:
             return P(t("msg.no_file_provided"), cls="cell-error")
         try:
-            await api.upload_attachment(token, entity_id, file)
+            await api.upload_item_file(token, entity_id, file)
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _attachments_panel(entity_id, item)
+        return _item_files_section(entity_id, item)
+
+    @app.post("/items/{entity_id}/files/{file_id}/tag")
+    async def item_tag_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        form = await request.form()
+        tag = str(form.get("document_tag", ""))
+        try:
+            await api.tag_item_file(token, entity_id, file_id, tag)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.patch("/items/{entity_id}/files/{file_id}/description")
+    async def item_describe_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        form = await request.form()
+        description = str(form.get("description", ""))
+        try:
+            await api.describe_item_file(token, entity_id, file_id, description)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.post("/items/{entity_id}/files/{file_id}/hero")
+    async def item_set_file_hero(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            await api.set_item_file_hero(token, entity_id, file_id)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.delete("/items/{entity_id}/files/{file_id}")
+    async def item_delete_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            await api.delete_item_file(token, entity_id, file_id)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.get("/items/{entity_id}/files/_section")
+    async def item_files_section_partial(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _item_files_section(entity_id, item)
+
+    @app.get("/items/{entity_id}/files/{file_id}/download")
+    async def item_download_file(request: Request, entity_id: str, file_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            resp = await api.download_item_file(token, entity_id, file_id)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            from starlette.responses import Response as _R
+            return _R(str(e.detail), status_code=e.status)
+        content_type = resp.headers.get("content-type", "application/octet-stream")
+        cd = resp.headers.get("content-disposition", "")
+        filename = "download"
+        if "filename=" in cd:
+            filename = cd.split("filename=")[-1].strip('"').strip("'")
+        from starlette.responses import Response as _R
+        return _R(
+            content=resp.content,
+            media_type=content_type,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        )
+
+    # ── Legacy attachment upload (redirects to new files endpoint) ────────────
+
+    @app.post("/api/items/{entity_id}/attachments")
+    async def item_upload_attachment_legacy(request: Request, entity_id: str):
+        """Deprecated: use /api/items/{entity_id}/files instead."""
+        return Response("", status_code=308, headers={"Location": f"/api/items/{entity_id}/files"})
 
     @app.delete("/api/items/{entity_id}")
     async def item_delete(request: Request, entity_id: str):
@@ -2318,11 +2425,13 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     if send_to_opts:
         action_options.append(Option(t("inv.send_to"), value="send_to"))
     action_options.extend(module_action_opts)
-    action_options.extend([
-        Option(t("inv.archive"), value="archive"),
-        Option(t("inv.expire"), value="expire"),
-        Option(t("btn.delete"), value="delete"),
-    ])
+    action_options.append(Option(t("inv.archive"), value="archive"))
+    action_options.append(Option(t("inv.expire"), value="expire"))
+    # Restore and Delete only shown when viewing archived/expired items
+    active_status = (p or {}).get("status", "")
+    if active_status in ("archived", "expired"):
+        action_options.append(Option(t("inv.restore"), value="restore"))
+        action_options.append(Option(t("btn.delete"), value="delete"))
 
     return Div(
         Span(t("doc.0_selected"), id="bulk-count", cls="bulk-count"),
@@ -2523,11 +2632,11 @@ _VERTICAL_STATUS_TABS: dict[str, list[tuple[str, str]]] = {
     ],
     "food_beverage": [
         ("", "Available"), ("reserved", "Reserved"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("sold", "Sold"), ("expired", "Expired"), ("archived", "Archived"), ("all", "All"),
     ],
     "agricultural": [
         ("", "Available"), ("reserved", "Reserved"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("sold", "Sold"), ("expired", "Expired"), ("archived", "Archived"), ("all", "All"),
     ],
 }
 _DEFAULT_STATUS_TABS: list[tuple[str, str]] = [
@@ -2549,10 +2658,12 @@ _VERTICAL_STATUS_CARDS: dict[str, list[tuple[str, str, str]]] = {
     "food_beverage": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
+        ("expired", "Expired", "red"),
     ],
     "agricultural": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
+        ("expired", "Expired", "red"),
     ],
     "watches_accessories": [
         ("available", "Available", "green"),
@@ -2596,7 +2707,7 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
 
     # When viewing a specific hidden/archived status, the available/reserved card
     # defs are irrelevant. Show a single total card instead.
-    _HIDDEN = {"sold", "archived", "merged", "expired", "disposed"}
+    _HIDDEN = {"sold", "archived", "merged", "expired"}
     if active_status and active_status not in ("", "all"):
         total = sum(count_by_status.values())
         cards = [{"label": t("chip.total", lang), "count": total, "status": active_status, "color": "gray"}]
@@ -3319,6 +3430,40 @@ def _print_label_dropdown(entity_id: str) -> FT:
     )
 
 
+def _item_files_section(entity_id: str, item: dict) -> FT:
+    """Render the shared files section for an item, with hero toggle enabled."""
+    files = item.get("files") or []
+    if not files and item.get("attachments"):
+        # Display-side adapter: convert old attachment format for display until
+        # the lazy migration fires on the first real file event.
+        from celerp_inventory.projections import _ATTACHMENT_TYPE_TO_TAG, _is_image_mime
+        existing_preview = item.get("preview_image_id")
+        first_image_done = False
+        for att in item["attachments"]:
+            att_type = att.get("type", "image")
+            tag = _ATTACHMENT_TYPE_TO_TAG.get(att_type, "product_images")
+            att_id = att.get("id", "")
+            is_hero = False
+            if tag == "product_images" and _is_image_mime(att.get("mime", "")):
+                if existing_preview:
+                    is_hero = att_id == existing_preview
+                elif not first_image_done:
+                    is_hero = True
+                    first_image_done = True
+            files.append({
+                "id": att_id,
+                "filename": att.get("filename", ""),
+                "mime": att.get("mime", ""),
+                "size": att.get("size", 0),
+                "url": att.get("url", ""),
+                "document_tag": tag,
+                "description": att.get("label") or None,
+                "uploaded_at": None,
+                "is_hero": is_hero,
+            })
+    return _shared_files_section("item", entity_id, files, can_set_hero=True, show_linked=False)
+
+
 def _item_detail_tabs(
     entity_id: str,
     item: dict,
@@ -3374,7 +3519,7 @@ def _item_detail_tabs(
     return Div(
         tab_bar,
         panel,
-        _attachments_panel(entity_id, item),
+        _item_files_section(entity_id, item),
         _advanced_panel(entity_id, item),
     )
 
@@ -3807,20 +3952,43 @@ function addSplitRow(btn) {{
         cls="action-card",
     )
 
-    dispose_card = Div(
+    archive_card = Div(
         Form(
-            Strong(t("inv.u0001f5d1_dispose"), cls="action-card-title"),
+            Strong(t("inv.u1f4e6_archive"), cls="action-card-title"),
             Div(
-                Input(type="text", name="reason", placeholder="Reason", cls="form-input form-input--sm"),
+                Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
                 cls="action-card-row",
             ),
-            hx_post=f"/api/items/{entity_id}/dispose",
+            hx_post=f"/api/items/{entity_id}/archive",
             hx_target="#item-action-error",
             hx_swap="outerHTML",
         ),
         cls="action-card",
     )
+
+    restore_card = Div(
+        Form(
+            Strong(t("inv.u21a9_restore"), cls="action-card-title"),
+            Div(
+                Input(type="text", name="reason", placeholder="Reason (optional)", cls="form-input form-input--sm"),
+                Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
+                cls="action-card-row",
+            ),
+            hx_post=f"/api/items/{entity_id}/restore",
+            hx_target="#item-action-error",
+            hx_swap="outerHTML",
+        ),
+        cls="action-card",
+    )
+
+    # Items already in a terminal/hidden state: show restore instead of expire/archive
+    item_status = item.get("status", "available")
+    _RESTORABLE = {"archived", "expired"}
+    if item_status in _RESTORABLE:
+        lifecycle_cards = [restore_card]
+    else:
+        lifecycle_cards = [expire_card, archive_card]
 
     # Return to Vendor (conditional)
     rtv_card = ""
@@ -3866,8 +4034,7 @@ function addSplitRow(btn) {{
         Div(
             split_card,
             duplicate_card,
-            expire_card,
-            dispose_card,
+            *lifecycle_cards,
             rtv_card,
             bbi_card,
             cls="action-cards-grid",

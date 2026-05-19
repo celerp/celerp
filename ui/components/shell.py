@@ -110,6 +110,36 @@ function toggleRowMenu(id) {
   }
 }
 document.addEventListener('click', function(e) {
+  // data-copy button: copy sibling/target text to clipboard with "Copied!" feedback
+  var copyBtn = e.target.closest('[data-copy]');
+  if (copyBtn) {
+    var targetSel = copyBtn.getAttribute('data-copy');
+    var text = targetSel
+      ? (document.querySelector(targetSel) || {}).textContent || ''
+      : copyBtn.getAttribute('data-copy-text') || '';
+    var original = copyBtn.textContent;
+    function _markCopied() {
+      copyBtn.textContent = 'Copied!';
+      setTimeout(function() { copyBtn.textContent = original; }, 2000);
+    }
+    function _fallbackCopy(str) {
+      var ta = document.createElement('textarea');
+      ta.value = str;
+      ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select();
+      try { document.execCommand('copy'); } catch(err) {}
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(_markCopied).catch(function() {
+        _fallbackCopy(text); _markCopied();
+      });
+    } else {
+      _fallbackCopy(text); _markCopied();
+    }
+  }
+
   if (!e.target.closest('.row-menu')) {
     document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) {
       m.classList.remove('open');

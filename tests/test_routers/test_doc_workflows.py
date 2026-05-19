@@ -1043,9 +1043,9 @@ async def test_receive_return_draft_cn_rejected(client, session):
 
 @pytest.mark.anyio
 async def test_undo_receive_return_removes_items_from_inventory(client, session):
-    """Regression: Revert Return Stock must dispose returned items so they no longer appear in inventory.
+    """Regression: Revert Return Stock must archive returned items so they no longer appear in inventory.
 
-    Previously item.disposed projection never set status='disposed', so items remained visible
+    Previously item.disposed projection never set status correctly, so items remained visible
     in inventory (filtered by _HIDDEN_STATUSES which checks status field, not is_available).
     """
     token = await _register(client)
@@ -1086,12 +1086,12 @@ async def test_undo_receive_return_removes_items_from_inventory(client, session)
     cn_state = (await client.get(f"/docs/{cn_id}", headers=h)).json()
     assert cn_state.get("return_received_items") in (None, []), "return_received_items must be cleared after undo"
 
-    # The returned item must no longer appear as available in inventory (status=disposed hides it)
+    # The returned item must no longer appear as available in inventory (status=archived hides it)
     inv_list_after = (await client.get("/items", headers=h)).json()["items"]
     available_skus_after = [i["sku"] for i in inv_list_after if i.get("status") == "available"]
     assert "RR-001" not in available_skus_after, (
         "Disposed item must not appear in inventory after Revert Return Stock. "
-        "Check item.disposed projection sets status='disposed'."
+        "Check item.status.set projection sets status='archived'."
     )
 
 
@@ -1170,7 +1170,7 @@ async def test_bill_receive_goods_without_po_line_index(client, session):
 
 @pytest.mark.anyio
 async def test_revert_goods_received_removes_items_from_inventory(client, session):
-    """Revert Goods Received must dispose all inventory items created by the receive."""
+    """Revert Goods Received must archive all inventory items created by the receive."""
     token = await _register(client)
     h = _h(token)
 
@@ -1206,7 +1206,7 @@ async def test_revert_goods_received_removes_items_from_inventory(client, sessio
     assert bill_after.get("received_item_ids") in (None, [])
     assert bill_after.get("status") == "final"
 
-    # Items must be disposed (not available in inventory)
+    # Items must be archived (not available in inventory)
     inv = (await client.get("/items", headers=h)).json()["items"]
     available_skus = [i["sku"] for i in inv if i.get("status") == "available"]
     assert "RG-001" not in available_skus, "Disposed item must not appear in inventory"

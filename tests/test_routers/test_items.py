@@ -92,7 +92,7 @@ async def test_items_happy_path(client):
     r = await client.post(f"/items/{merged_id}/expire", headers=headers)
     assert r.status_code == 200
 
-    r = await client.post(f"/items/{merged_id}/dispose", headers=headers)
+    r = await client.post("/items/bulk/status", json={"entity_ids": [merged_id], "status": "archived"}, headers=headers)
     assert r.status_code == 200
 
 
@@ -1578,3 +1578,200 @@ async def test_split_child_explicit_barcode_not_overridden(client):
     child_id = r.json()["children"][0]["id"]
     child = (await client.get(f"/items/{child_id}", headers=h)).json()
     assert child["barcode"] == "8888888888"
+
+
+# ── Phase 3: bulk file attach tests ─────────────────────────────────────────
+
+def _make_zip(files: dict[str, bytes]) -> bytes:
+    """Create an in-memory ZIP with given {filename: content} entries."""
+    import io as _io, zipfile as _zf
+    buf = _io.BytesIO()
+    with _zf.ZipFile(buf, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_bare_image_is_hero(client):
+    """Bare SKU.jpg → product_images tag, is_hero=True."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "BULK-HERO-001", "name": "Img Item", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+
+    fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10  # minimal JPEG header
+    zdata = _make_zip({"BULK-HERO-001.jpg": fake_jpg})
+    result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    data = result.json()
+    assert data["matched"] == 1
+    row = data["report"][0]
+    assert row["tag"] == "product_images"
+    assert row["is_hero"] is True
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_multi_image_only_first_hero(client):
+    """First alphabetical bare image gets hero; second does not."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "BULK-MULTI-001", "name": "Multi", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
+    zdata = _make_zip({"BULK-MULTI-001.jpg": fake_jpg, "BULK-MULTI-001-img-2.jpg": fake_jpg})
+    result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    report = result.json()["report"]
+    hero_rows = [r for r in report if r.get("is_hero")]
+    assert len(hero_rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_cert_tag(client):
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "BULK-CERT-001", "name": "Cert", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    zdata = _make_zip({"BULK-CERT-001-cert-grs.pdf": b"%PDF-1.4"})
+    result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    assert result.json()["report"][0]["tag"] == "certificates"
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_spec_tag(client):
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "BULK-SPEC-001", "name": "Spec", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    zdata = _make_zip({"BULK-SPEC-001-spec-tech.pdf": b"%PDF-1.4"})
+    result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    assert result.json()["report"][0]["tag"] == "spec_sheets"
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_safety_tag(client):
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "BULK-SAFE-001", "name": "Safe", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    zdata = _make_zip({"BULK-SAFE-001-safety-msds.pdf": b"%PDF-1.4"})
+    result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    assert result.json()["report"][0]["tag"] == "safety_docs"
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_360_tag(client):
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "BULK-360-001", "name": "360", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    zdata = _make_zip({"BULK-360-001-360-exterior.mp4": b"\x00" * 20})
+    result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    assert result.json()["report"][0]["tag"] == "view_360"
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_doc_alias_backward_compat(client):
+    """-doc- marker still maps to certificates."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "BULK-DOC-001", "name": "Doc", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    zdata = _make_zip({"BULK-DOC-001-doc-warranty.pdf": b"%PDF-1.4"})
+    result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    assert result.json()["report"][0]["tag"] == "certificates"
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_report_includes_tag_and_hero(client):
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "BULK-RPT-001", "name": "Report", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
+    zdata = _make_zip({"BULK-RPT-001.jpg": fake_jpg})
+    result = await client.post("/items/files/bulk", files={"file": ("test.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    row = result.json()["report"][0]
+    assert "tag" in row
+    assert "is_hero" in row
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_override_hero_false(client):
+    """Without override_hero, existing hero is not replaced."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "BULK-OH-001", "name": "OH", "quantity": 1, "sell_by": "piece"}, headers=h)
+    item_id = r.json()["id"]
+    # Upload first hero via file event
+    fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
+    first_zip = _make_zip({"BULK-OH-001.jpg": fake_jpg})
+    await client.post("/items/files/bulk", files={"file": ("t.zip", first_zip, "application/zip")}, headers=h)
+
+    # Second batch: different image, no override_hero
+    second_zip = _make_zip({"BULK-OH-001.png": fake_jpg})
+    result = await client.post("/items/files/bulk", files={"file": ("t2.zip", second_zip, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    second_row = result.json()["report"][0]
+    # No hero override → new image is NOT hero
+    assert second_row["is_hero"] is False
+
+
+@pytest.mark.asyncio
+async def test_bulk_attach_override_hero_true(client):
+    """With override_hero=1, new bare image becomes hero."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "BULK-OHT-001", "name": "OHT", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
+    first_zip = _make_zip({"BULK-OHT-001.jpg": fake_jpg})
+    await client.post("/items/files/bulk", files={"file": ("t.zip", first_zip, "application/zip")}, headers=h)
+
+    second_zip = _make_zip({"BULK-OHT-001.png": fake_jpg})
+    result = await client.post("/items/files/bulk?override_hero=1", files={"file": ("t2.zip", second_zip, "application/zip")}, headers=h)
+    assert result.status_code == 200
+    second_row = result.json()["report"][0]
+    assert second_row["is_hero"] is True
+
+
+@pytest.mark.asyncio
+async def test_download_item_file_route_exists(client):
+    """GET /items/{entity_id}/files/{file_id} must return the file, not 404.
+
+    Regression: attachments_router was registered AFTER the main items router,
+    causing GET /{entity_id} to shadow GET /{entity_id}/files/{file_id}.
+    """
+    from celerp.config import settings
+
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Create item and upload a file via the new /files endpoint
+    r = await client.post("/items", json={"sku": "DL-TEST-001", "name": "Download Test", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+
+    fake_jpg = b"\xff\xd8\xff\xe0" + b"\x00" * 20
+    ru = await client.post(
+        f"/items/{item_id}/files",
+        files={"file": ("test.jpg", fake_jpg, "image/jpeg")},
+        headers=h,
+    )
+    assert ru.status_code == 200, f"Upload failed: {ru.text}"
+    file_id = ru.json()["file_id"]
+
+    # Download the file — must NOT return 404
+    rd = await client.get(f"/items/{item_id}/files/{file_id}", headers=h)
+    assert rd.status_code == 200, (
+        f"GET /items/{{entity_id}}/files/{{file_id}} returned {rd.status_code}. "
+        "Route is likely shadowed by GET /{entity_id} from the main items router."
+    )
+    assert rd.content == fake_jpg

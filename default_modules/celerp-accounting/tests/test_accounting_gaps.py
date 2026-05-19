@@ -598,7 +598,7 @@ async def test_ledger_debit_normal_account_balance(client):
 
 @pytest.mark.asyncio
 async def test_opening_inventory_je_excludes_inactive_items(client):
-    """Regression: upsert_opening_inventory_je() included sold/disposed items in catalog_total.
+    """Regression: upsert_opening_inventory_je() included sold/archived items in catalog_total.
 
     Strategy: load balance sheet before and after marking an item sold.
     The OB JE amount should decrease by exactly that item's cost (200).

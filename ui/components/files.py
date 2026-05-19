@@ -24,6 +24,22 @@ _DOCUMENT_TAGS: tuple[str, ...] = (
     "shipping",
     "legal",
     "other",
+    # inventory product tags (harmless in contacts/docs - unused in practice)
+    "product_images",
+    "spec_sheets",
+    "safety_docs",
+    "view_360",
+)
+
+# Tags shown for inventory items - product-focused, excludes business-doc tags
+_ITEM_TAGS: tuple[str, ...] = (
+    "product_images",
+    "spec_sheets",
+    "safety_docs",
+    "view_360",
+    "certificates",
+    "photos",
+    "other",
 )
 
 # Page size for file list pagination
@@ -59,6 +75,8 @@ def _files_section(
     *,
     can_tag: bool = True,
     can_describe: bool = True,
+    can_set_hero: bool = False,
+    show_linked: bool = True,
     page: int = 1,
     sort_dir: str = "desc",
     tag_filter: str = "",
@@ -69,11 +87,13 @@ def _files_section(
     """Render the files section for any entity.
 
     Args:
-        entity_type:  e.g. "contact", "doc"
+        entity_type:  e.g. "contact", "doc", "item"
         entity_id:    the entity's id
         files:        list of file dicts from the projection
         can_tag:      whether to show tag editing controls
+        can_set_hero: whether to show hero star toggle (items only)
         can_describe: whether to show description editing controls
+        show_linked:  whether to show the "Linked To" column (False for items)
         page:         current page (1-indexed)
         sort_dir:     "desc" (newest first) or "asc"
         tag_filter:   filter to this tag slug
@@ -83,12 +103,15 @@ def _files_section(
     """
     base_url = f"/{entity_type}s/{entity_id}/files"
     sid = _safe_id(entity_id)  # safe DOM id fragment (no colons)
+    _tags = _ITEM_TAGS if entity_type == "item" else _DOCUMENT_TAGS
 
     # ── Sort ─────────────────────────────────────────────────────────────────
     def _uploaded_at_key(f: dict) -> str:
         return f.get("uploaded_at") or ""
 
     sorted_files = sorted(files, key=_uploaded_at_key, reverse=(sort_dir == "desc"))
+    # Hero always at top regardless of date sort
+    sorted_files = sorted(sorted_files, key=lambda f: 0 if f.get("is_hero") else 1)
 
     # ── Filter ───────────────────────────────────────────────────────────────
     if tag_filter:
@@ -116,7 +139,7 @@ def _files_section(
     # ── Filter bar ───────────────────────────────────────────────────────────
     tag_opts = [Option(t("label.all_tags"), value="")] + [
         Option(_tag_label(slug), value=slug, selected=(slug == tag_filter))
-        for slug in _DOCUMENT_TAGS
+        for slug in _tags
     ]
 
     next_sort = "asc" if sort_dir == "desc" else "desc"
@@ -185,8 +208,8 @@ def _files_section(
         style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;",
     )
 
-    # ── "Linked To" column is always shown (GDR: don't hide structure) ────────
-    has_linked = True
+    # ── "Linked To" column ───────────────────────────────────────────────────
+    has_linked = show_linked
 
     # ── Column resize JS ─────────────────────────────────────────────────────
     # Vanilla JS: drag resize handles between <th> elements.
@@ -229,27 +252,74 @@ def _files_section(
         uploaded_at = _fmt_date(f.get("uploaded_at"))
         linked_ref = f.get("linked_ref") or ""
         linked_url = f.get("linked_url") or ""
+        # Files from a foreign entity carry their own URL overrides.
+        file_download_url = f.get("_download_url") or f"{base_url}/{fid}/download"
+        # Action base: tag/describe/hero/delete target (defaults to this entity's base_url)
+        file_action_base = f.get("_action_base_url") or base_url
+        no_delete = bool(f.get("_no_delete"))
+        # When actions target a different entity, refresh via base_url/_section after mutation
+        cross_entity = file_action_base != base_url
+
+        def _refresh_section_js() -> str:
+            """JS snippet: re-fetch the section after a cross-entity mutation."""
+            return (
+                f"fetch('{base_url}/_section')"
+                f".then(function(r){{return r.text();}}).then(function(html){{"
+                f"var sec=document.getElementById('files-section-{sid}');"
+                f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
+                f"}});"
+            )
 
         if can_tag:
             tag_opts_row = [Option(t("label.no_tag"), value="")] + [
                 Option(_tag_label(slug), value=slug, selected=(slug == doc_tag))
-                for slug in _DOCUMENT_TAGS
+                for slug in _tags
             ]
-            tag_cell = Td(
-                Select(
-                    *tag_opts_row,
-                    name="document_tag",
-                    cls="form-input form-input--xs file-tag-select",
-                    hx_post=f"{base_url}/{fid}/tag",
-                    hx_target=f"#files-section-{sid}",
-                    hx_swap="outerHTML",
-                    hx_trigger="change",
-                ),
-            )
+            if cross_entity:
+                tag_cell = Td(
+                    Select(
+                        *tag_opts_row,
+                        name="document_tag",
+                        cls="form-input form-input--xs file-tag-select",
+                        onchange=(
+                            f"(function(sel){{var fd=new FormData();fd.append('document_tag',sel.value);"
+                            f"fetch('{file_action_base}/{fid}/tag',{{method:'PATCH',body:fd}})"
+                            f".then(function(){{" + _refresh_section_js() + f"}})}})this"
+                        ),
+                    ),
+                )
+            else:
+                tag_cell = Td(
+                    Select(
+                        *tag_opts_row,
+                        name="document_tag",
+                        cls="form-input form-input--xs file-tag-select",
+                        hx_post=f"{file_action_base}/{fid}/tag",
+                        hx_target=f"#files-section-{sid}",
+                        hx_swap="outerHTML",
+                        hx_trigger="change",
+                    ),
+                )
         else:
             tag_cell = Td(Span(_tag_label(doc_tag), cls="badge badge--muted") if doc_tag else Span())
 
         if can_describe:
+            _desc_fetch_then = (
+                _refresh_section_js() if cross_entity else
+                f".then(function(r){{return r.text();}}).then(function(html){{"
+                f"var sec=document.getElementById('files-section-{sid}');"
+                f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
+                f"}})"
+            )
+            _desc_fetch = (
+                f"var fd=new FormData();fd.append('description',inp.value);"
+                f"fetch('{file_action_base}/{fid}/description',{{method:'POST',body:fd}})"
+                + (_refresh_section_js() if cross_entity else
+                   f".then(function(r){{return r.text();}}).then(function(html){{"
+                   f"var sec=document.getElementById('files-section-{sid}');"
+                   f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
+                   f"}});")
+            )
             desc_cell = Td(
                 Span(
                     desc if desc else "--",
@@ -261,14 +331,12 @@ def _files_section(
                             f"inp.type='text';"
                             f"var cur=el.textContent.trim();inp.value=cur==='--'?'':cur;"
                             f"inp.className='form-input form-input--sm';inp.style='width:100%';"
-                            f"inp.onblur=function(){{var fd=new FormData();fd.append('description',inp.value);"
-                            f"fetch('{base_url}/{fid}/description',{{method:'POST',body:fd}})"
-                            f".then(function(r){{return r.text();}}).then(function(html){{"
-                            f"var sec=document.getElementById('files-section-{sid}');"
-                            f"if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}else location.reload();"
-                            f"}})}};"
+                            f"var cancelled=false;"
+                            f"inp.onblur=function(){{if(cancelled)return;"
+                            + _desc_fetch +
+                            f"}};"
                             f"inp.onkeydown=function(e){{if(e.key==='Enter')inp.blur();"
-                            f"if(e.key==='Escape'){{el.textContent=inp.value=el.dataset.orig;inp.blur();}}}};"
+                            f"if(e.key==='Escape'){{cancelled=true;var orig=el.dataset.orig;el.textContent=orig;inp.replaceWith(el);}}}};"
                             f"el.dataset.orig=el.textContent;el.replaceWith(inp);inp.focus();"
                             f"}})(this)"
                         )
@@ -292,30 +360,52 @@ def _files_section(
 
         row_cells = [
             Td(Span(uploaded_at, cls="muted")),
-            Td(A(fname, href=f"{base_url}/{fid}/download", cls="file-link")),
+            Td(
+                Img(src=file_download_url, style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
+                if f.get("mime", "").startswith("image/") else "",
+                A(fname, href=file_download_url, cls="file-link"),
+            ),
             tag_cell,
             desc_cell,
         ]
         if has_linked:
             row_cells.append(linked_cell)
+        if can_set_hero:
+            is_hero = f.get("is_hero", False)
+            is_image = (f.get("mime", "").startswith("image/"))
+            if is_image:
+                hero_cell = Td(
+                    Button(
+                        "⭐" if is_hero else "☆",
+                        hx_post=f"{file_action_base}/{fid}/hero",
+                        hx_target=f"#files-section-{sid}",
+                        hx_swap="outerHTML",
+                        cls=f"btn btn--ghost btn--xs{'  btn--hero-active' if is_hero else ''}",
+                        title="Set as hero image" if not is_hero else "Hero image",
+                    ),
+                )
+            else:
+                hero_cell = Td()
+            row_cells.append(hero_cell)
         row_cells += [
             Td(Span(_fmt_size(size), cls="muted")),
             Td(
                 Button(
                     "×",
-                    hx_delete=f"{base_url}/{fid}",
+                    hx_delete=f"{file_action_base}/{fid}",
                     hx_target=f"#files-section-{sid}",
                     hx_swap="outerHTML",
                     hx_confirm=f"{t('action.delete_file')}: {fname}?",
                     cls="btn btn--ghost btn--xs",
                     title=t("action.delete_file"),
-                ),
+                ) if not no_delete else Span(),
             ),
         ]
-        file_rows.append(Tr(*row_cells))
+        row_cls = "files-row--hero" if f.get("is_hero") else ""
+        file_rows.append(Tr(*row_cells, cls=row_cls) if row_cls else Tr(*row_cells))
 
     # Date column header with sort arrow (clickable)
-    col_count = 6 + (1 if has_linked else 0)
+    col_count = 6 + (1 if has_linked else 0) + (1 if can_set_hero else 0)
     date_th = Th(
         A(
             f"{t('label.upload_date')} {sort_arrow}",
@@ -340,6 +430,8 @@ def _files_section(
     ]
     if has_linked:
         header_cells.append(Th(t("label.linked_to")))
+    if can_set_hero:
+        header_cells.append(Th("Hero", style="text-align:center;width:48px;"))
     header_cells += [Th(t("th.size")), Th()]
 
     table = Table(
@@ -370,33 +462,51 @@ def _files_section(
         pagination = Div(*pager_items, cls="pagination", style="margin-top:8px;display:flex;gap:4px;")
 
     # ── Upload dropzone ───────────────────────────────────────────────────────
+    # Named init function keyed by sid so it survives outerHTML swaps.
+    # After each swap (htmx or plain fetch) we re-call it on the new zone.
+    # The global _celerpDZ registry lets the new section call its own init
+    # once inserted (htmx:afterSettle fires for hx-* swaps; for plain fetch
+    # swaps we call it directly after setting outerHTML).
     drop_js = f"""
 (function(){{
-  var zone=document.getElementById('file-drop-zone-{sid}');
-  var inp=document.getElementById('file-drop-input-{sid}');
-  if(!zone||!inp) return;
-  function upload(file){{
-    var fd=new FormData(); fd.append('file',file);
-    var txt=zone.querySelector('.file-drop-text');
-    if(txt) txt.textContent='{t("msg.uploading")}...';
-    fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
-      .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.text();}})
-      .then(function(html){{
-        var sec=document.getElementById('files-section-{sid}');
-        if(sec){{sec.outerHTML=html;var ns=document.getElementById('files-section-{sid}');if(ns&&window.htmx)htmx.process(ns);}}
-        else location.reload();
-      }})
-      .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
+  if(!window._celerpDZ) window._celerpDZ={{}};
+  function initDropZone(){{
+    var zone=document.getElementById('file-drop-zone-{sid}');
+    var inp=document.getElementById('file-drop-input-{sid}');
+    if(!zone||!inp||zone._dzInited) return;
+    zone._dzInited=true;
+    function upload(file){{
+      var fd=new FormData(); fd.append('file',file);
+      var txt=zone.querySelector('.file-drop-text');
+      if(txt) txt.textContent='{t("msg.uploading")}...';
+      fetch('{base_url}',{{method:'POST',headers:{{'HX-Request':'true'}},body:fd}})
+        .then(function(r){{if(!r.ok) throw new Error('Upload failed'); return r.text();}})
+        .then(function(html){{
+          var sec=document.getElementById('files-section-{sid}');
+          if(sec){{
+            sec.outerHTML=html;
+            var ns=document.getElementById('files-section-{sid}');
+            if(ns&&window.htmx) htmx.process(ns);
+            if(window._celerpDZ['{sid}']) window._celerpDZ['{sid}']();
+          }} else location.reload();
+        }})
+        .catch(function(e){{if(txt) txt.textContent='{t("msg.drop_files_here")}'; alert(e.message);}});
+    }}
+    zone.addEventListener('click',function(e){{
+      if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
+    }});
+    inp.addEventListener('change',function(){{ if(inp.files.length) upload(inp.files[0]); }});
+    zone.addEventListener('dragover',function(e){{e.preventDefault();zone.classList.add('file-drop-zone--active');}});
+    zone.addEventListener('dragleave',function(){{zone.classList.remove('file-drop-zone--active');}});
+    zone.addEventListener('drop',function(e){{
+      e.preventDefault(); zone.classList.remove('file-drop-zone--active');
+      if(e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
+    }});
   }}
-  zone.addEventListener('click',function(e){{
-    if(e.target===zone||e.target.closest('.file-drop-text,.file-drop-icon,.file-drop-hint')) inp.click();
-  }});
-  inp.addEventListener('change',function(){{ if(inp.files.length) upload(inp.files[0]); }});
-  zone.addEventListener('dragover',function(e){{e.preventDefault();zone.classList.add('file-drop-zone--active');}});
-  zone.addEventListener('dragleave',function(){{zone.classList.remove('file-drop-zone--active');}});
-  zone.addEventListener('drop',function(e){{
-    e.preventDefault(); zone.classList.remove('file-drop-zone--active');
-    if(e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
+  window._celerpDZ['{sid}']=initDropZone;
+  initDropZone();
+  document.addEventListener('htmx:afterSettle',function(e){{
+    if(e.detail&&e.detail.target&&e.detail.target.id==='files-section-{sid}') initDropZone();
   }});
 }})();
 """

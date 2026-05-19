@@ -96,7 +96,7 @@ async def export_full() -> Path:
 
     return _build_archive(
         dump,
-        [Path("static/attachments"), Path("data/ai_uploads")],
+        [settings.data_dir / "static" / "attachments", settings.data_dir / "ai_uploads"],
         meta,
     )
 

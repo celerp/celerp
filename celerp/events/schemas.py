@@ -89,10 +89,6 @@ class ItemExpired(BaseModel):
     reason: str | None = None
 
 
-class ItemDisposed(BaseModel):
-    reason: str | None = None
-
-
 class ItemSplit(BaseModel):
     child_ids: list[str]
     child_skus: list[str] = Field(default_factory=list)
@@ -751,6 +747,12 @@ class EntityFileDeleted(BaseModel):
     file_id: str
 
 
+class EntityFileHeroSet(BaseModel):
+    entity_id: str
+    entity_type: str  # always "item"
+    file_id: str  # the file to mark as hero (must be an image MIME)
+
+
 EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     # Items
     "item.created": ItemCreated,
@@ -763,7 +765,6 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.fulfilled": ItemFulfilled,
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
-    "item.disposed": ItemDisposed,
     "item.split": ItemSplit,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,
@@ -772,6 +773,11 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.produced": ItemProduced,
     "item.reserved": ItemReserved,
     "item.unreserved": ItemUnreserved,
+    "item.file.attached": EntityFileAttached,
+    "item.file.tagged": EntityFileTagged,
+    "item.file.deleted": EntityFileDeleted,
+    "item.file.description_updated": EntityFileDescriptionUpdated,
+    "item.file.hero_set": EntityFileHeroSet,
 
     # CRM
     "crm.contact.created": CrmContactCreated,

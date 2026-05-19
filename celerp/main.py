@@ -67,6 +67,7 @@ logging.Logger.handle = _filtered_logger_handle
 
 # Module system (opt-in: no-op if MODULE_DIR not set)
 import os as _os
+from pathlib import Path as _Path
 _MODULE_DIR = _os.environ.get("MODULE_DIR", "")
 
 
@@ -80,10 +81,8 @@ async def _try_auto_activate() -> None:
         import httpx
         from celerp.config import settings as _s, ensure_instance_id, read_config, write_config
         iid = ensure_instance_id()
-        relay_base = (
-            _s.gateway_http_url.rstrip("/") if _s.gateway_http_url
-            else _s.gateway_url.replace("wss://", "https://").replace("ws://", "http://").replace("/ws/connect", "")
-        )
+        from celerp.gateway.state import relay_http_url as _rhu
+        relay_base = _rhu()
         _httpx_log = logging.getLogger("httpx")
         _prev_level = _httpx_log.level
         _httpx_log.setLevel(logging.WARNING)
@@ -312,8 +311,18 @@ app.include_router(system.router, prefix="/system", tags=["system"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
 
+# Backup router — always registered; individual endpoints gate on cloud connection.
+# celerp_backup lives in default_modules/celerp-backup/ which is not on sys.path
+# until the module loader runs during lifespan. We add it explicitly here so the
+# router is registered at app-construction time (not lifespan), which is required
+# for FastAPI to include the routes in its route table before any request arrives.
+_backup_pkg = _Path(__file__).parent.parent / "default_modules" / "celerp-backup"
+if _backup_pkg.exists() and str(_backup_pkg) not in sys.path:
+    sys.path.insert(0, str(_backup_pkg))
+from celerp_backup.setup import setup_api_routes as _setup_backup  # noqa: E402
+_setup_backup(app)
+
 # Debug router — only active when CELERP_DEBUG=1 (never in production by default)
-import os as _os
 if _os.environ.get("CELERP_DEBUG") == "1":
     from celerp.routers import debug as _debug
     _debug.install_pool_listeners()

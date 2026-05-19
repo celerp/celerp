@@ -175,10 +175,10 @@ class ReserveBody(BaseModel):
 
 
 # Statuses hidden from the default inventory view. Users must explicitly request them.
-_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired", "disposed"})
+_HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
 
 # "Archived" tab shows all terminal/inactive statuses grouped together.
-_ARCHIVED_GROUP = frozenset({"archived", "merged", "expired", "disposed"})
+_ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
 
 
 @router.get("")
@@ -221,7 +221,7 @@ async def list_items(
     ]
 
     # Status filtering: default excludes hidden statuses; "all" skips filtering;
-    # "archived" expands to include merged/expired/disposed.
+    # "archived" expands to include merged/expired (and legacy disposed events).
     if status == "all":
         pass  # no filter
     elif status == "archived":
@@ -797,7 +797,7 @@ class BulkDeleteBody(BaseModel):
 
 
 @router.post("/bulk/status")
-async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_set_status(payload: BulkStatusBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.entity_ids:
         raise HTTPException(status_code=422, detail="entity_ids must not be empty")
     event_ids = []
@@ -853,7 +853,7 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
     from celerp.models.ledger import LedgerEntry as _LE
     # Hard delete: remove projection rows and all ledger events for these items.
     # This is the correct behaviour for a user-initiated "Delete" action —
-    # the item should vanish from the catalog entirely, not just be marked disposed.
+    # the item should vanish from the catalog entirely (hard delete, no event trail).
     await session.execute(
         _sa.delete(_Proj).where(
             _Proj.company_id == company_id,
@@ -872,11 +872,6 @@ async def bulk_delete(payload: BulkDeleteBody, company_id=Depends(get_current_co
 
 class BulkExpireBody(BaseModel):
     entity_ids: list[str]
-
-
-class BulkDisposeBody(BaseModel):
-    entity_ids: list[str]
-    reason: str | None = None
 
 
 @router.post("/bulk/expire")
@@ -900,28 +895,6 @@ async def bulk_expire(payload: BulkExpireBody, company_id=Depends(get_current_co
     await session.commit()
     return {"expired": len(payload.entity_ids)}
 
-
-@router.post("/bulk/dispose")
-async def bulk_dispose(payload: BulkDisposeBody, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    if not payload.entity_ids:
-        raise HTTPException(status_code=422, detail="entity_ids must not be empty")
-    import sqlalchemy as _sa
-    from celerp.models.projections import Projection as _Proj
-    from celerp.models.ledger import LedgerEntry as _LE
-    await session.execute(
-        _sa.delete(_Proj).where(
-            _Proj.company_id == company_id,
-            _Proj.entity_id.in_(payload.entity_ids),
-        )
-    )
-    await session.execute(
-        _sa.delete(_LE).where(
-            _LE.company_id == company_id,
-            _LE.entity_id.in_(payload.entity_ids),
-        )
-    )
-    await session.commit()
-    return {"disposed": len(payload.entity_ids)}
 
 
 @router.post("/{entity_id}/transfer")
@@ -1600,17 +1573,6 @@ async def expire_item(entity_id: str, company_id=Depends(get_current_company_id)
     return {"event_id": entry.id}
 
 
-@router.post("/{entity_id}/dispose")
-async def dispose_item(entity_id: str, company_id=Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    import sqlalchemy as _sa
-    from celerp.models.projections import Projection as _Proj
-    from celerp.models.ledger import LedgerEntry as _LE
-    await session.execute(_sa.delete(_Proj).where(_Proj.company_id == company_id, _Proj.entity_id == entity_id))
-    await session.execute(_sa.delete(_LE).where(_LE.company_id == company_id, _LE.entity_id == entity_id))
-    await session.commit()
-    return {"deleted": entity_id}
-
-
 # ── Import endpoint (CIF) ─────────────────────────────────────────────────────
 
 class ImportRecord(BaseModel):
@@ -1968,7 +1930,8 @@ def setup_api_routes(app) -> None:
     # Scanning module disabled until properly finished
     # from celerp_inventory.routes_scanning import router as scanning_router
     from celerp_inventory.routes_attachments import router as attachments_router
-    app.include_router(router, prefix="/items", tags=["items"])
-    # app.include_router(scanning_router, prefix="/scanning", tags=["scanning"])
+    # attachments_router first: its specific sub-paths (e.g. /files/{id}) must
+    # be registered before the catch-all /{entity_id} route in the main router.
     app.include_router(attachments_router, prefix="/items", tags=["attachments"])
+    app.include_router(router, prefix="/items", tags=["items"])
 

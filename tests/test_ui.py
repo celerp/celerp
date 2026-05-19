@@ -3663,9 +3663,9 @@ class TestSprint5ItemActions:
         assert r.status_code == 204
 
     @pytest.mark.asyncio
-    async def test_dispose_item_route(self, ui_client):
-        with patch("ui.api_client.dispose_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/dispose", data={"reason": "damaged", "notes": "dropped"}, cookies=_authed())
+    async def test_archive_item_route(self, ui_client):
+        with patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"updated": 1})):
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "damaged"}, cookies=_authed())
         assert r.status_code == 204
 
     # ── Split ─────────────────────────────────────────────────────────────────
@@ -3768,9 +3768,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
-        assert b"Merge" in r.content
-
-    @pytest.mark.asyncio
+        assert b"Merging" in r.content
     async def test_merge_items_route_success(self, ui_client):
         with patch("ui.api_client.merge_items", new=AsyncMock(return_value={"id": "item:new123"})):
             r = await ui_client.post(
@@ -4101,42 +4099,42 @@ class TestItemActionRouteCompleteness:
         assert r.status_code == 200
         assert b"already expired" in r.content
 
-    # ── dispose ──────────────────────────────────────────────────────────────
+    # ── archive (replaces dispose - merged into single archived status) ────────
 
     @pytest.mark.asyncio
-    async def test_dispose_redirects_to_item(self, ui_client):
-        with patch("ui.api_client.dispose_item", new=AsyncMock(return_value={"event_id": "e1"})):
-            r = await ui_client.post("/api/items/gc:123/dispose", data={"reason": "broken", "notes": ""}, cookies=_authed())
+    async def test_archive_redirects_to_item(self, ui_client):
+        with patch("ui.api_client.set_item_status", new=AsyncMock(return_value={"updated": 1})):
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "broken"}, cookies=_authed())
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
-    async def test_dispose_passes_reason_and_notes(self, ui_client):
+    async def test_archive_passes_reason(self, ui_client):
         captured = {}
-        async def _mock(token, entity_id, reason, notes):
-            captured.update({"reason": reason, "notes": notes})
-            return {"event_id": "e1"}
-        with patch("ui.api_client.dispose_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/dispose", data={"reason": "cracked", "notes": "dropped on floor"}, cookies=_authed())
-        assert captured["reason"] == "cracked"
-        assert captured["notes"] == "dropped on floor"
+        async def _mock(token, entity_id, status, reason=None):
+            captured.update({"status": status, "reason": reason})
+            return {"updated": 1}
+        with patch("ui.api_client.set_item_status", new=_mock):
+            await ui_client.post("/api/items/gc:123/archive", data={"reason": "damaged"}, cookies=_authed())
+        assert captured["status"] == "archived"
+        assert captured["reason"] == "damaged"
 
     @pytest.mark.asyncio
-    async def test_dispose_empty_notes_passes_none(self, ui_client):
+    async def test_archive_empty_reason_passes_none(self, ui_client):
         captured = {}
-        async def _mock(token, entity_id, reason, notes):
-            captured["notes"] = notes
-            return {"event_id": "e1"}
-        with patch("ui.api_client.dispose_item", new=_mock):
-            await ui_client.post("/api/items/gc:123/dispose", data={"reason": "damaged", "notes": ""}, cookies=_authed())
-        assert captured["notes"] is None
+        async def _mock(token, entity_id, status, reason=None):
+            captured["reason"] = reason
+            return {"updated": 1}
+        with patch("ui.api_client.set_item_status", new=_mock):
+            await ui_client.post("/api/items/gc:123/archive", data={"reason": ""}, cookies=_authed())
+        assert captured["reason"] is None
 
     @pytest.mark.asyncio
-    async def test_dispose_api_error_shown(self, ui_client):
+    async def test_archive_api_error_shown(self, ui_client):
         from ui.api_client import APIError
-        with patch("ui.api_client.dispose_item", new=AsyncMock(side_effect=APIError(400, "already disposed"))):
-            r = await ui_client.post("/api/items/gc:123/dispose", data={"reason": "broken", "notes": ""}, cookies=_authed())
+        with patch("ui.api_client.set_item_status", new=AsyncMock(side_effect=APIError(400, "already archived"))):
+            r = await ui_client.post("/api/items/gc:123/archive", data={"reason": "broken"}, cookies=_authed())
         assert r.status_code == 200
-        assert b"already disposed" in r.content
+        assert b"already archived" in r.content
 
     # ── DELETE /api/items/{entity_id} (row-menu delete) ──────────────────
 
@@ -4342,8 +4340,8 @@ class TestItemActionHtmlContracts:
         assert b'hx-swap="outerHTML"' in r.content
 
     @pytest.mark.asyncio
-    async def test_action_card_dispose_url(self, ui_client):
-        """Item detail page renders dispose form targeting /api/items/{id}/dispose."""
+    async def test_action_card_archive_url(self, ui_client):
+        """Item detail page renders archive form targeting /api/items/{id}/archive."""
         with (
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
@@ -4356,7 +4354,7 @@ class TestItemActionHtmlContracts:
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
-        assert b'hx-post="/api/items/gc:123/dispose"' in r.content
+        assert b'hx-post="/api/items/gc:123/archive"' in r.content
         assert b'hx-target="#item-action-error"' in r.content
         assert b'hx-swap="outerHTML"' in r.content
 
@@ -4620,28 +4618,27 @@ class TestAttachmentRoutes:
 
     @pytest.mark.asyncio
     async def test_upload_attachment_success_returns_panel(self, ui_client):
-        """POST /api/items/{id}/attachments returns updated attachments panel on success."""
+        """POST /api/items/{id}/files returns updated files panel on success."""
         import io
-        from starlette.datastructures import UploadFile as SF
         file_content = b"fake image data"
         with (
-            patch("ui.api_client.upload_attachment", new=AsyncMock(return_value={"id": "att:1"})),
-            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "attachments": [{"id": "att:1", "filename": "photo.jpg", "url": "/static/attachments/c/photo.jpg"}]})),
+            patch("ui.api_client.upload_item_file", new=AsyncMock(return_value={"id": "file:1"})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "files": [{"id": "file:1", "filename": "photo.jpg", "url": "/static/files/photo.jpg", "mime": "image/jpeg", "size": 15, "document_tag": "product_images", "is_hero": False, "uploaded_at": None, "description": None}]})),
         ):
             r = await ui_client.post(
-                "/api/items/gc:123/attachments",
+                "/items/gc:123/files",
                 files={"file": ("photo.jpg", io.BytesIO(file_content), "image/jpeg")},
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        # Returns the attachments panel HTML (not a redirect)
-        assert b"photo.jpg" in r.content or b"attachment" in r.content.lower()
+        # Returns the files panel HTML (not a redirect)
+        assert b"photo.jpg" in r.content or b"file" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_upload_attachment_no_file_returns_error(self, ui_client):
-        """POST /api/items/{id}/attachments with no file field returns an error message."""
+        """POST /api/items/{id}/files with no file field returns an error message."""
         r = await ui_client.post(
-            "/api/items/gc:123/attachments",
+            "/items/gc:123/files",
             data={},
             cookies=_authed(),
         )
@@ -4653,7 +4650,7 @@ class TestAttachmentRoutes:
         """POST without auth redirects to /login."""
         import io
         r = await ui_client.post(
-            "/api/items/gc:123/attachments",
+            "/items/gc:123/files",
             files={"file": ("photo.jpg", io.BytesIO(b"data"), "image/jpeg")},
         )
         assert r.status_code == 302
@@ -4663,9 +4660,9 @@ class TestAttachmentRoutes:
     async def test_upload_attachment_api_error_shown(self, ui_client):
         from ui.api_client import APIError
         import io
-        with patch("ui.api_client.upload_attachment", new=AsyncMock(side_effect=APIError(413, "file too large"))):
+        with patch("ui.api_client.upload_item_file", new=AsyncMock(side_effect=APIError(413, "file too large"))):
             r = await ui_client.post(
-                "/api/items/gc:123/attachments",
+                "/items/gc:123/files",
                 files={"file": ("big.jpg", io.BytesIO(b"data"), "image/jpeg")},
                 cookies=_authed(),
             )
@@ -4938,7 +4935,7 @@ class TestInventoryBulkActions:
 
 
 class TestBulkActionsPhase1to5:
-    """Phases 1-5: persistent selection, context-sensitive toolbar, merge/split/expire/dispose."""
+    """Phases 1-5: persistent selection, context-sensitive toolbar, merge/split/expire/archive."""
 
     # ── Phase 1: data attributes on row checkboxes ───────────────────────
 
@@ -4998,7 +4995,8 @@ class TestBulkActionsPhase1to5:
         assert b"Merge" in r.content
         assert b"Archive" in r.content
         assert b"Expire" in r.content
-        assert b"Delete" in r.content
+        # Delete only visible when viewing archived/expired items
+        assert b"Delete" not in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_toolbar_module_action_in_dropdown(self, ui_client):
@@ -5074,7 +5072,7 @@ class TestBulkActionsPhase1to5:
         assert r.status_code == 200
         assert b"Invalid split quantity" in r.content
 
-    # ── Phase 5: bulk expire/dispose ─────────────────────────────────────
+    # ── Phase 5: bulk expire/archive ─────────────────────────────────────
 
     @pytest.mark.asyncio
     async def test_bulk_expire_success(self, ui_client):
@@ -11902,3 +11900,182 @@ def test_split_weight_has_onblur_clamp():
     assert "splitClampWeight" in src or "onblur" in src.split("child_weight")[1][:200], (
         "child_weight input must have an onblur clamp handler"
     )
+
+
+# ── Backup proxy routes ────────────────────────────────────────────────────────
+
+class TestBackupRoutes:
+    """Regression tests for /backup/* UI route handlers.
+
+    The backup HTMX targets (/backup/list, /backup/trigger, /backup/export,
+    /backup/import) must be implemented as proper UI route handlers that use
+    ui.api_client with the user's token — the same pattern used everywhere
+    else in the UI.  A raw httpx proxy is wrong because it bypasses the
+    standard auth plumbing and is fragile (e.g. header forwarding edge-cases
+    produce 401 on the API side).
+    """
+
+    @pytest.fixture
+    def ui_client(self):
+        from httpx import AsyncClient, ASGITransport
+        import sys
+        sys.path.insert(0, "default_modules/celerp-backup")
+        from ui.app import app
+        return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+    @pytest.mark.asyncio
+    async def test_backup_list_uses_api_client_not_raw_proxy(self, ui_client):
+        """GET /backup/list must call ui.api_client (not httpx directly).
+
+        Root cause of the 401 bug: the raw proxy forwarded headers in an
+        ad-hoc way that differed from the standard _client(token) pattern.
+        This test verifies the route calls api_client.list_backups with the
+        token from the cookie — same as every other UI route handler.
+        """
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+        captured = {}
+
+        async def fake_list_backups(token: str, backup_type: str | None = None):
+            captured["token"] = token
+            captured["backup_type"] = backup_type
+            return {"items": []}
+
+        with patch.object(_api, "list_backups", fake_list_backups):
+            async with ui_client as c:
+                r = await c.get(
+                    "/backup/list?backup_type=database",
+                    headers={"HX-Request": "true"},
+                    cookies={"celerp_token": test_token},
+                )
+
+        assert r.status_code != 404, f"Route missing — got 404"
+        assert captured.get("token") == test_token, (
+            f"api_client.list_backups not called with cookie token. "
+            f"Captured: {captured}. This means the route is NOT following "
+            f"the standard _token(request) -> api_client pattern."
+        )
+        assert captured.get("backup_type") == "database", (
+            f"backup_type not passed through. Captured: {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_trigger_uses_api_client_not_raw_proxy(self, ui_client):
+        """POST /backup/trigger must call ui.api_client.trigger_backup with the token."""
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+        captured = {}
+
+        async def fake_trigger(token: str, backup_type: str = "database"):
+            captured["token"] = token
+            captured["backup_type"] = backup_type
+            return {"ok": True}
+
+        with patch.object(_api, "trigger_backup", fake_trigger):
+            async with ui_client as c:
+                r = await c.post(
+                    "/backup/trigger?type=database",
+                    cookies={"celerp_token": test_token},
+                )
+
+        assert r.status_code != 404, f"Route missing — got 404"
+        assert captured.get("token") == test_token, (
+            f"trigger_backup not called with cookie token. Captured: {captured}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_trigger_timeout_shows_inline_error_not_500(self, ui_client):
+        """POST /backup/trigger must return inline error HTML (not 500) on timeout.
+
+        Regression: httpx.TimeoutException was uncaught → 500 → HTMX discards
+        the response → button appears to do nothing (silent failure).
+        """
+        import httpx
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+
+        async def fake_trigger_timeout(token: str, backup_type: str = "database"):
+            raise httpx.TimeoutException("timed out", request=None)
+
+        with patch.object(_api, "trigger_backup", fake_trigger_timeout):
+            async with ui_client as c:
+                r = await c.post(
+                    "/backup/trigger?type=database",
+                    cookies={"celerp_token": test_token},
+                )
+
+        assert r.status_code == 200, (
+            f"Expected 200 inline error, got {r.status_code}. "
+            "Timeout must NOT bubble as a 500 — HTMX silently discards non-2xx on fragment swaps."
+        )
+        assert b"backup-flash" in r.content, (
+            f"Response must contain #backup-flash div for HTMX swap. Got: {r.text[:300]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_trigger_success_returns_flash_and_hx_trigger(self, ui_client):
+        """POST /backup/trigger must return flash div + HX-Trigger: backupDone on success."""
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+
+        async def fake_trigger_ok(token: str, backup_type: str = "database"):
+            return None  # trigger_backup returns None on success
+
+        with patch.object(_api, "trigger_backup", fake_trigger_ok):
+            async with ui_client as c:
+                r = await c.post(
+                    "/backup/trigger?type=database",
+                    cookies={"celerp_token": test_token},
+                )
+
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+        assert b"flash--success" in r.content, f"Expected success flash in response. Got: {r.text[:300]}"
+        assert r.headers.get("HX-Trigger") == "backupDone", (
+            f"Expected HX-Trigger: backupDone header. Got: {dict(r.headers)}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_trigger_api_failure_shows_real_error_message(self, ui_client):
+        """POST /backup/trigger must show the real error from the API, not a generic message.
+
+        Regression: API returned 422 with detail but UI showed generic 'cloud not connected'
+        because it didn't distinguish 422 (backup failed) from other errors.
+        """
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+
+        async def fake_trigger_fail(token: str, backup_type: str = "database"):
+            raise _api.APIError(422, "pg_dump not found in PATH")
+
+        with patch.object(_api, "trigger_backup", fake_trigger_fail):
+            async with ui_client as c:
+                r = await c.post(
+                    "/backup/trigger?type=database",
+                    cookies={"celerp_token": test_token},
+                )
+
+        assert r.status_code == 200, f"Expected 200 inline error, got {r.status_code}"
+        assert b"backup-flash" in r.content, "Response must contain #backup-flash for HTMX swap"
+        assert b"pg_dump" in r.content, (
+            f"Expected real error message in response, got generic message. Body: {r.text[:300]}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_backup_export_uses_api_client_not_raw_proxy(self, ui_client):
+        """GET /backup/export must call ui.api_client.export_backup with the token."""
+        import ui.api_client as _api
+        test_token = make_test_token(role="owner")
+        captured = {}
+
+        async def fake_export(token: str):
+            captured["token"] = token
+            return (b"fakedata", "application/octet-stream", "attachment; filename=backup.celerp-backup")
+
+        with patch.object(_api, "export_backup", fake_export):
+            async with ui_client as c:
+                r = await c.get("/backup/export", cookies={"celerp_token": test_token})
+
+        assert r.status_code != 404, f"Route missing — got 404"
+        assert captured.get("token") == test_token, (
+            f"export_backup not called with cookie token. Captured: {captured}"
+        )
