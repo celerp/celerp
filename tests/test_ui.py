@@ -4107,7 +4107,7 @@ class TestItemActionRouteCompleteness:
     async def test_dispose_redirects_to_item(self, ui_client):
         with patch("ui.api_client.dispose_item", new=AsyncMock(return_value={"event_id": "e1"})):
             r = await ui_client.post("/api/items/gc:123/dispose", data={"reason": "broken", "notes": ""}, cookies=_authed())
-        assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
+        assert r.headers.get("HX-Redirect") == "/inventory"
 
     @pytest.mark.asyncio
     async def test_dispose_passes_reason_and_notes(self, ui_client):
@@ -4998,7 +4998,8 @@ class TestBulkActionsPhase1to5:
         assert b"Merge" in r.content
         assert b"Archive" in r.content
         assert b"Expire" in r.content
-        assert b"Delete" in r.content
+        # Delete only visible when viewing archived/expired items
+        assert b"Delete" not in r.content
 
     @pytest.mark.asyncio
     async def test_bulk_toolbar_module_action_in_dropdown(self, ui_client):

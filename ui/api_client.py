@@ -1231,6 +1231,11 @@ async def dispose_item(token: str, entity_id: str, reason: str | None = None, no
         return _raise(await c.post(f"/items/{entity_id}/dispose", json={"reason": reason, "notes": notes})).json()
 
 
+async def set_item_status(token: str, entity_id: str, status: str) -> dict:
+    async with _client(token) as c:
+        return _raise(await c.post("/items/bulk/status", json={"entity_ids": [entity_id], "status": status})).json()
+
+
 async def create_item(token: str, data: dict) -> dict:
     async with _client(token) as c:
         return _raise(await c.post("/items", json=data)).json()

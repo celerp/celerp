@@ -941,6 +941,10 @@ function bulkActionChanged(action){
     if(!confirm('Archive selected items? They will be hidden from the default view.')) return;
     _bulkImmediate('/api/items/bulk/status','bulk_status','archived');return;
   }
+  if(action==='restore'){
+    if(!confirm('Restore selected items to the catalog? They will become available again.')) return;
+    _bulkImmediate('/api/items/bulk/status','bulk_status','available');return;
+  }
   if(action==='expire'){
     _bulkImmediate('/api/items/bulk/expire',null,null);return;
   }

@@ -1975,6 +1975,28 @@ function celerpPrintLabel(entityId, templateId) {
             await api.dispose_item(token, entity_id, reason, notes)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": "/inventory"})
+
+    @app.post("/api/items/{entity_id}/archive")
+    async def item_archive(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.set_item_status(token, entity_id, "archived")
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
+        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+
+    @app.post("/api/items/{entity_id}/restore")
+    async def item_restore(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        try:
+            await api.set_item_status(token, entity_id, "available")
+        except APIError as e:
+            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
 
     @app.post("/api/items/{entity_id}/return-to-vendor")
@@ -2318,11 +2340,13 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
     if send_to_opts:
         action_options.append(Option(t("inv.send_to"), value="send_to"))
     action_options.extend(module_action_opts)
-    action_options.extend([
-        Option(t("inv.archive"), value="archive"),
-        Option(t("inv.expire"), value="expire"),
-        Option(t("btn.delete"), value="delete"),
-    ])
+    action_options.append(Option(t("inv.archive"), value="archive"))
+    action_options.append(Option(t("inv.expire"), value="expire"))
+    # Restore and Delete only shown when viewing archived/expired items
+    active_status = (p or {}).get("status", "")
+    if active_status in ("archived", "expired"):
+        action_options.append(Option(t("inv.restore"), value="restore"))
+        action_options.append(Option(t("btn.delete"), value="delete"))
 
     return Div(
         Span(t("doc.0_selected"), id="bulk-count", cls="bulk-count"),
@@ -2523,11 +2547,11 @@ _VERTICAL_STATUS_TABS: dict[str, list[tuple[str, str]]] = {
     ],
     "food_beverage": [
         ("", "Available"), ("reserved", "Reserved"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("sold", "Sold"), ("expired", "Expired"), ("archived", "Archived"), ("all", "All"),
     ],
     "agricultural": [
         ("", "Available"), ("reserved", "Reserved"),
-        ("sold", "Sold"), ("archived", "Archived"), ("all", "All"),
+        ("sold", "Sold"), ("expired", "Expired"), ("archived", "Archived"), ("all", "All"),
     ],
 }
 _DEFAULT_STATUS_TABS: list[tuple[str, str]] = [
@@ -2549,10 +2573,12 @@ _VERTICAL_STATUS_CARDS: dict[str, list[tuple[str, str, str]]] = {
     "food_beverage": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
+        ("expired", "Expired", "red"),
     ],
     "agricultural": [
         ("available", "Available", "green"),
         ("reserved", "Reserved", "blue"),
+        ("expired", "Expired", "red"),
     ],
     "watches_accessories": [
         ("available", "Available", "green"),
@@ -3807,9 +3833,24 @@ function addSplitRow(btn) {{
         cls="action-card",
     )
 
+    archive_card = Div(
+        Form(
+            Strong(t("inv.u1f4e6_archive"), cls="action-card-title"),
+            Div(
+                Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
+                cls="action-card-row",
+            ),
+            hx_post=f"/api/items/{entity_id}/archive",
+            hx_target="#item-action-error",
+            hx_swap="outerHTML",
+        ),
+        cls="action-card",
+    )
+
     dispose_card = Div(
         Form(
             Strong(t("inv.u0001f5d1_dispose"), cls="action-card-title"),
+            P(t("inv.dispose_permanent_warning") if "inv.dispose_permanent_warning" in [] else "Permanently deletes item and all records.", cls="action-card-hint"),
             Div(
                 Input(type="text", name="reason", placeholder="Reason", cls="form-input form-input--sm"),
                 Button(t("btn.go"), type="submit", cls="btn btn--danger btn--xs"),
@@ -3821,6 +3862,28 @@ function addSplitRow(btn) {{
         ),
         cls="action-card",
     )
+
+    restore_card = Div(
+        Form(
+            Strong(t("inv.u21a9_restore"), cls="action-card-title"),
+            Div(
+                Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
+                cls="action-card-row",
+            ),
+            hx_post=f"/api/items/{entity_id}/restore",
+            hx_target="#item-action-error",
+            hx_swap="outerHTML",
+        ),
+        cls="action-card",
+    )
+
+    # Items already in a terminal/hidden state: show restore instead of expire/dispose
+    item_status = item.get("status", "available")
+    _RESTORABLE = {"archived", "expired"}
+    if item_status in _RESTORABLE:
+        lifecycle_cards = [restore_card, dispose_card]
+    else:
+        lifecycle_cards = [expire_card, archive_card, dispose_card]
 
     # Return to Vendor (conditional)
     rtv_card = ""
@@ -3866,8 +3929,7 @@ function addSplitRow(btn) {{
         Div(
             split_card,
             duplicate_card,
-            expire_card,
-            dispose_card,
+            *lifecycle_cards,
             rtv_card,
             bbi_card,
             cls="action-cards-grid",
