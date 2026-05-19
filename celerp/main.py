@@ -81,10 +81,8 @@ async def _try_auto_activate() -> None:
         import httpx
         from celerp.config import settings as _s, ensure_instance_id, read_config, write_config
         iid = ensure_instance_id()
-        relay_base = (
-            _s.gateway_http_url.rstrip("/") if _s.gateway_http_url
-            else _s.gateway_url.replace("wss://", "https://").replace("ws://", "http://").replace("/ws/connect", "")
-        )
+        from celerp.gateway.state import relay_http_url as _rhu
+        relay_base = _rhu()
         _httpx_log = logging.getLogger("httpx")
         _prev_level = _httpx_log.level
         _httpx_log.setLevel(logging.WARNING)

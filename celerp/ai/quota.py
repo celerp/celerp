@@ -15,34 +15,18 @@ import logging
 import httpx
 
 from celerp.config import settings
-from celerp.gateway.state import get_session_token, get_instance_id
+from celerp.gateway.state import (
+    get_session_token,
+    relay_http_url,
+    relay_session_headers,
+    relay_subscribe_url,
+)
 
 log = logging.getLogger(__name__)
 
 # Quota bypass monitoring: count consecutive relay failures
 _unconfirmed: int = 0
 _UNCONFIRMED_THRESHOLD: int = 10
-
-
-def _subscribe_url() -> str:
-    iid = settings.gateway_instance_id
-    base = "https://celerp.com/subscribe"
-    if iid:
-        return f"{base}?instance_id={iid}#ai"
-    return f"{base}#ai"
-
-
-def _relay_http_url() -> str:
-    """Derive relay HTTP base URL from the configured gateway WS URL."""
-    if settings.gateway_http_url:
-        return settings.gateway_http_url.rstrip("/")
-    # wss://relay.celerp.com/ws/connect -> https://relay.celerp.com
-    url = settings.gateway_url
-    url = url.replace("wss://", "https://").replace("ws://", "http://")
-    # Strip /ws/connect suffix
-    if "/ws/" in url:
-        url = url.rsplit("/ws/", 1)[0]
-    return url.rstrip("/")
 
 
 async def check_ai_quota(credits: int = 1) -> None:
@@ -57,22 +41,11 @@ async def check_ai_quota(credits: int = 1) -> None:
         log.debug("Quota check skipped: gateway not configured.")
         return
 
-    instance_id = get_instance_id() or settings.gateway_instance_id
-    session_token = get_session_token()
-
-    if not instance_id:
-        log.debug("Quota check skipped: instance_id not set.")
-        return
-
-    relay_url = _relay_http_url()
-    url = f"{relay_url}/quota/ai/consume"
+    url = f"{relay_http_url()}/quota/ai/consume"
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.post(url, headers={
-                "X-Session-Token": session_token,
-                "X-Instance-ID": instance_id,
-            })
+            r = await client.post(url, headers=relay_session_headers())
     except Exception as exc:
         # Network failure - allow through (don't block user on relay outage)
         global _unconfirmed
@@ -97,7 +70,7 @@ async def check_ai_quota(credits: int = 1) -> None:
                 "used": detail.get("used", 0),
                 "limit": detail.get("limit", 0),
                 "resets_at": detail.get("resets_at", ""),
-                "upgrade_url": _subscribe_url(),
+                "upgrade_url": relay_subscribe_url(anchor="ai"),
             },
         )
 
@@ -132,20 +105,11 @@ async def get_quota_status() -> dict | None:
     if not settings.gateway_token or not get_session_token():
         return None
 
-    instance_id = get_instance_id() or settings.gateway_instance_id
-    session_token = get_session_token()
-    if not instance_id:
-        return None
-
-    relay_url = _relay_http_url()
-    url = f"{relay_url}/quota/ai/status"
+    url = f"{relay_http_url()}/quota/ai/status"
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
-            r = await client.get(url, headers={
-                "X-Session-Token": session_token,
-                "X-Instance-ID": instance_id,
-            })
+            r = await client.get(url, headers=relay_session_headers())
         if r.status_code == 200:
             return r.json()
         log.warning("Quota status returned %s", r.status_code)

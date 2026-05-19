@@ -87,11 +87,11 @@ async def cloud_status() -> dict:
     email_used: int = 0
     try:
         import httpx
-        http_url = settings.gateway_http_url or settings.gateway_url.replace("wss://", "https://").replace("ws://", "http://").replace("/ws/connect", "")
+        from celerp.gateway.state import relay_http_url as _relay_http_url
         instance_id = settings.gateway_instance_id
         session_token = get_session_token()
         if instance_id and session_token:
-            async with httpx.AsyncClient(base_url=http_url, timeout=3.0) as c:
+            async with httpx.AsyncClient(base_url=_relay_http_url(), timeout=3.0) as c:
                 r = await c.get(
                     "/billing/status",
                     params={"instance_id": instance_id, "session_token": session_token},
@@ -181,9 +181,6 @@ async def cloud_disconnect() -> dict:
     return {"disconnected": True}
 
 
-def _relay_http_base(s) -> str:
-    return s.gateway_http_url or s.gateway_url.replace("wss://", "https://").replace("ws://", "http://").replace("/ws/connect", "")
-
 
 async def _apply_gateway_token_api(token: str, iid: str, public_url: str | None = None, tos_version: str | None = None) -> None:
     """Apply a gateway token in the API process: persist config, start WS client."""
@@ -241,7 +238,7 @@ async def cloud_activate_api() -> dict:
     from celerp.config import settings as _s, ensure_instance_id
 
     iid = ensure_instance_id()
-    relay_base = _relay_http_base(_s)
+    from celerp.gateway.state import relay_http_url as _rhu; relay_base = _rhu()
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
@@ -350,7 +347,7 @@ async def cloud_send_otp_api(payload: dict) -> dict:
         return {"error": "Email required."}
 
     iid = ensure_instance_id()
-    relay_base = _relay_http_base(_s)
+    from celerp.gateway.state import relay_http_url as _rhu; relay_base = _rhu()
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as c:
@@ -388,7 +385,7 @@ async def cloud_claim_api(payload: dict) -> dict:
         return {"error": "Email required."}
 
     iid = ensure_instance_id()
-    relay_base = _relay_http_base(_s)
+    from celerp.gateway.state import relay_http_url as _rhu; relay_base = _rhu()
 
     claim_payload: dict = {"email": email}
     if subscription_id:
@@ -470,7 +467,7 @@ async def connectors_catalog_api() -> dict:
     if not api_key:
         return {"error": "Not connected to relay.", "connectors": []}
 
-    relay_base = _relay_http_base(_s)
+    from celerp.gateway.state import relay_http_url as _rhu; relay_base = _rhu()
     try:
         async with httpx.AsyncClient(timeout=8.0) as c:
             # Exchange API key for short-lived JWT
@@ -506,7 +503,7 @@ async def connector_authorize_url(platform: str, shop: str = "") -> dict:
     if not api_key:
         return {"error": "Not connected to relay."}
 
-    relay_base = _relay_http_base(_s)
+    from celerp.gateway.state import relay_http_url as _rhu; relay_base = _rhu()
     iid = ensure_instance_id()
 
     try:

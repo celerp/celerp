@@ -23,8 +23,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 
 from celerp.config import settings
+from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
 from celerp.services.auth import get_current_user
-from celerp.services.backup import BackupResult, _relay_base_url, _session_headers
+from celerp.services.backup import BackupResult
 from ui.i18n import t
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -141,8 +142,8 @@ async def list_backups(request: Request, backup_type: str | None = None):
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(
-                f"{_relay_base_url()}/backup/",
-                headers=_session_headers(),
+                f"{relay_http_url()}/backup/",
+                headers=relay_session_headers(),
                 params=params,
             )
         if r.status_code != 200:

@@ -28,10 +28,10 @@ import respx
 import httpx
 
 from celerp.config import settings
+from celerp.gateway.state import relay_http_url
 from celerp.services.backup import (
     BackupResult,
     _parse_key,
-    _relay_base_url,
     decrypt,
     dump_database,
     encrypt,
@@ -130,14 +130,14 @@ def test_dump_database_timeout(monkeypatch):
         dump_database("postgresql+asyncpg://u:p@localhost/db")
 
 
-# ── _relay_base_url ───────────────────────────────────────────────────────────
+# ── relay_http_url ────────────────────────────────────────────────────────────
 
 def test_relay_base_url_from_gateway_url():
     orig = settings.gateway_http_url
     settings.gateway_http_url = ""
     settings.gateway_url = "wss://relay.celerp.com/ws/connect"
     try:
-        assert _relay_base_url() == "https://relay.celerp.com"
+        assert relay_http_url() == "https://relay.celerp.com"
     finally:
         settings.gateway_http_url = orig
 
@@ -146,7 +146,7 @@ def test_relay_base_url_from_http_url():
     orig = settings.gateway_http_url
     settings.gateway_http_url = "https://custom-relay.example.com"
     try:
-        assert _relay_base_url() == "https://custom-relay.example.com"
+        assert relay_http_url() == "https://custom-relay.example.com"
     finally:
         settings.gateway_http_url = orig
 
@@ -264,7 +264,8 @@ async def test_run_backup_dump_failure(monkeypatch):
         "celerp.services.backup.dump_database",
         lambda url: (_ for _ in ()).throw(RuntimeError("pg_dump not found in PATH")),
     )
-    monkeypatch.setattr("celerp.gateway.state.get_session_token", lambda: "test-token")
+    import celerp.gateway.state as gs
+    gs.set_session_token("test-token")
 
     result = await run_backup()
     assert not result.ok

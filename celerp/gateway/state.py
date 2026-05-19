@@ -58,3 +58,46 @@ def set_feature_flags(flags: dict) -> None:
 def get_feature_flags() -> dict:
     """Return a copy of the current feature flags."""
     return dict(_feature_flags)
+
+
+# ── Relay connection helpers (single source of truth) ────────────────────────
+# All relay HTTP calls use these. Never inline these values elsewhere.
+
+def relay_http_url() -> str:
+    """Derive the relay HTTP base URL from gateway settings.
+
+    Handles both explicit gateway_http_url config and WS-URL derivation.
+    Single source of truth - used by backup, ai/quota, and any future module.
+    """
+    from celerp.config import settings
+    if settings.gateway_http_url:
+        return settings.gateway_http_url.rstrip("/")
+    url = settings.gateway_url
+    url = url.replace("wss://", "https://").replace("ws://", "http://")
+    if "/ws/" in url:
+        url = url.rsplit("/ws/", 1)[0]
+    return url.rstrip("/")
+
+
+def relay_session_headers() -> dict[str, str]:
+    """Return X-Session-Token + X-Instance-ID headers for relay REST calls.
+
+    Always uses the relay-canonical instance_id (set on hello_ack), with the
+    config value as fallback. The relay keys its session table on the canonical
+    id — using the config id directly causes 401 when they differ.
+    """
+    from celerp.config import settings
+    return {
+        "X-Session-Token": _session_token,
+        "X-Instance-ID": _instance_id or settings.gateway_instance_id,
+    }
+
+
+def relay_subscribe_url(anchor: str = "") -> str:
+    """Return the celerp.com subscribe URL with the current instance_id pre-filled."""
+    from celerp.config import settings
+    iid = _instance_id or settings.gateway_instance_id
+    base = "https://celerp.com/subscribe"
+    url = f"{base}?instance_id={iid}" if iid else base
+    return f"{url}#{anchor}" if anchor else url
+

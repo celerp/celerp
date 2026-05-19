@@ -19,17 +19,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException, Request, status
 
-from celerp.gateway.state import get_session_token
-
-_SUBSCRIBE_BASE = "https://celerp.com/subscribe"
-
-
-def _subscribe_url() -> str:
-    from celerp.config import settings
-    iid = settings.gateway_instance_id
-    if iid:
-        return f"{_SUBSCRIBE_BASE}?instance_id={iid}"
-    return _SUBSCRIBE_BASE
+from celerp.gateway.state import get_session_token, relay_subscribe_url
 
 
 def require_session_token(request: Request) -> None:
@@ -72,7 +62,7 @@ def require_session_token(request: Request) -> None:
         return  # Gateway is connected, allow through
 
     # No session anywhere
-    url = _subscribe_url()
+    url = relay_subscribe_url()
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=(
