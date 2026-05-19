@@ -3356,6 +3356,7 @@ async def upload_doc_file(
             "filename": meta["filename"],
             "mime": meta["mime"],
             "size": meta["size"],
+            "url": meta["url"],
             "document_tag": None,
             "description": None,
             "uploaded_at": datetime.now(UTC).isoformat(),
@@ -3368,6 +3369,42 @@ async def upload_doc_file(
     )
     await session.commit()
     return {"event_id": entry.id, **meta}
+
+
+@router.get("/{entity_id}/files/{file_id}")
+async def download_doc_file(
+    entity_id: str,
+    file_id: str,
+    company_id: str = Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+):
+    """Download a file attached to a doc (invoice, bill, etc.)."""
+    from fastapi.responses import FileResponse, RedirectResponse
+    from pathlib import Path
+    from celerp.config import settings
+
+    row = await _get_doc(session, company_id, entity_id)
+    match = _get_doc_file(row.state.get("files", []), file_id)
+
+    url = match.get("url", "")
+    # Cloud/S3: redirect to the signed URL directly
+    if url.startswith("http://") or url.startswith("https://"):
+        return RedirectResponse(url)
+
+    # Legacy records (pre-fix) have no url stored; reconstruct from file_id + filename.
+    if not url:
+        ext = Path(match.get("filename", "")).suffix
+        url = f"/static/attachments/{company_id}/{file_id}{ext}"
+
+    dest = settings.data_dir / url.lstrip("/")
+    if not dest.exists():
+        raise HTTPException(status_code=404, detail="File missing from disk")
+
+    return FileResponse(
+        path=str(dest),
+        filename=match["filename"],
+        media_type=match.get("mime", "application/octet-stream"),
+    )
 
 
 @router.patch("/{entity_id}/files/{file_id}/tag")

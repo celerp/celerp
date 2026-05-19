@@ -280,3 +280,40 @@ async def test_contact_file_download_resolves_data_dir(client):
         "Route likely resolves path relative to cwd instead of settings.data_dir."
     )
     assert r.content == fake_pdf
+
+
+@pytest.mark.asyncio
+async def test_doc_file_download_resolves_data_dir(client):
+    """GET /docs/{doc_id}/files/{fid} must return the file.
+
+    Regression: url was missing from doc file event data and projection,
+    and the GET download route did not exist at all. Both are now fixed.
+    Also verifies the data_dir path resolution (not cwd-relative).
+    """
+    h = await _headers(client)
+    doc_id = await _create_draft_doc(client, h)
+
+    fake_img = b"\x89PNG\r\n\x1a\n" + b"\x00" * 20
+    r = await client.post(
+        f"/docs/{doc_id}/files",
+        files={"file": ("receipt.png", fake_img, "image/png")},
+        headers=h,
+    )
+    assert r.status_code == 200, f"Upload failed: {r.text}"
+    fid = r.json()["id"]
+
+    # Verify url is now stored in the projection
+    r = await client.get(f"/docs/{doc_id}", headers=h)
+    assert r.status_code == 200
+    files = r.json().get("files", [])
+    match = next((f for f in files if f.get("id") == fid), None)
+    assert match is not None
+    assert match.get("url"), f"url not stored in doc file projection: {match}"
+
+    # Download must succeed
+    r = await client.get(f"/docs/{doc_id}/files/{fid}", headers=h)
+    assert r.status_code == 200, (
+        f"Download returned {r.status_code}. "
+        "GET /docs/{{entity_id}}/files/{{file_id}} route may be missing or broken."
+    )
+    assert r.content == fake_img
