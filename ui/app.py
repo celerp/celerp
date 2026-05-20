@@ -22,6 +22,9 @@ from celerp.config import settings
 # configures uvicorn.* loggers and leaves the root level untouched.
 logging.basicConfig(level=settings.log_level.upper())
 
+# httpx logs every request at INFO; demote to DEBUG to keep logs clean.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # Suppress noisy access log lines.
 # All GET 2xx/3xx lines are suppressed in the UI process - errors still show.
 # Patch logging.Logger.handle on the base class: survives uvicorn logger reconfiguration.
