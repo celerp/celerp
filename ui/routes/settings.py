@@ -1042,6 +1042,8 @@ def setup_routes(app):
                 cls="cell cell--editing",
             )
         if field == "options":
+            if f.get("type") not in _OPTIONS_TYPES:
+                return _cat_schema_display_cell(category, idx, field, f)
             val = ", ".join(f.get("options", []))
         return Td(
             Input(
@@ -2552,6 +2554,9 @@ def _schema_display_cell(idx: int, field: str, f: dict) -> FT:
     )
 
 
+_OPTIONS_TYPES: frozenset[str] = frozenset({"select", "status"})
+
+
 def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT:
     """Editable cell for a category attribute schema field."""
     if field == "options":
@@ -2564,6 +2569,15 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
     cls_extra = " cell--mono" if field == "key" else ""
     from urllib.parse import quote
     enc = quote(category, safe="")
+
+    # Options are only meaningful for select/status types - block editing otherwise
+    if field == "options" and f.get("type") not in _OPTIONS_TYPES:
+        return Td(
+            Span(display, cls=f"cell-text{cls_extra} text-muted"),
+            title="Options only apply to select/status fields",
+            cls="cell",
+        )
+
     return Td(
         Span(display, cls=f"cell-text{cls_extra}"),
         title="Click to edit",
