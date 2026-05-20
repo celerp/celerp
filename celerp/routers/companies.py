@@ -8,7 +8,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -108,6 +108,15 @@ class ItemSchemaPatch(BaseModel):
 
 class CategorySchemaPatch(BaseModel):
     fields: list[ItemSchemaField]
+
+    @model_validator(mode="after")
+    def _unique_keys(self) -> "CategorySchemaPatch":
+        keys = [f.key for f in self.fields]
+        seen: set[str] = set()
+        dupes = [k for k in keys if k in seen or seen.add(k)]  # type: ignore[func-returns-value]
+        if dupes:
+            raise ValueError(f"Duplicate field keys: {', '.join(sorted(set(dupes)))}")
+        return self
 
 
 class ColumnPrefsPatch(BaseModel):
