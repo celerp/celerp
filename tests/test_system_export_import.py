@@ -38,7 +38,7 @@ async def _seed_items(client, token: str, count: int = 3) -> None:
             "event_type": "item.created",
             "idempotency_key": f"seed:{uuid.uuid4().hex}",
             "source": "test",
-            "data": {"sku": f"SKU{i}", "name": f"Item {i}", "quantity": float(i)},
+            "data": {"sku": f"SKU{i}", "name": f"Item {i}", "sell_by": "piece", "quantity": float(i)},
         }
         for i in range(count)
     ]
