@@ -92,7 +92,11 @@ def _raise(r: httpx.Response) -> httpx.Response:
             detail = r.json().get("detail", r.text)
         except Exception:
             detail = r.text
-        logger.warning("API %s: %s", r.status_code, detail)
+        if r.status_code == 401:
+            # 401 is expected during fresh init / token expiry; not a warning
+            logger.debug("API 401: %s", detail)
+        else:
+            logger.warning("API %s: %s", r.status_code, detail)
         raise APIError(r.status_code, detail)
     return r
 
