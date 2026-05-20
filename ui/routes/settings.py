@@ -1013,6 +1013,9 @@ def setup_routes(app):
             return P(f"Error: {e.detail}", cls="cell-error")
         sorted_fields = _load_cat_schema_sorted(fields)
         f = sorted_fields[idx] if idx < len(sorted_fields) else {}
+        # Key is auto-managed - clicking the hidden key cell should never open an editor
+        if field == "key":
+            return _cat_schema_display_cell(category, idx, field, f)
         val = str(f.get(field, "") or "")
         enc = quote(category, safe="")
         patch_url = f"/settings/cat-schema/{enc}/{idx}/{field}"
@@ -1063,6 +1066,15 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        # Key is auto-managed - never directly editable
+        if field == "key":
+            try:
+                fields = await api.get_category_schema(token, category)
+                sorted_fields = _load_cat_schema_sorted(fields)
+                f = sorted_fields[idx] if idx < len(sorted_fields) else {}
+            except APIError:
+                f = {}
+            return _cat_schema_display_cell(category, idx, field, f)
         form = await request.form()
         value = str(form.get("value", ""))
         _SCHEMA_TYPES = frozenset({"text", "number", "money", "select", "date", "boolean", "weight", "status", "image"})
@@ -1085,6 +1097,10 @@ def setup_routes(app):
                     sorted_fields[idx][field] = [o.strip() for o in value.split(",") if o.strip()]
                 else:
                     sorted_fields[idx][field] = value
+                # When label changes, rederive key to match (excluding self from collision check)
+                if field == "label":
+                    other_keys = {f["key"] for j, f in enumerate(sorted_fields) if j != idx and f.get("key")}
+                    sorted_fields[idx]["key"] = _derive_key(value, other_keys)
             await api.patch_category_schema(token, category, sorted_fields)
             fields = await api.get_category_schema(token, category)
         except APIError as e:
@@ -1120,9 +1136,12 @@ def setup_routes(app):
         try:
             fields = list(await api.get_category_schema(token, category))
             max_pos = max((f.get("position", 0) for f in fields), default=-1)
+            existing_keys = {f["key"] for f in fields if f.get("key")}
+            label = "New Field"
+            key = _derive_key(label, existing_keys)
             new_field = {
-                "key": f"field_{max_pos + 1}",
-                "label": "New Field",
+                "key": key,
+                "label": label,
                 "type": "text",
                 "required": False,
                 "editable": True,
@@ -2558,6 +2577,23 @@ def _schema_display_cell(idx: int, field: str, f: dict) -> FT:
 _OPTIONS_TYPES: frozenset[str] = frozenset({"select", "status"})
 _BOOL_FIELDS: frozenset[str] = frozenset({"required", "editable", "show_in_table"})
 _OPTIONS_PILL_LIMIT = 4
+
+
+def _derive_key(label: str, existing_keys: set[str], exclude_idx: int | None = None) -> str:
+    """Derive a unique snake_case key from a label.
+
+    Lowercases, replaces spaces and hyphens with underscores, strips non-alphanumeric chars.
+    Appends _2, _3 etc. to resolve collisions with existing_keys.
+    exclude_idx is unused (collision check is against the passed set, caller excludes self).
+    """
+    import re
+    base = re.sub(r"[^a-z0-9_]", "", label.lower().replace(" ", "_").replace("-", "_")).strip("_") or "field"
+    key = base
+    n = 2
+    while key in existing_keys:
+        key = f"{base}_{n}"
+        n += 1
+    return key
 
 
 def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT:
