@@ -1011,7 +1011,7 @@ _INLINE_FIX_JS = """
   // "Add new unit" option in unit dropdowns: redirect to settings page.
   document.addEventListener('change', function(e) {
     if (e.target.matches('select.cell-edit') && e.target.value === '__add_new__') {
-      window.open('/settings/units', '_blank');
+      window.open('/settings/inventory?tab=units', '_blank');
       e.target.value = '';
     }
   });
