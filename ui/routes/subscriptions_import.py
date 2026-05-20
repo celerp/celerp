@@ -201,7 +201,7 @@ def setup_routes(app):
             validation_result(
                 rows=rows,
                 cols=cols,
-                validate=lambda c, v: validate_cell(_SUB_IMPORT_SPEC, c, v),
+                validate=lambda c, v, r: validate_cell(_SUB_IMPORT_SPEC, c, v),
                 confirm_action="/subscriptions/import/confirm",
                 error_report_action="/subscriptions/import/errors",
                 back_href="/subscriptions/import",
@@ -234,7 +234,7 @@ def setup_routes(app):
         _stash_csv(_rows_to_csv(rows, cols))
         return validation_result(
             rows=rows, cols=cols,
-            validate=lambda c, v: validate_cell(_SUB_IMPORT_SPEC, c, v),
+            validate=lambda c, v, r: validate_cell(_SUB_IMPORT_SPEC, c, v),
             confirm_action="/subscriptions/import/confirm",
             error_report_action="/subscriptions/import/errors",
             back_href="/subscriptions/import",

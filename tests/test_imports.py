@@ -3,6 +3,8 @@
 
 """Import-coverage tests for modules that are hard to exercise via integration tests."""
 
+import os
+
 from celerp.events.types import EventType
 from celerp.models.marketplace import MarketplaceConfig
 
@@ -18,6 +20,33 @@ def test_event_type_values() -> None:
     assert EventType.SYS_COMPANY_CREATED == "sys.company.created"
     # Spot-check total count
     assert len(EventType) == 101
+
+
+def test_log_level_default_is_info() -> None:
+    """Settings.log_level defaults to INFO when LOG_LEVEL env var is unset."""
+    # Ensure env var is not set for this test
+    env_val = os.environ.pop("LOG_LEVEL", None)
+    try:
+        # Re-instantiate to pick up clean env
+        from pydantic_settings import BaseSettings
+        from celerp.config import Settings
+        s = Settings()
+        assert s.log_level.upper() == "INFO"
+    finally:
+        if env_val is not None:
+            os.environ["LOG_LEVEL"] = env_val
+
+
+def test_log_level_env_override() -> None:
+    """LOG_LEVEL env var is picked up by Settings."""
+    os.environ["LOG_LEVEL"] = "debug"
+    try:
+        from celerp.config import Settings
+        s = Settings()
+        assert s.log_level.lower() == "debug"
+    finally:
+        del os.environ["LOG_LEVEL"]
+
 
 
 def test_marketplace_config_model_is_importable() -> None:

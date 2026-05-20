@@ -155,3 +155,40 @@ def test_maybe_refresh_bearer_returns_none_for_token_without_jti():
     }
     token = _jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
     assert _maybe_refresh_bearer(token) is None
+
+
+@pytest.mark.asyncio
+async def test_switch_company_updates_refresh_token():
+    """POST /switch-company/{id} must set a new refresh token cookie scoped to the new company.
+
+    Regression: previously switch_company in api_client.py discarded the new refresh token
+    returned by the API. After 15 min idle the stale refresh token (company A) would
+    silently move the user back to company A.
+    """
+    from unittest.mock import AsyncMock, patch
+    from httpx import AsyncClient
+    from httpx._transports.asgi import ASGITransport
+    from celerp.services.auth import create_access_token, create_refresh_token
+    from ui.app import app as ui_app
+    from tests.test_ui import _authed
+
+    company_b_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    new_access = create_access_token("user-1", company_b_id, "admin")[0]
+    new_refresh = create_refresh_token("user-1", company_b_id, "admin")
+
+    # Patch at the api_client module level (where it's imported inside the handler)
+    with patch("ui.api_client.switch_company", new=AsyncMock(return_value=(new_access, new_refresh))):
+        async with AsyncClient(
+            transport=ASGITransport(app=ui_app),
+            base_url="http://ui",
+            follow_redirects=False,
+        ) as c:
+            r = await c.post(f"/switch-company/{company_b_id}", cookies=_authed())
+
+    assert r.status_code in (302, 303)
+    cookies_header = r.headers.get("set-cookie", "")
+    # Both cookies must be set
+    assert "celerp_token=" in cookies_header
+    assert "celerp_refresh=" in cookies_header
+    # The refresh cookie must contain the new refresh token value
+    assert new_refresh in cookies_header

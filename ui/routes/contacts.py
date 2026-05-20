@@ -1935,7 +1935,7 @@ def setup_routes(app):
             _csv_validation_result(
                 rows=rows,
                 cols=cols,
-                validate=lambda c, v: _csv_validate_cell(_CONTACT_IMPORT_SPEC, c, v),
+                validate=lambda c, v, r: _csv_validate_cell(_CONTACT_IMPORT_SPEC, c, v),
                 confirm_action="/crm/import/contacts/confirm",
                 error_report_action="/crm/import/contacts/errors",
                 back_href="/crm/import/contacts",
@@ -1967,7 +1967,7 @@ def setup_routes(app):
         _stash_csv(_rows_to_csv(rows, cols))
         return _csv_validation_result(
             rows=rows, cols=cols,
-            validate=lambda c, v: _csv_validate_cell(_CONTACT_IMPORT_SPEC, c, v),
+            validate=lambda c, v, r: _csv_validate_cell(_CONTACT_IMPORT_SPEC, c, v),
             confirm_action="/crm/import/contacts/confirm",
             error_report_action="/crm/import/contacts/errors",
             back_href="/crm/import/contacts",

@@ -32,7 +32,7 @@ from starlette.responses import StreamingResponse
 from ui.i18n import t, get_lang
 
 
-ValidateFn = Callable[[str, str], bool]
+ValidateFn = Callable[[str, str, dict], bool]
 
 # Server-side CSV stash: store uploaded CSV data in temp files, keyed by hash.
 # Avoids round-tripping large CSV data through hidden form fields (Starlette
@@ -90,7 +90,7 @@ class CsvImportSpec:
     type_map: dict[str, Callable[[str], Any]]
 
 
-def validate_cell(spec: CsvImportSpec, col: str, value: str) -> bool:
+def validate_cell(spec: CsvImportSpec, col: str, value: str, row: dict | None = None) -> bool:
     if col in spec.required and not value.strip():
         return False
     cast = spec.type_map.get(col)
@@ -137,7 +137,37 @@ _COMMON_ALIASES: dict[str, str] = {
     "qty": "quantity",
     "stock": "quantity",
     "on_hand": "quantity",
+    # spaced variants that don't exact-match underscore targets
+    "sell by": "sell_by",
+    "purchase unit": "purchase_unit",
+    "weight unit": "weight_unit",
+    "location name": "location_name",
+    "hs code": "hs_code",
+    "purchase sku": "purchase_sku",
+    "purchase name": "purchase_name",
+    "purchase conversion factor": "purchase_conversion_factor",
+    "short description": "short_description",
 }
+
+# Aliases for category attribute keys (csv_col_lower → attr_key_lower).
+# Used in suggest_mapping Pass 2b to bridge common spreadsheet column names
+# to their canonical category attribute counterparts.
+_COMMON_ATTR_ALIASES: dict[str, str] = {
+    "stone_color": "color",
+    "stone_colour": "color",
+    "stone_shape": "shape",
+    "stone_treatment": "treatment",
+    "stone_origin": "origin",
+    "color_grade": "grade",
+    "colour_grade": "grade",
+    "clarity_grade": "clarity",
+    "certificate_number": "certificate_no",
+    "cert_number": "certificate_no",
+    "cert_no": "certificate_no",
+}
+
+# Columns that should always default to Skip (system-managed; never imported)
+_FORCE_SKIP_COLS: frozenset[str] = frozenset({"created_at", "updated_at", "status"})
 
 # Sentinel values for the mapping dropdown
 MAPPING_ATTRIBUTE = "__attr__"
@@ -153,13 +183,14 @@ def suggest_mapping(
     """Return {csv_col: suggested_target} for each CSV column.
 
     Priority:
+    0. Force-skip columns (created_at, updated_at, status) → always MAPPING_SKIP
     1. Exact match (case-insensitive) to a core target column
     2. Known alias match to a core target column
-    3. Exact match to a category attribute key (prefixed with 'attr:')
+    2b. Known alias match to a category attribute key
+    3. Exact match to a category attribute key (prefixed with MAPPING_ATTR_PREFIX)
     4. Default to MAPPING_ATTRIBUTE (import as custom field)
 
     Each target field is claimed at most once (first match wins).
-    Category attributes use 'attr:<key>' as the mapping value.
     """
     mapping: dict[str, str] = {}
     claimed: set[str] = set()
@@ -167,12 +198,21 @@ def suggest_mapping(
     attrs = category_attrs or []
     attr_lower = {a.lower().replace(" ", "_"): a for a in attrs}
 
-    # Pass 1: exact matches to core fields
+    # Pass 0: force-skip system columns
     for csv_col in csv_cols:
+        if csv_col.lower().strip() in _FORCE_SKIP_COLS:
+            mapping[csv_col] = MAPPING_SKIP
+
+    # Pass 1: exact matches to core fields (also try space→underscore normalization)
+    for csv_col in csv_cols:
+        if csv_col in mapping:
+            continue
         lc = csv_col.lower().strip()
-        if lc in target_lower and target_lower[lc] not in claimed:
-            mapping[csv_col] = target_lower[lc]
-            claimed.add(target_lower[lc])
+        lc_norm = lc.replace(" ", "_")
+        match = target_lower.get(lc) or target_lower.get(lc_norm)
+        if match and match not in claimed:
+            mapping[csv_col] = match
+            claimed.add(match)
 
     # Pass 2: alias matches to core fields
     for csv_col in csv_cols:
@@ -184,8 +224,18 @@ def suggest_mapping(
             mapping[csv_col] = alias_target
             claimed.add(alias_target)
 
-    # Pass 3: match to category attribute keys
+    # Pass 2b: alias matches to category attribute keys
     claimed_attrs: set[str] = set()
+    for csv_col in csv_cols:
+        if csv_col in mapping:
+            continue
+        lc = csv_col.lower().strip().replace(" ", "_")
+        alias_attr = _COMMON_ATTR_ALIASES.get(lc)
+        if alias_attr and alias_attr in attr_lower.values() and alias_attr not in claimed_attrs:
+            mapping[csv_col] = f"{MAPPING_ATTR_PREFIX}{alias_attr}"
+            claimed_attrs.add(alias_attr)
+
+    # Pass 3: exact match to category attribute keys
     for csv_col in csv_cols:
         if csv_col in mapping:
             continue
@@ -807,6 +857,7 @@ _DROPZONE_JS = """
   var dz=document.getElementById('import-dropzone');
   var fi=document.getElementById('csv_file');
   var info=document.getElementById('dropzone-file-info');
+  var previewBtn=document.getElementById('csv-preview-btn');
   if(!dz||!fi) return;
   dz.addEventListener('click',function(){fi.click()});
   dz.addEventListener('dragover',function(e){e.preventDefault();dz.classList.add('import-dropzone--dragover')});
@@ -820,6 +871,12 @@ _DROPZONE_JS = """
     var kb=(f.size/1024).toFixed(1);
     info.textContent=f.name+' ('+kb+' KB)';
     info.style.display='inline-flex';
+    if(previewBtn){
+      previewBtn.disabled=false;
+      previewBtn.classList.remove('btn--disabled');
+      previewBtn.classList.add('btn--ready');
+      previewBtn.title='';
+    }
   }
 })();
 """
@@ -853,7 +910,7 @@ def upload_form(
                 id="import-dropzone",
                 cls="import-dropzone",
             ),
-            Button(t("btn.preview"), cls="btn btn--primary", type="submit"),
+            Button(t("btn.preview"), id="csv-preview-btn", cls="btn btn--primary btn--disabled", type="submit", disabled=True, title="Please upload a CSV file first.", style="margin-top: 12px;"),
             method="post",
             action=preview_action,
             enctype="multipart/form-data",
@@ -864,7 +921,17 @@ def upload_form(
 
 
 async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
-    """Return (rows, error)."""
+    """Return (rows, error).
+
+    Handles four failure classes explicitly:
+    1. Encoding errors  → "Could not decode file. Use UTF-8 encoding."
+    2. Structurally malformed CSV (csv.Error, e.g. unbalanced quotes, NUL bytes)
+       → "Could not parse file. Please check it is a valid CSV."
+    3. Empty or header-only / None-fieldname output from DictReader
+       → "CSV file is empty or has no valid header row."
+    4. Header-only file (valid header, zero data rows)
+       → "CSV file is empty or invalid."
+    """
     file_obj = form.get("csv_file")
     if not file_obj or not hasattr(file_obj, "read"):
         return [], "Please select a CSV file."
@@ -873,14 +940,23 @@ async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
         text = content.decode("utf-8-sig")
     except Exception:
         return [], "Could not decode file. Use UTF-8 encoding."
-    rows = list(csv.DictReader(io.StringIO(text)))
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        rows = list(reader)
+        fieldnames = reader.fieldnames or []
+    except csv.Error:
+        return [], "Could not parse file. Please check it is a valid CSV."
+    if not fieldnames or any(f is None for f in fieldnames):
+        return [], "CSV file is empty or has no valid header row."
+    if rows and any(None in row for row in rows):
+        return [], "CSV has more columns than the header row. Please check the file."
     if not rows:
         return [], "CSV file is empty or invalid."
     return rows, None
 
 
 def _row_errors(row: dict, cols: list[str], validate: ValidateFn) -> list[str]:
-    return [col for col in cols if not validate(col, str(row.get(col, "")))]
+    return [col for col in cols if not validate(col, str(row.get(col, "")), row)]
 
 
 def error_report_csv(rows: list[dict], cols: list[str], validate: ValidateFn) -> str:
@@ -909,6 +985,28 @@ _INLINE_FIX_JS = """
       el.classList.remove('input--error');
     });
   };
+
+  // Serialize all editable cells into fixes_json before htmx sends the form.
+  // htmx does not fire the native 'submit' event; use htmx:configRequest instead.
+  // This keeps the field count at 2 (csv_ref + fixes_json) regardless of
+  // how many error cells exist, avoiding Starlette's max_fields=1000 limit.
+  document.addEventListener('htmx:configRequest', function(e) {
+    var form = e.detail.elt;
+    if (!form || !form.querySelector('input[name="fixes_json"]')) return;
+    var fixes = {};
+    form.querySelectorAll('[data-row][data-col]').forEach(function(el) {
+      fixes[el.dataset.row + '__' + el.dataset.col] = el.value;
+    });
+    e.detail.parameters['fixes_json'] = JSON.stringify(fixes);
+  });
+
+  // "Add new unit" option in unit dropdowns: redirect to settings page.
+  document.addEventListener('change', function(e) {
+    if (e.target.matches('select.cell-edit') && e.target.value === '__add_new__') {
+      window.open('/settings/inventory?tab=units', '_blank');
+      e.target.value = '';
+    }
+  });
 })();
 """
 
@@ -930,7 +1028,11 @@ _INLINE_FIX_CSS = """
 .csv-fix-table .cell-ro { color: var(--c-text2); font-size: 11px; }
 .csv-fix-table input.cell-edit { width: 100%; box-sizing: border-box; padding: 3px 6px;
   font-size: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); }
+.csv-fix-table select.cell-edit { width: 100%; box-sizing: border-box; padding: 3px 6px;
+  font-size: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); }
 .csv-fix-table input.input--error { border-color: var(--c-red, #ef4444);
+  background: rgba(239,68,68,0.06); }
+.csv-fix-table select.input--error { border-color: var(--c-red, #ef4444);
   background: rgba(239,68,68,0.06); }
 .csv-ok-count { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
 .csv-fix-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
@@ -950,6 +1052,7 @@ def _fix_errors_panel(
     error_report_action: str,
     back_href: str,
     has_mapping: bool = False,
+    cell_renderers: dict[str, "Callable[[str, int, dict, bool], FT]"] | None = None,
 ) -> FT:
     """Inline-fix error panel: editable error cells + fill-all bars."""
     ok_count = len(rows) - len(error_row_indices)
@@ -966,7 +1069,7 @@ def _fix_errors_panel(
             continue
         col_error_counts[col] = sum(
             1 for ri in error_row_indices
-            if not validate(col, str(rows[ri].get(col, "")))
+            if not validate(col, str(rows[ri].get(col, "")), rows[ri])
         )
 
     # Fill-all bars for error columns with many errors (>1 error row)
@@ -1006,12 +1109,27 @@ def _fix_errors_panel(
 
     # Table: identifier cols read-only, error cols editable
     # Row number + error badge headers
+    _COL_TOOLTIPS: dict[str, str] = {
+        "name": "Required. The item's display name.",
+        "sell_by": "Required. The unit this item is bought and sold in (e.g. piece, kg, carat).",
+    }
+
     header_cells = [Th("#", cls="csv-th")]
     for col in visible_cols:
         label = col.replace("_", " ").title()
         is_err_col = col in error_cols
         badge = f" ({col_error_counts.get(col, 0)} errors)" if is_err_col else ""
-        header_cells.append(Th(f"{label}{badge}", cls="csv-th--error" if is_err_col else ""))
+        tooltip = _COL_TOOLTIPS.get(col)
+        th_content: Any = (
+            Span(
+                f"{label}{badge}",
+                title=tooltip,
+                style="cursor:help;border-bottom:1px dotted currentColor",
+            )
+            if tooltip
+            else f"{label}{badge}"
+        )
+        header_cells.append(Th(th_content, cls="csv-th--error" if is_err_col else ""))
 
     body_rows = []
     for err_idx, ri in enumerate(error_row_indices):
@@ -1022,14 +1140,18 @@ def _fix_errors_panel(
             val = str(row.get(col, ""))
             if col in error_cols:
                 is_bad = col in bad
-                cells.append(Td(Input(
-                    type="text",
-                    name=f"fix__{ri}__{col}",
-                    value=val,
-                    data_col=col,
-                    data_row=str(ri),
-                    cls=f"cell-edit{'  input--error' if is_bad else ''}",
-                )))
+                err_cls = f"cell-edit{'  input--error' if is_bad else ''}"
+                renderer = (cell_renderers or {}).get(col)
+                if renderer:
+                    cells.append(Td(renderer(val, ri, row, is_bad)))
+                else:
+                    cells.append(Td(Input(
+                        type="text",
+                        value=val,
+                        data_col=col,
+                        data_row=str(ri),
+                        cls=err_cls,
+                    )))
             else:
                 cells.append(Td(val, cls="cell-ro"))
         body_rows.append(Tr(*cells, cls="data-row"))
@@ -1068,6 +1190,7 @@ def _fix_errors_panel(
             fill_section,
             Form(
                 Input(type="hidden", name="csv_ref", value=csv_ref),
+                Input(type="hidden", name="fixes_json", value=""),
                 Table(
                     Thead(Tr(*header_cells)),
                     Tbody(*body_rows),
@@ -1112,21 +1235,33 @@ def apply_fixes_to_rows(
 ) -> list[dict]:
     """Apply inline-fix form values back into the row dicts.
 
-    Form fields are named ``fix__{row_index}__{col_name}``.
-    Returns the same list with values patched in-place.
+    Reads ``fixes_json``: a JSON object ``{"row__col": value, ...}`` serialized
+    by the fix form's submit handler. One field regardless of error count,
+    so Starlette's max_fields limit is never hit.
     """
-    for key, value in form.items():
-        if not isinstance(key, str) or not key.startswith("fix__"):
+    import json as _json
+
+    fixes_raw = form.get("fixes_json", "")
+    if not fixes_raw:
+        return rows
+    try:
+        fixes: dict = _json.loads(fixes_raw)
+    except (ValueError, TypeError):
+        return rows
+
+    cols_set = set(cols)
+    for key, value in fixes.items():
+        if not isinstance(key, str):
             continue
-        parts = key.split("__", 2)
-        if len(parts) != 3:
+        parts = key.split("__", 1)
+        if len(parts) != 2:
             continue
-        _, ri_str, col = parts
+        ri_str, col = parts
         try:
             ri = int(ri_str)
         except ValueError:
             continue
-        if 0 <= ri < len(rows) and col in cols:
+        if 0 <= ri < len(rows) and col in cols_set:
             rows[ri][col] = str(value)
     return rows
 
@@ -1142,6 +1277,7 @@ def validation_result(
     revalidate_action: str = "",
     has_mapping: bool = False,
     upsert_label: str | None = None,
+    cell_renderers: dict[str, "Callable[[str, int, dict, bool], FT]"] | None = None,
 ) -> FT:
     """Return the post-upload panel: inline-fix error panel or clean confirm panel.
 
@@ -1173,6 +1309,7 @@ def validation_result(
             error_report_action=error_report_action,
             back_href=back_href,
             has_mapping=has_mapping,
+            cell_renderers=cell_renderers,
         )
 
     # Clean - confirm panel with preview table
@@ -1272,6 +1409,31 @@ def _rows_to_csv(rows: list[dict], cols: list[str]) -> str:
     writer.writeheader()
     writer.writerows(rows)
     return output.getvalue()
+
+
+def import_abort_panel(
+    *,
+    message: str,
+    import_more_href: str,
+    back_href: str,
+    has_mapping: bool = False,
+) -> FT:
+    """Step-aware error panel for hard aborts (e.g. missing sell_by, location conflicts).
+
+    Keeps the journey map visible and gives the user a way forward.
+    ``back_href`` links to the entity list so the user can return without importing more.
+    """
+    review_step = 3 if has_mapping else 2
+    return Div(
+        _step_indicator(review_step, has_mapping=has_mapping),
+        P(message, cls="flash flash--error"),
+        Div(
+            A(t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            A(t("btn.cancel"), href=back_href, cls="btn btn--ghost"),
+            cls="flex-row gap-sm mt-md",
+        ),
+        id="import-preview",
+    )
 
 
 def import_result_panel(

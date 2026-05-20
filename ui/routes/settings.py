@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import zoneinfo as _zi
+from typing import Any
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -1012,6 +1013,9 @@ def setup_routes(app):
             return P(f"Error: {e.detail}", cls="cell-error")
         sorted_fields = _load_cat_schema_sorted(fields)
         f = sorted_fields[idx] if idx < len(sorted_fields) else {}
+        # Key is auto-managed - clicking the hidden key cell should never open an editor
+        if field == "key":
+            return _cat_schema_display_cell(category, idx, field, f)
         val = str(f.get(field, "") or "")
         enc = quote(category, safe="")
         patch_url = f"/settings/cat-schema/{enc}/{idx}/{field}"
@@ -1042,6 +1046,8 @@ def setup_routes(app):
                 cls="cell cell--editing",
             )
         if field == "options":
+            if f.get("type") not in _OPTIONS_TYPES:
+                return _cat_schema_display_cell(category, idx, field, f)
             val = ", ".join(f.get("options", []))
         return Td(
             Input(
@@ -1060,6 +1066,15 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        # Key is auto-managed - never directly editable
+        if field == "key":
+            try:
+                fields = await api.get_category_schema(token, category)
+                sorted_fields = _load_cat_schema_sorted(fields)
+                f = sorted_fields[idx] if idx < len(sorted_fields) else {}
+            except APIError:
+                f = {}
+            return _cat_schema_display_cell(category, idx, field, f)
         form = await request.form()
         value = str(form.get("value", ""))
         _SCHEMA_TYPES = frozenset({"text", "number", "money", "select", "date", "boolean", "weight", "status", "image"})
@@ -1082,6 +1097,10 @@ def setup_routes(app):
                     sorted_fields[idx][field] = [o.strip() for o in value.split(",") if o.strip()]
                 else:
                     sorted_fields[idx][field] = value
+                # When label changes, rederive key to match (excluding self from collision check)
+                if field == "label":
+                    other_keys = {f["key"] for j, f in enumerate(sorted_fields) if j != idx and f.get("key")}
+                    sorted_fields[idx]["key"] = _derive_key(value, other_keys)
             await api.patch_category_schema(token, category, sorted_fields)
             fields = await api.get_category_schema(token, category)
         except APIError as e:
@@ -1117,9 +1136,12 @@ def setup_routes(app):
         try:
             fields = list(await api.get_category_schema(token, category))
             max_pos = max((f.get("position", 0) for f in fields), default=-1)
+            existing_keys = {f["key"] for f in fields if f.get("key")}
+            label = "New Field"
+            key = _derive_key(label, existing_keys)
             new_field = {
-                "key": f"field_{max_pos + 1}",
-                "label": "New Field",
+                "key": key,
+                "label": label,
                 "type": "text",
                 "required": False,
                 "editable": True,
@@ -2552,20 +2574,94 @@ def _schema_display_cell(idx: int, field: str, f: dict) -> FT:
     )
 
 
+_OPTIONS_TYPES: frozenset[str] = frozenset({"select", "status"})
+_BOOL_FIELDS: frozenset[str] = frozenset({"required", "editable", "show_in_table"})
+_OPTIONS_PILL_LIMIT = 4
+
+
+def _derive_key(label: str, existing_keys: set[str], exclude_idx: int | None = None) -> str:
+    """Derive a unique snake_case key from a label.
+
+    Lowercases, replaces spaces and hyphens with underscores, strips non-alphanumeric chars.
+    Appends _2, _3 etc. to resolve collisions with existing_keys.
+    exclude_idx is unused (collision check is against the passed set, caller excludes self).
+    """
+    import re
+    base = re.sub(r"[^a-z0-9_]", "", label.lower().replace(" ", "_").replace("-", "_")).strip("_") or "field"
+    key = base
+    n = 2
+    while key in existing_keys:
+        key = f"{base}_{n}"
+        n += 1
+    return key
+
+
 def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT:
     """Editable cell for a category attribute schema field."""
-    if field == "options":
-        val = ", ".join(f.get("options", []))
-    elif field in ("required", "editable", "show_in_table"):
-        val = "Yes" if f.get(field) else "No"
-    else:
-        val = f.get(field, "")
-    display = str(val) if val and str(val).strip() else EMPTY
-    cls_extra = " cell--mono" if field == "key" else ""
     from urllib.parse import quote
     enc = quote(category, safe="")
+
+    # Boolean fields: ✓ / – icons
+    if field in _BOOL_FIELDS:
+        checked = bool(f.get(field))
+        icon = Span("✓", cls="cell-bool-check") if checked else Span("–", cls="cell-bool-dash")
+        return Td(
+            icon,
+            title="Click to edit",
+            hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
+            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+            cls="cell cell--clickable",
+            style="text-align:center",
+        )
+
+    # Label field: shown as "Name" to the user - key is fully internal
+    if field == "label":
+        label_val = str(f.get("label", "") or "")
+        display = label_val if label_val.strip() else EMPTY
+        return Td(
+            Span(display, cls="cell-text"),
+            title="Click to edit",
+            hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
+            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+            cls="cell cell--clickable",
+        )
+
+    # Key field: hidden - merged into label cell
+    if field == "key":
+        return Td(hidden=True, style="display:none")
+
+    # Options field: pill list with overflow
+    if field == "options":
+        opts: list[str] = f.get("options", []) or []
+        if f.get("type") not in _OPTIONS_TYPES:
+            return Td(
+                Span("–", cls="cell-bool-dash"),
+                title="Options only apply to select/status fields",
+                cls="cell",
+                style="text-align:center",
+            )
+        if not opts:
+            display_content: Any = Span(EMPTY, cls="cell-text text-muted")
+        else:
+            visible = opts[:_OPTIONS_PILL_LIMIT]
+            overflow = len(opts) - _OPTIONS_PILL_LIMIT
+            pills: list[Any] = [Span(o, cls="attr-pill") for o in visible]
+            if overflow > 0:
+                pills.append(Span(f"+{overflow} more", cls="attr-pill attr-pill--more"))
+            display_content = Span(*pills)
+        return Td(
+            display_content,
+            title="Click to edit",
+            hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
+            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+            cls="cell cell--clickable",
+        )
+
+    # Default: plain text
+    val = f.get(field, "")
+    display = str(val) if val and str(val).strip() else EMPTY
     return Td(
-        Span(display, cls=f"cell-text{cls_extra}"),
+        Span(display, cls="cell-text"),
         title="Click to edit",
         hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
@@ -3460,7 +3556,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
             cat_selector,
             P(hint, cls="settings-hint"),
             Table(
-                Thead(Tr(Th("#"), Th(t("th.key")), Th(t("th.label")), Th(t("th.doc_type")), Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")), Th(t("th.options")), Th(""))),
+                Thead(Tr(Th("Order", title="Display order - click to change"), Th("Name"), Th(t("th.doc_type")), Th("Req"), Th("Edit"), Th("In Table"), Th(t("th.options")), Th(""))),
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_schema)], add_row),
                 cls="data-table",
             ),
@@ -4251,8 +4347,8 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
             Td(
                 Form(
                     Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
-                          cls="form-input form-input--sm"),
-                    Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                          cls="form-input form-input--sm cat-add-input"),
+                    Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                     hx_post="/settings/categories",
                     hx_target="#vert-applied-panel",
                     hx_swap="outerHTML",
@@ -4271,8 +4367,8 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
             P(t("settings.no_category_schemas_applied_yet"), cls="settings-hint"),
             Form(
                 Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
-                      cls="form-input form-input--sm"),
-                Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                      cls="form-input form-input--sm cat-add-input"),
+                Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                 hx_post="/settings/categories",
                 hx_target="#vert-applied-panel",
                 hx_swap="outerHTML",

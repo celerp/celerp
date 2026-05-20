@@ -39,7 +39,7 @@ _CHART_SPEC = CsvImportSpec(
 )
 
 
-def _chart_validate(col: str, value: str) -> bool:
+def _chart_validate(col: str, value: str, row: dict | None = None) -> bool:
     if col == "account_type" and value.strip():
         return value.strip() in {"asset", "liability", "equity", "revenue", "expense", "cogs", "other"}
     if col == "is_active" and value.strip():

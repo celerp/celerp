@@ -421,10 +421,6 @@ def setup_routes(app):
                 A(t("btn.download_template", lang), href="/inventory/import/template", cls="btn btn--secondary"),
             ),
             _import_upload_form(),
-            P(t("inv.custom_columns_in_your_csv_will_be_imported_as_ite"),
-                A(t("inv.manage_fields"), href="/settings/inventory?tab=category-library"),
-                cls="import-hint mt-sm",
-            ),
             title="Import Inventory - Celerp",
             nav_active="inventory",
             lang=lang,
@@ -441,11 +437,16 @@ def setup_routes(app):
         except Exception:
             price_lists = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
         spec = _build_import_spec(price_lists)
+        try:
+            cat_schemas = await api.get_all_category_schemas(token)
+            cat_attrs = _union_category_attr_keys(cat_schemas)
+        except Exception:
+            cat_attrs = []
+        all_cols = spec.cols + [a for a in cat_attrs if a not in spec.cols]
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=spec.cols)
+        writer = csv.DictWriter(output, fieldnames=all_cols)
         writer.writeheader()
-        # Write one empty example row
-        writer.writerow({c: "" for c in spec.cols})
+        writer.writerow({c: "" for c in all_cols})
         return Response(
             content=output.getvalue(),
             media_type="text/csv",
@@ -578,7 +579,7 @@ def setup_routes(app):
 
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else spec.cols)
-        validate = await _build_item_validator(token)
+        validate, cell_renderers = await _build_item_validator(token)
 
         return base_shell(
             page_header(t("page.import_inventory", lang)),
@@ -592,6 +593,7 @@ def setup_routes(app):
                 revalidate_action="/inventory/import/revalidate",
                 has_mapping=True,
                 upsert_label="SKU or barcode",
+                cell_renderers=cell_renderers,
             ),
             title="Import Inventory - Celerp",
             nav_active="inventory",
@@ -614,7 +616,7 @@ def setup_routes(app):
         rows = _apply_fixes(form, rows, cols)
         # Re-stash the patched CSV so downstream confirm/errors can read it
         csv_ref = _stash_csv(_rows_to_csv(rows, cols))
-        validate = await _build_item_validator(token)
+        validate, cell_renderers = await _build_item_validator(token)
         return _csv_validation_result(
             rows=rows,
             cols=cols,
@@ -625,6 +627,7 @@ def setup_routes(app):
             revalidate_action="/inventory/import/revalidate",
             has_mapping=True,
             upsert_label="SKU or barcode",
+            cell_renderers=cell_renderers,
         )
 
     @app.post("/inventory/import/errors")
@@ -636,7 +639,7 @@ def setup_routes(app):
         csv_data = _resolve_csv_text(form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
-        validate = await _build_item_validator(token)
+        validate, _ = await _build_item_validator(token)
         return error_report_response(rows, cols, validate, "inventory_errors.csv")
 
     @app.post("/inventory/import/confirm")
@@ -692,7 +695,7 @@ def setup_routes(app):
 
         records: list[dict] = []
 
-        # Build category → default_sell_by map for sell_by fallback
+        # Build category → default_sell_by map for sell_by fallback at import time.
         _cat_sell_by: dict[str, str] = {}
         try:
             vert_cats = await api.list_verticals_categories(token)
@@ -703,6 +706,30 @@ def setup_routes(app):
             }
         except Exception:
             pass  # Non-critical; if unavailable, sell_by remains None
+
+        # Build case-insensitive → canonical unit name map for sell_by normalization.
+        _unit_canonical: dict[str, str] = {}
+        try:
+            _unit_canonical = {u["name"].lower(): u["name"] for u in await api.get_units(token)}
+        except Exception:
+            pass
+
+        # Defensive assertion: sell_by is validated in the revalidate cycle via
+        # _build_item_validator. If any row is still missing it here, the validator
+        # has a bug - this is an internal error, not a user error.
+        missing_sell_by = [
+            str(row.get("sku") or row.get("name") or f"row {i + 1}")
+            for i, row in enumerate(rows)
+            if not (
+                str(row.get("sell_by", "")).strip()
+                or _cat_sell_by.get(str(row.get("category", "")).strip())
+            )
+        ]
+        if missing_sell_by:
+            raise RuntimeError(
+                f"BUG: {len(missing_sell_by)} row(s) reached confirm with missing sell_by "
+                f"({', '.join(missing_sell_by[:5])}). Validator did not catch them."
+            )
 
         for row in rows:
             sku = str(row.get("sku", "")).strip()
@@ -715,19 +742,19 @@ def setup_routes(app):
             else:
                 location_id = default_location_id
 
-            if not sku or not name:
-                # Skip rows missing required fields (shouldn't reach confirm unless CSV tampered)
-                continue
-
+            # No guard for sku/name here - the validation pipeline (validate_cell /
+            # _build_item_validator) is the sole authority. sku is optional (auto-assigned);
+            # name is in spec.required and would have been caught at revalidate time.
             if not location_id:
-                return Div(
-                    P(
+                return import_abort_panel(
+                    message=(
                         "Import aborted: could not determine a location for one or more rows. "
                         "Your CSV has no location_name column and there are multiple locations configured. "
-                        "Please add a location_name column or set a default location in Settings → Inventory.",
-                        cls="flash flash--error",
+                        "Please add a location_name column or set a default location in Settings → Inventory."
                     ),
-                    id="import-preview",
+                    import_more_href="/inventory/import",
+                    back_href="/inventory",
+                    has_mapping=True,
                 )
 
             qty_raw = str(row.get("quantity", "0")).strip()
@@ -760,18 +787,18 @@ def setup_routes(app):
                 "category": str(row.get("category", "")).strip() or None,
                 "weight": _flt("weight") or _flt("weight_ct"),
                 "weight_unit": str(row.get("weight_unit", "")).strip() or None,
-                "sell_by": str(row.get("sell_by", "")).strip() or _cat_sell_by.get(str(row.get("category", "")).strip()) or None,
-                "status": str(row.get("status", "")).strip() or None,
+                "sell_by": _unit_canonical.get(str(row.get("sell_by", "")).strip().lower()) or str(row.get("sell_by", "")).strip() or _cat_sell_by.get(str(row.get("category", "")).strip()) or None,
                 "barcode": str(row.get("barcode", "")).strip() or None,
                 "hs_code": str(row.get("hs_code", "")).strip() or None,
                 "short_description": str(row.get("short_description", "")).strip() or None,
                 "description": str(row.get("description", "")).strip() or None,
                 "notes": str(row.get("notes", "")).strip() or None,
-                "created_at": str(row.get("created_at", "")).strip() or None,
-                "updated_at": str(row.get("updated_at", "")).strip() or None,
                 "location_id": location_id,
                 "attributes": attrs,
             }
+            # status, created_at, updated_at intentionally omitted:
+            # status is always set to available by the backend on creation.
+            # created_at/updated_at are system-generated; backend enforces this.
             # Extract price fields dynamically (any column ending in _price)
             for col_key in row:
                 if col_key.endswith("_price") and _flt(col_key) is not None:
@@ -789,24 +816,33 @@ def setup_routes(app):
             })
 
         try:
-            result = await api.batch_import(token, "/items/import/batch", records, upsert=upsert)
+            _CHUNK = 500
+            merged: dict = {"created": 0, "skipped": 0, "updated": 0, "errors": [], "batch_id": None}
+            for i in range(0, max(len(records), 1), _CHUNK):
+                chunk = records[i : i + _CHUNK]
+                if not chunk:
+                    break
+                r = await api.batch_import(token, "/items/import/batch", chunk, upsert=upsert)
+                merged["created"] += r.get("created", 0)
+                merged["skipped"] += r.get("skipped", 0)
+                merged["updated"] += r.get("updated", 0)
+                merged["errors"].extend(r.get("errors") or [])
+                if r.get("batch_id"):
+                    merged["batch_id"] = r["batch_id"]
+            result = merged
         except APIError as e:
             if e.status == 401:
-                return Div(
-                    P(t("error.session_expired"), cls="flash flash--error"),
-                    A(t("inv.go_to_login"), href="/login", cls="btn btn--primary"),
-                    id="import-preview",
+                return import_abort_panel(
+                    message=t("error.session_expired"),
+                    import_more_href="/login",
+                    back_href="/inventory",
+                    has_mapping=True,
                 )
-            return Div(
-                P(f"Import failed: {e.detail}", cls="flash flash--error"),
-                A(t("btn._try_again"), href="/inventory/import", cls="btn btn--secondary"),
-                id="import-preview",
-            )
-        except Exception as e:
-            return Div(
-                P(f"Unexpected error: {e}", cls="flash flash--error"),
-                A(t("btn._try_again"), href="/inventory/import", cls="btn btn--secondary"),
-                id="import-preview",
+            return import_abort_panel(
+                message=f"Import failed: {e.detail}",
+                import_more_href="/inventory/import",
+                back_href="/inventory",
+                has_mapping=True,
             )
 
         # Auto-merge discovered attribute keys into category schemas
@@ -3099,6 +3135,11 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
       var lbl = menu.querySelector('label[data-col="' + key + '"]');
       if (lbl) parent.appendChild(lbl);
     }});
+    // Always keep reset button and custom-col link at the bottom
+    var resetBtn = menu.querySelector('#col-mgr-reset');
+    if (resetBtn) parent.appendChild(resetBtn);
+    var customLink = menu.querySelector('#col-mgr-custom-link');
+    if (customLink) parent.appendChild(customLink);
   }}
 
   // Get current picker order (label DOM order = source of truth)
@@ -3213,7 +3254,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         Div(
             *checkboxes,
             Button(
-                t("btn.reset_columns"),
+                "Reset column settings",
                 id="col-mgr-reset",
                 cls="btn btn--sm btn--ghost col-mgr-reset-btn",
                 type="button",
@@ -3225,6 +3266,16 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                     f"location.reload();"
                 ),
                 title=t("btn.reset_columns_title"),
+            ),
+            A(
+                ("+ Add custom column" if active_cat else "+ Manage category columns"),
+                href=(
+                    f"/settings/inventory?tab=category-library&cat={active_cat}"
+                    if active_cat
+                    else "/settings/inventory?tab=category-library"
+                ),
+                id="col-mgr-custom-link",
+                cls="col-mgr-custom-link",
             ),
             Form(
                 *hidden_inputs,
@@ -3656,6 +3707,7 @@ from ui.routes.csv_import import (
     apply_fixes_to_rows as _apply_fixes,
     column_mapping_form,
     error_report_response,
+    import_abort_panel,
     import_result_panel,
     read_csv_upload,
     upload_form as _csv_upload_form,
@@ -3681,15 +3733,14 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
 
 
 # Base import columns (without price columns - those are added dynamically)
-_IMPORT_BASE_COLS = ["sku", "name", "category", "quantity"]
-_IMPORT_TAIL_COLS = ["weight", "weight_unit", "sell_by", "pieces", "status", "barcode", "hs_code",
+_IMPORT_BASE_COLS = ["sku", "name", "sell_by", "category", "quantity"]
+_IMPORT_TAIL_COLS = ["weight", "weight_unit", "pieces", "barcode", "hs_code",
                      "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
-                     "short_description", "description", "notes", "location_name",
-                     "created_at", "updated_at"]
+                     "short_description", "description", "notes", "location_name"]
 
 _IMPORT_SPEC = CsvImportSpec(
     cols=_IMPORT_BASE_COLS + ["retail_price", "wholesale_price", "cost_price"] + _IMPORT_TAIL_COLS,
-    required={"sku", "name", "location_name"},
+    required={"name", "sell_by"},
     type_map={"quantity": float, "retail_price": float, "wholesale_price": float,
               "cost_price": float, "weight": float, "purchase_conversion_factor": float},
 )
@@ -3703,7 +3754,7 @@ def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
         type_map[col] = float
     return CsvImportSpec(
         cols=_IMPORT_BASE_COLS + price_cols + _IMPORT_TAIL_COLS,
-        required={"sku", "name", "location_name"},
+        required={"name", "sell_by"},
         type_map=type_map,
     )
 
@@ -3718,31 +3769,72 @@ def _import_upload_form(error: str | None = None) -> FT:
     )
 
 
-def _item_validate(col: str, value: str) -> bool:
+def _item_validate(col: str, value: str, row: dict | None = None) -> bool:
     return _csv_validate_cell(_IMPORT_SPEC, col, value)
 
 
-async def _build_item_validator(token: str) -> ValidateFn:
-    """Build a validator for CSV import preview.
+async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
+    """Build a validator and import fix-table cell renderers for CSV import preview.
+
+    Returns (validate_fn, cell_renderers) where cell_renderers maps column names
+    to callables of signature (val: str, row_index: int, row: dict, is_bad: bool) -> FT.
 
     location_name is optional - blank or missing means "use default location"
-    (resolved at confirm time). Validates sell_by against company units if present.
+    (resolved at confirm time). Validates sell_by against company units if present,
+    and requires sell_by when the row's category has no default_sell_by fallback.
     """
-    # Fetch company units for sell_by validation; fall back to empty (no validation)
     try:
         company_units = await api.get_units(token)
     except Exception:
         company_units = []
 
-    valid_unit_names: frozenset[str] = frozenset(u["name"] for u in company_units)
+    try:
+        vert_cats = await api.list_verticals_categories(token)
+        cat_sell_by: dict[str, str] = {
+            c["name"]: c["default_sell_by"]
+            for c in vert_cats
+            if c.get("default_sell_by")
+        }
+    except Exception:
+        cat_sell_by = {}
 
-    def _validate(col: str, value: str) -> bool:
-        if col == "sell_by" and value.strip():
-            # If company units are known, validate against them
-            return not valid_unit_names or value.strip() in valid_unit_names
+    valid_unit_names: list[str] = [u["name"] for u in company_units]
+    valid_unit_set: frozenset[str] = frozenset(valid_unit_names)
+    valid_unit_lower: dict[str, str] = {u.lower(): u for u in valid_unit_names}
+
+    def _validate(col: str, value: str, row: dict | None = None) -> bool:
+        if col == "sell_by":
+            v = value.strip()
+            # sell_by is required unless the row's category provides a default
+            if not v:
+                category = str((row or {}).get("category", "")).strip()
+                return bool(cat_sell_by.get(category))
+            # If known units are available, validate membership (case-insensitive)
+            return not valid_unit_set or v.lower() in valid_unit_lower
         return _item_validate(col, value)
 
-    return _validate
+    # Build import fix-table cell renderers for constrained columns.
+    # Renderer signature: (val: str, row_index: int, row: dict, is_bad: bool) -> FT
+    cell_renderers: dict = {}
+    if valid_unit_names:
+        def _make_unit_renderer(col: str, _opts: list = valid_unit_names) -> "Callable":
+            def _render(val: str, ri: int, row: dict, is_bad: bool) -> FT:
+                err_cls = "cell-edit  input--error" if is_bad else "cell-edit"
+                val_lower = val.strip().lower()
+                return Select(
+                    Option("-- select unit --", value="", selected=(not val.strip())),
+                    *[Option(u, value=u, selected=(u.lower() == val_lower)) for u in _opts],
+                    Option("+ Add new unit", value="__add_new__"),
+                    data_col=col,
+                    data_row=str(ri),
+                    cls=err_cls,
+                )
+            return _render
+
+        cell_renderers["sell_by"] = _make_unit_renderer("sell_by")
+        cell_renderers["purchase_unit"] = _make_unit_renderer("purchase_unit")
+
+    return _validate, cell_renderers
 
 
 # Core item columns that map to top-level ItemCreate fields (not attributes).

@@ -261,7 +261,7 @@ async def lifespan(_app: FastAPI):
         _gw.set_client(None)
 
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=settings.log_level.upper())
 log = logging.getLogger(__name__)
 
 _storage_uri = settings.redis_url or "memory://"

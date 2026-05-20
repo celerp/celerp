@@ -52,11 +52,11 @@ _TERMS_SPEC = CsvImportSpec(
 )
 
 
-def _loc_validate(col: str, value: str) -> bool:
+def _loc_validate(col: str, value: str, row: dict | None = None) -> bool:
     return validate_cell(_LOCATION_SPEC, col, value)
 
 
-def _tax_validate(col: str, value: str) -> bool:
+def _tax_validate(col: str, value: str, row: dict | None = None) -> bool:
     if col == "tax_type" and value.strip():
         return value.strip() in {"sales", "purchase", "both"}
     if col == "is_default" and value.strip():
@@ -64,7 +64,7 @@ def _tax_validate(col: str, value: str) -> bool:
     return validate_cell(_TAX_SPEC, col, value)
 
 
-def _terms_validate(col: str, value: str) -> bool:
+def _terms_validate(col: str, value: str, row: dict | None = None) -> bool:
     return validate_cell(_TERMS_SPEC, col, value)
 
 

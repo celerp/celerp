@@ -631,7 +631,7 @@ class TestCompanySwitcher:
             from ui.api_client import switch_company as api_switch
         so it must be patched at ui.api_client.switch_company.
         """
-        with patch("ui.api_client.switch_company", new=AsyncMock(return_value="new-token-xyz")):
+        with patch("ui.api_client.switch_company", new=AsyncMock(return_value=("new-token-xyz", "new-refresh-xyz"))):
             r = await ui_client.post("/switch-company/c2", cookies=_authed())
         assert r.status_code in (302, 303)
         set_cookie = r.headers.get("set-cookie", "")
@@ -6245,7 +6245,7 @@ class TestCsvImportHelpers:
         rows = [{"sku": "S1", "name": "Widget"}]
         html = to_xml(validation_result(
             rows=rows, cols=["sku", "name"],
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
@@ -6261,7 +6261,7 @@ class TestCsvImportHelpers:
         rows = [{"sku": "", "name": "Widget"}]  # sku missing → error
         html = to_xml(validation_result(
             rows=rows, cols=["sku", "name"],
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
@@ -6279,7 +6279,7 @@ class TestCsvImportHelpers:
         rows = [{"sku": ""}]
         html = to_xml(validation_result(
             rows=rows, cols=["sku"],
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
@@ -6294,7 +6294,7 @@ class TestCsvImportHelpers:
         rows = [{"sku": "SKU-1"}]
         html = to_xml(validation_result(
             rows=rows, cols=["sku"],
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
@@ -6313,7 +6313,7 @@ class TestCsvImportHelpers:
         from ui.routes.csv_import import CsvImportSpec, validate_cell, error_report_csv
         spec = CsvImportSpec(cols=["sku", "name"], required={"sku", "name"}, type_map={})
         rows = [{"sku": "", "name": "Widget"}, {"sku": "S2", "name": ""}]
-        csv_text = error_report_csv(rows, spec.cols, lambda c, v: validate_cell(spec, c, v))
+        csv_text = error_report_csv(rows, spec.cols, lambda c, v, r: validate_cell(spec, c, v))
         reader = list(csv.DictReader(io.StringIO(csv_text)))
         assert "_errors" in reader[0]
         assert "sku" in reader[0]["_errors"]   # row 0: sku empty
@@ -6325,7 +6325,7 @@ class TestCsvImportHelpers:
         from ui.routes.csv_import import CsvImportSpec, validate_cell, error_report_csv
         spec = CsvImportSpec(cols=["sku"], required={"sku"}, type_map={})
         rows = [{"sku": "SKU-1"}]
-        csv_text = error_report_csv(rows, spec.cols, lambda c, v: validate_cell(spec, c, v))
+        csv_text = error_report_csv(rows, spec.cols, lambda c, v, r: validate_cell(spec, c, v))
         reader = list(csv.DictReader(io.StringIO(csv_text)))
         assert reader == []
 
@@ -6368,7 +6368,7 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_preview_errors_shows_download_prompt(self, ui_client):
         """CSV with required field missing → error report prompt, not Import All."""
-        csv_bytes = _make_csv([{"sku": "", "name": "Widget", "location_name": "Main Office"}])
+        csv_bytes = _make_csv([{"sku": "S1", "name": "", "location_name": "Main Office"}])
         with patch("ui.api_client.get_locations", new=AsyncMock(return_value=_LOCATIONS_RESP)):
             r = await _inventory_import_with_mapping(ui_client, csv_bytes)
         assert r.status_code == 200
@@ -6379,7 +6379,7 @@ class TestInventoryImportFlow:
     async def test_import_errors_download(self, ui_client):
         """POST /inventory/import/errors must return a CSV file with _errors column."""
         import csv as _csv, io as _io
-        csv_data = "sku,name,location_name\n,Widget,Main Office\n"
+        csv_data = "sku,name,location_name\nS1,,Main Office\n"
         r = await ui_client.post(
             "/inventory/import/errors",
             cookies=_authed(),
@@ -6402,7 +6402,7 @@ class TestInventoryImportFlow:
     async def test_import_confirm_all_valid_imports(self, ui_client):
         """Confirm with all-valid rows (preview already validated) → all imported."""
         known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
-        csv_data = "sku,name,location_name\nS1,Widget,Main Office\nS2,Ring,Main Office\n"
+        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\nS2,Ring,Main Office,piece\n"
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
             patch("ui.api_client.batch_import", new=AsyncMock(return_value={"created": 2, "skipped": 0, "errors": []})),
@@ -6420,7 +6420,7 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_unknown_location_auto_created(self, ui_client):
         """Unknown location_name in CSV → auto-created during confirm, import succeeds."""
-        csv_data = "sku,name,location_name\nS1,Widget,New Warehouse\n"
+        csv_data = "sku,name,location_name,sell_by\nS1,Widget,New Warehouse,piece\n"
         created_loc = {"id": "loc:new", "name": "New Warehouse", "type": "warehouse"}
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -6440,7 +6440,7 @@ class TestInventoryImportFlow:
     async def test_import_confirm_no_location_column_uses_default(self, ui_client):
         """CSV with no location_name column and single location → uses that location."""
         default_loc = {"id": "loc:hq", "name": "Head Office", "type": "office", "is_default": True}
-        csv_data = "sku,name\nS1,Widget\n"
+        csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [default_loc], "total": 1})),
             patch("ui.api_client.batch_import", new=AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})),
@@ -6461,7 +6461,7 @@ class TestInventoryImportFlow:
             {"id": "loc:a", "name": "Warehouse A", "type": "warehouse"},
             {"id": "loc:b", "name": "Warehouse B", "type": "warehouse"},
         ]
-        csv_data = "sku,name\nS1,Widget\n"
+        csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
         with patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": locs, "total": 2})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
@@ -6471,8 +6471,58 @@ class TestInventoryImportFlow:
         assert r.status_code == 200
         assert b"location_name" in r.content.lower() or b"location" in r.content.lower()
 
+    @pytest.mark.asyncio
+    async def test_import_confirm_chunks_large_csv(self, ui_client):
+        """600-row CSV must call batch_import twice (500-row chunk + 100-row chunk).
 
-class TestSettingsImportFlow:
+        The UI route must chunk records into ≤500 batches before sending to the API,
+        because the server enforces max_length=500 on BatchImportRequest.records.
+        """
+        known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
+        rows = "\n".join(f"SKU{i:04d},Item {i},Main Office,piece" for i in range(600))
+        csv_data = f"sku,name,location_name,sell_by\n{rows}\n"
+
+        batch_import_mock = AsyncMock(return_value={"created": 0, "skipped": 0, "updated": 0, "errors": []})
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
+            patch("ui.api_client.batch_import", new=batch_import_mock),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        assert batch_import_mock.call_count == 2, (
+            f"Expected 2 batch_import calls for 600 rows, got {batch_import_mock.call_count}"
+        )
+        # First call: 500 records, second call: 100 records
+        first_records = batch_import_mock.call_args_list[0].args[2]
+        second_records = batch_import_mock.call_args_list[0].args[2] if batch_import_mock.call_count < 2 else batch_import_mock.call_args_list[1].args[2]
+        assert len(first_records) == 500
+        assert len(second_records) == 100
+
+    @pytest.mark.asyncio
+    async def test_import_confirm_timeout_shows_friendly_error(self, ui_client):
+        """A 504 APIError (timeout) from batch_import renders an informative error message."""
+        from ui.api_client import APIError
+        known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
+        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\n"
+
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
+            patch("ui.api_client.batch_import", new=AsyncMock(side_effect=APIError(504, "Request timed out"))),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        assert b"timed out" in r.content.lower() or b"504" in r.content or b"failed" in r.content.lower()
+
+
     """Settings import routes use the new validate-then-report flow."""
 
     @pytest.mark.asyncio
@@ -7064,7 +7114,7 @@ class TestCsvImportUxErrorTable:
         return to_xml(validation_result(
             rows=rows,
             cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href=back_href,
@@ -7422,7 +7472,7 @@ class TestCsvImportIdentifierColumnContract:
         spec = CsvImportSpec(cols=cols, required=required or set(), type_map={})
         return to_xml(validation_result(
             rows=rows, cols=cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/c", error_report_action="/e", back_href="/b",
         ))
 
@@ -9205,7 +9255,7 @@ class TestCsvImportUxOverhaul:
         rows = [{"sku": "", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x", revalidate_action="/x/revalidate",
         ))
@@ -9222,7 +9272,7 @@ class TestCsvImportUxOverhaul:
         ]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x", revalidate_action="/x/revalidate",
         ))
@@ -9238,7 +9288,7 @@ class TestCsvImportUxOverhaul:
         ]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x", revalidate_action="/x/revalidate",
         ))
@@ -9252,7 +9302,7 @@ class TestCsvImportUxOverhaul:
         rows = [{"sku": "S1", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x",
         ))
@@ -9269,7 +9319,7 @@ class TestCsvImportUxOverhaul:
         ]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x",
         ))
@@ -9319,7 +9369,7 @@ class TestCsvImportUxOverhaul:
         rows = [{"sku": "", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x", revalidate_action="/x/revalidate",
         ))
@@ -9340,7 +9390,7 @@ class TestCsvImportSellByValidation:
             {"name": "carat", "label": "Carat", "decimals": 2},
         ]
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            validator = await _build_item_validator("fake-token")
+            validator, _ = await _build_item_validator("fake-token")
 
         # Known unit → valid
         assert validator("sell_by", "piece") is True
@@ -9350,16 +9400,17 @@ class TestCsvImportSellByValidation:
         assert validator("sell_by", "furlong") is False
 
     @pytest.mark.asyncio
-    async def test_sell_by_blank_is_valid(self, ui_client):
-        """CSV preview: blank sell_by is always valid (optional field)."""
+    async def test_sell_by_blank_is_invalid(self, ui_client):
+        """CSV preview: blank sell_by is invalid — sell_by is a required field."""
         from ui.routes.inventory import _build_item_validator
 
         units = [{"name": "piece", "label": "Piece", "decimals": 0}]
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            validator = await _build_item_validator("fake-token")
+            validator, _ = await _build_item_validator("fake-token")
 
-        assert validator("sell_by", "") is True
-        assert validator("sell_by", "   ") is True
+        # sell_by is required; blank value must be flagged as invalid at preview
+        assert validator("sell_by", "") is False
+        assert validator("sell_by", "   ") is False
 
     @pytest.mark.asyncio
     async def test_sell_by_valid_when_units_unavailable(self, ui_client):
@@ -9367,14 +9418,155 @@ class TestCsvImportSellByValidation:
         from ui.routes.inventory import _build_item_validator
 
         with patch("ui.api_client.get_units", new=AsyncMock(side_effect=Exception("network error"))):
-            validator = await _build_item_validator("fake-token")
+            validator, _ = await _build_item_validator("fake-token")
 
         # Any value is accepted when units can't be fetched
         assert validator("sell_by", "piece") is True
         assert validator("sell_by", "anything") is True
 
+    @pytest.mark.asyncio
+    async def test_sell_by_cell_renderer_returns_select(self, ui_client):
+        """_build_item_validator returns a sell_by renderer that emits a <select>."""
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
 
-class TestLabelPages:
+        units = [
+            {"name": "piece", "label": "Piece", "decimals": 0},
+            {"name": "kg", "label": "Kilogram", "decimals": 3},
+        ]
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
+            _, renderers = await _build_item_validator("fake-token")
+
+        assert "sell_by" in renderers
+        assert "purchase_unit" in renderers
+
+        # Render with current value "piece" - should be selected
+        html = to_xml(renderers["sell_by"]("piece", 0, {}, False))
+        assert "<select" in html
+        assert 'data-col="sell_by"' in html
+        assert 'data-row="0"' in html
+        assert 'value="piece"' in html
+        assert "selected" in html
+
+        # Render with blank value - first option selected
+        html_blank = to_xml(renderers["sell_by"]("", 0, {}, True))
+        assert "input--error" in html_blank
+
+    def test_suggest_mapping_sell_by_spaced_header(self):
+        """'Sell By' (spaced) must auto-map to 'sell_by' target, not fall to custom."""
+        from ui.routes.csv_import import suggest_mapping, MAPPING_SKIP, MAPPING_ATTRIBUTE
+
+        target_cols = ["sku", "name", "category", "quantity", "sell_by", "retail_price"]
+        csv_cols = ["SKU", "Name", "Sell By", "Quantity", "Retail Price"]
+        result = suggest_mapping(csv_cols, target_cols)
+
+        assert result["Sell By"] == "sell_by", (
+            f"Expected 'Sell By' to map to 'sell_by', got {result['Sell By']!r}"
+        )
+
+    def test_suggest_mapping_spaced_headers_roundtrip(self):
+        """All common spaced column headers must produce a valid sell_by in remapped CSV.
+
+        Replicates Noah's scenario: spreadsheet exports with spaced headers.
+        After suggest_mapping + apply_column_mapping, the output CSV must contain
+        a 'sell_by' column, not a custom attribute column.
+        """
+        import io, csv as _csv
+        from ui.routes.csv_import import (
+            suggest_mapping, apply_column_mapping,
+            MAPPING_ATTRIBUTE, MAPPING_SKIP,
+        )
+
+        # Simulate a spreadsheet with human-readable spaced headers + "piece" values
+        csv_text = "SKU,Name,Category,Sell By,Quantity\n001,Ring,Jewelry,piece,5\n"
+        rows = list(_csv.DictReader(io.StringIO(csv_text)))
+        csv_cols = list(rows[0].keys())
+        target_cols = ["sku", "name", "category", "sell_by", "quantity", "retail_price"]
+
+        suggested = suggest_mapping(csv_cols, target_cols)
+        # Build form dict as the HTTP handler would receive it
+        form = {f"map__{col}": suggested[col] for col in csv_cols}
+
+        remapped, new_cols = apply_column_mapping(form, csv_text)
+        assert "sell_by" in new_cols, (
+            f"'sell_by' missing from remapped cols: {new_cols}. "
+            f"Mapping was: {suggested}"
+        )
+        remapped_rows = list(_csv.DictReader(io.StringIO(remapped)))
+        assert remapped_rows[0]["sell_by"] == "piece"
+
+    @pytest.mark.asyncio
+    async def test_sell_by_case_insensitive_validation(self, ui_client):
+        """sell_by 'piece' must pass when company unit is stored as 'Piece' (different case)."""
+        from ui.routes.inventory import _build_item_validator
+
+        # Company stores unit as 'Piece' (capital P) - common real-world setup
+        units = [{"name": "Piece", "label": "Piece", "decimals": 0}]
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                validator, _ = await _build_item_validator("fake-token")
+
+        # 'piece' (lowercase from spreadsheet) must pass against 'Piece' (canonical)
+        assert validator("sell_by", "piece") is True, "case-insensitive match failed"
+        assert validator("sell_by", "PIECE") is True, "uppercase match failed"
+        assert validator("sell_by", "Piece") is True, "exact canonical match failed"
+        assert validator("sell_by", "unknown_unit") is False, "invalid unit must still fail"
+
+    @pytest.mark.asyncio
+    async def test_sell_by_piece_full_http_flow_proceeds_to_confirm(self, ui_client):
+        """Full HTTP flow: CSV with sell_by=piece must reach confirm page, not fix-errors.
+
+        Replicates Noah's exact scenario:
+        - CSV column: sell_by, value: piece
+        - Company unit: {name: piece, ...}
+        - Expected: no validation errors -> confirm page shown
+        """
+        units = [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "pieces"}]
+        csv_bytes = _make_csv([
+            {"sku": "S001", "name": "Gold Ring", "category": "Jewelry", "sell_by": "piece", "quantity": "3"},
+            {"sku": "S002", "name": "Silver Ring", "category": "Jewelry", "sell_by": "piece", "quantity": "1"},
+        ])
+
+        p_price = patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}]))
+        p_schema = patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={}))
+        p_units = patch("ui.api_client.get_units", new=AsyncMock(return_value=units))
+        p_vert = patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[]))
+
+        with p_price, p_schema, p_units, p_vert:
+            # Step 1: upload CSV
+            r = await ui_client.post(
+                "/inventory/import/preview",
+                cookies=_authed(),
+                files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
+            )
+            assert r.status_code == 200
+            m = re.search(r'name="csv_ref"\s+value="([^"]+)"', r.text)
+            assert m, "csv_ref not found in preview response"
+            csv_ref = m.group(1)
+
+            # Step 2: apply column mapping (sell_by -> sell_by)
+            r2 = await ui_client.post(
+                "/inventory/import/mapped",
+                cookies=_authed(),
+                data={
+                    "csv_ref": csv_ref,
+                    "map__sku": "sku",
+                    "map__name": "name",
+                    "map__category": "category",
+                    "map__sell_by": "sell_by",
+                    "map__quantity": "quantity",
+                },
+            )
+        assert r2.status_code == 200
+        # Must NOT show fix-errors panel - sell_by=piece is a valid unit
+        assert b"fix-errors" not in r2.content, (
+            "Got fix-errors panel but sell_by=piece should be valid against unit 'piece'. "
+            f"Response: {r2.text[:800]}"
+        )
+        assert b"Import All" in r2.content or b"import-confirm" in r2.content, (
+            f"Expected confirm panel. Got: {r2.text[:800]}"
+        )
+
     """Label module UI pages: shell wrapping, preset seeding, editor panel rendering."""
 
     @pytest_asyncio.fixture

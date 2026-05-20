@@ -1593,7 +1593,7 @@ class BatchImportResult(BaseModel):
 
 
 class BatchImportRequest(BaseModel):
-    records: list[ImportRecord]
+    records: list[ImportRecord] = Field(..., max_length=500)
     filename: str | None = None
     upsert: bool = False
 
@@ -1620,12 +1620,41 @@ async def batch_import_items(
         )).scalars().all()
     )
 
+    # Fetch valid unit names once for sell_by validation across all records.
+    # Falls back to empty set (no validation) if units cannot be fetched.
+    _units = await _get_company_units(session, company_id)
+    _valid_units: frozenset[str] = frozenset(u["name"] for u in _units)
+
     created = skipped = updated = 0
     errors: list[str] = []
     created_entity_ids: list[str] = []
     created_keys: list[str] = []
 
     for rec in body.records:
+        # Strip system-managed and document-lifecycle fields — never user-settable via import.
+        # status: all imported items must start as available; other statuses require linked docs.
+        rec.data.pop("status", None)
+        # created_at/updated_at: strip user values and backfill with current UTC time.
+        # (batch_import bypasses post_item so we set them here rather than relying on setdefault.)
+        _now_iso = datetime.now(timezone.utc).isoformat()
+        rec.data.pop("created_at", None)
+        rec.data.pop("updated_at", None)
+        rec.data["created_at"] = _now_iso
+        rec.data["updated_at"] = _now_iso
+
+        # Validate sell_by against company units before attempting any DB work.
+        sell_by = str(rec.data.get("sell_by") or "").strip()
+        if not sell_by:
+            errors.append(f"Row (SKU={rec.data.get('sku', '?')}): sell_by is required")
+            skipped += 1
+            continue
+        if _valid_units and sell_by not in _valid_units:
+            errors.append(
+                f"Row (SKU={rec.data.get('sku', '?')}): sell_by '{sell_by}' is not a valid unit"
+            )
+            skipped += 1
+            continue
+
         scoped_key = f"{company_id}:{rec.idempotency_key}"
         if scoped_key in existing:
             if body.upsert:

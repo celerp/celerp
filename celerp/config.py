@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 30
     # Set to "true" to allow the default JWT secret (CI only).
     allow_insecure_jwt: str = "false"
+    # Logging level for both API and UI processes. Override with LOG_LEVEL env var.
+    # Accepted values: debug, info, warning, error, critical (case-insensitive).
+    log_level: str = "INFO"
     # Public URL of this Celerp instance (e.g. https://erp.acme.com).
     # When set, share links include ?src= enabling p2p import by recipients.
     # Leave blank on private/LAN installs — bundle download fallback applies.

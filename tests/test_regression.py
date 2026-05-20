@@ -105,7 +105,7 @@ class TestSetupCompanySave:
 
         patched_calls: list[dict] = []
 
-        def mock_client_ctx(token):
+        def mock_client_ctx(token, **kwargs):
             class FakeResp:
                 def json(self_):
                     return {"id": "c1", "name": "Co", "slug": "co", "settings": {}}
@@ -152,7 +152,7 @@ class TestSetupCompanySave:
 
         patched_calls: list[dict] = []
 
-        def mock_client_ctx(token):
+        def mock_client_ctx(token, **kwargs):
             class FakeResp:
                 def json(self_): return {"id": "c1", "name": "Co", "slug": "co", "settings": {}}
                 @property

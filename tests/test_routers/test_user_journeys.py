@@ -1408,7 +1408,7 @@ async def test_wf_import_csv_items_count_increases(client):
         {
             "entity_id": f"item:{uuid.uuid4()}",
             "event_type": "item.created",
-            "data": {"sku": f"IMP-{uuid.uuid4().hex[:6]}", "name": "Imported Item", "quantity": 5},
+            "data": {"sku": f"IMP-{uuid.uuid4().hex[:6]}", "name": "Imported Item", "sell_by": "piece", "quantity": 5},
             "source": "csv_import",
             "idempotency_key": uuid.uuid4().hex,
             "source_ts": None,
@@ -1706,7 +1706,7 @@ async def test_edge_idempotent_item_import(client):
     record = {
         "entity_id": eid,
         "event_type": "item.created",
-        "data": {"sku": "IDEM-1", "name": "Idem Item", "quantity": 1},
+        "data": {"sku": "IDEM-1", "name": "Idem Item", "sell_by": "piece", "quantity": 1},
         "source": "api",
         "idempotency_key": ikey,
         "source_ts": None,
@@ -1916,7 +1916,7 @@ async def test_ie_import_valid_csv_items_count_increases(client):
         {
             "entity_id": f"item:{uuid.uuid4()}",
             "event_type": "item.created",
-            "data": {"sku": f"IMP-V-{uuid.uuid4().hex[:6]}", "name": "Valid Import", "quantity": 1},
+            "data": {"sku": f"IMP-V-{uuid.uuid4().hex[:6]}", "name": "Valid Import", "sell_by": "piece", "quantity": 1},
             "source": "csv",
             "idempotency_key": uuid.uuid4().hex,
             "source_ts": None,
@@ -1940,7 +1940,7 @@ async def test_ie_import_idempotent_skips_duplicates(client):
     record = {
         "entity_id": f"item:{uuid.uuid4()}",
         "event_type": "item.created",
-        "data": {"sku": "IDEM-IMPORT", "name": "Idempotent", "quantity": 1},
+        "data": {"sku": "IDEM-IMPORT", "name": "Idempotent", "sell_by": "piece", "quantity": 1},
         "source": "csv",
         "idempotency_key": ikey,
         "source_ts": None,
@@ -1962,7 +1962,7 @@ async def test_ie_import_partial_with_errors_reports_them(client):
         {
             "entity_id": f"item:{uuid.uuid4()}",
             "event_type": "item.created",
-            "data": {"sku": "GOOD-1", "name": "Good", "quantity": 1},
+            "data": {"sku": "GOOD-1", "name": "Good", "sell_by": "piece", "quantity": 1},
             "source": "csv",
             "idempotency_key": good_key,
             "source_ts": None,
@@ -1970,7 +1970,7 @@ async def test_ie_import_partial_with_errors_reports_them(client):
         {
             "entity_id": f"item:{uuid.uuid4()}",
             "event_type": "item.bad_event_type_xyz",  # deliberately bad
-            "data": {},
+            "data": {"sell_by": "piece"},
             "source": "csv",
             "idempotency_key": bad_key,
             "source_ts": None,
@@ -2029,7 +2029,7 @@ async def test_ie_import_batch_returns_structured_result(client):
         {
             "entity_id": f"item:{uuid.uuid4()}",
             "event_type": "item.created",
-            "data": {"sku": f"STRUCT-{i}", "name": f"Struct {i}", "quantity": i},
+            "data": {"sku": f"STRUCT-{i}", "name": f"Struct {i}", "sell_by": "piece", "quantity": i},
             "source": "batch",
             "idempotency_key": uuid.uuid4().hex,
             "source_ts": None,
@@ -2061,7 +2061,7 @@ async def test_ie_import_large_batch_respects_limit(client):
         {
             "entity_id": f"item:{uuid.uuid4()}",
             "event_type": "item.created",
-            "data": {"sku": f"LARGE-{i}", "name": f"Large {i}", "quantity": 1},
+            "data": {"sku": f"LARGE-{i}", "name": f"Large {i}", "sell_by": "piece", "quantity": 1},
             "source": "batch",
             "idempotency_key": uuid.uuid4().hex,
             "source_ts": None,
@@ -2080,7 +2080,7 @@ async def test_ie_import_with_source_ts(client):
     record = {
         "entity_id": f"item:{uuid.uuid4()}",
         "event_type": "item.created",
-        "data": {"sku": "TS-IMPORT", "name": "Timestamped", "quantity": 1},
+        "data": {"sku": "TS-IMPORT", "name": "Timestamped", "sell_by": "piece", "quantity": 1},
         "source": "migration",
         "idempotency_key": uuid.uuid4().hex,
         "source_ts": "2025-01-15T10:30:00Z",
@@ -2127,7 +2127,7 @@ async def test_ie_import_duplicate_key_in_same_batch(client):
     record = {
         "entity_id": f"item:{uuid.uuid4()}",
         "event_type": "item.created",
-        "data": {"sku": "DUP-BATCH", "name": "Dup", "quantity": 1},
+        "data": {"sku": "DUP-BATCH", "name": "Dup", "sell_by": "piece", "quantity": 1},
         "source": "csv",
         "idempotency_key": ikey,
         "source_ts": None,
@@ -2160,7 +2160,7 @@ async def test_ie_import_creates_retrievable_item(client):
     record = {
         "entity_id": eid,
         "event_type": "item.created",
-        "data": {"sku": sku, "name": "Retrievable", "quantity": 3},
+        "data": {"sku": sku, "name": "Retrievable", "sell_by": "piece", "quantity": 3},
         "source": "api",
         "idempotency_key": uuid.uuid4().hex,
         "source_ts": None,
