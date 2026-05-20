@@ -4346,9 +4346,9 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
         add_row = Tr(
             Td(
                 Form(
-                    Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                     Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
                           cls="form-input form-input--sm cat-add-input"),
+                    Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                     hx_post="/settings/categories",
                     hx_target="#vert-applied-panel",
                     hx_swap="outerHTML",
@@ -4366,9 +4366,9 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
         applied_content = Div(
             P(t("settings.no_category_schemas_applied_yet"), cls="settings-hint"),
             Form(
-                Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                 Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
                       cls="form-input form-input--sm cat-add-input"),
+                Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                 hx_post="/settings/categories",
                 hx_target="#vert-applied-panel",
                 hx_swap="outerHTML",
