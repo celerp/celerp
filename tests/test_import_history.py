@@ -42,6 +42,7 @@ async def _import_items(client, token: str, count: int = 3) -> dict:
                 "sku": f"HIST-{i:04d}",
                 "name": f"History Item {i}",
                 "category": "Test",
+                "sell_by": "piece",
                 "quantity": 1,
                 "cost_price": 1.00,
                 "wholesale_price": 1.50,
