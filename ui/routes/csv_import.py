@@ -927,18 +927,26 @@ _INLINE_FIX_JS = """
     });
   };
 
-  // Serialize all editable cells into fixes_json before form submit.
+  // Serialize all editable cells into fixes_json before htmx sends the form.
+  // htmx does not fire the native 'submit' event; use htmx:configRequest instead.
   // This keeps the field count at 2 (csv_ref + fixes_json) regardless of
   // how many error cells exist, avoiding Starlette's max_fields=1000 limit.
-  document.addEventListener('submit', function(e) {
-    var form = e.target;
-    var jsonField = form.querySelector('input[name="fixes_json"]');
-    if (!jsonField) return;
+  document.addEventListener('htmx:configRequest', function(e) {
+    var form = e.detail.elt;
+    if (!form || !form.querySelector('input[name="fixes_json"]')) return;
     var fixes = {};
     form.querySelectorAll('[data-row][data-col]').forEach(function(el) {
       fixes[el.dataset.row + '__' + el.dataset.col] = el.value;
     });
-    jsonField.value = JSON.stringify(fixes);
+    e.detail.parameters['fixes_json'] = JSON.stringify(fixes);
+  });
+
+  // "Add new unit" option in unit dropdowns: redirect to settings page.
+  document.addEventListener('change', function(e) {
+    if (e.target.matches('select.cell-edit') && e.target.value === '__add_new__') {
+      window.open('/settings/units', '_blank');
+      e.target.value = '';
+    }
   });
 })();
 """

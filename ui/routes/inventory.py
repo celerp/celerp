@@ -3799,6 +3799,7 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
                 return Select(
                     Option("-- select unit --", value="", selected=(not val.strip())),
                     *[Option(u, value=u, selected=(val.strip() == u)) for u in _opts],
+                    Option("+ Add new unit", value="__add_new__"),
                     data_col=col,
                     data_row=str(ri),
                     cls=err_cls,
