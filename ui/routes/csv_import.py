@@ -137,6 +137,16 @@ _COMMON_ALIASES: dict[str, str] = {
     "qty": "quantity",
     "stock": "quantity",
     "on_hand": "quantity",
+    # spaced variants that don't exact-match underscore targets
+    "sell by": "sell_by",
+    "purchase unit": "purchase_unit",
+    "weight unit": "weight_unit",
+    "location name": "location_name",
+    "hs code": "hs_code",
+    "purchase sku": "purchase_sku",
+    "purchase name": "purchase_name",
+    "purchase conversion factor": "purchase_conversion_factor",
+    "short description": "short_description",
 }
 
 # Aliases for category attribute keys (csv_col_lower → attr_key_lower).
@@ -193,14 +203,16 @@ def suggest_mapping(
         if csv_col.lower().strip() in _FORCE_SKIP_COLS:
             mapping[csv_col] = MAPPING_SKIP
 
-    # Pass 1: exact matches to core fields
+    # Pass 1: exact matches to core fields (also try space→underscore normalization)
     for csv_col in csv_cols:
         if csv_col in mapping:
             continue
         lc = csv_col.lower().strip()
-        if lc in target_lower and target_lower[lc] not in claimed:
-            mapping[csv_col] = target_lower[lc]
-            claimed.add(target_lower[lc])
+        lc_norm = lc.replace(" ", "_")
+        match = target_lower.get(lc) or target_lower.get(lc_norm)
+        if match and match not in claimed:
+            mapping[csv_col] = match
+            claimed.add(match)
 
     # Pass 2: alias matches to core fields
     for csv_col in csv_cols:
@@ -908,7 +920,7 @@ def upload_form(
                 id="import-dropzone",
                 cls="import-dropzone",
             ),
-            Button(t("btn.preview"), id="csv-preview-btn", cls="btn btn--primary btn--disabled", type="submit", disabled=True, title="Please upload a CSV file first."),
+            Button(t("btn.preview"), id="csv-preview-btn", cls="btn btn--primary btn--disabled", type="submit", disabled=True, title="Please upload a CSV file first.", style="margin-top: 12px;"),
             method="post",
             action=preview_action,
             enctype="multipart/form-data",
