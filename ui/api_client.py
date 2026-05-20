@@ -123,8 +123,9 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
 async def bootstrap_status() -> bool:
     """Returns True if the system has been bootstrapped (any user exists).
 
-    Raises APIError(503) if the API is unreachable — callers should catch this
-    and render a friendly "API not running" page rather than a 500.
+    Raises APIError(503) if the API connection is refused, or APIError(504) on
+    timeout — callers should catch both and render a friendly "API not running"
+    page rather than a 500.
     """
     async with _anon_api_client(timeout=5.0) as c:
         r = await c.get("/auth/bootstrap-status")

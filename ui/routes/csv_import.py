@@ -867,16 +867,6 @@ _DROPZONE_JS = """
     if(e.dataTransfer.files.length){fi.files=e.dataTransfer.files;_showFile(fi.files[0])}
   });
   fi.addEventListener('change',function(){if(fi.files.length) _showFile(fi.files[0])});
-  if(previewBtn){
-    previewBtn.addEventListener('click',function(e){
-      if(previewBtn.disabled){
-        e.preventDefault();
-        previewBtn.title='Please upload a CSV file first.';
-        previewBtn.classList.add('btn--shake');
-        setTimeout(function(){previewBtn.classList.remove('btn--shake')},400);
-      }
-    });
-  }
   function _showFile(f){
     var kb=(f.size/1024).toFixed(1);
     info.textContent=f.name+' ('+kb+' KB)';
@@ -933,12 +923,14 @@ def upload_form(
 async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
     """Return (rows, error).
 
-    Handles three failure classes explicitly:
+    Handles four failure classes explicitly:
     1. Encoding errors  → "Could not decode file. Use UTF-8 encoding."
     2. Structurally malformed CSV (csv.Error, e.g. unbalanced quotes, NUL bytes)
        → "Could not parse file. Please check it is a valid CSV."
     3. Empty or header-only / None-fieldname output from DictReader
        → "CSV file is empty or has no valid header row."
+    4. Header-only file (valid header, zero data rows)
+       → "CSV file is empty or invalid."
     """
     file_obj = form.get("csv_file")
     if not file_obj or not hasattr(file_obj, "read"):
@@ -1429,6 +1421,7 @@ def import_abort_panel(
     """Step-aware error panel for hard aborts (e.g. missing sell_by, location conflicts).
 
     Keeps the journey map visible and gives the user a way forward.
+    ``back_href`` links to the entity list so the user can return without importing more.
     """
     review_step = 3 if has_mapping else 2
     return Div(
@@ -1436,6 +1429,7 @@ def import_abort_panel(
         P(message, cls="flash flash--error"),
         Div(
             A(t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            A(t("btn.cancel"), href=back_href, cls="btn btn--ghost"),
             cls="flex-row gap-sm mt-md",
         ),
         id="import-preview",
