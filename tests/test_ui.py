@@ -9512,6 +9512,61 @@ class TestCsvImportSellByValidation:
         assert validator("sell_by", "Piece") is True, "exact canonical match failed"
         assert validator("sell_by", "unknown_unit") is False, "invalid unit must still fail"
 
+    @pytest.mark.asyncio
+    async def test_sell_by_piece_full_http_flow_proceeds_to_confirm(self, ui_client):
+        """Full HTTP flow: CSV with sell_by=piece must reach confirm page, not fix-errors.
+
+        Replicates Noah's exact scenario:
+        - CSV column: sell_by, value: piece
+        - Company unit: {name: piece, ...}
+        - Expected: no validation errors -> confirm page shown
+        """
+        units = [{"name": "piece", "label": "Piece", "decimals": 0, "unit_type": "pieces"}]
+        csv_bytes = _make_csv([
+            {"sku": "S001", "name": "Gold Ring", "category": "Jewelry", "sell_by": "piece", "quantity": "3"},
+            {"sku": "S002", "name": "Silver Ring", "category": "Jewelry", "sell_by": "piece", "quantity": "1"},
+        ])
+
+        p_price = patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}]))
+        p_schema = patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={}))
+        p_units = patch("ui.api_client.get_units", new=AsyncMock(return_value=units))
+        p_vert = patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[]))
+
+        with p_price, p_schema, p_units, p_vert:
+            # Step 1: upload CSV
+            r = await ui_client.post(
+                "/inventory/import/preview",
+                cookies=_authed(),
+                files={"csv_file": ("items.csv", csv_bytes, "text/csv")},
+            )
+            assert r.status_code == 200
+            m = re.search(r'name="csv_ref"\s+value="([^"]+)"', r.text)
+            assert m, "csv_ref not found in preview response"
+            csv_ref = m.group(1)
+
+            # Step 2: apply column mapping (sell_by -> sell_by)
+            r2 = await ui_client.post(
+                "/inventory/import/mapped",
+                cookies=_authed(),
+                data={
+                    "csv_ref": csv_ref,
+                    "map__sku": "sku",
+                    "map__name": "name",
+                    "map__category": "category",
+                    "map__sell_by": "sell_by",
+                    "map__quantity": "quantity",
+                },
+            )
+        assert r2.status_code == 200
+        # Must NOT show fix-errors panel - sell_by=piece is a valid unit
+        assert b"fix-errors" not in r2.content, (
+            "Got fix-errors panel but sell_by=piece should be valid against unit 'piece'. "
+            f"Response: {r2.text[:800]}"
+        )
+        assert b"Import All" in r2.content or b"import-confirm" in r2.content, (
+            f"Expected confirm panel. Got: {r2.text[:800]}"
+        )
+
     """Label module UI pages: shell wrapping, preset seeding, editor panel rendering."""
 
     @pytest_asyncio.fixture

@@ -212,7 +212,7 @@ def setup_routes(app):
             validation_result(
                 rows=rows,
                 cols=cols,
-                validate=lambda c, v: validate_cell(_BOM_SPEC, c, v),
+                validate=lambda c, v, r: validate_cell(_BOM_SPEC, c, v),
                 confirm_action="/manufacturing/import/boms/confirm",
                 error_report_action="/manufacturing/import/boms/errors",
                 back_href="/manufacturing/import/boms",
@@ -244,7 +244,7 @@ def setup_routes(app):
         _stash_csv(_rows_to_csv(rows, cols))
         return validation_result(
             rows=rows, cols=cols,
-            validate=lambda c, v: validate_cell(_BOM_SPEC, c, v),
+            validate=lambda c, v, r: validate_cell(_BOM_SPEC, c, v),
             confirm_action="/manufacturing/import/boms/confirm",
             error_report_action="/manufacturing/import/boms/errors",
             back_href="/manufacturing/import/boms",
@@ -462,7 +462,7 @@ def setup_routes(app):
             validation_result(
                 rows=rows,
                 cols=cols,
-                validate=lambda c, v: validate_cell(_ORDER_SPEC, c, v),
+                validate=lambda c, v, r: validate_cell(_ORDER_SPEC, c, v),
                 confirm_action="/manufacturing/import/orders/confirm",
                 error_report_action="/manufacturing/import/orders/errors",
                 back_href="/manufacturing/import/orders",
@@ -494,7 +494,7 @@ def setup_routes(app):
         _stash_csv(_rows_to_csv(rows, cols))
         return validation_result(
             rows=rows, cols=cols,
-            validate=lambda c, v: validate_cell(_ORDER_SPEC, c, v),
+            validate=lambda c, v, r: validate_cell(_ORDER_SPEC, c, v),
             confirm_action="/manufacturing/import/orders/confirm",
             error_report_action="/manufacturing/import/orders/errors",
             back_href="/manufacturing/import/orders",
