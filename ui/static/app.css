@@ -829,6 +829,11 @@ a:hover { text-decoration: underline; }
 .import-dropzone-hint { font-size: 12px; color: var(--c-text2); }
 .import-dropzone-template { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--c-border); width: 100%; }
 .import-dropzone-file { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; padding: 4px 10px; background: var(--c-bg2); border-radius: var(--radius); font-size: 12px; color: var(--c-text); }
+.btn--disabled, .btn--primary.btn--disabled { background: var(--c-bg3); color: var(--c-text-muted); border-color: var(--c-border); cursor: not-allowed; opacity: 0.6; }
+.btn--ready.btn--primary { background: #16a34a; border-color: #15803d; }
+.btn--ready.btn--primary:hover { background: #15803d; }
+@keyframes btn-shake { 0%,100%{transform:translateX(0)} 25%{transform:translateX(-4px)} 75%{transform:translateX(4px)} }
+.btn--shake { animation: btn-shake 0.4s ease; }
 
 /* Summary cards for results */
 .import-summary-cards { display: flex; gap: 12px; margin-bottom: 16px; }

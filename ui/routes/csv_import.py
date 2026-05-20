@@ -139,6 +139,26 @@ _COMMON_ALIASES: dict[str, str] = {
     "on_hand": "quantity",
 }
 
+# Aliases for category attribute keys (csv_col_lower → attr_key_lower).
+# Used in suggest_mapping Pass 2b to bridge common spreadsheet column names
+# to their canonical category attribute counterparts.
+_COMMON_ATTR_ALIASES: dict[str, str] = {
+    "stone_color": "color",
+    "stone_colour": "color",
+    "stone_shape": "shape",
+    "stone_treatment": "treatment",
+    "stone_origin": "origin",
+    "color_grade": "grade",
+    "colour_grade": "grade",
+    "clarity_grade": "clarity",
+    "certificate_number": "certificate_no",
+    "cert_number": "certificate_no",
+    "cert_no": "certificate_no",
+}
+
+# Columns that should always default to Skip (system-managed; never imported)
+_FORCE_SKIP_COLS: frozenset[str] = frozenset({"created_at", "updated_at", "status"})
+
 # Sentinel values for the mapping dropdown
 MAPPING_ATTRIBUTE = "__attr__"
 MAPPING_SKIP = "__skip__"
@@ -153,13 +173,14 @@ def suggest_mapping(
     """Return {csv_col: suggested_target} for each CSV column.
 
     Priority:
+    0. Force-skip columns (created_at, updated_at, status) → always MAPPING_SKIP
     1. Exact match (case-insensitive) to a core target column
     2. Known alias match to a core target column
-    3. Exact match to a category attribute key (prefixed with 'attr:')
+    2b. Known alias match to a category attribute key
+    3. Exact match to a category attribute key (prefixed with MAPPING_ATTR_PREFIX)
     4. Default to MAPPING_ATTRIBUTE (import as custom field)
 
     Each target field is claimed at most once (first match wins).
-    Category attributes use 'attr:<key>' as the mapping value.
     """
     mapping: dict[str, str] = {}
     claimed: set[str] = set()
@@ -167,8 +188,15 @@ def suggest_mapping(
     attrs = category_attrs or []
     attr_lower = {a.lower().replace(" ", "_"): a for a in attrs}
 
+    # Pass 0: force-skip system columns
+    for csv_col in csv_cols:
+        if csv_col.lower().strip() in _FORCE_SKIP_COLS:
+            mapping[csv_col] = MAPPING_SKIP
+
     # Pass 1: exact matches to core fields
     for csv_col in csv_cols:
+        if csv_col in mapping:
+            continue
         lc = csv_col.lower().strip()
         if lc in target_lower and target_lower[lc] not in claimed:
             mapping[csv_col] = target_lower[lc]
@@ -184,8 +212,18 @@ def suggest_mapping(
             mapping[csv_col] = alias_target
             claimed.add(alias_target)
 
-    # Pass 3: match to category attribute keys
+    # Pass 2b: alias matches to category attribute keys
     claimed_attrs: set[str] = set()
+    for csv_col in csv_cols:
+        if csv_col in mapping:
+            continue
+        lc = csv_col.lower().strip().replace(" ", "_")
+        alias_attr = _COMMON_ATTR_ALIASES.get(lc)
+        if alias_attr and alias_attr in attr_lower.values() and alias_attr not in claimed_attrs:
+            mapping[csv_col] = f"{MAPPING_ATTR_PREFIX}{alias_attr}"
+            claimed_attrs.add(alias_attr)
+
+    # Pass 3: exact match to category attribute keys
     for csv_col in csv_cols:
         if csv_col in mapping:
             continue
@@ -807,6 +845,7 @@ _DROPZONE_JS = """
   var dz=document.getElementById('import-dropzone');
   var fi=document.getElementById('csv_file');
   var info=document.getElementById('dropzone-file-info');
+  var previewBtn=document.getElementById('csv-preview-btn');
   if(!dz||!fi) return;
   dz.addEventListener('click',function(){fi.click()});
   dz.addEventListener('dragover',function(e){e.preventDefault();dz.classList.add('import-dropzone--dragover')});
@@ -816,10 +855,26 @@ _DROPZONE_JS = """
     if(e.dataTransfer.files.length){fi.files=e.dataTransfer.files;_showFile(fi.files[0])}
   });
   fi.addEventListener('change',function(){if(fi.files.length) _showFile(fi.files[0])});
+  if(previewBtn){
+    previewBtn.addEventListener('click',function(e){
+      if(previewBtn.disabled){
+        e.preventDefault();
+        previewBtn.title='Please upload a CSV file first.';
+        previewBtn.classList.add('btn--shake');
+        setTimeout(function(){previewBtn.classList.remove('btn--shake')},400);
+      }
+    });
+  }
   function _showFile(f){
     var kb=(f.size/1024).toFixed(1);
     info.textContent=f.name+' ('+kb+' KB)';
     info.style.display='inline-flex';
+    if(previewBtn){
+      previewBtn.disabled=false;
+      previewBtn.classList.remove('btn--disabled');
+      previewBtn.classList.add('btn--ready');
+      previewBtn.title='';
+    }
   }
 })();
 """
@@ -853,7 +908,7 @@ def upload_form(
                 id="import-dropzone",
                 cls="import-dropzone",
             ),
-            Button(t("btn.preview"), cls="btn btn--primary", type="submit"),
+            Button(t("btn.preview"), id="csv-preview-btn", cls="btn btn--primary btn--disabled", type="submit", disabled=True, title="Please upload a CSV file first."),
             method="post",
             action=preview_action,
             enctype="multipart/form-data",

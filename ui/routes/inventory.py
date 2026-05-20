@@ -441,11 +441,16 @@ def setup_routes(app):
         except Exception:
             price_lists = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
         spec = _build_import_spec(price_lists)
+        try:
+            cat_schemas = await api.get_all_category_schemas(token)
+            cat_attrs = _union_category_attr_keys(cat_schemas)
+        except Exception:
+            cat_attrs = []
+        all_cols = spec.cols + [a for a in cat_attrs if a not in spec.cols]
         output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=spec.cols)
+        writer = csv.DictWriter(output, fieldnames=all_cols)
         writer.writeheader()
-        # Write one empty example row
-        writer.writerow({c: "" for c in spec.cols})
+        writer.writerow({c: "" for c in all_cols})
         return Response(
             content=output.getvalue(),
             media_type="text/csv",
@@ -706,6 +711,13 @@ def setup_routes(app):
         except Exception:
             pass  # Non-critical; if unavailable, sell_by remains None
 
+        # Build case-insensitive → canonical unit name map for sell_by normalization.
+        _unit_canonical: dict[str, str] = {}
+        try:
+            _unit_canonical = {u["name"].lower(): u["name"] for u in await api.get_units(token)}
+        except Exception:
+            pass
+
         # Defensive assertion: sell_by is validated in the revalidate cycle via
         # _build_item_validator. If any row is still missing it here, the validator
         # has a bug - this is an internal error, not a user error.
@@ -779,7 +791,7 @@ def setup_routes(app):
                 "category": str(row.get("category", "")).strip() or None,
                 "weight": _flt("weight") or _flt("weight_ct"),
                 "weight_unit": str(row.get("weight_unit", "")).strip() or None,
-                "sell_by": str(row.get("sell_by", "")).strip() or _cat_sell_by.get(str(row.get("category", "")).strip()) or None,
+                "sell_by": _unit_canonical.get(str(row.get("sell_by", "")).strip().lower()) or str(row.get("sell_by", "")).strip() or _cat_sell_by.get(str(row.get("category", "")).strip()) or None,
                 "barcode": str(row.get("barcode", "")).strip() or None,
                 "hs_code": str(row.get("hs_code", "")).strip() or None,
                 "short_description": str(row.get("short_description", "")).strip() or None,
@@ -3792,6 +3804,7 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
 
     valid_unit_names: list[str] = [u["name"] for u in company_units]
     valid_unit_set: frozenset[str] = frozenset(valid_unit_names)
+    valid_unit_lower: dict[str, str] = {u.lower(): u for u in valid_unit_names}
 
     def _validate(col: str, value: str, row: dict | None = None) -> bool:
         if col == "sell_by":
@@ -3800,8 +3813,8 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
             if not v:
                 category = str((row or {}).get("category", "")).strip()
                 return bool(cat_sell_by.get(category))
-            # If known units are available, validate membership
-            return not valid_unit_set or v in valid_unit_set
+            # If known units are available, validate membership (case-insensitive)
+            return not valid_unit_set or v.lower() in valid_unit_lower
         return _item_validate(col, value)
 
     # Build import fix-table cell renderers for constrained columns.
