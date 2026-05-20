@@ -32,7 +32,7 @@ from starlette.responses import StreamingResponse
 from ui.i18n import t, get_lang
 
 
-ValidateFn = Callable[[str, str], bool]
+ValidateFn = Callable[[str, str, dict], bool]
 
 # Server-side CSV stash: store uploaded CSV data in temp files, keyed by hash.
 # Avoids round-tripping large CSV data through hidden form fields (Starlette
@@ -90,7 +90,7 @@ class CsvImportSpec:
     type_map: dict[str, Callable[[str], Any]]
 
 
-def validate_cell(spec: CsvImportSpec, col: str, value: str) -> bool:
+def validate_cell(spec: CsvImportSpec, col: str, value: str, row: dict | None = None) -> bool:
     if col in spec.required and not value.strip():
         return False
     cast = spec.type_map.get(col)
@@ -897,7 +897,7 @@ async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
 
 
 def _row_errors(row: dict, cols: list[str], validate: ValidateFn) -> list[str]:
-    return [col for col in cols if not validate(col, str(row.get(col, "")))]
+    return [col for col in cols if not validate(col, str(row.get(col, "")), row)]
 
 
 def error_report_csv(rows: list[dict], cols: list[str], validate: ValidateFn) -> str:
@@ -926,6 +926,20 @@ _INLINE_FIX_JS = """
       el.classList.remove('input--error');
     });
   };
+
+  // Serialize all editable cells into fixes_json before form submit.
+  // This keeps the field count at 2 (csv_ref + fixes_json) regardless of
+  // how many error cells exist, avoiding Starlette's max_fields=1000 limit.
+  document.addEventListener('submit', function(e) {
+    var form = e.target;
+    var jsonField = form.querySelector('input[name="fixes_json"]');
+    if (!jsonField) return;
+    var fixes = {};
+    form.querySelectorAll('input.cell-edit[data-row][data-col]').forEach(function(el) {
+      fixes[el.dataset.row + '__' + el.dataset.col] = el.value;
+    });
+    jsonField.value = JSON.stringify(fixes);
+  });
 })();
 """
 
@@ -983,7 +997,7 @@ def _fix_errors_panel(
             continue
         col_error_counts[col] = sum(
             1 for ri in error_row_indices
-            if not validate(col, str(rows[ri].get(col, "")))
+            if not validate(col, str(rows[ri].get(col, "")), rows[ri])
         )
 
     # Fill-all bars for error columns with many errors (>1 error row)
@@ -1041,7 +1055,6 @@ def _fix_errors_panel(
                 is_bad = col in bad
                 cells.append(Td(Input(
                     type="text",
-                    name=f"fix__{ri}__{col}",
                     value=val,
                     data_col=col,
                     data_row=str(ri),
@@ -1085,6 +1098,7 @@ def _fix_errors_panel(
             fill_section,
             Form(
                 Input(type="hidden", name="csv_ref", value=csv_ref),
+                Input(type="hidden", name="fixes_json", value=""),
                 Table(
                     Thead(Tr(*header_cells)),
                     Tbody(*body_rows),
@@ -1129,21 +1143,33 @@ def apply_fixes_to_rows(
 ) -> list[dict]:
     """Apply inline-fix form values back into the row dicts.
 
-    Form fields are named ``fix__{row_index}__{col_name}``.
-    Returns the same list with values patched in-place.
+    Reads ``fixes_json``: a JSON object ``{"row__col": value, ...}`` serialized
+    by the fix form's submit handler. One field regardless of error count,
+    so Starlette's max_fields limit is never hit.
     """
-    for key, value in form.items():
-        if not isinstance(key, str) or not key.startswith("fix__"):
+    import json as _json
+
+    fixes_raw = form.get("fixes_json", "")
+    if not fixes_raw:
+        return rows
+    try:
+        fixes: dict = _json.loads(fixes_raw)
+    except (ValueError, TypeError):
+        return rows
+
+    cols_set = set(cols)
+    for key, value in fixes.items():
+        if not isinstance(key, str):
             continue
-        parts = key.split("__", 2)
-        if len(parts) != 3:
+        parts = key.split("__", 1)
+        if len(parts) != 2:
             continue
-        _, ri_str, col = parts
+        ri_str, col = parts
         try:
             ri = int(ri_str)
         except ValueError:
             continue
-        if 0 <= ri < len(rows) and col in cols:
+        if 0 <= ri < len(rows) and col in cols_set:
             rows[ri][col] = str(value)
     return rows
 

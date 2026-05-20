@@ -692,7 +692,7 @@ def setup_routes(app):
 
         records: list[dict] = []
 
-        # Build category → default_sell_by map for sell_by fallback
+        # Build category → default_sell_by map for sell_by fallback at import time.
         _cat_sell_by: dict[str, str] = {}
         try:
             vert_cats = await api.list_verticals_categories(token)
@@ -704,8 +704,9 @@ def setup_routes(app):
         except Exception:
             pass  # Non-critical; if unavailable, sell_by remains None
 
-        # Pre-flight: every row must have sell_by (either explicit or via category fallback).
-        # Catch this early so the user sees a clear message rather than a silent 0-created result.
+        # Defensive assertion: sell_by is validated in the revalidate cycle via
+        # _build_item_validator. If any row is still missing it here, the validator
+        # has a bug - this is an internal error, not a user error.
         missing_sell_by = [
             str(row.get("sku") or row.get("name") or f"row {i + 1}")
             for i, row in enumerate(rows)
@@ -715,14 +716,9 @@ def setup_routes(app):
             )
         ]
         if missing_sell_by:
-            return import_abort_panel(
-                message=(
-                    f"Import aborted: {len(missing_sell_by)} row(s) are missing sell_by. "
-                    "Map the sell_by column or ensure all items have a category with a default unit."
-                ),
-                import_more_href="/inventory/import",
-                back_href="/inventory",
-                has_mapping=True,
+            raise RuntimeError(
+                f"BUG: {len(missing_sell_by)} row(s) reached confirm with missing sell_by "
+                f"({', '.join(missing_sell_by[:5])}). Validator did not catch them."
             )
 
         for row in rows:
@@ -736,10 +732,9 @@ def setup_routes(app):
             else:
                 location_id = default_location_id
 
-            if not sku or not name:
-                # Skip rows missing required fields (shouldn't reach confirm unless CSV tampered)
-                continue
-
+            # No guard for sku/name here - the validation pipeline (validate_cell /
+            # _build_item_validator) is the sole authority. sku is optional (auto-assigned);
+            # name is in spec.required and would have been caught at revalidate time.
             if not location_id:
                 return import_abort_panel(
                     message=(
@@ -3749,7 +3744,7 @@ def _import_upload_form(error: str | None = None) -> FT:
     )
 
 
-def _item_validate(col: str, value: str) -> bool:
+def _item_validate(col: str, value: str, row: dict | None = None) -> bool:
     return _csv_validate_cell(_IMPORT_SPEC, col, value)
 
 
@@ -3757,20 +3752,35 @@ async def _build_item_validator(token: str) -> ValidateFn:
     """Build a validator for CSV import preview.
 
     location_name is optional - blank or missing means "use default location"
-    (resolved at confirm time). Validates sell_by against company units if present.
+    (resolved at confirm time). Validates sell_by against company units if present,
+    and requires sell_by when the row's category has no default_sell_by fallback.
     """
-    # Fetch company units for sell_by validation; fall back to empty (no validation)
     try:
         company_units = await api.get_units(token)
     except Exception:
         company_units = []
 
+    try:
+        vert_cats = await api.list_verticals_categories(token)
+        cat_sell_by: dict[str, str] = {
+            c["name"]: c["default_sell_by"]
+            for c in vert_cats
+            if c.get("default_sell_by")
+        }
+    except Exception:
+        cat_sell_by = {}
+
     valid_unit_names: frozenset[str] = frozenset(u["name"] for u in company_units)
 
-    def _validate(col: str, value: str) -> bool:
-        if col == "sell_by" and value.strip():
-            # If company units are known, validate against them
-            return not valid_unit_names or value.strip() in valid_unit_names
+    def _validate(col: str, value: str, row: dict | None = None) -> bool:
+        if col == "sell_by":
+            v = value.strip()
+            # sell_by is required unless the row's category provides a default
+            if not v:
+                category = str((row or {}).get("category", "")).strip()
+                return bool(cat_sell_by.get(category))
+            # If known units are available, validate membership
+            return not valid_unit_names or v in valid_unit_names
         return _item_validate(col, value)
 
     return _validate
