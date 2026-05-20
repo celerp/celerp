@@ -65,6 +65,7 @@ async def test_items_valuation_with_total_cost_and_retail(client):
             "data": {
                 "sku": f"TC-{uuid.uuid4().hex[:6]}",
                 "name": "ValuationItem",
+                "sell_by": "piece",
                 "quantity": 1,
                 "total_cost": 100.0,
                 "wholesale_price": 120.0,
@@ -182,7 +183,7 @@ async def test_reports_expiring_days_remaining_skip(client):
             "event_type": "item.created",
             "source": "test",
             "idempotency_key": f"exp-far-{uuid.uuid4().hex}",
-            "data": {"sku": "EXP-FAR", "name": "Far Future", "expires_at": far_future},
+            "data": {"sku": "EXP-FAR", "name": "Far Future", "sell_by": "piece", "expires_at": far_future},
         }
     ]})
     assert r.status_code == 200
@@ -195,7 +196,7 @@ async def test_reports_expiring_days_remaining_skip(client):
             "event_type": "item.created",
             "source": "test",
             "idempotency_key": f"exp-near-{uuid.uuid4().hex}",
-            "data": {"sku": "EXP-NEAR", "name": "Near Future", "expires_at": near_future},
+            "data": {"sku": "EXP-NEAR", "name": "Near Future", "sell_by": "piece", "expires_at": near_future},
         }
     ]})
     assert r2.status_code == 200

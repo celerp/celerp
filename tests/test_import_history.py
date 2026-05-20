@@ -237,6 +237,7 @@ async def test_undo_purges_idempotency_keys_allowing_reimport(client):
         "entity_type": "item",
         "event_type": EventType.ITEM_CREATED,
         "data": {"sku": "REIMP-001", "name": "Reimportable", "category": "Test",
+                 "sell_by": "piece",
                  "quantity": 1, "cost_price": 1.0, "wholesale_price": 1.5, "retail_price": 2.0, "status": "available"},
         "idempotency_key": ikey,
         "source": "csv_import",
