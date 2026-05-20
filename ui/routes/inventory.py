@@ -578,7 +578,7 @@ def setup_routes(app):
 
         rows = list(csv.DictReader(io.StringIO(remapped_csv)))
         cols = remapped_cols or (list(rows[0].keys()) if rows else spec.cols)
-        validate = await _build_item_validator(token)
+        validate, cell_renderers = await _build_item_validator(token)
 
         return base_shell(
             page_header(t("page.import_inventory", lang)),
@@ -592,6 +592,7 @@ def setup_routes(app):
                 revalidate_action="/inventory/import/revalidate",
                 has_mapping=True,
                 upsert_label="SKU or barcode",
+                cell_renderers=cell_renderers,
             ),
             title="Import Inventory - Celerp",
             nav_active="inventory",
@@ -614,7 +615,7 @@ def setup_routes(app):
         rows = _apply_fixes(form, rows, cols)
         # Re-stash the patched CSV so downstream confirm/errors can read it
         csv_ref = _stash_csv(_rows_to_csv(rows, cols))
-        validate = await _build_item_validator(token)
+        validate, cell_renderers = await _build_item_validator(token)
         return _csv_validation_result(
             rows=rows,
             cols=cols,
@@ -625,6 +626,7 @@ def setup_routes(app):
             revalidate_action="/inventory/import/revalidate",
             has_mapping=True,
             upsert_label="SKU or barcode",
+            cell_renderers=cell_renderers,
         )
 
     @app.post("/inventory/import/errors")
@@ -636,7 +638,7 @@ def setup_routes(app):
         csv_data = _resolve_csv_text(form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
         cols = list(rows[0].keys()) if rows else _IMPORT_SPEC.cols
-        validate = await _build_item_validator(token)
+        validate, _ = await _build_item_validator(token)
         return error_report_response(rows, cols, validate, "inventory_errors.csv")
 
     @app.post("/inventory/import/confirm")
@@ -3748,8 +3750,11 @@ def _item_validate(col: str, value: str, row: dict | None = None) -> bool:
     return _csv_validate_cell(_IMPORT_SPEC, col, value)
 
 
-async def _build_item_validator(token: str) -> ValidateFn:
-    """Build a validator for CSV import preview.
+async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
+    """Build a validator and import fix-table cell renderers for CSV import preview.
+
+    Returns (validate_fn, cell_renderers) where cell_renderers maps column names
+    to callables of signature (val: str, row_index: int, row: dict, is_bad: bool) -> FT.
 
     location_name is optional - blank or missing means "use default location"
     (resolved at confirm time). Validates sell_by against company units if present,
@@ -3770,7 +3775,8 @@ async def _build_item_validator(token: str) -> ValidateFn:
     except Exception:
         cat_sell_by = {}
 
-    valid_unit_names: frozenset[str] = frozenset(u["name"] for u in company_units)
+    valid_unit_names: list[str] = [u["name"] for u in company_units]
+    valid_unit_set: frozenset[str] = frozenset(valid_unit_names)
 
     def _validate(col: str, value: str, row: dict | None = None) -> bool:
         if col == "sell_by":
@@ -3780,10 +3786,29 @@ async def _build_item_validator(token: str) -> ValidateFn:
                 category = str((row or {}).get("category", "")).strip()
                 return bool(cat_sell_by.get(category))
             # If known units are available, validate membership
-            return not valid_unit_names or v in valid_unit_names
+            return not valid_unit_set or v in valid_unit_set
         return _item_validate(col, value)
 
-    return _validate
+    # Build import fix-table cell renderers for constrained columns.
+    # Renderer signature: (val: str, row_index: int, row: dict, is_bad: bool) -> FT
+    cell_renderers: dict = {}
+    if valid_unit_names:
+        def _make_unit_renderer(col: str, _opts: list = valid_unit_names) -> "Callable":
+            def _render(val: str, ri: int, row: dict, is_bad: bool) -> FT:
+                err_cls = "cell-edit  input--error" if is_bad else "cell-edit"
+                return Select(
+                    Option("-- select unit --", value="", selected=(not val.strip())),
+                    *[Option(u, value=u, selected=(val.strip() == u)) for u in _opts],
+                    data_col=col,
+                    data_row=str(ri),
+                    cls=err_cls,
+                )
+            return _render
+
+        cell_renderers["sell_by"] = _make_unit_renderer("sell_by")
+        cell_renderers["purchase_unit"] = _make_unit_renderer("purchase_unit")
+
+    return _validate, cell_renderers
 
 
 # Core item columns that map to top-level ItemCreate fields (not attributes).

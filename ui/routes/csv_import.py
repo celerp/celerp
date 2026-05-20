@@ -935,7 +935,7 @@ _INLINE_FIX_JS = """
     var jsonField = form.querySelector('input[name="fixes_json"]');
     if (!jsonField) return;
     var fixes = {};
-    form.querySelectorAll('input.cell-edit[data-row][data-col]').forEach(function(el) {
+    form.querySelectorAll('[data-row][data-col]').forEach(function(el) {
       fixes[el.dataset.row + '__' + el.dataset.col] = el.value;
     });
     jsonField.value = JSON.stringify(fixes);
@@ -961,7 +961,11 @@ _INLINE_FIX_CSS = """
 .csv-fix-table .cell-ro { color: var(--c-text2); font-size: 11px; }
 .csv-fix-table input.cell-edit { width: 100%; box-sizing: border-box; padding: 3px 6px;
   font-size: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); }
+.csv-fix-table select.cell-edit { width: 100%; box-sizing: border-box; padding: 3px 6px;
+  font-size: 12px; border: 1px solid var(--c-border); border-radius: var(--radius); }
 .csv-fix-table input.input--error { border-color: var(--c-red, #ef4444);
+  background: rgba(239,68,68,0.06); }
+.csv-fix-table select.input--error { border-color: var(--c-red, #ef4444);
   background: rgba(239,68,68,0.06); }
 .csv-ok-count { font-size: 12px; color: var(--c-text2); margin-top: 6px; }
 .csv-fix-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
@@ -981,6 +985,7 @@ def _fix_errors_panel(
     error_report_action: str,
     back_href: str,
     has_mapping: bool = False,
+    cell_renderers: dict[str, "Callable[[str, int, dict, bool], FT]"] | None = None,
 ) -> FT:
     """Inline-fix error panel: editable error cells + fill-all bars."""
     ok_count = len(rows) - len(error_row_indices)
@@ -1053,13 +1058,18 @@ def _fix_errors_panel(
             val = str(row.get(col, ""))
             if col in error_cols:
                 is_bad = col in bad
-                cells.append(Td(Input(
-                    type="text",
-                    value=val,
-                    data_col=col,
-                    data_row=str(ri),
-                    cls=f"cell-edit{'  input--error' if is_bad else ''}",
-                )))
+                err_cls = f"cell-edit{'  input--error' if is_bad else ''}"
+                renderer = (cell_renderers or {}).get(col)
+                if renderer:
+                    cells.append(Td(renderer(val, ri, row, is_bad)))
+                else:
+                    cells.append(Td(Input(
+                        type="text",
+                        value=val,
+                        data_col=col,
+                        data_row=str(ri),
+                        cls=err_cls,
+                    )))
             else:
                 cells.append(Td(val, cls="cell-ro"))
         body_rows.append(Tr(*cells, cls="data-row"))
@@ -1185,6 +1195,7 @@ def validation_result(
     revalidate_action: str = "",
     has_mapping: bool = False,
     upsert_label: str | None = None,
+    cell_renderers: dict[str, "Callable[[str, int, dict, bool], FT]"] | None = None,
 ) -> FT:
     """Return the post-upload panel: inline-fix error panel or clean confirm panel.
 
@@ -1216,6 +1227,7 @@ def validation_result(
             error_report_action=error_report_action,
             back_href=back_href,
             has_mapping=has_mapping,
+            cell_renderers=cell_renderers,
         )
 
     # Clean - confirm panel with preview table

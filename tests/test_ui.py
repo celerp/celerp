@@ -6245,7 +6245,7 @@ class TestCsvImportHelpers:
         rows = [{"sku": "S1", "name": "Widget"}]
         html = to_xml(validation_result(
             rows=rows, cols=["sku", "name"],
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
@@ -6261,7 +6261,7 @@ class TestCsvImportHelpers:
         rows = [{"sku": "", "name": "Widget"}]  # sku missing → error
         html = to_xml(validation_result(
             rows=rows, cols=["sku", "name"],
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
@@ -6279,7 +6279,7 @@ class TestCsvImportHelpers:
         rows = [{"sku": ""}]
         html = to_xml(validation_result(
             rows=rows, cols=["sku"],
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
@@ -6294,7 +6294,7 @@ class TestCsvImportHelpers:
         rows = [{"sku": "SKU-1"}]
         html = to_xml(validation_result(
             rows=rows, cols=["sku"],
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href="/x",
@@ -6313,7 +6313,7 @@ class TestCsvImportHelpers:
         from ui.routes.csv_import import CsvImportSpec, validate_cell, error_report_csv
         spec = CsvImportSpec(cols=["sku", "name"], required={"sku", "name"}, type_map={})
         rows = [{"sku": "", "name": "Widget"}, {"sku": "S2", "name": ""}]
-        csv_text = error_report_csv(rows, spec.cols, lambda c, v: validate_cell(spec, c, v))
+        csv_text = error_report_csv(rows, spec.cols, lambda c, v, r: validate_cell(spec, c, v))
         reader = list(csv.DictReader(io.StringIO(csv_text)))
         assert "_errors" in reader[0]
         assert "sku" in reader[0]["_errors"]   # row 0: sku empty
@@ -6325,7 +6325,7 @@ class TestCsvImportHelpers:
         from ui.routes.csv_import import CsvImportSpec, validate_cell, error_report_csv
         spec = CsvImportSpec(cols=["sku"], required={"sku"}, type_map={})
         rows = [{"sku": "SKU-1"}]
-        csv_text = error_report_csv(rows, spec.cols, lambda c, v: validate_cell(spec, c, v))
+        csv_text = error_report_csv(rows, spec.cols, lambda c, v, r: validate_cell(spec, c, v))
         reader = list(csv.DictReader(io.StringIO(csv_text)))
         assert reader == []
 
@@ -7114,7 +7114,7 @@ class TestCsvImportUxErrorTable:
         return to_xml(validation_result(
             rows=rows,
             cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm",
             error_report_action="/x/errors",
             back_href=back_href,
@@ -7472,7 +7472,7 @@ class TestCsvImportIdentifierColumnContract:
         spec = CsvImportSpec(cols=cols, required=required or set(), type_map={})
         return to_xml(validation_result(
             rows=rows, cols=cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/c", error_report_action="/e", back_href="/b",
         ))
 
@@ -9255,7 +9255,7 @@ class TestCsvImportUxOverhaul:
         rows = [{"sku": "", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x", revalidate_action="/x/revalidate",
         ))
@@ -9272,7 +9272,7 @@ class TestCsvImportUxOverhaul:
         ]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x", revalidate_action="/x/revalidate",
         ))
@@ -9288,7 +9288,7 @@ class TestCsvImportUxOverhaul:
         ]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x", revalidate_action="/x/revalidate",
         ))
@@ -9302,7 +9302,7 @@ class TestCsvImportUxOverhaul:
         rows = [{"sku": "S1", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x",
         ))
@@ -9319,7 +9319,7 @@ class TestCsvImportUxOverhaul:
         ]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x",
         ))
@@ -9369,7 +9369,7 @@ class TestCsvImportUxOverhaul:
         rows = [{"sku": "", "name": "Widget", "quantity": "5", "cost_price": "10"}]
         html = to_xml(validation_result(
             rows=rows, cols=spec.cols,
-            validate=lambda c, v: validate_cell(spec, c, v),
+            validate=lambda c, v, r: validate_cell(spec, c, v),
             confirm_action="/x/confirm", error_report_action="/x/errors",
             back_href="/x", revalidate_action="/x/revalidate",
         ))
@@ -9390,7 +9390,7 @@ class TestCsvImportSellByValidation:
             {"name": "carat", "label": "Carat", "decimals": 2},
         ]
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            validator = await _build_item_validator("fake-token")
+            validator, _ = await _build_item_validator("fake-token")
 
         # Known unit → valid
         assert validator("sell_by", "piece") is True
@@ -9406,7 +9406,7 @@ class TestCsvImportSellByValidation:
 
         units = [{"name": "piece", "label": "Piece", "decimals": 0}]
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
-            validator = await _build_item_validator("fake-token")
+            validator, _ = await _build_item_validator("fake-token")
 
         # sell_by is required; blank value must be flagged as invalid at preview
         assert validator("sell_by", "") is False
@@ -9418,14 +9418,40 @@ class TestCsvImportSellByValidation:
         from ui.routes.inventory import _build_item_validator
 
         with patch("ui.api_client.get_units", new=AsyncMock(side_effect=Exception("network error"))):
-            validator = await _build_item_validator("fake-token")
+            validator, _ = await _build_item_validator("fake-token")
 
         # Any value is accepted when units can't be fetched
         assert validator("sell_by", "piece") is True
         assert validator("sell_by", "anything") is True
 
+    @pytest.mark.asyncio
+    async def test_sell_by_cell_renderer_returns_select(self, ui_client):
+        """_build_item_validator returns a sell_by renderer that emits a <select>."""
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
 
-class TestLabelPages:
+        units = [
+            {"name": "piece", "label": "Piece", "decimals": 0},
+            {"name": "kg", "label": "Kilogram", "decimals": 3},
+        ]
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
+            _, renderers = await _build_item_validator("fake-token")
+
+        assert "sell_by" in renderers
+        assert "purchase_unit" in renderers
+
+        # Render with current value "piece" - should be selected
+        html = to_xml(renderers["sell_by"]("piece", 0, {}, False))
+        assert "<select" in html
+        assert 'data-col="sell_by"' in html
+        assert 'data-row="0"' in html
+        assert 'value="piece"' in html
+        assert "selected" in html
+
+        # Render with blank value - first option selected
+        html_blank = to_xml(renderers["sell_by"]("", 0, {}, True))
+        assert "input--error" in html_blank
+
     """Label module UI pages: shell wrapping, preset seeding, editor panel rendering."""
 
     @pytest_asyncio.fixture
