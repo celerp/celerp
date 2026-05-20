@@ -4348,7 +4348,7 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
                 Form(
                     Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
                           cls="form-input form-input--sm"),
-                    Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                    Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                     hx_post="/settings/categories",
                     hx_target="#vert-applied-panel",
                     hx_swap="outerHTML",
@@ -4368,7 +4368,7 @@ def _verticals_applied_panel(applied_names: list[str]) -> FT:
             Form(
                 Input(type="text", name="new_category_name", placeholder=t("settings.new_category_name"),
                       cls="form-input form-input--sm"),
-                Button(t("btn.add"), type="submit", cls="btn btn--secondary btn--sm"),
+                Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                 hx_post="/settings/categories",
                 hx_target="#vert-applied-panel",
                 hx_swap="outerHTML",
