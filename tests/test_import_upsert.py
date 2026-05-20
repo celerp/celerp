@@ -437,3 +437,59 @@ async def test_import_spec_required_fields():
     assert "sku" not in _IMPORT_SPEC.required
     assert "name" in _IMPORT_SPEC.required
     assert "sell_by" in _IMPORT_SPEC.required
+
+
+# ---------------------------------------------------------------------------
+# Issue 1: ill-formed CSV handling
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_import_malformed_csv_shows_error(client):
+    """CSV with extra columns beyond the header (causes None key in DictReader rows)
+    must return a clean upload error, not a 500."""
+    from httpx import AsyncClient
+    from httpx._transports.asgi import ASGITransport
+    from ui.app import app as ui_app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=ui_app),
+        base_url="http://ui",
+        follow_redirects=False,
+    ) as c:
+        # More columns than header → DictReader emits None key for overflow columns
+        malformed = b"name,sell_by\nfoo,piece,extra_unexpected_col\n"
+        r = await c.post(
+            "/inventory/import/preview",
+            cookies={"celerp_token": "dummy-token-for-test"},
+            files={"csv_file": ("items.csv", malformed, "text/csv")},
+        )
+    assert r.status_code == 200
+    body = r.text
+    assert "unexpected error" not in body.lower()
+    # Must show a user-friendly CSV error, not fall through to the column mapping step
+    assert "more columns than" in body or "valid CSV" in body or "upload" in body.lower()
+
+
+@pytest.mark.asyncio
+async def test_import_none_fieldnames_shows_error(client):
+    """CSV that causes DictReader to emit None fieldnames must return a clean error,
+    not propagate to a 500."""
+    from httpx import AsyncClient
+    from httpx._transports.asgi import ASGITransport
+    from ui.app import app as ui_app
+
+    async with AsyncClient(
+        transport=ASGITransport(app=ui_app),
+        base_url="http://ui",
+        follow_redirects=False,
+    ) as c:
+        # A CSV where the header row is empty / blank triggers None fieldnames
+        empty_header = b"\n\nname,sell_by\ntest,piece\n"
+        r = await c.post(
+            "/inventory/import/preview",
+            cookies={"celerp_token": "dummy-token-for-test"},
+            files={"csv_file": ("items.csv", empty_header, "text/csv")},
+        )
+    assert r.status_code == 200
+    body = r.text
+    assert "unexpected error" not in body.lower()

@@ -864,7 +864,15 @@ def upload_form(
 
 
 async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
-    """Return (rows, error)."""
+    """Return (rows, error).
+
+    Handles three failure classes explicitly:
+    1. Encoding errors  → "Could not decode file. Use UTF-8 encoding."
+    2. Structurally malformed CSV (csv.Error, e.g. unbalanced quotes, NUL bytes)
+       → "Could not parse file. Please check it is a valid CSV."
+    3. Empty or header-only / None-fieldname output from DictReader
+       → "CSV file is empty or has no valid header row."
+    """
     file_obj = form.get("csv_file")
     if not file_obj or not hasattr(file_obj, "read"):
         return [], "Please select a CSV file."
@@ -873,7 +881,16 @@ async def read_csv_upload(form: Any) -> tuple[list[dict], str | None]:
         text = content.decode("utf-8-sig")
     except Exception:
         return [], "Could not decode file. Use UTF-8 encoding."
-    rows = list(csv.DictReader(io.StringIO(text)))
+    try:
+        reader = csv.DictReader(io.StringIO(text))
+        rows = list(reader)
+        fieldnames = reader.fieldnames or []
+    except csv.Error:
+        return [], "Could not parse file. Please check it is a valid CSV."
+    if not fieldnames or any(f is None for f in fieldnames):
+        return [], "CSV file is empty or has no valid header row."
+    if rows and any(None in row for row in rows):
+        return [], "CSV has more columns than the header row. Please check the file."
     if not rows:
         return [], "CSV file is empty or invalid."
     return rows, None
