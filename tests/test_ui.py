@@ -6368,7 +6368,7 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_preview_errors_shows_download_prompt(self, ui_client):
         """CSV with required field missing → error report prompt, not Import All."""
-        csv_bytes = _make_csv([{"sku": "", "name": "Widget", "location_name": "Main Office"}])
+        csv_bytes = _make_csv([{"sku": "S1", "name": "", "location_name": "Main Office"}])
         with patch("ui.api_client.get_locations", new=AsyncMock(return_value=_LOCATIONS_RESP)):
             r = await _inventory_import_with_mapping(ui_client, csv_bytes)
         assert r.status_code == 200
@@ -6379,7 +6379,7 @@ class TestInventoryImportFlow:
     async def test_import_errors_download(self, ui_client):
         """POST /inventory/import/errors must return a CSV file with _errors column."""
         import csv as _csv, io as _io
-        csv_data = "sku,name,location_name\n,Widget,Main Office\n"
+        csv_data = "sku,name,location_name\nS1,,Main Office\n"
         r = await ui_client.post(
             "/inventory/import/errors",
             cookies=_authed(),
@@ -6402,7 +6402,7 @@ class TestInventoryImportFlow:
     async def test_import_confirm_all_valid_imports(self, ui_client):
         """Confirm with all-valid rows (preview already validated) → all imported."""
         known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
-        csv_data = "sku,name,location_name\nS1,Widget,Main Office\nS2,Ring,Main Office\n"
+        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\nS2,Ring,Main Office,piece\n"
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
             patch("ui.api_client.batch_import", new=AsyncMock(return_value={"created": 2, "skipped": 0, "errors": []})),
@@ -6420,7 +6420,7 @@ class TestInventoryImportFlow:
     @pytest.mark.asyncio
     async def test_import_confirm_unknown_location_auto_created(self, ui_client):
         """Unknown location_name in CSV → auto-created during confirm, import succeeds."""
-        csv_data = "sku,name,location_name\nS1,Widget,New Warehouse\n"
+        csv_data = "sku,name,location_name,sell_by\nS1,Widget,New Warehouse,piece\n"
         created_loc = {"id": "loc:new", "name": "New Warehouse", "type": "warehouse"}
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
@@ -6440,7 +6440,7 @@ class TestInventoryImportFlow:
     async def test_import_confirm_no_location_column_uses_default(self, ui_client):
         """CSV with no location_name column and single location → uses that location."""
         default_loc = {"id": "loc:hq", "name": "Head Office", "type": "office", "is_default": True}
-        csv_data = "sku,name\nS1,Widget\n"
+        csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [default_loc], "total": 1})),
             patch("ui.api_client.batch_import", new=AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})),
@@ -6461,7 +6461,7 @@ class TestInventoryImportFlow:
             {"id": "loc:a", "name": "Warehouse A", "type": "warehouse"},
             {"id": "loc:b", "name": "Warehouse B", "type": "warehouse"},
         ]
-        csv_data = "sku,name\nS1,Widget\n"
+        csv_data = "sku,name,sell_by\nS1,Widget,piece\n"
         with patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": locs, "total": 2})):
             r = await ui_client.post(
                 "/inventory/import/confirm",
@@ -6479,8 +6479,8 @@ class TestInventoryImportFlow:
         because the server enforces max_length=500 on BatchImportRequest.records.
         """
         known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
-        rows = "\n".join(f"SKU{i:04d},Item {i},Main Office" for i in range(600))
-        csv_data = f"sku,name,location_name\n{rows}\n"
+        rows = "\n".join(f"SKU{i:04d},Item {i},Main Office,piece" for i in range(600))
+        csv_data = f"sku,name,location_name,sell_by\n{rows}\n"
 
         batch_import_mock = AsyncMock(return_value={"created": 0, "skipped": 0, "updated": 0, "errors": []})
         with (
@@ -6508,7 +6508,7 @@ class TestInventoryImportFlow:
         """A 504 APIError (timeout) from batch_import renders an informative error message."""
         from ui.api_client import APIError
         known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
-        csv_data = "sku,name,location_name\nS1,Widget,Main Office\n"
+        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main Office,piece\n"
 
         with (
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
@@ -9400,16 +9400,17 @@ class TestCsvImportSellByValidation:
         assert validator("sell_by", "furlong") is False
 
     @pytest.mark.asyncio
-    async def test_sell_by_blank_is_valid(self, ui_client):
-        """CSV preview: blank sell_by is always valid (optional field)."""
+    async def test_sell_by_blank_is_invalid(self, ui_client):
+        """CSV preview: blank sell_by is invalid — sell_by is a required field."""
         from ui.routes.inventory import _build_item_validator
 
         units = [{"name": "piece", "label": "Piece", "decimals": 0}]
         with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
             validator = await _build_item_validator("fake-token")
 
-        assert validator("sell_by", "") is True
-        assert validator("sell_by", "   ") is True
+        # sell_by is required; blank value must be flagged as invalid at preview
+        assert validator("sell_by", "") is False
+        assert validator("sell_by", "   ") is False
 
     @pytest.mark.asyncio
     async def test_sell_by_valid_when_units_unavailable(self, ui_client):

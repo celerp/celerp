@@ -704,6 +704,26 @@ def setup_routes(app):
         except Exception:
             pass  # Non-critical; if unavailable, sell_by remains None
 
+        # Pre-flight: every row must have sell_by (either explicit or via category fallback).
+        # Catch this early so the user sees a clear message rather than a silent 0-created result.
+        missing_sell_by = [
+            str(row.get("sku") or row.get("name") or f"row {i + 1}")
+            for i, row in enumerate(rows)
+            if not (
+                str(row.get("sell_by", "")).strip()
+                or _cat_sell_by.get(str(row.get("category", "")).strip())
+            )
+        ]
+        if missing_sell_by:
+            return Div(
+                P(
+                    f"Import aborted: {len(missing_sell_by)} row(s) are missing sell_by. "
+                    "Map the sell_by column or ensure all items have a category with a default unit.",
+                    cls="flash flash--error",
+                ),
+                id="import-preview",
+            )
+
         for row in rows:
             sku = str(row.get("sku", "")).strip()
             name = str(row.get("name", "")).strip()
@@ -761,17 +781,17 @@ def setup_routes(app):
                 "weight": _flt("weight") or _flt("weight_ct"),
                 "weight_unit": str(row.get("weight_unit", "")).strip() or None,
                 "sell_by": str(row.get("sell_by", "")).strip() or _cat_sell_by.get(str(row.get("category", "")).strip()) or None,
-                "status": str(row.get("status", "")).strip() or None,
                 "barcode": str(row.get("barcode", "")).strip() or None,
                 "hs_code": str(row.get("hs_code", "")).strip() or None,
                 "short_description": str(row.get("short_description", "")).strip() or None,
                 "description": str(row.get("description", "")).strip() or None,
                 "notes": str(row.get("notes", "")).strip() or None,
-                "created_at": str(row.get("created_at", "")).strip() or None,
-                "updated_at": str(row.get("updated_at", "")).strip() or None,
                 "location_id": location_id,
                 "attributes": attrs,
             }
+            # status, created_at, updated_at intentionally omitted:
+            # status is always set to available by the backend on creation.
+            # created_at/updated_at are system-generated; backend enforces this.
             # Extract price fields dynamically (any column ending in _price)
             for col_key in row:
                 if col_key.endswith("_price") and _flt(col_key) is not None:
@@ -3689,14 +3709,13 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
 
 # Base import columns (without price columns - those are added dynamically)
 _IMPORT_BASE_COLS = ["sku", "name", "category", "quantity"]
-_IMPORT_TAIL_COLS = ["weight", "weight_unit", "sell_by", "pieces", "status", "barcode", "hs_code",
+_IMPORT_TAIL_COLS = ["weight", "weight_unit", "sell_by", "pieces", "barcode", "hs_code",
                      "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
-                     "short_description", "description", "notes", "location_name",
-                     "created_at", "updated_at"]
+                     "short_description", "description", "notes", "location_name"]
 
 _IMPORT_SPEC = CsvImportSpec(
     cols=_IMPORT_BASE_COLS + ["retail_price", "wholesale_price", "cost_price"] + _IMPORT_TAIL_COLS,
-    required={"sku", "name", "location_name"},
+    required={"name", "sell_by"},
     type_map={"quantity": float, "retail_price": float, "wholesale_price": float,
               "cost_price": float, "weight": float, "purchase_conversion_factor": float},
 )
@@ -3710,7 +3729,7 @@ def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
         type_map[col] = float
     return CsvImportSpec(
         cols=_IMPORT_BASE_COLS + price_cols + _IMPORT_TAIL_COLS,
-        required={"sku", "name", "location_name"},
+        required={"name", "sell_by"},
         type_map=type_map,
     )
 
