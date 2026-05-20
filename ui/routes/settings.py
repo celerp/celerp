@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import zoneinfo as _zi
+from typing import Any
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -2555,31 +2556,81 @@ def _schema_display_cell(idx: int, field: str, f: dict) -> FT:
 
 
 _OPTIONS_TYPES: frozenset[str] = frozenset({"select", "status"})
+_BOOL_FIELDS: frozenset[str] = frozenset({"required", "editable", "show_in_table"})
+_OPTIONS_PILL_LIMIT = 4
 
 
 def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT:
     """Editable cell for a category attribute schema field."""
-    if field == "options":
-        val = ", ".join(f.get("options", []))
-    elif field in ("required", "editable", "show_in_table"):
-        val = "Yes" if f.get(field) else "No"
-    else:
-        val = f.get(field, "")
-    display = str(val) if val and str(val).strip() else EMPTY
-    cls_extra = " cell--mono" if field == "key" else ""
     from urllib.parse import quote
     enc = quote(category, safe="")
 
-    # Options are only meaningful for select/status types - block editing otherwise
-    if field == "options" and f.get("type") not in _OPTIONS_TYPES:
+    # Boolean fields: ✓ / – icons
+    if field in _BOOL_FIELDS:
+        checked = bool(f.get(field))
+        icon = Span("✓", cls="cell-bool-check") if checked else Span("–", cls="cell-bool-dash")
         return Td(
-            Span(display, cls=f"cell-text{cls_extra} text-muted"),
-            title="Options only apply to select/status fields",
-            cls="cell",
+            icon,
+            title="Click to edit",
+            hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
+            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+            cls="cell cell--clickable",
+            style="text-align:center",
         )
 
+    # Label field: show key as grey subtitle (key column is hidden)
+    if field == "label":
+        label_val = str(f.get("label", "") or "")
+        key_val = str(f.get("key", "") or "")
+        display = label_val if label_val.strip() else EMPTY
+        return Td(
+            Div(
+                Span(display, cls="cell-text"),
+                Span(key_val, cls="cell-label-key") if key_val else "",
+                cls="cell-label-stack",
+            ),
+            title="Click to edit",
+            hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
+            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+            cls="cell cell--clickable",
+        )
+
+    # Key field: hidden - merged into label cell
+    if field == "key":
+        return Td(hidden=True, style="display:none")
+
+    # Options field: pill list with overflow
+    if field == "options":
+        opts: list[str] = f.get("options", []) or []
+        if f.get("type") not in _OPTIONS_TYPES:
+            return Td(
+                Span("–", cls="cell-bool-dash"),
+                title="Options only apply to select/status fields",
+                cls="cell",
+                style="text-align:center",
+            )
+        if not opts:
+            display_content: Any = Span(EMPTY, cls="cell-text text-muted")
+        else:
+            visible = opts[:_OPTIONS_PILL_LIMIT]
+            overflow = len(opts) - _OPTIONS_PILL_LIMIT
+            pills: list[Any] = [Span(o, cls="attr-pill") for o in visible]
+            if overflow > 0:
+                pills.append(Span(f"+{overflow} more", cls="attr-pill attr-pill--more"))
+            display_content = Span(*pills)
+        return Td(
+            display_content,
+            title="Click to edit",
+            hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
+            hx_target="this", hx_swap="outerHTML", hx_trigger="click",
+            cls="cell cell--clickable",
+        )
+
+    # Default: plain text
+    val = f.get(field, "")
+    display = str(val) if val and str(val).strip() else EMPTY
     return Td(
-        Span(display, cls=f"cell-text{cls_extra}"),
+        Span(display, cls="cell-text"),
         title="Click to edit",
         hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="click",
@@ -3474,7 +3525,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
             cat_selector,
             P(hint, cls="settings-hint"),
             Table(
-                Thead(Tr(Th("#"), Th(t("th.key")), Th(t("th.label")), Th(t("th.doc_type")), Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")), Th(t("th.options")), Th(""))),
+                Thead(Tr(Th("#"), Th(t("th.label")), Th(t("th.doc_type")), Th("Req"), Th("Edit"), Th("In Table"), Th(t("th.options")), Th(""))),
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_schema)], add_row),
                 cls="data-table",
             ),

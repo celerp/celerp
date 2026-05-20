@@ -980,6 +980,12 @@ a:hover { text-decoration: underline; }
 .tags-section { margin-top: 16px; padding: 12px 0; }
 .tags-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .tag-pill { display: inline-flex; align-items: center; gap: 4px; background: rgba(14,165,122,0.12); border: 1px solid rgba(14,165,122,0.3); color: var(--c-accent); border-radius: 12px; padding: 2px 8px; font-size: 11px; font-weight: 500; }
+.attr-pill { display: inline-block; background: var(--c-bg3, #f3f4f6); border: 1px solid var(--c-border); color: var(--c-text2); border-radius: 10px; padding: 1px 7px; font-size: 11px; margin: 1px 2px 1px 0; white-space: nowrap; }
+.attr-pill--more { background: var(--c-bg-alt); color: var(--c-text-muted); font-style: italic; cursor: default; }
+.cell-label-stack { display: flex; flex-direction: column; gap: 1px; }
+.cell-label-key { font-size: 10px; color: var(--c-text-muted); font-family: var(--font-mono); margin-top: 2px; }
+.cell-bool-check { color: var(--c-accent); font-size: 13px; }
+.cell-bool-dash { color: var(--c-text-muted); font-size: 13px; }
 .tag-remove { background: none; border: none; color: var(--c-accent); cursor: pointer; font-size: 13px; line-height: 1; padding: 0 0 0 2px; opacity: 0.7; }
 .tag-remove:hover { opacity: 1; }
 .file-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.25rem 0; }
