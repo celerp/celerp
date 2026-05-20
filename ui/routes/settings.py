@@ -2614,17 +2614,12 @@ def _cat_schema_display_cell(category: str, idx: int, field: str, f: dict) -> FT
             style="text-align:center",
         )
 
-    # Label field: show key as grey subtitle (key column is hidden)
+    # Label field: shown as "Name" to the user - key is fully internal
     if field == "label":
         label_val = str(f.get("label", "") or "")
-        key_val = str(f.get("key", "") or "")
         display = label_val if label_val.strip() else EMPTY
         return Td(
-            Div(
-                Span(display, cls="cell-text"),
-                Span(key_val, cls="cell-label-key") if key_val else "",
-                cls="cell-label-stack",
-            ),
+            Span(display, cls="cell-text"),
             title="Click to edit",
             hx_get=f"/settings/cat-schema/{enc}/{idx}/{field}/edit",
             hx_target="this", hx_swap="outerHTML", hx_trigger="click",
@@ -3561,7 +3556,7 @@ def _schema_tab(schema: list[dict], cat_schemas: dict, cat_tab: str = "") -> FT:
             cat_selector,
             P(hint, cls="settings-hint"),
             Table(
-                Thead(Tr(Th("#"), Th(t("th.label")), Th(t("th.doc_type")), Th("Req"), Th("Edit"), Th("In Table"), Th(t("th.options")), Th(""))),
+                Thead(Tr(Th("Order", title="Display order - click to change"), Th("Name"), Th(t("th.doc_type")), Th("Req"), Th("Edit"), Th("In Table"), Th(t("th.options")), Th(""))),
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_schema)], add_row),
                 cls="data-table",
             ),
