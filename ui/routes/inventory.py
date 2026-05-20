@@ -3127,6 +3127,11 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
       var lbl = menu.querySelector('label[data-col="' + key + '"]');
       if (lbl) parent.appendChild(lbl);
     }});
+    // Always keep reset button and custom-col link at the bottom
+    var resetBtn = menu.querySelector('#col-mgr-reset');
+    if (resetBtn) parent.appendChild(resetBtn);
+    var customLink = menu.querySelector('#col-mgr-custom-link');
+    if (customLink) parent.appendChild(customLink);
   }}
 
   // Get current picker order (label DOM order = source of truth)
@@ -3241,7 +3246,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
         Div(
             *checkboxes,
             Button(
-                t("btn.reset_columns"),
+                "Reset column settings",
                 id="col-mgr-reset",
                 cls="btn btn--sm btn--ghost col-mgr-reset-btn",
                 type="button",
@@ -3253,6 +3258,16 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
                     f"location.reload();"
                 ),
                 title=t("btn.reset_columns_title"),
+            ),
+            A(
+                ("+ Add custom column" if active_cat else "+ Manage category columns"),
+                href=(
+                    f"/settings/inventory?tab=category-library&cat={active_cat}"
+                    if active_cat
+                    else "/settings/inventory?tab=category-library"
+                ),
+                id="col-mgr-custom-link",
+                cls="col-mgr-custom-link",
             ),
             Form(
                 *hidden_inputs,

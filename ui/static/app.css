@@ -620,6 +620,8 @@ a:hover { text-decoration: underline; }
 }
 .column-option input[type="checkbox"] { cursor: pointer; accent-color: var(--c-accent); }
 .col-mgr-reset-btn { margin-top: 6px; font-size: 11px; width: 100%; justify-content: center; }
+.col-mgr-custom-link { display: block; margin-top: 4px; font-size: 11px; text-align: center; color: var(--color-primary, #2563eb); text-decoration: none; padding: 4px 0; }
+.col-mgr-custom-link:hover { text-decoration: underline; }
 
 /* ─── Searchable combobox dropdown ───────────────────────────────────── */
 .combobox-wrap { position: relative; display: inline-block; width: 100%; }
