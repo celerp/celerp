@@ -196,10 +196,11 @@ async def my_companies(token: str) -> dict:
         return _raise(await c.get("/auth/my-companies")).json()
 
 
-async def switch_company(token: str, company_id: str) -> str:
+async def switch_company(token: str, company_id: str) -> tuple[str, str]:
     async with _api_client(token) as c:
         r = _raise(await c.post(f"/auth/switch-company/{company_id}"))
-        return r.json()["access_token"]
+        data = r.json()
+        return data["access_token"], data["refresh_token"]
 
 
 # ---------------------------------------------------------------------------

@@ -631,7 +631,7 @@ class TestCompanySwitcher:
             from ui.api_client import switch_company as api_switch
         so it must be patched at ui.api_client.switch_company.
         """
-        with patch("ui.api_client.switch_company", new=AsyncMock(return_value="new-token-xyz")):
+        with patch("ui.api_client.switch_company", new=AsyncMock(return_value=("new-token-xyz", "new-refresh-xyz"))):
             r = await ui_client.post("/switch-company/c2", cookies=_authed())
         assert r.status_code in (302, 303)
         set_cookie = r.headers.get("set-cookie", "")

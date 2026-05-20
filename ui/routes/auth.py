@@ -254,12 +254,11 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         from ui.api_client import switch_company as api_switch
         try:
-            new_token = await api_switch(token, company_id)
+            new_access, new_refresh = await api_switch(token, company_id)
         except APIError as e:
             return RedirectResponse(f"/?error={e.detail}", status_code=302)
         resp = RedirectResponse("/", status_code=302)
-        # switch_company only returns access_token; keep existing refresh token
-        resp.set_cookie(COOKIE_NAME, new_token, httponly=True, samesite="lax", max_age=900, secure=_settings.cookie_secure, domain=cookie_domain(request))
+        _set_tokens(resp, new_access, new_refresh, request)
         return resp
 
     # ── Logout ───────────────────────────────────────────────────────────────
