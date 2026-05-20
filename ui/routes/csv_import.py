@@ -1274,6 +1274,29 @@ def _rows_to_csv(rows: list[dict], cols: list[str]) -> str:
     return output.getvalue()
 
 
+def import_abort_panel(
+    *,
+    message: str,
+    import_more_href: str,
+    back_href: str,
+    has_mapping: bool = False,
+) -> FT:
+    """Step-aware error panel for hard aborts (e.g. missing sell_by, location conflicts).
+
+    Keeps the journey map visible and gives the user a way forward.
+    """
+    review_step = 3 if has_mapping else 2
+    return Div(
+        _step_indicator(review_step, has_mapping=has_mapping),
+        P(message, cls="flash flash--error"),
+        Div(
+            A(t("msg.import_more"), href=import_more_href, cls="btn btn--secondary"),
+            cls="flex-row gap-sm mt-md",
+        ),
+        id="import-preview",
+    )
+
+
 def import_result_panel(
     *,
     created: int,

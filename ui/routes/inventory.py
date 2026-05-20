@@ -715,13 +715,14 @@ def setup_routes(app):
             )
         ]
         if missing_sell_by:
-            return Div(
-                P(
+            return import_abort_panel(
+                message=(
                     f"Import aborted: {len(missing_sell_by)} row(s) are missing sell_by. "
-                    "Map the sell_by column or ensure all items have a category with a default unit.",
-                    cls="flash flash--error",
+                    "Map the sell_by column or ensure all items have a category with a default unit."
                 ),
-                id="import-preview",
+                import_more_href="/inventory/import",
+                back_href="/inventory",
+                has_mapping=True,
             )
 
         for row in rows:
@@ -740,14 +741,15 @@ def setup_routes(app):
                 continue
 
             if not location_id:
-                return Div(
-                    P(
+                return import_abort_panel(
+                    message=(
                         "Import aborted: could not determine a location for one or more rows. "
                         "Your CSV has no location_name column and there are multiple locations configured. "
-                        "Please add a location_name column or set a default location in Settings → Inventory.",
-                        cls="flash flash--error",
+                        "Please add a location_name column or set a default location in Settings → Inventory."
                     ),
-                    id="import-preview",
+                    import_more_href="/inventory/import",
+                    back_href="/inventory",
+                    has_mapping=True,
                 )
 
             qty_raw = str(row.get("quantity", "0")).strip()
@@ -825,15 +827,17 @@ def setup_routes(app):
             result = merged
         except APIError as e:
             if e.status == 401:
-                return Div(
-                    P(t("error.session_expired"), cls="flash flash--error"),
-                    A(t("inv.go_to_login"), href="/login", cls="btn btn--primary"),
-                    id="import-preview",
+                return import_abort_panel(
+                    message=t("error.session_expired"),
+                    import_more_href="/login",
+                    back_href="/inventory",
+                    has_mapping=True,
                 )
-            return Div(
-                P(f"Import failed: {e.detail}", cls="flash flash--error"),
-                A(t("btn._try_again"), href="/inventory/import", cls="btn btn--secondary"),
-                id="import-preview",
+            return import_abort_panel(
+                message=f"Import failed: {e.detail}",
+                import_more_href="/inventory/import",
+                back_href="/inventory",
+                has_mapping=True,
             )
 
         # Auto-merge discovered attribute keys into category schemas
@@ -3683,6 +3687,7 @@ from ui.routes.csv_import import (
     apply_fixes_to_rows as _apply_fixes,
     column_mapping_form,
     error_report_response,
+    import_abort_panel,
     import_result_panel,
     read_csv_upload,
     upload_form as _csv_upload_form,
