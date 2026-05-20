@@ -245,10 +245,10 @@ def _categories_tab(
         add_row = Tr(
             Td(
                 Form(
+                    Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                     Input(type="text", name="new_category_name",
                           placeholder=t("settings.new_category_name"),
-                          cls="form-input form-input--sm"),
-                    Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
+                          cls="form-input form-input--sm cat-add-input"),
                     hx_post="/settings/categories",
                     hx_target="#your-cats-section",
                     hx_swap="outerHTML",
@@ -266,10 +266,10 @@ def _categories_tab(
         your_cats_body = Div(
             P(t("settings.no_categories_applied"), cls="settings-hint"),
             Form(
+                Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
                 Input(type="text", name="new_category_name",
                       placeholder=t("settings.new_category_name"),
-                      cls="form-input form-input--sm"),
-                Button("Add Category", type="submit", cls="btn btn--secondary btn--sm"),
+                      cls="form-input form-input--sm cat-add-input"),
                 hx_post="/settings/categories",
                 hx_target="#your-cats-section",
                 hx_swap="outerHTML",

@@ -1259,6 +1259,8 @@ a:hover { text-decoration: underline; }
 .your-cats-table td, .your-cats-table th { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .your-cats-fields { width: 80px; text-align: center !important; }
 .your-cats-action { width: 90px; text-align: right !important; }
+.cat-add-form { display: flex; align-items: center; gap: 6px; }
+.cat-add-input { width: 200px !important; flex: 0 0 200px; }
 .cell--center { text-align: center; }
 .th--center { text-align: center; }
 
