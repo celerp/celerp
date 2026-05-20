@@ -789,7 +789,20 @@ def setup_routes(app):
             })
 
         try:
-            result = await api.batch_import(token, "/items/import/batch", records, upsert=upsert)
+            _CHUNK = 500
+            merged: dict = {"created": 0, "skipped": 0, "updated": 0, "errors": [], "batch_id": None}
+            for i in range(0, max(len(records), 1), _CHUNK):
+                chunk = records[i : i + _CHUNK]
+                if not chunk:
+                    break
+                r = await api.batch_import(token, "/items/import/batch", chunk, upsert=upsert)
+                merged["created"] += r.get("created", 0)
+                merged["skipped"] += r.get("skipped", 0)
+                merged["updated"] += r.get("updated", 0)
+                merged["errors"].extend(r.get("errors") or [])
+                if r.get("batch_id"):
+                    merged["batch_id"] = r["batch_id"]
+            result = merged
         except APIError as e:
             if e.status == 401:
                 return Div(
@@ -799,12 +812,6 @@ def setup_routes(app):
                 )
             return Div(
                 P(f"Import failed: {e.detail}", cls="flash flash--error"),
-                A(t("btn._try_again"), href="/inventory/import", cls="btn btn--secondary"),
-                id="import-preview",
-            )
-        except Exception as e:
-            return Div(
-                P(f"Unexpected error: {e}", cls="flash flash--error"),
                 A(t("btn._try_again"), href="/inventory/import", cls="btn btn--secondary"),
                 id="import-preview",
             )

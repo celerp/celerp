@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 import httpx
 
@@ -19,13 +20,68 @@ class APIError(Exception):
         super().__init__(f"API {status}: {detail}")
 
 
-def _client(token: str) -> httpx.AsyncClient:
+def _client(token: str, timeout: float = 10.0) -> httpx.AsyncClient:
     return httpx.AsyncClient(
         base_url=API_BASE,
         headers={"Authorization": f"Bearer {token}"},
-        timeout=10.0,
+        timeout=timeout,
         follow_redirects=True,
     )
+
+
+def _anon_client(timeout: float = 10.0) -> httpx.AsyncClient:
+    """Unauthenticated client (no Authorization header)."""
+    return httpx.AsyncClient(
+        base_url=API_BASE,
+        timeout=timeout,
+        follow_redirects=True,
+    )
+
+
+@asynccontextmanager
+async def _api_client(token: str, timeout: float = 10.0):
+    """Authenticated client context manager.
+
+    Converts httpx network errors to APIError so all callers only need to
+    handle APIError — no scattered per-function try/except for timeouts or
+    connection failures.
+    """
+    try:
+        async with _client(token, timeout=timeout) as c:
+            yield c
+    except httpx.TimeoutException as exc:
+        raise APIError(504, "Request timed out — the server is busy or the payload is too large. Try again or reduce batch size.") from exc
+    except httpx.ConnectError as exc:
+        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+
+
+@asynccontextmanager
+async def _anon_api_client(timeout: float = 10.0):
+    """Unauthenticated client context manager with the same error mapping."""
+    try:
+        async with _anon_client(timeout=timeout) as c:
+            yield c
+    except httpx.TimeoutException as exc:
+        raise APIError(504, "Request timed out — the server is busy or the payload is too large.") from exc
+    except httpx.ConnectError as exc:
+        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
+
+
+@asynccontextmanager
+async def _ai_api_client(token: str, session_token: str, timeout: float = 10.0):
+    """Authenticated client with X-Session-Token header for AI endpoints."""
+    try:
+        async with httpx.AsyncClient(
+            base_url=API_BASE,
+            headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
+            timeout=timeout,
+            follow_redirects=True,
+        ) as c:
+            yield c
+    except httpx.TimeoutException as exc:
+        raise APIError(504, "Request timed out — the server is busy or the payload is too large.") from exc
+    except httpx.ConnectError as exc:
+        raise APIError(503, f"Cannot reach API at {API_BASE} — is the server running?") from exc
 
 
 def _raise(r: httpx.Response) -> httpx.Response:
@@ -49,8 +105,9 @@ async def batch_import(token: str, path: str, records: list[dict], upsert: bool 
     """POST a CIF batch import payload to an API path.
 
     This is intentionally generic so UI routes can reuse it for items/docs/lists/crm/etc.
+    Timeout is set high (300s) because large batches involve many DB writes server-side.
     """
-    async with _client(token) as c:
+    async with _api_client(token, timeout=300.0) as c:
         r = _raise(await c.post(path, json={"records": records, "upsert": upsert}))
         return r.json()
 
@@ -65,19 +122,16 @@ async def bootstrap_status() -> bool:
     Raises APIError(503) if the API is unreachable — callers should catch this
     and render a friendly "API not running" page rather than a 500.
     """
-    try:
-        async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
-            r = await c.get("/auth/bootstrap-status")
-            if r.is_error:
-                return False
-            return r.json().get("bootstrapped", False)
-    except (httpx.ConnectError, httpx.TimeoutException) as exc:
-        raise APIError(503, f"Cannot reach API at {API_BASE} — is the API server running?") from exc
+    async with _anon_api_client(timeout=5.0) as c:
+        r = await c.get("/auth/bootstrap-status")
+        if r.is_error:
+            return False
+        return r.json().get("bootstrapped", False)
 
 
 async def has_data(token: str) -> bool:
     """Returns True if the company has any inventory/docs/contacts loaded."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         try:
             val = _raise(await c.get("/items/valuation")).json()
             return (val.get("item_count", 0) or 0) > 0
@@ -87,7 +141,7 @@ async def has_data(token: str) -> bool:
 
 async def login(email: str, password: str) -> tuple[str, str]:
     """Returns (access_token, refresh_token)."""
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+    async with _anon_api_client() as c:
         r = _raise(await c.post("/auth/login", json={"email": email, "password": password}))
         data = r.json()
         return data["access_token"], data["refresh_token"]
@@ -95,16 +149,16 @@ async def login(email: str, password: str) -> tuple[str, str]:
 
 async def logout(access_token: str) -> None:
     """Clear all active sessions in the API process (rotates nonce, invalidates all tokens)."""
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=5.0) as c:
-        try:
+    try:
+        async with _anon_client(timeout=5.0) as c:
             await c.post("/auth/logout", headers={"Authorization": f"Bearer {access_token}"})
-        except Exception:
-            pass  # best-effort: cookie is cleared regardless
+    except Exception:
+        pass  # best-effort: cookie is cleared regardless
 
 
 async def login_force(email: str, password: str) -> tuple[str, str]:
     """Like login() but evicts other active sessions first."""
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+    async with _anon_api_client() as c:
         r = _raise(await c.post("/auth/login-force", json={"email": email, "password": password}))
         data = r.json()
         return data["access_token"], data["refresh_token"]
@@ -112,7 +166,7 @@ async def login_force(email: str, password: str) -> tuple[str, str]:
 
 async def change_password(token: str, current_password: str, new_password: str) -> str:
     """Change password for the authenticated user. Returns detail message."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.post("/auth/change-password", json={
             "current_password": current_password, "new_password": new_password,
         }))
@@ -121,7 +175,7 @@ async def change_password(token: str, current_password: str, new_password: str) 
 
 async def register(company_name: str, email: str, name: str, password: str) -> tuple[str, str]:
     """Returns (access_token, refresh_token)."""
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+    async with _anon_api_client() as c:
         r = _raise(await c.post("/auth/register", json={
             "company_name": company_name, "email": email, "name": name, "password": password,
         }))
@@ -131,19 +185,19 @@ async def register(company_name: str, email: str, name: str, password: str) -> t
 
 async def refresh_access_token(refresh_token: str) -> tuple[str, str]:
     """Exchange refresh token for new (access_token, refresh_token). Raises APIError on failure."""
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=10.0) as c:
+    async with _anon_api_client() as c:
         r = _raise(await c.post("/auth/token/refresh", json={"refresh_token": refresh_token}))
         data = r.json()
         return data["access_token"], data["refresh_token"]
 
 
 async def my_companies(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/auth/my-companies")).json()
 
 
 async def switch_company(token: str, company_id: str) -> str:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.post(f"/auth/switch-company/{company_id}"))
         return r.json()["access_token"]
 
@@ -166,7 +220,7 @@ def _flatten_company(data: dict) -> dict:
 
 
 async def get_company(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         data = _raise(await c.get("/companies/me")).json()
         return _flatten_company(data)
 
@@ -185,7 +239,7 @@ async def patch_company(token: str, data: dict) -> dict:
             dashboard_patch[storage_key] = data[k]
     direct_patch = {k: v for k, v in data.items()
                     if k not in _SETTINGS_FIELDS and k not in _DASHBOARD_FIELDS}
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         if settings_patch or dashboard_patch:
             current = _raise(await c.get("/companies/me")).json()
             merged = {**(current.get("settings") or {}), **settings_patch}
@@ -200,173 +254,173 @@ async def patch_company(token: str, data: dict) -> dict:
 
 async def create_company(token: str, company_name: str) -> str:
     """Create a new company linked to the current user. Returns new JWT scoped to it."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.post("/companies", json={"name": company_name}))
         return r.json()["access_token"]
 
 
 async def get_item_schema(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/item-schema")).json()
 
 
 async def patch_item_schema(token: str, fields: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/item-schema", json={"fields": fields})).json()
 
 
 async def get_all_category_schemas(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/category-schemas")).json()
 
 
 async def get_company_category_schemas(token: str) -> dict:
     """Return only company-applied schemas (no module defaults). Used to determine which categories the user explicitly applied."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/company-category-schemas")).json()
 
 
 async def get_category_display_names(token: str) -> dict:
     """Return display names keyed by category slug."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/category-display-names")).json()
 
 
 async def get_category_schema(token: str, category: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/companies/me/category-schema/{category}")).json()
 
 
 async def patch_category_schema(token: str, category: str, fields: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/companies/me/category-schema/{category}", json={"fields": fields})).json()
 
 
 async def merge_category_schemas(token: str, schemas: dict[str, list[dict]]) -> dict:
     """Auto-merge attribute keys from import into category schemas."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/category-schemas/merge", json={"schemas": schemas})).json()
 
 
 async def get_column_prefs(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/column-prefs")).json()
 
 
 async def patch_column_prefs(token: str, prefs: dict[str, list[str]]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/column-prefs", json={"prefs": prefs})).json()
 
 
 async def get_locations(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/locations")).json()
 
 
 async def create_location(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/locations", json=data)).json()
 
 
 async def delete_location(token: str, location_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/companies/me/locations/{location_id}")).json()
 
 
 async def get_users(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/users")).json()
 
 
 async def create_user(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/users", json=data)).json()
 
 
 async def patch_user(token: str, user_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/companies/me/users/{user_id}", json=data)).json()
 
 
 async def get_taxes(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/taxes")).json()
 
 
 async def patch_taxes(token: str, taxes: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/taxes", json={"taxes": taxes})).json()
 
 
 async def get_payment_terms(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/payment-terms")).json()
 
 
 async def patch_payment_terms(token: str, terms: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/payment-terms", json={"terms": terms})).json()
 
 
 async def get_purchasing_taxes(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/purchasing-taxes")).json()
 
 
 async def patch_purchasing_taxes(token: str, taxes: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/purchasing-taxes", json={"taxes": taxes})).json()
 
 
 async def get_purchasing_payment_terms(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/purchasing-payment-terms")).json()
 
 
 async def patch_purchasing_payment_terms(token: str, terms: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/purchasing-payment-terms", json={"terms": terms})).json()
 
 
 async def get_terms_conditions(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/terms-conditions")).json()
 
 
 async def patch_terms_conditions(token: str, templates: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/terms-conditions", json={"templates": templates})).json()
 
 
 async def get_price_lists(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/price-lists")).json()
 
 
 async def patch_price_lists(token: str, price_lists: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/price-lists", json={"price_lists": price_lists})).json()
 
 
 async def get_default_price_list(token: str) -> str:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/default-price-list")).json()
 
 
 async def patch_default_price_list(token: str, name: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/default-price-list", json={"name": name})).json()
 
 
 async def get_units(token: str) -> list[dict]:
     """GET /companies/me/units → list of unit dicts."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/units")).json()
 
 
 async def patch_units(token: str, units: list[dict]) -> list[dict]:
     """PUT /companies/me/units → replace units list."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.put("/companies/me/units", json={"units": units})).json()
 
 
@@ -376,7 +430,7 @@ async def patch_units(token: str, units: list[dict]) -> list[dict]:
 
 async def global_search(token: str, q: str) -> dict:
     """Search across items, contacts, docs."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/search", params={"q": q})).json()
 
 
@@ -397,14 +451,14 @@ def _flatten_item_attrs(item: dict) -> dict:
 
 
 async def list_items(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         raw = _raise(await c.get("/items", params=params or {})).json()
     items = raw.get("items") or []
     return {**raw, "items": [_flatten_item_attrs(i) for i in items]}
 
 
 async def get_item(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/items/{entity_id}")).json()
 
 
@@ -428,12 +482,12 @@ async def patch_item(token: str, entity_id: str, fields_changed: dict) -> dict:
                 pass
         return v
     wrapped = {k: (v if isinstance(v, dict) and "new" in v else {"old": None, "new": _coerce(k, v)}) for k, v in fields_changed.items()}
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/items/{entity_id}", json={"fields_changed": wrapped})).json()
 
 
 async def upload_attachment(token: str, entity_id: str, file) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
@@ -444,7 +498,7 @@ async def upload_attachment(token: str, entity_id: str, file) -> dict:
 
 
 async def upload_item_file(token: str, entity_id: str, file) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "upload")
         content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
@@ -455,7 +509,7 @@ async def upload_item_file(token: str, entity_id: str, file) -> dict:
 
 
 async def tag_item_file(token: str, entity_id: str, file_id: str, tag: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(
             f"/items/{entity_id}/files/{file_id}/tag",
             data={"document_tag": tag},
@@ -463,7 +517,7 @@ async def tag_item_file(token: str, entity_id: str, file_id: str, tag: str) -> d
 
 
 async def describe_item_file(token: str, entity_id: str, file_id: str, description: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(
             f"/items/{entity_id}/files/{file_id}/description",
             data={"description": description},
@@ -471,22 +525,22 @@ async def describe_item_file(token: str, entity_id: str, file_id: str, descripti
 
 
 async def set_item_file_hero(token: str, entity_id: str, file_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/files/{file_id}/hero")).json()
 
 
 async def delete_item_file(token: str, entity_id: str, file_id: str) -> None:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         _raise(await c.delete(f"/items/{entity_id}/files/{file_id}"))
 
 
 async def delete_attachment(token: str, entity_id: str, att_id: str) -> None:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         _raise(await c.delete(f"/items/{entity_id}/attachments/{att_id}"))
 
 
 async def bulk_attach(token: str, file, override_hero: bool = False) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "attachments.zip")
         params = {"override_hero": "1"} if override_hero else {}
@@ -503,17 +557,17 @@ async def get_valuation(token: str, category: str | None = None, status: str | N
         params["category"] = category
     if status:
         params["status"] = status
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/items/valuation", params=params)).json()
 
 
 async def get_item_field_values(token: str, field: str) -> list[str]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/items/field-values", params={"field": field})).json().get("values", [])
 
 
 async def list_item_categories(token: str) -> list[str]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/items/categories")).json()
 
 
@@ -522,18 +576,18 @@ async def list_item_categories(token: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 async def list_docs(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/docs", params=params or {})).json()
 
 
 async def list_contact_docs(token: str, contact_id: str, params: dict | None = None) -> dict:
     p = {"contact_id": contact_id, **(params or {})}
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/docs", params=p)).json()
 
 
 async def get_doc(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/docs/{entity_id}")).json()
 
 
@@ -541,90 +595,90 @@ async def get_doc_summary(token: str, doc_type: str = "") -> dict:
     params = {}
     if doc_type:
         params["doc_type"] = doc_type
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/docs/summary", params=params)).json()
 
 
 async def patch_doc(token: str, entity_id: str, data: dict) -> dict:
     """data is a flat dict of field->value; wraps into fields_changed format."""
     fields_changed = {k: {"old": None, "new": v} for k, v in data.items()}
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/docs/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
 async def renumber_doc(token: str, entity_id: str, ref_id: str) -> dict:
     """Change the display number (ref_id) of any non-void document via /renumber endpoint."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/renumber", json={"ref_id": ref_id})).json()
 
 
 async def create_doc(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/docs", json=data)).json()
 
 
 async def get_doc_sequences(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/docs/sequences")).json()
 
 
 async def patch_doc_sequence(token: str, doc_type: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/docs/sequences/{doc_type}", json=data)).json()
 
 
 async def finalize_doc(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/finalize")).json()
 
 
 async def send_doc(token: str, entity_id: str, data: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/send", json=data or {})).json()
 
 
 async def void_doc(token: str, entity_id: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/void", json={"reason": reason})).json()
 
 
 async def revert_doc_to_draft(token: str, entity_id: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/revert-to-draft", json={"reason": reason})).json()
 
 
 async def revert_list_to_draft(token: str, entity_id: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/revert-to-draft", json={"reason": reason})).json()
 
 
 async def unvoid_doc(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/unvoid", json={})).json()
 
 
 async def fulfill_doc(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/fulfill", json={})).json()
 
 
 async def unfulfill_doc(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/unfulfill", json={})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/receive-return", json={"items": items, "notes": notes})).json()
 
 
 async def undo_receive_return(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/receive-return")).json()
 
 
 async def undo_receive_goods(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/receive")).json()
 
 
@@ -645,17 +699,17 @@ async def receive_goods(token: str, entity_id: str, line_items: list[dict], loca
         ],
         "location_id": location_id or "",
     }
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/receive", json=payload)).json()
 
 
 async def delete_doc(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}")).json()
 
 
 async def record_payment(token: str, entity_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/payment", json=data)).json()
 
 
@@ -664,7 +718,7 @@ async def record_payment(token: str, entity_id: str, data: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 async def list_contacts(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         data = _raise(await c.get("/crm/contacts", params=params or {})).json()
         # Normalise: backend now returns {items, total}; keep backward compat for callers
         if isinstance(data, list):
@@ -673,19 +727,19 @@ async def list_contacts(token: str, params: dict | None = None) -> dict:
 
 
 async def get_contact(token: str, contact_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/crm/contacts/{contact_id}")).json()
 
 
 async def patch_contact(token: str, contact_id: str, data: dict) -> dict:
     """data is a flat dict of field->value; wraps into fields_changed format."""
     fields_changed = {k: {"old": None, "new": v} for k, v in data.items()}
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/crm/contacts/{contact_id}", json={"fields_changed": fields_changed})).json()
 
 
 async def create_contact(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/crm/contacts", json=data)).json()
 
 
@@ -694,111 +748,111 @@ async def create_contact(token: str, data: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 async def get_chart(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/accounting/chart")).json()
 
 
 async def seed_chart(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/accounting/chart/seed")).json()
 
 
 async def create_account(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/accounting/accounts", json=data)).json()
 
 
 async def patch_account(token: str, code: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/accounting/accounts/{code}", json=data)).json()
 
 
 async def get_ledger(token: str, account_code: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/accounting/ledger/{account_code}", params=params or {})).json()
 
 
 async def get_trial_balance(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/accounting/trial-balance", params=params or {})).json()
 
 
 async def get_pnl(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/accounting/pnl", params=params or {})).json()
 
 
 async def get_balance_sheet(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/accounting/balance-sheet", params=params or {})).json()
 
 
 async def get_bank_accounts(token: str, include_inactive: bool = False) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         params = {"include_inactive": "true"} if include_inactive else {}
         return _raise(await c.get("/accounting/bank-accounts", params=params)).json()
 
 
 async def get_bank_account(token: str, bank_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/accounting/bank-accounts/{bank_id}")).json()
 
 
 async def create_bank_account(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/accounting/bank-accounts", json=data)).json()
 
 
 async def patch_bank_account(token: str, bank_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/accounting/bank-accounts/{bank_id}", json=data)).json()
 
 
 async def create_transfer(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/accounting/transfers", json=data)).json()
 
 
 async def start_reconciliation(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/accounting/reconciliation/start", json=data)).json()
 
 
 async def get_reconciliation(token: str, session_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/accounting/reconciliation/{session_id}")).json()
 
 
 async def match_reconciliation(token: str, session_id: str, je_ids: list[str]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/match", json={"je_ids": je_ids})).json()
 
 
 async def complete_reconciliation(token: str, session_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/complete")).json()
 
 
 async def import_recon_csv(token: str, session_id: str, content: bytes, filename: str, column_map: dict | None = None) -> dict:
     import json as _json
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         files = {"file": (filename, content, "text/csv")}
         data = {"column_map": _json.dumps(column_map)} if column_map else {}
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/import-csv", files=files, data=data)).json()
 
 
 async def get_statement_lines(token: str, session_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/accounting/reconciliation/{session_id}/statement-lines")).json()
 
 
 async def auto_match_recon(token: str, session_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/auto-match")).json()
 
 
 async def match_recon_line(token: str, session_id: str, line_id: str, je_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/match",
             json={"je_id": je_id},
@@ -806,12 +860,12 @@ async def match_recon_line(token: str, session_id: str, line_id: str, je_id: str
 
 
 async def unmatch_recon_line(token: str, session_id: str, line_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/lines/{line_id}/unmatch")).json()
 
 
 async def create_recon_expense(token: str, session_id: str, line_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/create",
             json=data,
@@ -819,7 +873,7 @@ async def create_recon_expense(token: str, session_id: str, line_id: str, data: 
 
 
 async def split_recon_line(token: str, session_id: str, line_id: str, splits: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/split",
             json={"splits": splits},
@@ -827,7 +881,7 @@ async def split_recon_line(token: str, session_id: str, line_id: str, splits: li
 
 
 async def skip_recon_line(token: str, session_id: str, line_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}",
             json={"status": "skipped"},
@@ -835,7 +889,7 @@ async def skip_recon_line(token: str, session_id: str, line_id: str) -> dict:
 
 
 async def attach_recon_line(token: str, session_id: str, line_id: str, content: bytes, filename: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         files = {"file": (filename, content, "application/octet-stream")}
         return _raise(await c.post(
             f"/accounting/reconciliation/{session_id}/lines/{line_id}/attach",
@@ -844,33 +898,33 @@ async def attach_recon_line(token: str, session_id: str, line_id: str, content: 
 
 
 async def bulk_confirm_recon(token: str, session_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/bulk-confirm")).json()
 
 
 async def write_off_recon(token: str, session_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/accounting/reconciliation/{session_id}/write-off", json=data)).json()
 
 
 async def get_recon_rules(token: str, bank_account_id: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         params = {"bank_account_id": bank_account_id} if bank_account_id else {}
         return _raise(await c.get("/accounting/rules", params=params)).json()
 
 
 async def create_recon_rule(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/accounting/rules", json=data)).json()
 
 
 async def patch_recon_rule(token: str, rule_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/accounting/rules/{rule_id}", json=data)).json()
 
 
 async def delete_recon_rule(token: str, rule_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/accounting/rules/{rule_id}")).json()
 
 
@@ -879,27 +933,27 @@ async def delete_recon_rule(token: str, rule_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def get_ar_aging(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/reports/ar-aging", params=params or {})).json()
 
 
 async def get_ap_aging(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/reports/ap-aging", params=params or {})).json()
 
 
 async def get_sales_report(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/reports/sales", params=params or {})).json()
 
 
 async def get_purchases_report(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/reports/purchases", params=params or {})).json()
 
 
 async def get_expiring(token: str, days: int = 30) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/reports/expiring", params={"days": days})).json()
 
 
@@ -910,49 +964,49 @@ async def get_expiring(token: str, days: int = 30) -> dict:
 
 async def list_subscriptions(token: str, params: dict | None = None) -> dict:
     """Returns {items: [...], total: N}."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/subscriptions", params=params or {})).json()
 
 
 async def get_subscription(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/docs/{entity_id}")).json()
 
 
 async def list_ledger(token: str, params: dict | None = None) -> dict:
     p = dict(params or {})
     p.setdefault("resolve", "true")
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/ledger", params=p)).json()
 
 
 async def create_subscription(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/docs", json=data)).json()
 
 
 async def pause_subscription(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/pause")).json()
 
 
 async def resume_subscription(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/resume")).json()
 
 
 async def cancel_subscription(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/cancel")).json()
 
 
 async def generate_subscription(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/generate")).json()
 
 
 async def activate_subscription(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/subscriptions/{entity_id}/activate")).json()
 
 
@@ -961,42 +1015,42 @@ async def activate_subscription(token: str, entity_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def list_mfg_orders(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/manufacturing")).json()
 
 
 async def get_mfg_order(token: str, order_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/manufacturing/{order_id}")).json()
 
 
 async def create_mfg_order(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/manufacturing", json=data)).json()
 
 
 async def start_mfg_order(token: str, order_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/start")).json()
 
 
 async def complete_mfg_step(token: str, order_id: str, step_id: str, notes: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/step", json={"step_id": step_id, "notes": notes})).json()
 
 
 async def consume_mfg_input(token: str, order_id: str, item_id: str, quantity: float) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/consume", json={"item_id": item_id, "quantity": quantity})).json()
 
 
 async def complete_mfg_order(token: str, order_id: str, data: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/complete", json=data or {})).json()
 
 
 async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/cancel", json={"reason": reason})).json()
 
 
@@ -1005,27 +1059,27 @@ async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None)
 # ---------------------------------------------------------------------------
 
 async def list_boms(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/manufacturing/boms")).json()
 
 
 async def get_bom(token: str, bom_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/manufacturing/boms/{bom_id}")).json()
 
 
 async def create_bom(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/manufacturing/boms", json=data)).json()
 
 
 async def update_bom(token: str, bom_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.put(f"/manufacturing/boms/{bom_id}", json=data)).json()
 
 
 async def delete_bom(token: str, bom_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/manufacturing/boms/{bom_id}")).json()
 
 
@@ -1034,7 +1088,7 @@ async def delete_bom(token: str, bom_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 # async def scan_once(token: str, code: str, location_id: str | None = None) -> dict:
-#     async with _client(token) as c:
+#     async with _api_client(token) as c:
 #         payload: dict = {"code": code}
 #         if location_id:
 #             payload["location_id"] = location_id
@@ -1042,22 +1096,22 @@ async def delete_bom(token: str, bom_id: str) -> dict:
 #
 #
 # async def resolve_scan(token: str, code: str) -> dict:
-#     async with _client(token) as c:
+#     async with _api_client(token) as c:
 #         return _raise(await c.get(f"/scanning/resolve/{code}")).json()
 #
 #
 # async def start_batch(token: str, location_id: str | None = None) -> dict:
-#     async with _client(token) as c:
+#     async with _api_client(token) as c:
 #         return _raise(await c.post("/scanning/batch", json={"location_id": location_id})).json()
 #
 #
 # async def complete_batch(token: str, batch_id: str) -> dict:
-#     async with _client(token) as c:
+#     async with _api_client(token) as c:
 #         return _raise(await c.post(f"/scanning/batch/{batch_id}/complete")).json()
 #
 #
 # async def scan_batch(token: str, scans: list[dict]) -> dict:
-#     async with _client(token) as c:
+#     async with _api_client(token) as c:
 #         return _raise(await c.post("/scanning/scan/batch", json={"scans": scans})).json()
 
 
@@ -1066,19 +1120,19 @@ async def delete_bom(token: str, bom_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def export_items_csv(token: str, params: dict | None = None) -> bytes:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.get("/items/export/csv", params=params or {}))
         return r.content
 
 
 async def export_docs_csv(token: str, params: dict | None = None) -> bytes:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.get("/docs/export/csv", params=params or {}))
         return r.content
 
 
 async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.get("/crm/contacts/export/csv", params=params or {}))
         return r.content
 
@@ -1088,108 +1142,108 @@ async def export_contacts_csv(token: str, params: dict | None = None) -> bytes:
 # ---------------------------------------------------------------------------
 
 async def list_lists(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/lists", params=params or {})).json()
 
 
 async def get_list(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/lists/{entity_id}")).json()
 
 
 async def get_list_summary(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/lists/summary")).json()
 
 
 async def create_list(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/lists", json=data)).json()
 
 
 async def patch_list(token: str, entity_id: str, data: dict) -> dict:
     fields_changed = {k: {"old": None, "new": v} for k, v in data.items()}
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/lists/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
 async def send_list(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/send", json={})).json()
 
 
 async def accept_list(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/accept", json={})).json()
 
 
 async def complete_list(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/complete", json={})).json()
 
 
 async def void_list(token: str, entity_id: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/void", json={"reason": reason} if reason else {})).json()
 
 
 async def delete_list(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/lists/{entity_id}")).json()
 
 
 async def convert_list(token: str, entity_id: str, target_type: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/convert", json={"target_type": target_type})).json()
 
 
 async def duplicate_list(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/duplicate", json={})).json()
 
 
 async def list_doc_notes(token: str, entity_id: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/docs/{entity_id}/notes")).json()
 
 
 async def add_doc_note(token: str, entity_id: str, note: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/notes", json={"note": note})).json()
 
 
 async def update_doc_note(token: str, entity_id: str, note_id: str, note: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/docs/{entity_id}/notes/{note_id}", json={"note": note})).json()
 
 
 async def delete_doc_note(token: str, entity_id: str, note_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/notes/{note_id}")).json()
 
 
 async def list_list_notes(token: str, entity_id: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/lists/{entity_id}/notes")).json()
 
 
 async def add_list_note(token: str, entity_id: str, note: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/notes", json={"note": note})).json()
 
 
 async def update_list_note(token: str, entity_id: str, note_id: str, note: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/lists/{entity_id}/notes/{note_id}", json={"note": note})).json()
 
 
 async def delete_list_note(token: str, entity_id: str, note_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/lists/{entity_id}/notes/{note_id}")).json()
 
 
 async def export_lists_csv(token: str, params: dict | None = None) -> bytes:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.get("/lists/export/csv", params=params or {}))
         return r.content
 
@@ -1199,7 +1253,7 @@ async def export_lists_csv(token: str, params: dict | None = None) -> bytes:
 # ---------------------------------------------------------------------------
 
 async def convert_doc(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/convert")).json()
 
 
@@ -1208,12 +1262,12 @@ async def convert_doc(token: str, entity_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def receive_po(token: str, entity_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/receive", json=data)).json()
 
 
 async def return_consignment_items(token: str, entity_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/return-items", json=data)).json()
 
 
@@ -1222,12 +1276,12 @@ async def return_consignment_items(token: str, entity_id: str, data: dict) -> di
 # ---------------------------------------------------------------------------
 
 async def adjust_item(token: str, entity_id: str, new_qty: float) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/adjust", json={"new_qty": new_qty})).json()
 
 
 async def transfer_item(token: str, entity_id: str, location_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/transfer", json={"to_location_id": location_id})).json()
 
 
@@ -1238,17 +1292,17 @@ async def set_item_price(token: str, entity_id: str, price_type: str, new_price:
     # writes current[price_type] directly.
     if not price_type.endswith("_price"):
         price_type = f"{price_type.lower()}_price"
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/price", json={"price_type": price_type, "new_price": new_price})).json()
 
 
 async def set_item_status(token: str, entity_id: str, status: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/status", json={"status": status})).json()
 
 
 async def reserve_item(token: str, entity_id: str, quantity: float, reference: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         payload: dict = {"quantity": quantity}
         if reference:
             payload["reference"] = reference
@@ -1256,29 +1310,29 @@ async def reserve_item(token: str, entity_id: str, quantity: float, reference: s
 
 
 async def unreserve_item(token: str, entity_id: str, quantity: float) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/unreserve", json={"quantity": quantity})).json()
 
 
 async def expire_item(token: str, entity_id: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/expire", json={"reason": reason})).json()
 
 
 
 async def set_item_status(token: str, entity_id: str, status: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/status", json={"entity_ids": [entity_id], "status": status, "reason": reason})).json()
 
 
 async def create_item(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/items", json=data)).json()
 
 
 async def split_item(token: str, entity_id: str, children: list[dict]) -> dict:
     body: dict = {"children": children}
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/{entity_id}/split", json=body)).json()
 
 
@@ -1286,7 +1340,7 @@ async def split_preview(token: str, entity_id: str, child_sku: str | None = None
     params: dict = {}
     if child_sku:
         params["child_sku"] = child_sku
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/items/{entity_id}/split-preview", params=params)).json()
 
 
@@ -1311,27 +1365,27 @@ async def merge_items(
         body["resolved_attributes"] = resolved_attributes
     if idempotency_key:
         body["idempotency_key"] = idempotency_key
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/items/merge", json=body)).json()
 
 
 async def bulk_set_status(token: str, entity_ids: list[str], status: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/status", json={"entity_ids": entity_ids, "status": status})).json()
 
 
 async def bulk_transfer(token: str, entity_ids: list[str], to_location_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/transfer", json={"entity_ids": entity_ids, "to_location_id": to_location_id})).json()
 
 
 async def bulk_delete(token: str, entity_ids: list[str]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/delete", json={"entity_ids": entity_ids})).json()
 
 
 async def bulk_expire(token: str, entity_ids: list[str]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/items/bulk/expire", json={"entity_ids": entity_ids})).json()
 
 
@@ -1341,52 +1395,52 @@ async def bulk_expire(token: str, entity_ids: list[str]) -> dict:
 # ---------------------------------------------------------------------------
 
 async def list_deals(token: str, params: dict | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/crm/deals", params=params or {})).json()
 
 
 async def create_deal(token: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/crm/deals", json=data)).json()
 
 
 async def move_deal_stage(token: str, deal_id: str, stage: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/crm/deals/{deal_id}/stage", json={"new_stage": stage})).json()
 
 
 async def mark_deal_won(token: str, deal_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/crm/deals/{deal_id}/won")).json()
 
 
 async def mark_deal_lost(token: str, deal_id: str, reason: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/crm/deals/{deal_id}/lost", json={"reason": reason})).json()
 
 
 async def get_deal(token: str, deal_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/crm/deals/{deal_id}")).json()
 
 
 async def patch_deal(token: str, deal_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/crm/deals/{deal_id}", json=data)).json()
 
 
 async def delete_deal(token: str, deal_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/crm/deals/{deal_id}")).json()
 
 
 async def reopen_deal(token: str, deal_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/crm/deals/{deal_id}/reopen")).json()
 
 
 async def add_contact_tags(token: str, contact_id: str, tags: list[str]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/crm/contacts/{contact_id}/tags", json={"tags": tags})).json()
 
 
@@ -1395,137 +1449,137 @@ async def add_contact_tags(token: str, contact_id: str, tags: list[str]) -> dict
 # ---------------------------------------------------------------------------
 
 async def add_contact_person(token: str, contact_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/crm/contacts/{contact_id}/people", json=data)).json()
 
 
 async def update_contact_person(token: str, contact_id: str, person_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/crm/contacts/{contact_id}/people/{person_id}", json=data)).json()
 
 
 async def remove_contact_person(token: str, contact_id: str, person_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/crm/contacts/{contact_id}/people/{person_id}")).json()
 
 
 async def add_contact_address(token: str, contact_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/crm/contacts/{contact_id}/addresses", json=data)).json()
 
 
 async def update_contact_address(token: str, contact_id: str, address_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/crm/contacts/{contact_id}/addresses/{address_id}", json=data)).json()
 
 
 async def remove_contact_address(token: str, contact_id: str, address_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/crm/contacts/{contact_id}/addresses/{address_id}")).json()
 
 
 async def add_contact_note(token: str, contact_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/crm/contacts/{contact_id}/notes", json=data)).json()
 
 
 async def list_contact_notes(token: str, contact_id: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/crm/contacts/{contact_id}/notes")).json()
 
 
 async def update_contact_note(token: str, contact_id: str, note_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/crm/contacts/{contact_id}/notes/{note_id}", json=data)).json()
 
 
 async def delete_contact_note(token: str, contact_id: str, note_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/crm/contacts/{contact_id}/notes/{note_id}")).json()
 
 
 async def get_contact_tags_vocabulary(token: str) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/contact-tags")).json()
 
 
 async def patch_contact_tags_vocabulary(token: str, tags: list[dict]) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/contact-tags", json={"tags": tags})).json()
 
 
 async def get_contact_defaults(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/contact-defaults")).json()
 
 
 async def patch_contact_defaults(token: str, defaults: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch("/companies/me/contact-defaults", json={"defaults": defaults})).json()
 
 
 async def upload_contact_file(token: str, contact_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         files = {"file": (filename, file_data, content_type)}
         data = {"description": description, "document_tag": document_tag}
         return _raise(await c.post(f"/crm/contacts/{contact_id}/files", files=files, data=data)).json()
 
 
 async def tag_contact_file(token: str, contact_id: str, file_id: str, document_tag: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/crm/contacts/{contact_id}/files/{file_id}/tag", data={"document_tag": document_tag})).json()
 
 
 async def patch_contact_file_description(token: str, contact_id: str, file_id: str, description: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/crm/contacts/{contact_id}/files/{file_id}/description", data={"description": description})).json()
 
 
 async def delete_contact_file(token: str, contact_id: str, file_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/crm/contacts/{contact_id}/files/{file_id}")).json()
 
 
 async def download_contact_file(token: str, contact_id: str, file_id: str) -> httpx.Response:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.get(f"/crm/contacts/{contact_id}/files/{file_id}"))
         return r
 
 
 async def upload_doc_file(token: str, entity_id: str, file_data: bytes, filename: str, content_type: str, description: str = "", document_tag: str = "") -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         files = {"file": (filename, file_data, content_type)}
         data = {"description": description, "document_tag": document_tag}
         return _raise(await c.post(f"/docs/{entity_id}/files", files=files, data=data)).json()
 
 
 async def tag_doc_file(token: str, entity_id: str, file_id: str, document_tag: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/docs/{entity_id}/files/{file_id}/tag", data={"document_tag": document_tag})).json()
 
 
 async def patch_doc_file_description(token: str, entity_id: str, file_id: str, description: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/docs/{entity_id}/files/{file_id}/description", data={"description": description})).json()
 
 
 async def delete_doc_file(token: str, entity_id: str, file_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/files/{file_id}")).json()
 
 
 async def download_doc_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/docs/{entity_id}/files/{file_id}"))
 
 
 async def download_item_file(token: str, entity_id: str, file_id: str) -> httpx.Response:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/items/{entity_id}/files/{file_id}"))
 
 
 async def patch_location(token: str, location_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/companies/me/locations/{location_id}", json=data)).json()
 
 
@@ -1534,19 +1588,19 @@ async def patch_location(token: str, location_id: str, data: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 async def refund_payment(token: str, entity_id: str, data: dict) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/refund", json=data)).json()
 
 
 async def void_payment(token: str, entity_id: str, payment_index: int, void_reason: str = "") -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/void-payment", json={
             "payment_index": payment_index, "void_reason": void_reason,
         })).json()
 
 
 async def apply_credit_note(token: str, cn_id: str, target_doc_id: str, amount: float, date: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{cn_id}/apply-to-invoice", json={
             "target_doc_id": target_doc_id, "amount": amount, "date": date,
         })).json()
@@ -1555,7 +1609,7 @@ async def apply_credit_note(token: str, cn_id: str, target_doc_id: str, amount: 
 async def refund_credit_note(token: str, cn_id: str, amount: float, date: str | None = None,
                              method: str | None = None, bank_account: str | None = None,
                              reference: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{cn_id}/cn-refund", json={
             "amount": amount, "date": date, "method": method,
             "bank_account": bank_account, "reference": reference,
@@ -1565,7 +1619,7 @@ async def refund_credit_note(token: str, cn_id: str, amount: float, date: str | 
 async def bulk_payment(token: str, doc_ids: list[str], amount: float, payment_date: str | None = None,
                        method: str | None = None, bank_account: str | None = None,
                        reference: str | None = None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/docs/bulk-payment", json={
             "doc_ids": doc_ids, "amount": amount, "payment_date": payment_date,
             "method": method, "bank_account": bank_account, "reference": reference,
@@ -1577,7 +1631,7 @@ async def bulk_payment(token: str, doc_ids: list[str], amount: float, payment_da
 # ---------------------------------------------------------------------------
 
 async def get_activity(token: str, limit: int = 15) -> list[dict]:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = await c.get("/dashboard/activity", params={"limit": limit})
         if r.is_error:
             return []
@@ -1586,7 +1640,7 @@ async def get_activity(token: str, limit: int = 15) -> list[dict]:
 
 async def get_dashboard_kpis(token: str) -> dict:
     """GET /dashboard/kpis - full KPI payload for vertical-aware dashboard rendering."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = await c.get("/dashboard/kpis")
         if r.is_error:
             return {}
@@ -1598,12 +1652,12 @@ async def get_dashboard_kpis(token: str) -> dict:
 # ---------------------------------------------------------------------------
 
 async def create_share_link(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/share")).json()
 
 
 async def revoke_share_link(token: str, entity_id: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/docs/{entity_id}/share")).json()
 
 
@@ -1621,41 +1675,25 @@ async def ai_query(token: str, session_token: str, query: str, file_ids: list[st
     if file_ids:
         payload["file_ids"] = file_ids
 
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
-        timeout=60.0,
-    ) as c:
+    async with _ai_api_client(token, session_token, timeout=60.0) as c:
         return _raise(await c.post("/ai/query", json=payload)).json()
 
 
 async def ai_conversations_list(token: str, session_token: str) -> list[dict]:
     """GET /ai/conversations - list conversations for sidebar."""
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
-        timeout=10.0,
-    ) as c:
+    async with _ai_api_client(token, session_token) as c:
         return _raise(await c.get("/ai/conversations?limit=20")).json()
 
 
 async def ai_memory_get(token: str, session_token: str) -> dict:
     """GET /ai/memory - get AI memory for current company."""
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
-        timeout=10.0,
-    ) as c:
+    async with _ai_api_client(token, session_token) as c:
         return _raise(await c.get("/ai/memory")).json()
 
 
 async def ai_memory_clear(token: str, session_token: str) -> None:
     """DELETE /ai/memory - clear AI memory for current company."""
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
-        timeout=10.0,
-    ) as c:
+    async with _ai_api_client(token, session_token) as c:
         _raise(await c.delete("/ai/memory"))
 
 
@@ -1666,47 +1704,31 @@ async def ai_upload(token: str, session_token: str, files: list[tuple[str, bytes
     Returns {"file_ids": [...]}.
     """
     multipart = [("files", (name, data, ct)) for name, data, ct in files]
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
-        timeout=60.0,
-    ) as c:
+    async with _ai_api_client(token, session_token, timeout=60.0) as c:
         return _raise(await c.post("/ai/upload", files=multipart)).json()
 
 
 async def ai_confirm_bills(token: str, session_token: str, bills: list[dict]) -> dict:
     """POST /ai/confirm-bills - confirm and create draft bills proposed by AI."""
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}", "X-Session-Token": session_token},
-        timeout=60.0,
-    ) as c:
+    async with _ai_api_client(token, session_token, timeout=60.0) as c:
         return _raise(await c.post("/ai/confirm-bills", json={"bills": bills})).json()
 
 
 async def ai_usage_stats(token: str, session_token: str = "") -> dict:
     """GET /ai/usage-stats - per-user query/credit usage for current month."""
-    headers = {"Authorization": f"Bearer {token}"}
     if session_token:
-        headers["X-Session-Token"] = session_token
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers=headers,
-        timeout=10.0,
-    ) as c:
+        async with _ai_api_client(token, session_token) as c:
+            return _raise(await c.get("/ai/usage-stats")).json()
+    async with _api_client(token) as c:
         return _raise(await c.get("/ai/usage-stats")).json()
 
 
 async def ai_quota_status(token: str, session_token: str = "") -> dict:
     """GET /ai/quota-status - get current quota usage for UI badge."""
-    headers = {"Authorization": f"Bearer {token}"}
     if session_token:
-        headers["X-Session-Token"] = session_token
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers=headers,
-        timeout=10.0,
-    ) as c:
+        async with _ai_api_client(token, session_token) as c:
+            return _raise(await c.get("/ai/quota-status")).json()
+    async with _api_client(token) as c:
         return _raise(await c.get("/ai/quota-status")).json()
 
 
@@ -1716,13 +1738,13 @@ async def ai_quota_status(token: str, session_token: str = "") -> dict:
 
 async def list_import_batches(token: str) -> dict:
     """GET /items/import/batches — list all import batches for the company."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/items/import/batches")).json()
 
 
 async def undo_import_batch(token: str, batch_id: str) -> dict:
     """POST /items/import/batches/{batch_id}/undo — undo an import batch."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/items/import/batches/{batch_id}/undo")).json()
 
 
@@ -1732,19 +1754,19 @@ async def undo_import_batch(token: str, batch_id: str) -> dict:
 
 async def get_modules(token: str) -> list[dict]:
     """GET /companies/me/modules — list installed modules with enabled state."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/me/modules")).json()
 
 
 async def enable_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/enable — enable a module (admin only)."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/companies/me/modules/{module_name}/enable")).json()
 
 
 async def disable_module(token: str, module_name: str) -> dict:
     """POST /companies/me/modules/{name}/disable — disable a module (admin only)."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post(f"/companies/me/modules/{module_name}/disable")).json()
 
 
@@ -1754,70 +1776,70 @@ async def disable_module(token: str, module_name: str) -> dict:
 
 async def list_verticals_categories(token: str) -> list[dict]:
     """GET /companies/verticals/categories — list all category definitions."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/verticals/categories")).json()
 
 
 async def list_verticals_presets(token: str) -> list[dict]:
     """GET /companies/verticals/presets — list all vertical presets."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/companies/verticals/presets")).json()
 
 
 async def apply_vertical_preset(token: str, vertical: str) -> dict:
     """POST /companies/me/apply-preset?vertical=X — seed category schemas from a preset."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/apply-preset", params={"vertical": vertical})).json()
 
 
 async def apply_vertical_category(token: str, name: str) -> dict:
     """POST /companies/me/apply-category?name=X — seed a single category schema."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/apply-category", params={"name": name})).json()
 
 
 async def create_category(token: str, name: str) -> dict:
     """POST /companies/me/categories — create a new empty category."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/companies/me/categories", json={"name": name})).json()
 
 
 async def rename_category(token: str, category_key: str, new_name: str) -> dict:
     """PATCH /companies/me/categories/{key} — rename category and update all item projections."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.patch(f"/companies/me/categories/{category_key}", json={"name": new_name})).json()
 
 
 async def delete_category(token: str, category_key: str) -> dict:
     """DELETE /companies/me/categories/{key} — delete category (403 if items reference it)."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.delete(f"/companies/me/categories/{category_key}")).json()
 
 
 # ── Period Lock + Fiscal Year Close ──────────────────────────────────────────
 
 async def get_period_lock(token: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/accounting/period-lock")).json()
 
 
 async def set_period_lock(token: str, lock_date: str | None) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/accounting/period-lock", json={"lock_date": lock_date})).json()
 
 
 async def close_fiscal_year(token: str, fiscal_year_end: str) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/accounting/close-year", json={"fiscal_year_end": fiscal_year_end})).json()
 
 
 async def bulk_delete_contacts(token: str, contact_ids: list) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/crm/contacts/bulk/delete", json={"contact_ids": contact_ids})).json()
 
 
 async def merge_contacts(token: str, target_contact_id: str, source_contact_ids: list) -> dict:
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/crm/contacts/merge", json={
             "target_contact_id": target_contact_id,
             "source_contact_ids": source_contact_ids,
@@ -1826,20 +1848,20 @@ async def merge_contacts(token: str, target_contact_id: str, source_contact_ids:
 
 async def get_relay_status(token: str) -> dict:
     """GET /settings/cloud-status — returns {connected, relay_status, ...}."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/settings/cloud-status")).json()
 
 
 async def get_backup_status(token: str) -> dict:
     """GET /settings/backup-status — returns scheduler state from API process."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/settings/backup-status")).json()
 
 
 async def list_backups(token: str, backup_type: str | None = None) -> dict:
     """GET /backup/list — list cloud backups (proxied to relay by API)."""
     params = {"backup_type": backup_type} if backup_type else {}
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/backup/list", params=params)).json()
 
 
@@ -1850,12 +1872,7 @@ async def trigger_backup(token: str, backup_type: str = "database") -> None:
     timeout so the UI handler gets a real success/error rather than a timeout
     exception that it can't distinguish from a connection failure.
     """
-    async with httpx.AsyncClient(
-        base_url=API_BASE,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=120.0,
-        follow_redirects=True,
-    ) as c:
+    async with _api_client(token, timeout=120.0) as c:
         _raise(await c.post("/backup/trigger", params={"type": backup_type}))
 
 
@@ -1864,7 +1881,7 @@ async def export_backup(token: str) -> tuple[bytes, str, str]:
 
     Returns (content_bytes, content_type, content_disposition).
     """
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         r = _raise(await c.get("/backup/export"))
         return (
             r.content,
@@ -1878,10 +1895,8 @@ async def export_cloud_backup(token: str, backup_id: str) -> tuple[bytes, str, s
 
     Returns (content_bytes, content_type, content_disposition).
     """
-    import httpx
-    from ui.config import API_BASE
-    async with httpx.AsyncClient(base_url=API_BASE, timeout=120) as c:
-        r = _raise(await c.get(f"/backup/export/{backup_id}", headers={"Authorization": f"Bearer {token}"}))
+    async with _api_client(token, timeout=120.0) as c:
+        r = _raise(await c.get(f"/backup/export/{backup_id}"))
         return (
             r.content,
             r.headers.get("content-type", "application/octet-stream"),
@@ -1890,50 +1905,50 @@ async def export_cloud_backup(token: str, backup_id: str) -> tuple[bytes, str, s
 
 async def disconnect_relay(token: str) -> dict:
     """POST /settings/cloud-disconnect — stop gateway client, clear config."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-disconnect")).json()
 
 
 async def activate_relay(token: str) -> dict:
     """POST /settings/cloud-activate — call relay /auth/activate, start gateway."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-activate")).json()
 
 
 async def apply_relay_token(token: str, payload: dict) -> dict:
     """POST /settings/cloud-apply-token — apply pre-fetched gateway token."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-apply-token", json=payload)).json()
 
 
 async def accept_relay_tos(token: str) -> dict:
     """POST /settings/cloud-accept-tos — persist TOS, restart gateway client."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-accept-tos")).json()
 
 
 async def get_instance_id(token: str) -> str:
     """GET /settings/cloud-instance-id — return canonical instance_id from API process."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get("/settings/cloud-instance-id")).json()["instance_id"]
 
 
 async def send_otp(token: str, email: str) -> dict:
     """POST /settings/cloud-send-otp — send OTP via API process (correct instance_id)."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-send-otp", json={"email": email})).json()
 
 
 async def cloud_claim(token: str, payload: dict) -> dict:
     """POST /settings/cloud-claim — claim + activate via API process (correct instance_id)."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.post("/settings/cloud-claim", json=payload)).json()
 
 
 async def get_connectors_catalog(token: str) -> tuple[list[dict], str]:
     """GET /settings/connectors-catalog — proxy relay /api/connectors via API process (has gateway token).
     Returns (connectors, error_detail). error_detail is "" on success."""
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         data = _raise(await c.get("/settings/connectors-catalog")).json()
     return data.get("connectors", []), data.get("error", "")
 
@@ -1943,5 +1958,5 @@ async def get_connector_authorize_url(token: str, platform: str, shop: str = "")
     params = {}
     if shop:
         params["shop"] = shop
-    async with _client(token) as c:
+    async with _api_client(token) as c:
         return _raise(await c.get(f"/settings/connectors/{platform}/authorize-url", params=params)).json()

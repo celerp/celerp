@@ -252,3 +252,35 @@ async def test_same_idempotency_key_allowed_for_different_companies(client, sess
         json={"records": [record_b]})
     assert rb.status_code == 200, rb.text
     assert rb.json()["created"] == 1, f"Expected created=1, got {rb.json()}"
+
+
+# ---------------------------------------------------------------------------
+# Server-side 500-record limit enforcement
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_batch_import_501_records_returns_422(client, session):
+    """POST /items/import/batch with 501 records must return 422.
+
+    BatchImportRequest.records has max_length=500. Sending 501 records
+    must be rejected by Pydantic validation before any DB work happens.
+    """
+    company_id, user_id, token = await _setup(session)
+    headers = {"Authorization": f"Bearer {token}"}
+
+    records = [
+        {
+            "entity_id": f"item:{uuid.uuid4().hex}",
+            "event_type": "item.created",
+            "data": {"sku": f"LIMIT-{i:04d}", "name": f"Item {i}", "quantity": 1},
+            "source": "csv_import",
+            "idempotency_key": f"csv:item:limit-{i:04d}",
+        }
+        for i in range(501)
+    ]
+    r = await client.post(
+        "/items/import/batch",
+        headers=headers,
+        json={"records": records},
+    )
+    assert r.status_code == 422, f"Expected 422, got {r.status_code}: {r.text}"

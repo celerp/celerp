@@ -6471,8 +6471,58 @@ class TestInventoryImportFlow:
         assert r.status_code == 200
         assert b"location_name" in r.content.lower() or b"location" in r.content.lower()
 
+    @pytest.mark.asyncio
+    async def test_import_confirm_chunks_large_csv(self, ui_client):
+        """600-row CSV must call batch_import twice (500-row chunk + 100-row chunk).
 
-class TestSettingsImportFlow:
+        The UI route must chunk records into ≤500 batches before sending to the API,
+        because the server enforces max_length=500 on BatchImportRequest.records.
+        """
+        known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
+        rows = "\n".join(f"SKU{i:04d},Item {i},Main Office" for i in range(600))
+        csv_data = f"sku,name,location_name\n{rows}\n"
+
+        batch_import_mock = AsyncMock(return_value={"created": 0, "skipped": 0, "updated": 0, "errors": []})
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
+            patch("ui.api_client.batch_import", new=batch_import_mock),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        assert batch_import_mock.call_count == 2, (
+            f"Expected 2 batch_import calls for 600 rows, got {batch_import_mock.call_count}"
+        )
+        # First call: 500 records, second call: 100 records
+        first_records = batch_import_mock.call_args_list[0].args[2]
+        second_records = batch_import_mock.call_args_list[0].args[2] if batch_import_mock.call_count < 2 else batch_import_mock.call_args_list[1].args[2]
+        assert len(first_records) == 500
+        assert len(second_records) == 100
+
+    @pytest.mark.asyncio
+    async def test_import_confirm_timeout_shows_friendly_error(self, ui_client):
+        """A 504 APIError (timeout) from batch_import renders an informative error message."""
+        from ui.api_client import APIError
+        known_loc = {"id": "loc:main", "name": "Main Office", "type": "store"}
+        csv_data = "sku,name,location_name\nS1,Widget,Main Office\n"
+
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [known_loc], "total": 1})),
+            patch("ui.api_client.batch_import", new=AsyncMock(side_effect=APIError(504, "Request timed out"))),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        assert b"timed out" in r.content.lower() or b"504" in r.content or b"failed" in r.content.lower()
+
+
     """Settings import routes use the new validate-then-report flow."""
 
     @pytest.mark.asyncio

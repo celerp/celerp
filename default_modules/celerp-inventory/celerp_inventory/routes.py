@@ -1593,7 +1593,7 @@ class BatchImportResult(BaseModel):
 
 
 class BatchImportRequest(BaseModel):
-    records: list[ImportRecord]
+    records: list[ImportRecord] = Field(..., max_length=500)
     filename: str | None = None
     upsert: bool = False
 
