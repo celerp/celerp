@@ -9452,6 +9452,66 @@ class TestCsvImportSellByValidation:
         html_blank = to_xml(renderers["sell_by"]("", 0, {}, True))
         assert "input--error" in html_blank
 
+    def test_suggest_mapping_sell_by_spaced_header(self):
+        """'Sell By' (spaced) must auto-map to 'sell_by' target, not fall to custom."""
+        from ui.routes.csv_import import suggest_mapping, MAPPING_SKIP, MAPPING_ATTRIBUTE
+
+        target_cols = ["sku", "name", "category", "quantity", "sell_by", "retail_price"]
+        csv_cols = ["SKU", "Name", "Sell By", "Quantity", "Retail Price"]
+        result = suggest_mapping(csv_cols, target_cols)
+
+        assert result["Sell By"] == "sell_by", (
+            f"Expected 'Sell By' to map to 'sell_by', got {result['Sell By']!r}"
+        )
+
+    def test_suggest_mapping_spaced_headers_roundtrip(self):
+        """All common spaced column headers must produce a valid sell_by in remapped CSV.
+
+        Replicates Noah's scenario: spreadsheet exports with spaced headers.
+        After suggest_mapping + apply_column_mapping, the output CSV must contain
+        a 'sell_by' column, not a custom attribute column.
+        """
+        import io, csv as _csv
+        from ui.routes.csv_import import (
+            suggest_mapping, apply_column_mapping,
+            MAPPING_ATTRIBUTE, MAPPING_SKIP,
+        )
+
+        # Simulate a spreadsheet with human-readable spaced headers + "piece" values
+        csv_text = "SKU,Name,Category,Sell By,Quantity\n001,Ring,Jewelry,piece,5\n"
+        rows = list(_csv.DictReader(io.StringIO(csv_text)))
+        csv_cols = list(rows[0].keys())
+        target_cols = ["sku", "name", "category", "sell_by", "quantity", "retail_price"]
+
+        suggested = suggest_mapping(csv_cols, target_cols)
+        # Build form dict as the HTTP handler would receive it
+        form = {f"map__{col}": suggested[col] for col in csv_cols}
+
+        remapped, new_cols = apply_column_mapping(form, csv_text)
+        assert "sell_by" in new_cols, (
+            f"'sell_by' missing from remapped cols: {new_cols}. "
+            f"Mapping was: {suggested}"
+        )
+        remapped_rows = list(_csv.DictReader(io.StringIO(remapped)))
+        assert remapped_rows[0]["sell_by"] == "piece"
+
+    @pytest.mark.asyncio
+    async def test_sell_by_case_insensitive_validation(self, ui_client):
+        """sell_by 'piece' must pass when company unit is stored as 'Piece' (different case)."""
+        from ui.routes.inventory import _build_item_validator
+
+        # Company stores unit as 'Piece' (capital P) - common real-world setup
+        units = [{"name": "Piece", "label": "Piece", "decimals": 0}]
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                validator, _ = await _build_item_validator("fake-token")
+
+        # 'piece' (lowercase from spreadsheet) must pass against 'Piece' (canonical)
+        assert validator("sell_by", "piece") is True, "case-insensitive match failed"
+        assert validator("sell_by", "PIECE") is True, "uppercase match failed"
+        assert validator("sell_by", "Piece") is True, "exact canonical match failed"
+        assert validator("sell_by", "unknown_unit") is False, "invalid unit must still fail"
+
     """Label module UI pages: shell wrapping, preset seeding, editor panel rendering."""
 
     @pytest_asyncio.fixture
