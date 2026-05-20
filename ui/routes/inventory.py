@@ -3733,8 +3733,8 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
 
 
 # Base import columns (without price columns - those are added dynamically)
-_IMPORT_BASE_COLS = ["sku", "name", "category", "quantity"]
-_IMPORT_TAIL_COLS = ["weight", "weight_unit", "sell_by", "pieces", "barcode", "hs_code",
+_IMPORT_BASE_COLS = ["sku", "name", "sell_by", "category", "quantity"]
+_IMPORT_TAIL_COLS = ["weight", "weight_unit", "pieces", "barcode", "hs_code",
                      "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
                      "short_description", "description", "notes", "location_name"]
 

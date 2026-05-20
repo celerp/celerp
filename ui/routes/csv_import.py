@@ -1117,12 +1117,27 @@ def _fix_errors_panel(
 
     # Table: identifier cols read-only, error cols editable
     # Row number + error badge headers
+    _COL_TOOLTIPS: dict[str, str] = {
+        "name": "Required. The item's display name.",
+        "sell_by": "Required. The unit this item is bought and sold in (e.g. piece, kg, carat).",
+    }
+
     header_cells = [Th("#", cls="csv-th")]
     for col in visible_cols:
         label = col.replace("_", " ").title()
         is_err_col = col in error_cols
         badge = f" ({col_error_counts.get(col, 0)} errors)" if is_err_col else ""
-        header_cells.append(Th(f"{label}{badge}", cls="csv-th--error" if is_err_col else ""))
+        tooltip = _COL_TOOLTIPS.get(col)
+        th_content: Any = (
+            Span(
+                f"{label}{badge}",
+                title=tooltip,
+                style="cursor:help;border-bottom:1px dotted currentColor",
+            )
+            if tooltip
+            else f"{label}{badge}"
+        )
+        header_cells.append(Th(th_content, cls="csv-th--error" if is_err_col else ""))
 
     body_rows = []
     for err_idx, ri in enumerate(error_row_indices):
