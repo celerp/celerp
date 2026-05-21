@@ -231,6 +231,13 @@ async def _inventory_content(
     count_by_status = valuation.get("count_by_status", {})
     active_cat = p.get("category", "")
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
+    # Patch location_name in eff_schema to be editable with resolved options
+    loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
+    eff_schema = [
+        {**f, "type": "select", "options": loc_names, "editable": True} if f.get("key") == "location_name"
+        else f
+        for f in eff_schema
+    ]
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
     # Inject resolved cols into URL state so sort links and pagination always carry
     # the exact column set being rendered, even when it came from col_prefs not URL params.
@@ -1178,7 +1185,13 @@ function celerpPrintLabel(entityId, templateId) {
                     return P(f"Unknown location: {value}", cls="cell-error")
                 await api.transfer_item(token, entity_id, loc.get("location_id") or loc.get("id", ""))
             else:
-                await api.patch_item(token, entity_id, {field: value})
+                # Fetch old value before patching so activity log shows old → new
+                try:
+                    old_item = await api.get_item(token, entity_id)
+                    old_val = old_item.get(field)
+                except Exception:
+                    old_val = None
+                await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
             schema, item, cat_schemas, locs_data = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
