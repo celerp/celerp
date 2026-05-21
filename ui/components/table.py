@@ -324,14 +324,13 @@ def editable_cell(
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
     # Preserve horizontal scroll on both .table-scroll-wrap and .main-content.
-    # We listen on document with {once:true} because the swapped-out <td> fires htmx:afterSwap
-    # on the *new* node (in-DOM), which bubbles to document.
+    # We listen on document with {once:true} because the swapped-out <td> fires htmx:afterSettle
     escape_js = (
         f"if(event.key==='Escape'){{"
         f"this._escaping=true;"
         f"var _sw=this.closest('.table-scroll-wrap');var _sl=_sw?_sw.scrollLeft:0;"
         f"var _mc=this.closest('.main-content');var _ml=_mc?_mc.scrollLeft:0;"
-        f"document.addEventListener('htmx:afterSwap',function _r(){{requestAnimationFrame(function(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;}});document.removeEventListener('htmx:afterSwap',_r);}});"
+        f"document.addEventListener('htmx:afterSettle',function _r(){{requestAnimationFrame(function(){{requestAnimationFrame(function(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;}});}});document.removeEventListener('htmx:afterSettle',_r);}});"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
@@ -342,7 +341,7 @@ def editable_cell(
         f"if(event.key==='Escape'){{"
         f"var _sw=this.closest('.table-scroll-wrap');var _sl=_sw?_sw.scrollLeft:0;"
         f"var _mc=this.closest('.main-content');var _ml=_mc?_mc.scrollLeft:0;"
-        f"document.addEventListener('htmx:afterSwap',function _r(){{requestAnimationFrame(function(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;}});document.removeEventListener('htmx:afterSwap',_r);}});"
+        f"document.addEventListener('htmx:afterSettle',function _r(){{requestAnimationFrame(function(){{requestAnimationFrame(function(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;}});}});document.removeEventListener('htmx:afterSettle',_r);}});"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
     )

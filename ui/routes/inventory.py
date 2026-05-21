@@ -1096,7 +1096,7 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
-        # location_name: render a custom cell with select + "Add new" link
+        # location_name: render a select cell with locations + "Add new" as last option
         if field == "location_name":
             loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
             current_val = str(item.get("location_name") or "")
@@ -1105,18 +1105,26 @@ function celerpPrintLabel(entityId, templateId) {
             swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
             escape_js = (
                 f"if(event.key==='Escape'){{"
+                f"var _sw=this.closest('.table-scroll-wrap');var _sl=_sw?_sw.scrollLeft:0;"
+                f"var _mc=this.closest('.main-content');var _ml=_mc?_mc.scrollLeft:0;"
+                f"document.addEventListener('htmx:afterSettle',function _r(){{requestAnimationFrame(function(){{requestAnimationFrame(function(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;}});}});document.removeEventListener('htmx:afterSettle',_r);}});"
                 f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
                 f"event.preventDefault();}}"
+            )
+            add_new_url = "/settings/inventory?tab=locations"
+            onchange_js = (
+                f"if(this.value==='__add_new__'){{"
+                f"window.open('{add_new_url}','_blank');this.value='{current_val}';}}"
             )
             return Td(
                 Select(
                     *[Option(n, value=n, selected=(n == current_val)) for n in loc_names],
-                    name="value", **swap, hx_trigger="change",
+                    Option("+ Add new location", value="__add_new__"),
+                    name="value", **swap, hx_trigger="change[this.value!='__add_new__']",
                     cls="cell-input cell-input--select", autofocus=True,
                     onkeydown=escape_js,
+                    onchange=onchange_js,
                 ),
-                A("+ Add new location", href="/settings/inventory?tab=locations",
-                  cls="cell-add-new-link", target="_blank"),
                 cls="cell cell--editing",
             )
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
