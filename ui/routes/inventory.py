@@ -824,7 +824,7 @@ def setup_routes(app):
                 "quantity": qty,
                 "category": str(row.get("category", "")).strip() or None,
                 "weight": _flt("weight") or _flt("weight_ct"),
-                "weight_unit": str(row.get("weight_unit", "")).strip() or None,
+                "weight_unit": _unit_canonical.get(str(row.get("weight_unit", "")).strip().lower()) or str(row.get("weight_unit", "")).strip() or None,
                 "pieces": _flt("pieces"),
                 "sell_by": sell_by or None,
                 "barcode": str(row.get("barcode", "")).strip() or None,
@@ -1071,14 +1071,16 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
-        # Apply unit-field override (sell_by, purchase_unit → searchable select)
-        if field in ("sell_by", "purchase_unit"):
+        # Apply unit-field override (sell_by, purchase_unit, weight_unit → searchable select)
+        if field in ("sell_by", "purchase_unit", "weight_unit"):
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
+                weight_unit_names = [u["name"] for u in units_resp if u.get("unit_type") == "weight"]
             except Exception:
                 unit_names = []
-            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names)
+                weight_unit_names = []
+            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
         label_map: dict | None = None
         if field == "category":
             try:
@@ -1363,13 +1365,15 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Field-specific overrides
-        if field in ("sell_by", "purchase_unit"):
+        if field in ("sell_by", "purchase_unit", "weight_unit"):
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
+                weight_unit_names = [u["name"] for u in units_resp if u.get("unit_type") == "weight"]
             except Exception:
                 unit_names = []
-            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names)
+                weight_unit_names = []
+            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
         elif field == "purchase_conversion_factor":
             # Plain number input
             cell_type = "number"
@@ -2943,9 +2947,10 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     _umap = units_map or {}
     # sell_by options: company units (searchable select); fallback to text if no units
     sell_by_opts = unit_names or None
+    weight_unit_opts = [n for n, u in _umap.items() if u.get("unit_type") == "weight"] or None
     paired_options: dict[str, list[str] | None] = {
         "sell_by": sell_by_opts,
-        "weight_unit": _UNIVERSAL_FIELD_OPTIONS.get("weight_unit"),
+        "weight_unit": weight_unit_opts,
     }
     for primary, secondary in _PAIRED_TABLE.items():
         if primary in schema_keys and secondary in schema_keys:
@@ -3441,21 +3446,29 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
 
 
 _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
-    "weight_unit": ["ct", "g", "kg", "oz", "lb", "t"],
     "inventory_type": ["stocked", "non_stocked", "service"],
 }
 
 
 def _apply_unit_field_override(
-    field: str, cell_type: str, options, allow_custom: bool, unit_names: list[str]
+    field: str, cell_type: str, options, allow_custom: bool, unit_names: list[str],
+    weight_unit_names: list[str] | None = None,
 ) -> tuple[str, list | None, bool]:
     """Return (cell_type, options, allow_custom) with unit-field overrides applied.
     sell_by and purchase_unit become searchable selects populated from company units.
+    weight_unit becomes a searchable select filtered to weight-type units only.
     """
     if field in ("sell_by", "purchase_unit"):
         return (
             "select",
             [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
+            True,
+        )
+    if field == "weight_unit":
+        opts = weight_unit_names or unit_names
+        return (
+            "select",
+            [*opts, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
             True,
         )
     return cell_type, options, allow_custom
@@ -3840,6 +3853,8 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
     valid_unit_names: list[str] = [u["name"] for u in company_units]
     valid_unit_set: frozenset[str] = frozenset(valid_unit_names)
     valid_unit_lower: dict[str, str] = {u.lower(): u for u in valid_unit_names}
+    weight_unit_names: list[str] = [u["name"] for u in company_units if u.get("unit_type") == "weight"]
+    weight_unit_lower: dict[str, str] = {u.lower(): u for u in weight_unit_names}
 
     def _validate(col: str, value: str, row: dict | None = None) -> bool:
         if col == "sell_by":
@@ -3850,6 +3865,12 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
                 return bool(cat_sell_by.get(category))
             # If known units are available, validate membership (case-insensitive)
             return not valid_unit_set or v.lower() in valid_unit_lower
+        if col == "weight_unit":
+            v = value.strip()
+            # weight_unit is optional; if provided it must be a known weight-type unit
+            if not v:
+                return True
+            return not weight_unit_lower or v.lower() in weight_unit_lower
         return _item_validate(col, value)
 
     # Build import fix-table cell renderers for constrained columns.
@@ -3872,6 +3893,8 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
 
         cell_renderers["sell_by"] = _make_unit_renderer("sell_by")
         cell_renderers["purchase_unit"] = _make_unit_renderer("purchase_unit")
+        if weight_unit_names:
+            cell_renderers["weight_unit"] = _make_unit_renderer("weight_unit", weight_unit_names)
 
     return _validate, cell_renderers
 

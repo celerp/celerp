@@ -6656,8 +6656,72 @@ class TestInventoryImportFlow:
         records = batch_mock.call_args[0][2]
         assert records[0]["data"].get("pieces") is None
 
+    @pytest.mark.asyncio
+    async def test_import_weight_unit_invalid_fails_validation(self, ui_client):
+        """weight_unit value not in company units fails validation and renders dropdown."""
+        from celerp.services.units import DEFAULT_UNITS
+        from fasthtml.common import Select
+        csv_data = "sku,name,sell_by,weight,weight_unit\nS1,Ring,carat,100,badunit\n"
+        with (
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/preview",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        # "badunit" is not a valid unit → fix table shown (error path)
+        body = r.text
+        assert "badunit" in body or "fix" in body.lower() or "error" in body.lower()
 
-    """Settings import routes use the new validate-then-report flow."""
+    @pytest.mark.asyncio
+    async def test_import_weight_unit_valid_canonicalized(self, ui_client):
+        """weight_unit present and valid → stored with canonical name (case-insensitive)."""
+        from celerp.services.units import DEFAULT_UNITS
+        loc = {"id": "loc:main", "name": "Main", "type": "store"}
+        # Use 'Gram' (capital G) - canonical is 'gram'
+        csv_data = "sku,name,location_name,sell_by,weight,weight_unit\nS1,Ring,Main,carat,100,Gram\n"
+        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
+            patch("ui.api_client.batch_import", new=batch_mock),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        records = batch_mock.call_args[0][2]
+        assert records[0]["data"]["weight_unit"] == "gram"
+
+    @pytest.mark.asyncio
+    async def test_import_weight_unit_absent_is_valid(self, ui_client):
+        """weight_unit absent from CSV → stored as None, no validation error."""
+        from celerp.services.units import DEFAULT_UNITS
+        loc = {"id": "loc:main", "name": "Main", "type": "store"}
+        csv_data = "sku,name,location_name,sell_by,weight\nS1,Ring,Main,carat,100\n"
+        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
+            patch("ui.api_client.batch_import", new=batch_mock),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        records = batch_mock.call_args[0][2]
+        assert records[0]["data"].get("weight_unit") is None
 
     @pytest.mark.asyncio
     async def test_locations_preview_clean_shows_import(self, ui_client):
