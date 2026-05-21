@@ -334,7 +334,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     type="text", name="value", value=val,
                     hx_patch=f"/settings/{pfx}/{idx}/{field}",
                     hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                    hx_trigger="blur delay:200ms",
+                    hx_trigger="blur delay:200ms, keyup[key=='Enter']",
                     cls="cell-input",
                     autofocus=True,
                 ),
@@ -355,10 +355,27 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     price_lists[idx][field] = value
                 await getattr(api, pname)(token, price_lists)
                 price_lists = await getattr(api, gname)(token)
+                default_name = await api.get_default_price_list(token)
             except APIError as e:
                 return P(str(e.detail), cls="cell-error")
             pl = price_lists[idx] if idx < len(price_lists) else {}
-            return _price_list_display_cell(idx, field, pl, prefix=pfx)
+            cell = _price_list_display_cell(idx, field, pl, prefix=pfx)
+            if field == "name":
+                # Re-render default price list selector OOB so it reflects the new name
+                visible_names = [p.get("name", "") for p in price_lists if p.get("name") != "Cost"]
+                oob_select = Select(
+                    *[Option(n, value=n, selected=(n == default_name)) for n in visible_names],
+                    name="name", id="default-price-list-select",
+                    cls="form-select",
+                    hx_post="/settings/default-price-list",
+                    hx_target="#default-price-list-status",
+                    hx_swap="outerHTML",
+                    hx_trigger="change",
+                    hx_swap_oob="true",
+                )
+                from fasthtml.common import Div as _Div
+                return _Div(cell, oob_select)
+            return cell
         return price_list_field_patch
 
     def _make_new(gname, pname, redir):
@@ -3476,6 +3493,7 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: s
             Select(
                 *[Option(name, value=name, selected=(name == default_price_list)) for name in pl_names],
                 name="name",
+                id="default-price-list-select",
                 cls="form-select",
                 hx_post="/settings/default-price-list",
                 hx_target="#default-price-list-status",
