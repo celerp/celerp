@@ -249,7 +249,7 @@ async def _inventory_content(
             cls="column-manager-row",
         ),
         data_table(
-            eff_schema,
+            _label_price_cols(eff_schema),
             items,
             entity_type="inventory",
             show_cols=visible_cols or None,
@@ -260,7 +260,7 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map),
+            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency),
             hidden_fields=set(_PAIRED_TABLE.values()),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
@@ -1000,7 +1000,7 @@ def setup_routes(app):
         units_list = units_resp if isinstance(units_resp, list) else []
         unit_names = [u["name"] for u in units_list]
         units_map = {u["name"]: u for u in units_list}
-        detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map)
+        detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, currency=currency)
 
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
@@ -1294,7 +1294,7 @@ function celerpPrintLabel(entityId, templateId) {
         except Exception:
             pass
         visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
-        cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map)
+        cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency)
         from ui.components.table import display_cell, EMPTY
         safe_id = entity_id.replace(":", "-")
         flat = _flatten_item_attrs(item)
@@ -2930,7 +2930,19 @@ _ITEM_CORE_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None) -> dict:
+def _label_price_cols(schema: list[dict]) -> list[dict]:
+    """Return schema with '(Unit Price)' appended to price column labels at render time.
+    Does not mutate the input list."""
+    result = []
+    for f in schema:
+        if f.get("type") == "money":
+            result.append({**f, "label": f"{f.get('label', f['key'])} (Unit Price)"})
+        else:
+            result.append(f)
+    return result
+
+
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None) -> dict:
     """Build cell_renderers dict for paired/triple columns.
 
     Handles:
@@ -3047,24 +3059,29 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                                 cell_type="select", editable=True, label_map=_lm)
         renderers["category"] = _cat_renderer
 
-    # Price column renderers: append "/ sell_unit" annotation to each price cell
+    # Price column renderers: show currency symbol + "/ sell_unit" annotation
+    from ui.components.table import fmt_money, currency_symbol
     price_keys = [f["key"] for f in schema if f.get("type") == "money"]
+    _cur = currency
     for pk in price_keys:
-        def _make_price_renderer(field=pk):
+        def _make_price_renderer(field=pk, _currency=_cur):
             def renderer(entity_id: str, row: dict) -> FT:
                 sell_by = (row.get("sell_by") or "").strip()
                 val = row.get(field, "")
-                cell = display_cell(entity_id=entity_id, field=field, value=val, cell_type="money", editable=True)
-                if sell_by:
-                    # Append small annotation inside the cell
-                    from fasthtml.common import to_xml
-                    inner = to_xml(cell)
-                    annotation = f'<span class="cell-price-unit">/ {sell_by}</span>'
-                    # Inject before closing </td>
-                    cell_html = inner.replace("</td>", f"{annotation}</td>", 1)
-                    from fasthtml.common import NotStr
-                    return NotStr(cell_html)
-                return cell
+                # Render formatted money value with currency symbol
+                try:
+                    formatted = fmt_money(val, _currency) if val not in (None, "", "--") else "--"
+                except (ValueError, TypeError):
+                    formatted = "--"
+                annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+                inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                return Td(
+                    inner, annotation,
+                    cls="cell cell--money",
+                    data_col=field,
+                    hx_get=f"/api/items/{entity_id}/field/{field}/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                )
             return renderer
         renderers[pk] = _make_price_renderer()
 
