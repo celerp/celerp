@@ -323,7 +323,7 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # Scroll preservation is handled globally by the htmx:beforeSwap/afterSettle handlers
+    # Scroll preservation is handled by the htmx:beforeRequest/afterSettle global handlers
     # in data_table's script block — no per-cell scroll logic needed here.
     escape_js = (
         f"if(event.key==='Escape'){{"
@@ -1118,34 +1118,26 @@ function sendToTypeChanged(docType){
   // Guard: register body-level htmx handlers only once per page load
   if(!window.__celerpHtmxHandlers){
     window.__celerpHtmxHandlers=true;
-  // Preserve scroll position across cell-level HTMX swaps (outerHTML on <td>).
-  // Capture before swap, restore after settle via polling to survive browser reflow.
+  // Preserve scroll position across inline cell edits.
+  // The browser resets .table-scroll-wrap scrollLeft to 0 when the edit input gains
+  // focus. We must save BEFORE the request fires (htmx:beforeRequest on the TD),
+  // not on htmx:beforeSwap which fires after the response arrives (post-focus-reset).
+  // Restore after the cancel/save swap via htmx:afterSettle.
   var _scrollSnap=null;
-  document.body.addEventListener('htmx:beforeSwap',function(e){
-    var tgt=e.detail&&e.detail.target;
-    if(tgt&&tgt.tagName==='TD'){
-      var mc=document.getElementById('main-content');
+  document.body.addEventListener('htmx:beforeRequest',function(e){
+    var tgt=e.detail&&e.detail.elt;
+    if(tgt&&tgt.tagName==='TD'&&!_scrollSnap){
       var sw=tgt.closest('.table-scroll-wrap');
-      _scrollSnap={
-        winX:window.scrollX,winY:window.scrollY,
-        mcL:mc?mc.scrollLeft:0,mcT:mc?mc.scrollTop:0,
-        swL:sw?sw.scrollLeft:0,
-        bdL:document.body.scrollLeft,deL:document.documentElement.scrollLeft
-      };
+      _scrollSnap={swL:sw?sw.scrollLeft:0};
     }
   });
   document.body.addEventListener('htmx:afterSettle',function(e){
     if(_scrollSnap){
       var s=_scrollSnap;_scrollSnap=null;
-      var mc=document.getElementById('main-content');
-      var sw=e.detail&&e.detail.target&&e.detail.target.closest?e.detail.target.closest('.table-scroll-wrap'):null;
+      var sw=document.querySelector('.table-scroll-wrap');
       var attempts=0;
       var t=setInterval(function(){
-        window.scrollTo(s.winX,s.winY);
-        if(mc){mc.scrollLeft=s.mcL;mc.scrollTop=s.mcT;}
         if(sw)sw.scrollLeft=s.swL;
-        document.body.scrollLeft=s.bdL;
-        document.documentElement.scrollLeft=s.deL;
         if(++attempts>=30)clearInterval(t);
       },10);
     }
