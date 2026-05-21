@@ -980,7 +980,7 @@ _INLINE_FIX_JS = """
     if (!input) return;
     var val = input.value;
     if (!val) return;
-    document.querySelectorAll('input[data-col="' + col + '"]').forEach(function(el) {
+    document.querySelectorAll('[data-col="' + col + '"]').forEach(function(el) {
       el.value = val;
       el.classList.remove('input--error');
     });
@@ -1080,13 +1080,22 @@ def _fix_errors_panel(
         col_error_count = col_error_counts.get(col, 0)
         if col_error_count > 1:
             label = col.replace("_", " ").title()
-            fill_bars.append(Div(
-                Label(f"{label} ({col_error_count} rows):", _for=f"fill-{col}"),
-                Input(
+            renderer = (cell_renderers or {}).get(col)
+            if renderer:
+                # Reuse the per-cell renderer for the fill widget. ri=-1 marks it as
+                # the fill source (not a target cell). Inject id so csvFillColumn can
+                # read the selected value via document.getElementById('fill-{col}').
+                fill_widget = renderer("", -1, {}, False)
+                fill_widget.attrs["id"] = f"fill-{col}"
+            else:
+                fill_widget = Input(
                     type="text", id=f"fill-{col}",
                     placeholder=f"Value for all {label} cells",
                     cls="form-input form-input--sm",
-                ),
+                )
+            fill_bars.append(Div(
+                Label(f"{label} ({col_error_count} rows):", _for=f"fill-{col}"),
+                fill_widget,
                 Button(t("btn.apply"),
                     type="button",
                     onclick=f"csvFillColumn('{col}')",

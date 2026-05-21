@@ -9452,6 +9452,61 @@ class TestCsvImportSellByValidation:
         html_blank = to_xml(renderers["sell_by"]("", 0, {}, True))
         assert "input--error" in html_blank
 
+    @pytest.mark.asyncio
+    async def test_bulk_fill_bar_uses_select_for_renderer_columns(self, ui_client):
+        """_fix_errors_panel must render a <select id='fill-sell_by'> in the bulk fill bar.
+
+        Regression: bulk fill bar hardcoded Input(type='text') for all columns,
+        and csvFillColumn queried 'input[data-col]' — both broken for select cells.
+        """
+        from ui.routes.csv_import import _fix_errors_panel
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
+
+        units = [{"name": "piece", "label": "Piece", "decimals": 0},
+                 {"name": "kg", "label": "Kilogram", "decimals": 3}]
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
+            validate, renderers = await _build_item_validator("fake-token")
+
+        # 3 rows all missing sell_by (triggers bulk fill bar — requires >1 error row)
+        rows = [
+            {"sku": f"S{i}", "name": f"Item {i}", "sell_by": "", "category": "Test"}
+            for i in range(3)
+        ]
+        cols = ["sku", "name", "sell_by", "category"]
+        error_row_indices = list(range(3))
+        error_cols = {"sell_by"}
+        html = to_xml(_fix_errors_panel(
+            rows=rows,
+            cols=cols,
+            validate=validate,
+            error_row_indices=error_row_indices,
+            error_cols=error_cols,
+            total_errors=3,
+            csv_ref="ref123",
+            revalidate_action="/inventory/import/revalidate",
+            error_report_action="/inventory/import/errors",
+            back_href="/inventory/import",
+            has_mapping=False,
+            cell_renderers=renderers,
+        ))
+
+        # Bulk fill bar must use <select> not <input> for sell_by
+        assert 'id="fill-sell_by"' in html, (
+            "fill-sell_by element missing — bulk fill bar not rendered for sell_by"
+        )
+        assert '<select' in html, "Expected <select> for sell_by fill bar, got plain input"
+        # Must NOT have a plain text input for sell_by in the fill bar
+        assert 'id="fill-sell_by" type="text"' not in html and \
+               'type="text" id="fill-sell_by"' not in html, \
+            "sell_by fill bar must be a <select>, not a text <input>"
+
+        # JS must use generic [data-col] selector, not input[data-col]
+        assert "input[data-col" not in html, (
+            "csvFillColumn JS still uses 'input[data-col]' — must use '[data-col]' to match selects"
+        )
+
     def test_suggest_mapping_sell_by_spaced_header(self):
         """'Sell By' (spaced) must auto-map to 'sell_by' target, not fall to custom."""
         from ui.routes.csv_import import suggest_mapping, MAPPING_SKIP, MAPPING_ATTRIBUTE
