@@ -1089,6 +1089,29 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        # location_name: render a custom cell with select + "Add new" link
+        if field == "location_name":
+            loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
+            current_val = str(item.get("location_name") or "")
+            restore_url = f"/api/items/{entity_id}/field/{field}/display"
+            patch_url = f"/api/items/{entity_id}/field/{field}"
+            swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
+            escape_js = (
+                f"if(event.key==='Escape'){{"
+                f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
+                f"event.preventDefault();}}"
+            )
+            return Td(
+                Select(
+                    *[Option(n, value=n, selected=(n == current_val)) for n in loc_names],
+                    name="value", **swap, hx_trigger="change",
+                    cls="cell-input cell-input--select", autofocus=True,
+                    onkeydown=escape_js,
+                ),
+                A("+ Add new location", href="/settings/inventory?tab=locations",
+                  cls="cell-add-new-link", target="_blank"),
+                cls="cell cell--editing",
+            )
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
                              label_map=label_map)

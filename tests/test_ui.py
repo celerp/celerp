@@ -8573,10 +8573,11 @@ class TestInventoryItemDetailFixes:
             r2 = await ui_client.get("/api/items/item:abc1/field/location_name/edit", cookies=_authed())
         assert r2.status_code == 200
         edit_html = r2.content.decode()
-        # allow_custom=True → combobox (not plain select)
-        assert "combobox" in edit_html
+        # location_name renders as a plain <select> with "Add new location" link
+        assert "<select" in edit_html
         assert "Warehouse A" in edit_html
         assert "Warehouse B" in edit_html
+        assert "Add new location" in edit_html
 
     @pytest.mark.asyncio
     async def test_attachment_proxy_route(self, ui_client):
@@ -8625,8 +8626,9 @@ class TestInventoryItemDetailFixes:
             r = await ui_client.get("/api/items/item:abc1/field/location_name/edit", cookies=_authed())
         assert r.status_code == 200
         html = r.content.decode()
-        # allow_custom=True forces combobox path even with 0 options
-        assert "combobox" in html
+        # location_name renders as a plain <select> with "Add new location" link (even with 0 options)
+        assert "<select" in html
+        assert "Add new location" in html
         assert 'type="text" class="cell-input"' not in html
 
     @pytest.mark.asyncio

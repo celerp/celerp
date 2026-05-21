@@ -329,6 +329,7 @@ a:hover { text-decoration: underline; }
 }
 
 .cell--editing { padding: 0; }
+.cell-add-new-link { display: block; font-size: 11px; padding: 2px 6px; color: var(--c-accent); white-space: nowrap; }
 
 /* Paired cells (e.g. Qty + Sell Unit in one column) */
 .cell--paired { white-space: nowrap; }

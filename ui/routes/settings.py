@@ -1336,6 +1336,7 @@ def setup_routes(app):
                 hx_target="closest td", hx_swap="outerHTML", hx_include="this",
                 hx_trigger="blur delay:200ms",
                 cls="cell-input", autofocus=True,
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}",
             ),
             cls="cell cell--editing",
         )
@@ -3627,7 +3628,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
                 ),
                 cls="cell",
             ),
-            Td(
+            Td(cls="cell") if is_default else Td(
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/locations/{lid}",
                        hx_confirm=f"Delete location '{loc.get('name', '')}'? Items must be unassigned first.",
