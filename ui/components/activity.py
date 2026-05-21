@@ -121,10 +121,10 @@ def detail_from_entry(data: dict, event_type: str) -> str:
             for k, change in list(user_fields.items())[:4]:
                 old = change.get("old") if isinstance(change, dict) else None
                 new = change.get("new") if isinstance(change, dict) else None
-                if old is not None and new is not None:
-                    parts.append(f"{k}: {old} → {new}")
-                elif new is not None:
-                    parts.append(f"{k}: → {new}")
+                old_str = str(old) if old is not None else "none"
+                new_str = str(new) if new is not None else "none"
+                if new is not None:
+                    parts.append(f"{k}: {old_str} → {new_str}")
                 else:
                     parts.append(k)
             suffix = "…" if len(user_fields) > 4 else ""
@@ -275,10 +275,10 @@ def _fields_changed_summary(fields_changed: dict) -> str:
         for k, change in list(user_fields.items())[:4]:
             old = change.get("old") if isinstance(change, dict) else None
             new = change.get("new") if isinstance(change, dict) else None
-            if old is not None and new is not None:
-                parts.append(f"{k}: {old} → {new}")
-            elif new is not None:
-                parts.append(f"{k}: → {new}")
+            old_str = str(old) if old is not None else "none"
+            new_str = str(new) if new is not None else "none"
+            if new is not None:
+                parts.append(f"{k}: {old_str} → {new_str}")
             else:
                 parts.append(k)
         suffix = "..." if len(user_fields) > 4 else ""

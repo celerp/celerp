@@ -323,14 +323,21 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # Preserve horizontal scroll: save before htmx.ajax, restore via polling interval
-    # until the value sticks (browser may reset scroll during DOM swap).
+    # Preserve horizontal scroll: save scrollLeft on all possible containers before swap,
+    # then poll-restore for 300ms (browser may reset during DOM reflow).
     _scroll_save = (
-        f"var _mc=document.getElementById('main-content');var _ml=_mc?_mc.scrollLeft:0;"
+        f"var _mc=document.getElementById('main-content');"
+        f"var _sw=this.closest('.table-scroll-wrap');"
+        f"var _bd=document.body;"
+        f"var _de=document.documentElement;"
+        f"var _ml=_mc?_mc.scrollLeft:0;var _sl=_sw?_sw.scrollLeft:0;"
+        f"var _bl=_bd.scrollLeft;var _dl=_de.scrollLeft;"
     )
     _scroll_restore = (
-        f"var _ri=setInterval(function(){{if(_mc)_mc.scrollLeft=_ml;}},10);"
-        f"setTimeout(function(){{clearInterval(_ri);}},300);"
+        f"var _ri=setInterval(function(){{"
+        f"if(_mc)_mc.scrollLeft=_ml;if(_sw)_sw.scrollLeft=_sl;"
+        f"_bd.scrollLeft=_bl;_de.scrollLeft=_dl;"
+        f"}},10);setTimeout(function(){{clearInterval(_ri);}},300);"
     )
     escape_js = (
         f"if(event.key==='Escape'){{"

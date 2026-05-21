@@ -1105,9 +1105,13 @@ function celerpPrintLabel(entityId, templateId) {
             swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
             escape_js = (
                 f"if(event.key==='Escape'){{"
-                f"var _mc=document.getElementById('main-content');var _ml=_mc?_mc.scrollLeft:0;"
+                f"var _mc=document.getElementById('main-content');"
+                f"var _sw=this.closest('.table-scroll-wrap');"
+                f"var _bd=document.body;var _de=document.documentElement;"
+                f"var _ml=_mc?_mc.scrollLeft:0;var _sl=_sw?_sw.scrollLeft:0;"
+                f"var _bl=_bd.scrollLeft;var _dl=_de.scrollLeft;"
                 f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-                f"var _ri=setInterval(function(){{if(_mc)_mc.scrollLeft=_ml;}},10);setTimeout(function(){{clearInterval(_ri);}},300);"
+                f"var _ri=setInterval(function(){{if(_mc)_mc.scrollLeft=_ml;if(_sw)_sw.scrollLeft=_sl;_bd.scrollLeft=_bl;_de.scrollLeft=_dl;}},10);setTimeout(function(){{clearInterval(_ri);}},300);"
                 f"event.preventDefault();}}"
             )
             add_new_url = "/settings/inventory?tab=locations"
