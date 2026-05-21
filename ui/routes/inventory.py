@@ -1208,6 +1208,29 @@ function celerpPrintLabel(entityId, templateId) {
                 return await _paired_display(token, entity_id, field)
             except Exception:
                 pass  # fall through to single display_cell on error
+        # Price fields: re-render with currency symbol + / sell_unit annotation
+        if cell_type == "money":
+            from ui.components.table import fmt_money
+            sell_by = (item.get("sell_by") or "").strip()
+            val = item.get(field, "")
+            try:
+                company = await api.get_company(token)
+                currency = (company.get("currency") or "").strip() or None
+            except Exception:
+                currency = None
+            try:
+                formatted = fmt_money(val, currency) if val not in (None, "", "--") else "--"
+            except (ValueError, TypeError):
+                formatted = "--"
+            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+            inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+            return Td(
+                inner, annotation,
+                cls="cell cell--money",
+                data_col=field,
+                hx_get=f"/api/items/{entity_id}/field/{field}/edit",
+                hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+            )
         from ui.components.table import display_cell
         try:
             label_map = await api.get_category_display_names(token) if field == "category" else None
