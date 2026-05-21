@@ -377,3 +377,65 @@ class TestLocaleKeys:
             with open(path) as f:
                 data = json.load(f)
             assert "settings.new_category_name" in data, f"Missing settings.new_category_name in {lang}.json"
+
+
+# ── Issue 2: protected price list deletion ────────────────────────────────────
+
+class TestProtectedPriceListDeletion:
+    @pytest.mark.asyncio
+    async def test_cannot_delete_retail(self, ui_client):
+        """DELETE /settings/price-lists/<idx> for Retail must return error fragment."""
+        with (
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
+                {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"},
+            ])),
+            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
+            patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
+        ):
+            resp = await ui_client.delete("/settings/price-lists/2", cookies=_authed())
+        assert resp.status_code == 200
+        assert "flash--error" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_cannot_delete_cost(self, ui_client):
+        """DELETE /settings/price-lists/<idx> for Cost must return error fragment."""
+        with (
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
+                {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"},
+            ])),
+            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
+            patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
+        ):
+            resp = await ui_client.delete("/settings/price-lists/0", cookies=_authed())
+        assert resp.status_code == 200
+        assert "flash--error" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_cannot_delete_wholesale(self, ui_client):
+        """DELETE /settings/price-lists/<idx> for Wholesale must return error fragment."""
+        with (
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
+                {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"},
+            ])),
+            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
+            patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
+        ):
+            resp = await ui_client.delete("/settings/price-lists/1", cookies=_authed())
+        assert resp.status_code == 200
+        assert "flash--error" in resp.text
+
+    @pytest.mark.asyncio
+    async def test_can_delete_custom_price_list(self, ui_client):
+        """DELETE /settings/price-lists/<idx> for a user-added list must succeed."""
+        with (
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[
+                {"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"}, {"name": "VIP"},
+            ])),
+            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
+            patch("ui.api_client.patch_price_lists", new=AsyncMock(return_value=None)),
+        ):
+            resp = await ui_client.delete("/settings/price-lists/3", cookies=_authed())
+        # Should redirect (204) or succeed without an error fragment
+        assert resp.status_code in (200, 204)
+        if resp.status_code == 200:
+            assert "flash--error" not in resp.text

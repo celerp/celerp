@@ -392,6 +392,11 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                             Span(t("settings.retail_price_list_cannot_be_deleted"), cls="flash flash--error"),
                             id="price-list-error",
                         )
+                    if name in ("Cost", "Wholesale"):
+                        return Div(
+                            Span(f"'{name}' is a system price list and cannot be deleted.", cls="flash flash--error"),
+                            id="price-list-error",
+                        )
                     if name == default_name:
                         # Return error fragment instead of redirect
                         return Div(
@@ -3429,12 +3434,17 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: s
 
     def _row(idx: int, pl: dict) -> FT:
         name = pl.get("name", "")
-        is_retail = name == "Retail"
+        is_protected = name in ("Retail", "Cost", "Wholesale")
+        protected_msg = {
+            "Retail": "Retail price list cannot be deleted",
+            "Cost": "Cost is a system field and cannot be deleted",
+            "Wholesale": "Wholesale price list cannot be deleted",
+        }
         delete_cell = Td(
             Button(t("btn.delete"),
                    cls="btn btn--danger btn--xs",
                    disabled=True,
-                   title="Retail price list cannot be deleted") if is_retail else
+                   title=protected_msg.get(name, "Cannot delete")) if is_protected else
             Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                    hx_delete=f"/settings/{prefix}/{idx}",
                    hx_confirm=f"Delete price list '{name}'?",

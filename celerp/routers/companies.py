@@ -610,17 +610,7 @@ from celerp.services.field_schema import get_effective_field_schema  # noqa: F40
 
 @router.get("/me/item-schema")
 async def get_item_schema(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
-    from celerp.services.field_schema import _BASE_FIELDS
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    stored = company.settings.get("item_schema")
-    if not stored:
-        return DEFAULT_ITEM_SCHEMA
-    # Merge: keep stored fields as-is, add any base fields missing from stored
-    stored_keys = {f["key"] for f in stored}
-    extras = [f for f in _BASE_FIELDS if f["key"] not in stored_keys]
-    return stored + extras
+    return await get_effective_field_schema(session, company_id)
 
 
 @router.patch("/me/item-schema")

@@ -825,6 +825,8 @@ def setup_routes(app):
                 "category": str(row.get("category", "")).strip() or None,
                 "weight": _flt("weight") or _flt("weight_ct"),
                 "weight_unit": _unit_canonical.get(str(row.get("weight_unit", "")).strip().lower()) or str(row.get("weight_unit", "")).strip() or None,
+                "gross_weight": _flt("gross_weight"),
+                "gross_weight_unit": _unit_canonical.get(str(row.get("gross_weight_unit", "")).strip().lower()) or str(row.get("gross_weight_unit", "")).strip() or None,
                 "pieces": _flt("pieces"),
                 "sell_by": sell_by or None,
                 "barcode": str(row.get("barcode", "")).strip() or None,
@@ -1072,7 +1074,7 @@ function celerpPrintLabel(entityId, templateId) {
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
         # Apply unit-field override (sell_by, purchase_unit, weight_unit → searchable select)
-        if field in ("sell_by", "purchase_unit", "weight_unit"):
+        if field in ("sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"):
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
@@ -1122,6 +1124,7 @@ function celerpPrintLabel(entityId, templateId) {
 
     _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
                                       "weight": "weight_unit", "weight_unit": "weight",
+                                      "gross_weight": "gross_weight_unit", "gross_weight_unit": "gross_weight",
                                       "purchase_unit": "purchase_conversion_factor",
                                       "purchase_conversion_factor": "purchase_unit"}
 
@@ -1365,7 +1368,7 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Field-specific overrides
-        if field in ("sell_by", "purchase_unit", "weight_unit"):
+        if field in ("sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"):
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
@@ -2915,7 +2918,7 @@ def _inventory_type_tabs(p: dict) -> FT:
         )
 
     return Div(*[_tab(it, label) for it, label in _TABS], cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
-_PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "purchase_unit": "purchase_conversion_factor"}
+_PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "gross_weight": "gross_weight_unit", "purchase_unit": "purchase_conversion_factor"}
 # Derived from _PAIRED_TABLE — secondary fields already rendered inside paired cells; exclude from standalone rows
 _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
 # Core item fields shown in the left (core details) panel on the detail page — single definition
@@ -2951,6 +2954,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     paired_options: dict[str, list[str] | None] = {
         "sell_by": sell_by_opts,
         "weight_unit": weight_unit_opts,
+        "gross_weight_unit": weight_unit_opts,
     }
     for primary, secondary in _PAIRED_TABLE.items():
         if primary in schema_keys and secondary in schema_keys:
@@ -3042,6 +3046,27 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             return display_cell(entity_id=entity_id, field="category", value=row.get("category", ""),
                                 cell_type="select", editable=True, label_map=_lm)
         renderers["category"] = _cat_renderer
+
+    # Price column renderers: append "/ sell_unit" annotation to each price cell
+    price_keys = [f["key"] for f in schema if f.get("type") == "money"]
+    for pk in price_keys:
+        def _make_price_renderer(field=pk):
+            def renderer(entity_id: str, row: dict) -> FT:
+                sell_by = (row.get("sell_by") or "").strip()
+                val = row.get(field, "")
+                cell = display_cell(entity_id=entity_id, field=field, value=val, cell_type="money", editable=True)
+                if sell_by:
+                    # Append small annotation inside the cell
+                    from fasthtml.common import to_xml
+                    inner = to_xml(cell)
+                    annotation = f'<span class="cell-price-unit">/ {sell_by}</span>'
+                    # Inject before closing </td>
+                    cell_html = inner.replace("</td>", f"{annotation}</td>", 1)
+                    from fasthtml.common import NotStr
+                    return NotStr(cell_html)
+                return cell
+            return renderer
+        renderers[pk] = _make_price_renderer()
 
     return renderers
 
@@ -3464,7 +3489,7 @@ def _apply_unit_field_override(
             [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
             True,
         )
-    if field == "weight_unit":
+    if field in ("weight_unit", "gross_weight_unit"):
         opts = weight_unit_names or unit_names
         return (
             "select",
@@ -3786,7 +3811,7 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
 
 # Base import columns (without price columns - those are added dynamically)
 _IMPORT_BASE_COLS = ["sku", "name", "sell_by", "category", "quantity"]
-_IMPORT_TAIL_COLS = ["weight", "weight_unit", "pieces", "barcode", "hs_code",
+_IMPORT_TAIL_COLS = ["weight", "weight_unit", "gross_weight", "gross_weight_unit", "pieces", "barcode", "hs_code",
                      "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
                      "short_description", "description", "notes", "location_name"]
 
@@ -3871,6 +3896,11 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
             if not v:
                 return True
             return not weight_unit_lower or v.lower() in weight_unit_lower
+        if col == "gross_weight_unit":
+            v = value.strip()
+            if not v:
+                return True
+            return not weight_unit_lower or v.lower() in weight_unit_lower
         return _item_validate(col, value)
 
     # Build import fix-table cell renderers for constrained columns.
@@ -3895,6 +3925,7 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
         cell_renderers["purchase_unit"] = _make_unit_renderer("purchase_unit")
         if weight_unit_names:
             cell_renderers["weight_unit"] = _make_unit_renderer("weight_unit", weight_unit_names)
+            cell_renderers["gross_weight_unit"] = _make_unit_renderer("gross_weight_unit", weight_unit_names)
 
     return _validate, cell_renderers
 
@@ -3903,7 +3934,8 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
 # Price columns (any key ending in _price) are excluded from attributes separately.
 _CORE_ITEM_COLS: frozenset[str] = frozenset({
     "sku", "name", "category", "quantity",
-    "weight", "weight_ct", "weight_unit", "sell_by", "pieces", "status",
+    "weight", "weight_ct", "weight_unit", "gross_weight", "gross_weight_unit",
+    "sell_by", "pieces", "status",
     "barcode", "hs_code", "short_description", "description", "notes", "location_name",
     "location_id", "created_at", "updated_at",
 })
