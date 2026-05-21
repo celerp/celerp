@@ -3080,15 +3080,15 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     import json as _json
     selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
     cat_pref = active_cat or "__all__"
-    # JS data for all columns (key, label, visible)
-    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema]
+    # JS data for all columns (key, label, visible) — exclude paired secondaries
+    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema if f.get("key") not in _PAIRED_SECONDARY_KEYS]
     col_data_js = _json.dumps(col_data)
     selected_js = _json.dumps(sorted(selected))
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
     hidden_state["_cat_pref"] = cat_pref
 
-    # Build checkbox list for initial render
+    # Build checkbox list for initial render (exclude paired secondaries - they render inside primary cells)
     checkboxes = [
         Label(
             Input(
@@ -3104,6 +3104,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
             data_col=f.get("key", ""),
         )
         for f in schema
+        if f.get("key") not in _PAIRED_SECONDARY_KEYS
     ]
 
     hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
