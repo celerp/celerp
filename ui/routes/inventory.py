@@ -1194,6 +1194,9 @@ function celerpPrintLabel(entityId, templateId) {
                 try:
                     old_item = await api.get_item(token, entity_id)
                     old_val = old_item.get(field)
+                    if old_val is None:
+                        # Category attributes are stored under "attributes" dict
+                        old_val = (old_item.get("attributes") or {}).get(field)
                 except Exception:
                     old_val = None
                 await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})

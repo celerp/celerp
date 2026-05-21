@@ -6893,6 +6893,41 @@ class TestHtmxPartialAttrContract:
         assert r.status_code == 200
         assert b"New Name" in r.content
 
+    @pytest.mark.asyncio
+    async def test_item_field_patch_sends_old_value_from_attributes(self, ui_client):
+        """PATCH /api/items/{id}/field/{field} must read old value from 'attributes' dict
+        for category attribute fields, so the activity log shows old → new."""
+        _item = {
+            "id": "item:x", "sku": "S1", "name": "Ruby", "status": "available",
+            "quantity": 1, "category": "gemstones",
+            # _flatten_item promotes attribute fields to top level on GET /items/{id}
+            "symmetry": "Good",
+            "attributes": {"symmetry": "Good"},
+        }
+        _schema = [{"key": "symmetry", "type": "text", "label": "Symmetry", "editable": True}]
+        captured = {}
+
+        async def mock_patch(token, entity_id, fields_changed):
+            captured.update(fields_changed)
+            return _item
+
+        with (
+            patch("ui.api_client.patch_item", new=mock_patch),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_item)),
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_schema)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/item:x/field/symmetry",
+                cookies=_authed(),
+                data={"value": "Excellent"},
+            )
+        assert r.status_code == 200
+        sym = captured.get("symmetry", {})
+        assert sym.get("old") == "Good", f"Expected old='Good', got: {sym}"
+        assert sym.get("new") == "Excellent"
+
 
 class TestCurrencyThreading:
     """P4: Every page that renders money values must pass currency through.
