@@ -323,28 +323,12 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # Preserve horizontal scroll: save scrollLeft on all possible containers before swap,
-    # then poll-restore for 300ms (browser may reset during DOM reflow).
-    _scroll_save = (
-        f"var _mc=document.getElementById('main-content');"
-        f"var _sw=this.closest('.table-scroll-wrap');"
-        f"var _bd=document.body;"
-        f"var _de=document.documentElement;"
-        f"var _ml=_mc?_mc.scrollLeft:0;var _sl=_sw?_sw.scrollLeft:0;"
-        f"var _bl=_bd.scrollLeft;var _dl=_de.scrollLeft;"
-    )
-    _scroll_restore = (
-        f"var _ri=setInterval(function(){{"
-        f"if(_mc)_mc.scrollLeft=_ml;if(_sw)_sw.scrollLeft=_sl;"
-        f"_bd.scrollLeft=_bl;_de.scrollLeft=_dl;"
-        f"}},10);setTimeout(function(){{clearInterval(_ri);}},300);"
-    )
+    # Scroll preservation is handled globally by the htmx:beforeSwap/afterSettle handlers
+    # in data_table's script block — no per-cell scroll logic needed here.
     escape_js = (
         f"if(event.key==='Escape'){{"
         f"this._escaping=true;"
-        f"{_scroll_save}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-        f"{_scroll_restore}"
         f"event.preventDefault();}}"
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
     )
@@ -352,9 +336,7 @@ def editable_cell(
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
-        f"{_scroll_save}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-        f"{_scroll_restore}"
         f"event.preventDefault();}}"
     )
 
@@ -1136,6 +1118,38 @@ function sendToTypeChanged(docType){
   // Guard: register body-level htmx handlers only once per page load
   if(!window.__celerpHtmxHandlers){
     window.__celerpHtmxHandlers=true;
+  // Preserve scroll position across cell-level HTMX swaps (outerHTML on <td>).
+  // Capture before swap, restore after settle via polling to survive browser reflow.
+  var _scrollSnap=null;
+  document.body.addEventListener('htmx:beforeSwap',function(e){
+    var tgt=e.detail&&e.detail.target;
+    if(tgt&&tgt.tagName==='TD'){
+      var mc=document.getElementById('main-content');
+      var sw=tgt.closest('.table-scroll-wrap');
+      _scrollSnap={
+        winX:window.scrollX,winY:window.scrollY,
+        mcL:mc?mc.scrollLeft:0,mcT:mc?mc.scrollTop:0,
+        swL:sw?sw.scrollLeft:0,
+        bdL:document.body.scrollLeft,deL:document.documentElement.scrollLeft
+      };
+    }
+  });
+  document.body.addEventListener('htmx:afterSettle',function(e){
+    if(_scrollSnap){
+      var s=_scrollSnap;_scrollSnap=null;
+      var mc=document.getElementById('main-content');
+      var sw=e.detail&&e.detail.target&&e.detail.target.closest?e.detail.target.closest('.table-scroll-wrap'):null;
+      var attempts=0;
+      var t=setInterval(function(){
+        window.scrollTo(s.winX,s.winY);
+        if(mc){mc.scrollLeft=s.mcL;mc.scrollTop=s.mcT;}
+        if(sw)sw.scrollLeft=s.swL;
+        document.body.scrollLeft=s.bdL;
+        document.documentElement.scrollLeft=s.deL;
+        if(++attempts>=30)clearInterval(t);
+      },10);
+    }
+  });
   // Sync derived cells (weight/pieces) after a quantity PATCH.
   // Use htmx:afterRequest (fires before swap) to get the requestConfig path reliably,
   // then re-query the live DOM after the swap completes via htmx:afterSettle.
