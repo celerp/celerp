@@ -1743,7 +1743,6 @@ async def reactivate_company(
 DEFAULT_PRICE_LISTS: list[dict] = [
     {"name": "Retail", "description": "Standard retail price"},
     {"name": "Wholesale", "description": "Wholesale / trade price"},
-    {"name": "Cost", "description": "Cost / landed price"},
 ]
 DEFAULT_PRICE_LIST_NAME: str = "Retail"
 

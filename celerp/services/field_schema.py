@@ -15,7 +15,6 @@ from celerp.models.company import Company
 
 # Default price lists (used when company has none configured)
 _DEFAULT_PRICE_LISTS: list[dict] = [
-    {"name": "Cost"},
     {"name": "Wholesale"},
     {"name": "Retail"},
 ]

@@ -65,7 +65,9 @@ async def test_field_schema_returns_base_schema():
     result = await get_effective_field_schema(mock_session, uuid.uuid4())
     # sku is present (stored) and missing default keys are merged in
     assert any(f["key"] == "sku" for f in result)
-    assert any(f["key"] == "cost_price" for f in result)
+    # Default price lists are Retail and Wholesale (Cost is a system field, not a price list)
+    assert any(f["key"] == "retail_price" for f in result)
+    assert any(f["key"] == "wholesale_price" for f in result)
 
 
 @pytest.mark.asyncio

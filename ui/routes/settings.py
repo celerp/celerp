@@ -3430,21 +3430,10 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
 
 
 def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: str = "price-lists") -> FT:
-    has_cost = any(pl.get("name") == "Cost" for pl in price_lists)
-
     def _row(idx: int, pl: dict) -> FT:
         name = pl.get("name", "")
-        is_protected = name in ("Retail", "Cost", "Wholesale")
-        protected_msg = {
-            "Retail": "Retail price list cannot be deleted",
-            "Cost": "Cost is a system field and cannot be deleted",
-            "Wholesale": "Wholesale price list cannot be deleted",
-        }
-        delete_cell = Td(
-            Button(t("btn.delete"),
-                   cls="btn btn--danger btn--xs",
-                   disabled=True,
-                   title=protected_msg.get(name, "Cannot delete")) if is_protected else
+        is_protected = name in ("Retail", "Wholesale")
+        delete_cell = Td(cls="cell") if is_protected else Td(
             Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                    hx_delete=f"/settings/{prefix}/{idx}",
                    hx_confirm=f"Delete price list '{name}'?",
@@ -3460,18 +3449,15 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: s
             cls="data-row",
         )
 
-    pl_names = [pl.get("name", "") for pl in price_lists]
+    # Filter out Cost - it's a system field, not a user-facing price list
+    visible_price_lists = [(i, pl) for i, pl in enumerate(price_lists) if pl.get("name") != "Cost"]
+    pl_names = [pl.get("name", "") for _, pl in visible_price_lists]
 
     return Div(
         Div(id="price-list-error"),
         H3(t("page.price_lists"), cls="settings-section-title"),
         P(t("settings.define_your_companys_price_tiers_these_names_are_u"),
           cls="settings-hint"),
-        *(
-            [P(t("settings._cost_price_is_tracked_peritem_from_purchase_docum"),
-               cls="settings-hint settings-hint--info")]
-            if has_cost else []
-        ),
         Div(
             Button(t("btn.add_price_list"), cls="btn btn--primary",
                    hx_post=f"/settings/{prefix}/new", hx_swap="none",
@@ -3480,7 +3466,7 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: s
         ),
         Table(
             Thead(Tr(Th(t("th.name")), Th(t("th.description")), Th(""))),
-            Tbody(*[_row(i, pl) for i, pl in enumerate(price_lists)]),
+            Tbody(*[_row(i, pl) for i, pl in visible_price_lists]),
             cls="data-table",
         ),
         H3(t("page.default_price_list"), cls="settings-section-title mt-lg"),
