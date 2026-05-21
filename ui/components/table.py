@@ -323,15 +323,21 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # Preserve horizontal scroll on both .table-scroll-wrap and .main-content.
-    # We listen on document with {once:true} because the swapped-out <td> fires htmx:afterSettle
+    # Preserve horizontal scroll: save before htmx.ajax, restore via polling interval
+    # until the value sticks (browser may reset scroll during DOM swap).
+    _scroll_save = (
+        f"var _mc=document.getElementById('main-content');var _ml=_mc?_mc.scrollLeft:0;"
+    )
+    _scroll_restore = (
+        f"var _ri=setInterval(function(){{if(_mc)_mc.scrollLeft=_ml;}},10);"
+        f"setTimeout(function(){{clearInterval(_ri);}},300);"
+    )
     escape_js = (
         f"if(event.key==='Escape'){{"
         f"this._escaping=true;"
-        f"var _sw=this.closest('.table-scroll-wrap');var _sl=_sw?_sw.scrollLeft:0;"
-        f"var _mc=this.closest('.main-content');var _ml=_mc?_mc.scrollLeft:0;"
-        f"document.addEventListener('htmx:afterSettle',function _r(){{requestAnimationFrame(function(){{requestAnimationFrame(function(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;}});}});document.removeEventListener('htmx:afterSettle',_r);}});"
+        f"{_scroll_save}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
+        f"{_scroll_restore}"
         f"event.preventDefault();}}"
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
     )
@@ -339,10 +345,9 @@ def editable_cell(
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
-        f"var _sw=this.closest('.table-scroll-wrap');var _sl=_sw?_sw.scrollLeft:0;"
-        f"var _mc=this.closest('.main-content');var _ml=_mc?_mc.scrollLeft:0;"
-        f"document.addEventListener('htmx:afterSettle',function _r(){{requestAnimationFrame(function(){{requestAnimationFrame(function(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;}});}});document.removeEventListener('htmx:afterSettle',_r);}});"
+        f"{_scroll_save}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
+        f"{_scroll_restore}"
         f"event.preventDefault();}}"
     )
 
