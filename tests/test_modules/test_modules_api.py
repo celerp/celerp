@@ -222,3 +222,23 @@ class TestModulesAPIEndpoints:
         assert m["author"] == "Celerp"
         assert m["version"] == "0.1.0"
         assert m["label"] == "Manufacturing"
+
+    @pytest.mark.asyncio
+    async def test_subscriptions_outer_manifest_is_literal(self):
+        """Outer celerp-subscriptions/__init__.py must define PLUGIN_MANIFEST as a dict literal.
+
+        read_manifest_metadata uses AST parsing and cannot follow import statements.
+        If the outer __init__.py uses 'from celerp_subscriptions import PLUGIN_MANIFEST',
+        disabled-state rendering falls back to the raw package name instead of display_name.
+        """
+        from pathlib import Path
+        from celerp.modules.loader import read_manifest_metadata
+
+        subs_path = Path(__file__).parent.parent.parent / "default_modules" / "celerp-subscriptions"
+        meta = read_manifest_metadata(subs_path)
+        assert meta.get("display_name") == "Subscriptions", (
+            "Outer __init__.py must define PLUGIN_MANIFEST as a literal dict with "
+            f"display_name='Subscriptions'; got: {meta}"
+        )
+        assert meta.get("description"), "description must be non-empty"
+        assert meta.get("version"), "version must be non-empty"
