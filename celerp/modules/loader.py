@@ -166,6 +166,54 @@ def loaded_modules() -> list[dict]:
     return list(_loaded)
 
 
+# Fields to extract from PLUGIN_MANIFEST for display purposes.
+# All must be string or list-of-strings literals in __init__.py (safe for ast.literal_eval).
+_MANIFEST_DISPLAY_FIELDS: frozenset[str] = frozenset({
+    "display_name", "label", "version", "description", "author", "depends_on",
+})
+
+
+def read_manifest_metadata(pkg_path: Path) -> dict:
+    """Parse display metadata from a module's __init__.py without importing it.
+
+    Reads PLUGIN_MANIFEST from the package's __init__.py using ast.parse so
+    there are no import side effects. Only extracts the fields in
+    _MANIFEST_DISPLAY_FIELDS (all plain string/list literals).
+
+    Returns a partial manifest dict. Missing or unparseable fields are omitted.
+    Returns an empty dict if the file cannot be found or parsed.
+    """
+    init_py = pkg_path / "__init__.py"
+    if not init_py.exists():
+        return {}
+    try:
+        tree = ast.parse(init_py.read_text())
+    except Exception:
+        return {}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not (isinstance(target, ast.Name) and target.id == "PLUGIN_MANIFEST"):
+                continue
+            if not isinstance(node.value, ast.Dict):
+                return {}
+            result: dict = {}
+            for key_node, val_node in zip(node.value.keys, node.value.values):
+                if not isinstance(key_node, ast.Constant):
+                    continue
+                field = key_node.value
+                if field not in _MANIFEST_DISPLAY_FIELDS:
+                    continue
+                try:
+                    result[field] = ast.literal_eval(val_node)
+                except Exception:
+                    pass  # Non-literal value (e.g. function call) — skip gracefully
+            return result
+    return {}
+
+
 def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
     """Scan module directories for enabled modules, import them, register slots.
 

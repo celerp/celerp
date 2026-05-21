@@ -825,6 +825,7 @@ def setup_routes(app):
                 "category": str(row.get("category", "")).strip() or None,
                 "weight": _flt("weight") or _flt("weight_ct"),
                 "weight_unit": str(row.get("weight_unit", "")).strip() or None,
+                "pieces": _flt("pieces"),
                 "sell_by": sell_by or None,
                 "barcode": str(row.get("barcode", "")).strip() or None,
                 "hs_code": str(row.get("hs_code", "")).strip() or None,

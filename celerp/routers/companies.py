@@ -1617,7 +1617,7 @@ async def list_modules(
     import asyncio
     import os
     from pathlib import Path
-    from celerp.modules.loader import loaded_modules
+    from celerp.modules.loader import loaded_modules, read_manifest_metadata
     from celerp.modules.registry import get_enabled
 
     company = await session.get(Company, company_id)
@@ -1644,7 +1644,7 @@ async def list_modules(
                     continue
                 seen.add(pkg_name)
                 loaded = loaded_by_name.get(pkg_name)
-                manifest_source = loaded or {}
+                manifest_source = loaded or read_manifest_metadata(pkg_path)
                 results.append({
                     "name": pkg_name,
                     "label": manifest_source.get("display_name") or manifest_source.get("label") or pkg_name,

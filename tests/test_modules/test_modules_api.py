@@ -190,3 +190,35 @@ class TestModulesAPIEndpoints:
         assert "enabled" in gem
         assert "running" in gem
         assert "version" in gem
+
+    @pytest.mark.asyncio
+    async def test_list_modules_disabled_module_has_metadata(self, client, tmp_path):
+        """A disabled (not running) module must still return description, author, version."""
+        import shutil
+        import os
+
+        token = await _register(client)
+
+        # Use celerp-manufacturing which is MIT and has rich manifest fields
+        mfg_src = Path(__file__).parent.parent.parent / "default_modules" / "celerp-manufacturing"
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        shutil.copytree(mfg_src, module_dir / "celerp-manufacturing")
+
+        # Do NOT enable the module — it must appear as disabled
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+
+        assert r.status_code == 200
+        data = r.json()
+        names = [m["name"] for m in data]
+        assert "celerp-manufacturing" in names
+
+        m = next(x for x in data if x["name"] == "celerp-manufacturing")
+        assert m["enabled"] is False
+        assert m["running"] is False
+        # These must be populated even when not running
+        assert m["description"] == "Manufacturing orders, BOM management, and production tracking."
+        assert m["author"] == "Celerp"
+        assert m["version"] == "0.1.0"
+        assert m["label"] == "Manufacturing"
