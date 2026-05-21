@@ -104,6 +104,38 @@ function bulkSplitSubmit(formEl) {
 
 
 
+def _derive_import_qty(row: dict, sell_by: str, unit_map: dict[str, dict]) -> float:
+    """Derive the stock quantity from a CSV row.
+
+    Priority:
+    1. If the row contains an explicit ``quantity`` or ``qty`` column, trust it
+       unconditionally - the user knows what they're doing.
+    2. Otherwise fall back to the semantic field for the unit type:
+       - pieces-type (e.g. ``piece``) → ``pieces`` column
+       - weight-type (e.g. ``carat``, ``gram``) → ``weight`` or ``weight_ct`` column
+       - other (service, volume, length, unknown) → 0.0
+
+    Returns a float; never raises.
+    """
+    def _to_float(val) -> float | None:
+        s = str(val).strip() if val is not None else ""
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    explicit = _to_float(row.get("quantity")) if "quantity" in row else _to_float(row.get("qty"))
+    if explicit is not None:
+        return explicit
+    if is_pieces_unit(sell_by, unit_map):
+        return _to_float(row.get("pieces")) or 0.0
+    if is_weight_unit(sell_by, unit_map):
+        return _to_float(row.get("weight")) or _to_float(row.get("weight_ct")) or 0.0
+    return 0.0
+
+
 def _parse_params(request: Request) -> dict:
     q = request.query_params
     try:
@@ -707,10 +739,14 @@ def setup_routes(app):
         except Exception:
             pass  # Non-critical; if unavailable, sell_by remains None
 
-        # Build case-insensitive → canonical unit name map for sell_by normalization.
+        # Build unit maps for sell_by normalization and qty derivation.
+        # Both are derived from a single get_units call to stay DRY.
         _unit_canonical: dict[str, str] = {}
+        _unit_map: dict[str, dict] = {}
         try:
-            _unit_canonical = {u["name"].lower(): u["name"] for u in await api.get_units(token)}
+            _units = await api.get_units(token)
+            _unit_canonical = {u["name"].lower(): u["name"] for u in _units}
+            _unit_map = {u["name"]: u for u in _units}
         except Exception:
             pass
 
@@ -757,11 +793,13 @@ def setup_routes(app):
                     has_mapping=True,
                 )
 
-            qty_raw = str(row.get("quantity", "0")).strip()
-            try:
-                qty = float(qty_raw) if qty_raw else 0.0
-            except ValueError:
-                qty = 0.0
+            sell_by = (
+                _unit_canonical.get(str(row.get("sell_by", "")).strip().lower())
+                or str(row.get("sell_by", "")).strip()
+                or _cat_sell_by.get(str(row.get("category", "")).strip())
+                or ""
+            )
+            qty = _derive_import_qty(row, sell_by, _unit_map)
 
             def _flt(key: str, _row: dict = row) -> float | None:
                 raw = str(_row.get(key, "")).strip()
@@ -787,7 +825,7 @@ def setup_routes(app):
                 "category": str(row.get("category", "")).strip() or None,
                 "weight": _flt("weight") or _flt("weight_ct"),
                 "weight_unit": str(row.get("weight_unit", "")).strip() or None,
-                "sell_by": _unit_canonical.get(str(row.get("sell_by", "")).strip().lower()) or str(row.get("sell_by", "")).strip() or _cat_sell_by.get(str(row.get("category", "")).strip()) or None,
+                "sell_by": sell_by or None,
                 "barcode": str(row.get("barcode", "")).strip() or None,
                 "hs_code": str(row.get("hs_code", "")).strip() or None,
                 "short_description": str(row.get("short_description", "")).strip() or None,

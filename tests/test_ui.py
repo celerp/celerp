@@ -6522,6 +6522,96 @@ class TestInventoryImportFlow:
         assert r.status_code == 200
         assert b"timed out" in r.content.lower() or b"504" in r.content or b"failed" in r.content.lower()
 
+    # ── qty derivation tests ──────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_import_confirm_pieces_col_used_when_qty_absent(self, ui_client):
+        """CSV with sell_by=piece and pieces col (no qty) → quantity=pieces in batch payload."""
+        from celerp.services.units import DEFAULT_UNITS
+        loc = {"id": "loc:main", "name": "Main", "type": "store"}
+        csv_data = "sku,name,location_name,sell_by,pieces\nS1,Widget,Main,piece,7\n"
+        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
+            patch("ui.api_client.batch_import", new=batch_mock),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        records = batch_mock.call_args[0][2]
+        assert records[0]["data"]["quantity"] == 7.0
+
+    @pytest.mark.asyncio
+    async def test_import_confirm_qty_col_wins_over_pieces(self, ui_client):
+        """CSV with both qty and pieces: qty is explicit so it wins."""
+        from celerp.services.units import DEFAULT_UNITS
+        loc = {"id": "loc:main", "name": "Main", "type": "store"}
+        csv_data = "sku,name,location_name,sell_by,pieces,quantity\nS1,Widget,Main,piece,5,99\n"
+        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
+            patch("ui.api_client.batch_import", new=batch_mock),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        records = batch_mock.call_args[0][2]
+        assert records[0]["data"]["quantity"] == 99.0
+
+    @pytest.mark.asyncio
+    async def test_import_confirm_weight_col_used_for_weight_unit(self, ui_client):
+        """CSV with sell_by=carat and weight col (no qty) → quantity=weight in batch payload."""
+        from celerp.services.units import DEFAULT_UNITS
+        loc = {"id": "loc:main", "name": "Main", "type": "store"}
+        csv_data = "sku,name,location_name,sell_by,weight\nS1,Ring,Main,carat,2.5\n"
+        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
+            patch("ui.api_client.batch_import", new=batch_mock),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        records = batch_mock.call_args[0][2]
+        assert records[0]["data"]["quantity"] == 2.5
+
+    @pytest.mark.asyncio
+    async def test_import_confirm_no_qty_no_pieces_defaults_zero(self, ui_client):
+        """CSV with sell_by=piece and no qty/pieces → quantity=0, no crash."""
+        from celerp.services.units import DEFAULT_UNITS
+        loc = {"id": "loc:main", "name": "Main", "type": "store"}
+        csv_data = "sku,name,location_name,sell_by\nS1,Widget,Main,piece\n"
+        batch_mock = AsyncMock(return_value={"created": 1, "skipped": 0, "errors": []})
+        with (
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=DEFAULT_UNITS)),
+            patch("ui.api_client.batch_import", new=batch_mock),
+            patch("ui.api_client.merge_category_schemas", new=AsyncMock(return_value={})),
+        ):
+            r = await ui_client.post(
+                "/inventory/import/confirm",
+                cookies=_authed(),
+                data={"csv_data": csv_data},
+            )
+        assert r.status_code == 200
+        records = batch_mock.call_args[0][2]
+        assert records[0]["data"]["quantity"] == 0.0
+
 
     """Settings import routes use the new validate-then-report flow."""
 
