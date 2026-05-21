@@ -323,13 +323,15 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # Preserve horizontal scroll position: save scrollLeft on the scroll wrapper,
-    # then restore it after the HTMX swap (DOM mutation can reset scroll).
+    # Preserve horizontal scroll on both .table-scroll-wrap and .main-content.
+    # We listen on document with {once:true} because the swapped-out <td> fires htmx:afterSwap
+    # on the *new* node (in-DOM), which bubbles to document.
     escape_js = (
         f"if(event.key==='Escape'){{"
         f"this._escaping=true;"
         f"var _sw=this.closest('.table-scroll-wrap');var _sl=_sw?_sw.scrollLeft:0;"
-        f"if(_sw){{var _h=function(){{_sw.scrollLeft=_sl;_sw.removeEventListener('htmx:afterSwap',_h);}};_sw.addEventListener('htmx:afterSwap',_h);}}"
+        f"var _mc=this.closest('.main-content');var _ml=_mc?_mc.scrollLeft:0;"
+        f"document.addEventListener('htmx:afterSwap',function _r(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;document.removeEventListener('htmx:afterSwap',_r);}});"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
@@ -339,7 +341,8 @@ def editable_cell(
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
         f"var _sw=this.closest('.table-scroll-wrap');var _sl=_sw?_sw.scrollLeft:0;"
-        f"if(_sw){{var _h=function(){{_sw.scrollLeft=_sl;_sw.removeEventListener('htmx:afterSwap',_h);}};_sw.addEventListener('htmx:afterSwap',_h);}}"
+        f"var _mc=this.closest('.main-content');var _ml=_mc?_mc.scrollLeft:0;"
+        f"document.addEventListener('htmx:afterSwap',function _r(){{if(_sw)_sw.scrollLeft=_sl;if(_mc)_mc.scrollLeft=_ml;document.removeEventListener('htmx:afterSwap',_r);}});"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
     )

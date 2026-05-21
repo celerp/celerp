@@ -1872,6 +1872,17 @@ async def reseed_demo_items(
     if not vertical:
         company = await session.get(Company, company_id)
         vertical = (company.settings or {}).get("vertical") if company else None
-    await seed_demo_items(session, company_id, user.id, vertical=vertical)
+    # Look up the default location so demo items land in it
+    from sqlalchemy import select as _select
+    from celerp.models.company import Location as _Location
+    _loc_result = await session.execute(
+        _select(_Location).where(
+            _Location.company_id == company_id,
+            _Location.is_default == True,
+        ).limit(1)
+    )
+    _default_loc = _loc_result.scalars().first()
+    await seed_demo_items(session, company_id, user.id, vertical=vertical,
+                          default_location_id=_default_loc.id if _default_loc else None)
     await session.commit()
     return {"ok": True, "vertical": vertical, "wiped": len(demo_entity_ids)}

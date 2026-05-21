@@ -1264,6 +1264,8 @@ async def seed_demo_items(
             "attributes": data.get("attributes") or {},
             **price_fields,
         }
+        if default_location_id is not None:
+            payload["location_id"] = str(default_location_id)
         # Strip None values to keep event data clean
         payload = {k: v for k, v in payload.items() if v is not None}
         await emit_event(
