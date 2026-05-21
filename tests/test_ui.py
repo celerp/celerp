@@ -6894,15 +6894,14 @@ class TestHtmxPartialAttrContract:
         assert b"New Name" in r.content
 
     @pytest.mark.asyncio
-    async def test_item_field_patch_sends_old_value_from_attributes(self, ui_client):
-        """PATCH /api/items/{id}/field/{field} must read old value from 'attributes' dict
-        for category attribute fields, so the activity log shows old → new."""
+    async def test_item_field_patch_sends_old_value_for_attribute_field(self, ui_client):
+        """PATCH /api/items/{id}/field/{field} must pass old value to patch_item so the
+        activity log shows old → new. Category attribute fields are promoted to top level
+        by _flatten_item on GET /items/{id}, so old_item.get(field) is authoritative."""
         _item = {
             "id": "item:x", "sku": "S1", "name": "Ruby", "status": "available",
             "quantity": 1, "category": "gemstones",
-            # _flatten_item promotes attribute fields to top level on GET /items/{id}
-            "symmetry": "Good",
-            "attributes": {"symmetry": "Good"},
+            "symmetry": "Good",  # promoted to top level by _flatten_item
         }
         _schema = [{"key": "symmetry", "type": "text", "label": "Symmetry", "editable": True}]
         captured = {}

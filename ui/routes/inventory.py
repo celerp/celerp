@@ -1190,15 +1190,11 @@ function celerpPrintLabel(entityId, templateId) {
                     return P(f"Unknown location: {value}", cls="cell-error")
                 await api.transfer_item(token, entity_id, loc.get("location_id") or loc.get("id", ""))
             else:
-                # Fetch old value before patching so activity log shows old → new
-                try:
-                    old_item = await api.get_item(token, entity_id)
-                    old_val = old_item.get(field)
-                    if old_val is None:
-                        # Category attributes are stored under "attributes" dict
-                        old_val = (old_item.get("attributes") or {}).get(field)
-                except Exception:
-                    old_val = None
+                # Fetch old value before patching so activity log shows old → new.
+                # get_item returns a _flatten_item result: attribute fields are already
+                # promoted to top level, so old_item.get(field) is always authoritative.
+                old_item = await api.get_item(token, entity_id)
+                old_val = old_item.get(field)
                 await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
             schema, item, cat_schemas, locs_data = await asyncio.gather(
                 api.get_item_schema(token),
