@@ -840,13 +840,18 @@ def data_table(
       e.preventDefault();
       th.classList.remove('col-drag-over');
       if (!dragKey || dragKey === th.dataset.key) return;
+      // Resolve the canonical group: if dragging a virtual, treat its primary as the drag source
+      var effectiveDragKey = dragKey;
+      for (var pk in VIRTUAL_FOLLOWERS) {{
+        if (VIRTUAL_FOLLOWERS[pk].indexOf(dragKey) !== -1) {{ effectiveDragKey = pk; break; }}
+      }}
       // Move TH (and any virtual followers) before the drop target
       var thead_tr = table.querySelector('thead tr');
-      var srcTh = thead_tr.querySelector('th[data-key="' + dragKey + '"]');
+      var srcTh = thead_tr.querySelector('th[data-key="' + effectiveDragKey + '"]');
       if (!srcTh) return;
       thead_tr.insertBefore(srcTh, th);
-      // Place virtual followers immediately after the dragged column
-      (VIRTUAL_FOLLOWERS[dragKey] || []).forEach(function(vk) {{
+      // Place virtual followers immediately after the primary
+      (VIRTUAL_FOLLOWERS[effectiveDragKey] || []).forEach(function(vk) {{
         var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
         if (vth) srcTh.insertAdjacentElement('afterend', vth);
       }});
