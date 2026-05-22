@@ -1057,6 +1057,33 @@ class TestDocsPage:
         assert b"field/ref_id/edit" in r.content
 
     @pytest.mark.asyncio
+    async def test_doc_draft_has_sku_autocomplete(self, ui_client):
+        """Draft doc page must render SKU autocomplete inputs.
+
+        Regression guard: the catalog-ac-input / celerpAcSearch wiring must
+        be present in the HTML for draft docs so users can search items.
+        A non-draft (sent/paid) doc correctly omits the editable inputs.
+        """
+        draft_doc = {
+            **_DOCS[0],
+            "status": "draft",
+            "line_items": [{"description": "Widget", "quantity": 1, "unit_price": 50}],
+        }
+        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=draft_doc)):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content
+        assert b"catalog-ac-input" in html, (
+            "Draft doc must include catalog-ac-input class for SKU search"
+        )
+        assert b"celerpAcSearch" in html, (
+            "Draft doc must include celerpAcSearch JS function for autocomplete"
+        )
+        assert b"catalog-ac-list" in html, (
+            "Draft doc must include catalog-ac-list dropdown container"
+        )
+
+    @pytest.mark.asyncio
     async def test_docs_type_filter(self, ui_client):
         with (
             patch("ui.api_client.list_docs", new=AsyncMock(return_value={"items": _DOCS, "total": len(_DOCS)})),
