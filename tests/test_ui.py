@@ -12323,3 +12323,289 @@ class TestBackupRoutes:
         assert captured.get("token") == test_token, (
             f"export_backup not called with cookie token. Captured: {captured}"
         )
+
+
+class TestUnknownUnitRendererInFixTable:
+    """Unit dropdown in fix-table must preserve unrecognised values instead of silently dropping them."""
+
+    _UNITS = [
+        {"name": "piece", "label": "Piece", "decimals": 0},
+        {"name": "kg", "label": "Kilogram", "decimals": 3},
+        {"name": "gram", "label": "Gram", "decimals": 3},
+    ]
+    _WEIGHT_UNITS = [
+        {"name": "gram", "label": "Gram", "decimals": 3, "unit_type": "weight"},
+        {"name": "kg", "label": "Kilogram", "decimals": 3, "unit_type": "weight"},
+    ]
+
+    # ── renderer unit tests ────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_unknown_sell_by_renders_warning_option(self):
+        """When sell_by value is not in company units, renderer shows ⚠ "val" (unknown)."""
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                _, renderers = await _build_item_validator("fake-token")
+
+        html = to_xml(renderers["sell_by"]("grams", 0, {}, True))
+        assert "grams" in html, "Original unknown value must appear in rendered HTML"
+        assert "unknown" in html.lower(), "Unknown-option indicator text missing"
+        assert "unit-unknown-option" in html, "CSS class unit-unknown-option missing"
+        # Must be pre-selected
+        assert "selected" in html, "Unknown option must be pre-selected"
+
+    @pytest.mark.asyncio
+    async def test_known_sell_by_has_no_warning_option(self):
+        """When sell_by value IS a valid unit, no warning option is injected."""
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                _, renderers = await _build_item_validator("fake-token")
+
+        html = to_xml(renderers["sell_by"]("piece", 0, {}, False))
+        assert "unit-unknown-option" not in html, "Warning option must not appear for valid unit"
+        assert "unknown" not in html.lower(), "No 'unknown' text for valid unit"
+        # 'piece' option must be selected
+        assert 'value="piece"' in html
+        assert "selected" in html
+
+    @pytest.mark.asyncio
+    async def test_blank_sell_by_has_no_warning_option(self):
+        """Blank value shows '-- select unit --' prompt, no warning option."""
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                _, renderers = await _build_item_validator("fake-token")
+
+        html = to_xml(renderers["sell_by"]("", 0, {}, True))
+        assert "unit-unknown-option" not in html
+        assert "-- select unit --" in html
+
+    @pytest.mark.asyncio
+    async def test_unknown_weight_unit_renders_warning_option(self):
+        """Weight unit renderer also shows warning for unrecognised values."""
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
+
+        units = self._UNITS + self._WEIGHT_UNITS
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                _, renderers = await _build_item_validator("fake-token")
+
+        assert "weight_unit" in renderers, "weight_unit renderer must exist"
+        assert "gross_weight_unit" in renderers, "gross_weight_unit renderer must exist"
+
+        html_w = to_xml(renderers["weight_unit"]("grams", 0, {}, True))
+        assert "grams" in html_w
+        assert "unit-unknown-option" in html_w
+
+        html_gw = to_xml(renderers["gross_weight_unit"]("lbs", 0, {}, True))
+        assert "lbs" in html_gw
+        assert "unit-unknown-option" in html_gw
+
+    @pytest.mark.asyncio
+    async def test_case_insensitive_match_suppresses_warning(self):
+        """Case-insensitive match (e.g. 'Piece' vs 'piece') must not show warning."""
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                _, renderers = await _build_item_validator("fake-token")
+
+        # 'Piece' (capital P) against unit 'piece' → should match, no warning
+        html = to_xml(renderers["sell_by"]("Piece", 0, {}, False))
+        assert "unit-unknown-option" not in html, "Case-insensitive match must not show warning"
+
+    # ── fix-table integration ──────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_fix_table_shows_unknown_value_in_cell(self):
+        """_fix_errors_panel must preserve unknown unit values in table cells, not blank them."""
+        from ui.routes.csv_import import _fix_errors_panel
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                validate, renderers = await _build_item_validator("fake-token")
+
+        rows = [
+            {"sku": "A1", "name": "Item A", "sell_by": "grams", "category": ""},
+            {"sku": "A2", "name": "Item B", "sell_by": "piece", "category": ""},
+        ]
+        cols = ["sku", "name", "sell_by", "category"]
+        html = to_xml(_fix_errors_panel(
+            rows=rows,
+            cols=cols,
+            validate=validate,
+            error_row_indices=[0],
+            error_cols={"sell_by"},
+            total_errors=1,
+            csv_ref="ref123",
+            revalidate_action="/inventory/import/revalidate",
+            error_report_action="/inventory/import/errors",
+            back_href="/inventory/import",
+            has_mapping=True,
+            cell_renderers=renderers,
+        ))
+        # Unknown value "grams" must appear in the rendered fix table
+        assert "grams" in html, "Unknown sell_by value 'grams' must be visible in fix table"
+        assert "unit-unknown-option" in html, "Warning CSS class must be present for bad unit"
+
+    @pytest.mark.asyncio
+    async def test_fix_table_bulk_fill_bar_shows_unknown_option_for_multi_error(self):
+        """When >1 row has bad sell_by, bulk fill bar must also use the select renderer."""
+        from ui.routes.csv_import import _fix_errors_panel
+        from ui.routes.inventory import _build_item_validator
+        from fasthtml.common import to_xml
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)):
+            with patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+                validate, renderers = await _build_item_validator("fake-token")
+
+        rows = [
+            {"sku": f"S{i}", "name": f"Item {i}", "sell_by": "grams", "category": ""}
+            for i in range(3)
+        ]
+        cols = ["sku", "name", "sell_by", "category"]
+        html = to_xml(_fix_errors_panel(
+            rows=rows,
+            cols=cols,
+            validate=validate,
+            error_row_indices=list(range(3)),
+            error_cols={"sell_by"},
+            total_errors=3,
+            csv_ref="ref",
+            revalidate_action="/inventory/import/revalidate",
+            error_report_action="/inventory/import/errors",
+            back_href="/inventory/import",
+            has_mapping=True,
+            cell_renderers=renderers,
+        ))
+        assert 'id="fill-sell_by"' in html, "Bulk fill bar must be present"
+        assert "<select" in html, "Bulk fill bar must be a <select>"
+
+    # ── revalidate: fixing via unit selection ──────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_revalidate_with_valid_unit_clears_error(self, ui_client):
+        """After user picks a valid unit in the fix table, revalidate must succeed."""
+        import json as _json
+        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+
+        units = self._UNITS
+        csv_rows = [{"sku": "X1", "name": "Ring", "sell_by": "grams", "category": "", "quantity": "1"}]
+        csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
+        csv_text = _rows_to_csv(csv_rows, csv_cols)
+        csv_ref = _stash_csv(csv_text)
+
+        # User fixes "grams" → "gram" (valid unit)
+        fixes = {"0__sell_by": "gram"}
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units)), \
+             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+            resp = await ui_client.post(
+                "/inventory/import/revalidate",
+                data={"csv_ref": csv_ref, "fixes_json": _json.dumps(fixes)},
+                cookies=_authed(),
+            )
+
+        assert resp.status_code == 200
+        html = resp.text
+        # Should reach confirm step, not show fix-errors panel
+        assert "csv-fix-panel" not in html, "Fix panel must not show after valid unit is selected"
+
+    @pytest.mark.asyncio
+    async def test_revalidate_after_catalog_unit_added_clears_error(self, ui_client):
+        """If unit is added to catalog between fix-table render and revalidate, error clears.
+
+        _build_item_validator always calls get_units fresh - so adding a unit to the
+        catalog and clicking Fix & Import (without changing the cell) must clear the error.
+        """
+        import json as _json
+        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+
+        csv_rows = [{"sku": "X2", "name": "Stone", "sell_by": "carat", "category": "", "quantity": "1"}]
+        csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
+        csv_text = _rows_to_csv(csv_rows, csv_cols)
+        csv_ref = _stash_csv(csv_text)
+
+        # "carat" is now in the catalog (user added it while fix table was open)
+        units_now = self._UNITS + [{"name": "carat", "label": "Carat", "decimals": 2}]
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=units_now)), \
+             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+            resp = await ui_client.post(
+                "/inventory/import/revalidate",
+                data={"csv_ref": csv_ref, "fixes_json": "{}"},
+                cookies=_authed(),
+            )
+
+        assert resp.status_code == 200
+        html = resp.text
+        assert "csv-fix-panel" not in html, "Error must clear when unit now exists in catalog"
+
+    @pytest.mark.asyncio
+    async def test_revalidate_still_unknown_unit_keeps_error(self, ui_client):
+        """If unit is still not in catalog after revalidate, error persists and value is preserved."""
+        import json as _json
+        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+
+        csv_rows = [{"sku": "X3", "name": "Rock", "sell_by": "fathom", "category": "", "quantity": "1"}]
+        csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
+        csv_text = _rows_to_csv(csv_rows, csv_cols)
+        csv_ref = _stash_csv(csv_text)
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
+             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+            resp = await ui_client.post(
+                "/inventory/import/revalidate",
+                data={"csv_ref": csv_ref, "fixes_json": "{}"},
+                cookies=_authed(),
+            )
+
+        assert resp.status_code == 200
+        html = resp.text
+        assert "csv-fix-panel" in html, "Fix panel must still show for unresolved unknown unit"
+        # Original value "fathom" must still be visible in the re-rendered fix table
+        assert "fathom" in html, "Original unknown unit value must be preserved in re-rendered fix table"
+        assert "unit-unknown-option" in html, "Warning CSS class must still appear"
+
+    # ── __add_new__ guard ──────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_add_new_option_not_saved_as_unit_value(self, ui_client):
+        """If __add_new__ somehow reaches revalidate, it must not be stored as a sell_by value."""
+        import json as _json
+        from ui.routes.csv_import import _stash_csv, _rows_to_csv
+
+        csv_rows = [{"sku": "X4", "name": "Bead", "sell_by": "piece", "category": "", "quantity": "1"}]
+        csv_cols = ["sku", "name", "sell_by", "category", "quantity"]
+        csv_text = _rows_to_csv(csv_rows, csv_cols)
+        csv_ref = _stash_csv(csv_text)
+
+        # Simulate user somehow submitting __add_new__ as the fix value
+        fixes = {"0__sell_by": "__add_new__"}
+
+        with patch("ui.api_client.get_units", new=AsyncMock(return_value=self._UNITS)), \
+             patch("ui.api_client.list_verticals_categories", new=AsyncMock(return_value=[])):
+            resp = await ui_client.post(
+                "/inventory/import/revalidate",
+                data={"csv_ref": csv_ref, "fixes_json": _json.dumps(fixes)},
+                cookies=_authed(),
+            )
+
+        assert resp.status_code == 200
+        html = resp.text
+        # __add_new__ is not a valid unit → row must remain in error state
+        assert "csv-fix-panel" in html, "__add_new__ must not be accepted as a valid unit"
+        assert "unit-unknown-option" in html, \
+            "__add_new__ must be shown as an unknown/invalid value, not silently accepted"
