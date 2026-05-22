@@ -120,17 +120,15 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
         ))
 
     add_form = Form(
-        Tr(
-            Td(
-                Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm",
-                      pattern="[a-z0-9_]+", title="Lowercase letters, numbers and underscores only (e.g. piece, kg, troy_oz)"),
-                cls="cell",
-            ),
-            Td("(auto)", cls="cell cell--mono", style="color:var(--c-text2);font-size:12px"),
-            Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
-            Td(_unit_type_select("unit_type"), cls="cell"),
-            Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
-            cls="data-row",
+        Div(
+            Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm",
+                  pattern="[a-z0-9_]+", title="Lowercase letters, numbers and underscores only",
+                  style="width:140px"),
+            _unit_type_select("unit_type"),
+            Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm",
+                  style="width:70px", title="Decimal places"),
+            Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"),
+            cls="flex-row gap-sm", style="align-items:center;margin-top:10px",
         ),
         hx_post="/settings/units/add",
         hx_swap="none",
@@ -154,10 +152,11 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
         P(t("inv.configure_measurement_units_available_for_inventor"), cls="settings-hint"),
         Table(
             Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th("Type"), Th(""))),
-            Tbody(*rows, add_form),
+            Tbody(*rows),
             cls="data-table",
         ),
-        P("Unit names must be lowercase with no spaces (e.g. piece, kg, troy_oz).", cls="form-hint"),
+        add_form,
+        P("Name: lowercase letters, numbers and underscores only (e.g. piece, kg, troy_oz). Label auto-filled from name - click to customise.", cls="form-hint"),
         cls="settings-card",
     )
 
