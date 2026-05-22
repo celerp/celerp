@@ -1415,6 +1415,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .scan-bar-status--err { color: var(--c-red); font-weight: 600; }
 
 /* Catalog autocomplete dropdowns (SKU/Description in line items) */
+/* td overflow:hidden clips absolutely-positioned dropdowns; override for ac cells */
+.data-table td:has(.catalog-ac-wrap) { overflow: visible; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }

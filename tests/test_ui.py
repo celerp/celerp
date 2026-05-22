@@ -2009,6 +2009,25 @@ class TestCSSConsistency:
         assert ".row-menu-dropdown" in css
 
     @pytest.mark.asyncio
+    async def test_catalog_ac_td_overflow_visible(self):
+        """Regression guard: .data-table td clips absolutely-positioned children
+        (overflow:hidden), so the catalog autocomplete dropdown is invisible.
+        The fix must add a rule that makes the td containing .catalog-ac-wrap
+        overflow:visible so the dropdown can escape the table cell.
+        """
+        import pathlib
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+        assert "catalog-ac-wrap" in css, "catalog-ac-wrap CSS class must exist"
+        # The td that wraps the autocomplete input must not clip its children
+        assert "catalog-ac-wrap" in css and (
+            "td:has(.catalog-ac-wrap)" in css
+            or "td:has(.catalog-ac-list)" in css
+        ), (
+            "Must have a CSS rule overriding overflow:hidden on the td containing "
+            ".catalog-ac-wrap so the dropdown escapes the table cell"
+        )
+
+    @pytest.mark.asyncio
     async def test_cell_clickable_has_dashed_underline(self):
         """cell--clickable must have a persistent visual cue (dashed border) per QA fix."""
         import pathlib
