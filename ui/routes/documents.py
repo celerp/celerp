@@ -4616,10 +4616,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          cls="cell-input cell-input--xs"), cls="col-disc"),
                 Td(_tax_select(float(li.get("tax_rate", 0) or 0), li.get("tax_code", "") or "",
                               ((li.get("taxes") or [{}])[0].get("label", "") if li.get("taxes") else "")), cls="col-tax"),
-                Td(Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
-                   Input(type="hidden", value=li_entity_id, data_name="entity_id"),
-                   Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
-                   Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity")),
             ])
             if account_cell:
                 cells.append(account_cell)
@@ -4628,7 +4624,12 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
                          onblur="celerpAutoSave()",
-                         data_name="line_total"), cls="cell--number col-total"),
+                         data_name="line_total"),
+                   Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
+                   Input(type="hidden", value=li_entity_id, data_name="entity_id"),
+                   Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
+                   Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity"),
+                   cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -4682,15 +4683,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
                 Td(_tax_select(), cls="col-tax"),
-                Td(Input(type="hidden", value="", data_name="hs_code"),
-                   Input(type="hidden", value="", data_name="entity_id"),
-                   Input(type="hidden", value="", data_name="allow_splitting"),
-                   Input(type="hidden", value="", data_name="item_quantity")),
                 Td(Input(type="number", value="0", step="0.01",
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
                          onblur="celerpAutoSave()",
-                         data_name="line_total"), cls="cell--number col-total"),
+                         data_name="line_total"),
+                   Input(type="hidden", value="", data_name="hs_code"),
+                   Input(type="hidden", value="", data_name="entity_id"),
+                   Input(type="hidden", value="", data_name="allow_splitting"),
+                   Input(type="hidden", value="", data_name="item_quantity"),
+                   cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
