@@ -1026,12 +1026,52 @@ _INLINE_FIX_JS = """
     e.detail.parameters['fixes_json'] = JSON.stringify(fixes);
   });
 
-  // "Add new unit" option in unit dropdowns: redirect to settings page.
+  // "Add new unit" option in unit dropdowns: open settings page and return.
+  // Keep original value in the cell (do not reset to '') so fixes_json preserves
+  // the bad value on revalidate. Auto-revalidate when window regains focus so the
+  // freshly added unit appears as a valid option without a manual click.
   document.addEventListener('change', function(e) {
     if (e.target.matches('select.cell-edit') && e.target.value === '__add_new__') {
-      window.open('/settings/inventory?tab=units', '_blank');
-      e.target.value = '';
+      var origVal = e.target.getAttribute('data-prev') || '';
+      // Restore original value before opening new tab
+      e.target.value = origVal;
+      var returnUrl = encodeURIComponent(window.location.href);
+      window.open('/settings/inventory?tab=units&from_import=1&return_url=' + returnUrl, '_blank');
+      // When user returns to this tab, auto-revalidate so new units appear in dropdowns.
+      var revalidateFired = false;
+      window.addEventListener('focus', function _refocus() {
+        if (revalidateFired) return;
+        revalidateFired = true;
+        window.removeEventListener('focus', _refocus);
+        var btn = document.querySelector('.csv-fix-actions button[type="submit"]');
+        if (btn) btn.click();
+      });
     }
+  });
+
+  // Track previous select values so bulk-sync and add-new can reference them.
+  document.addEventListener('focus', function(e) {
+    if (e.target.matches('select.cell-edit')) {
+      e.target.setAttribute('data-prev', e.target.value);
+    }
+  }, true);
+
+  // When a cell-edit select value changes, sync all other cells in the same
+  // column that still hold the same old value (bulk-update identical bad values).
+  document.addEventListener('change', function(e) {
+    if (!e.target.matches('select.cell-edit') || e.target.value === '__add_new__') return;
+    var col = e.target.getAttribute('data-col');
+    var newVal = e.target.value;
+    var oldVal = e.target.getAttribute('data-prev');
+    if (!col || !oldVal || oldVal === newVal) return;
+    document.querySelectorAll('select.cell-edit[data-col="' + col + '"]').forEach(function(el) {
+      if (el !== e.target && el.value === oldVal) {
+        el.value = newVal;
+        el.classList.remove('input--error');
+      }
+    });
+    // Update data-prev to new value after sync
+    e.target.setAttribute('data-prev', newVal);
   });
 })();
 """

@@ -94,7 +94,7 @@ def _unit_type_select(name_attr: str, selected: str = "quantity") -> FT:
     )
 
 
-def _units_tab(units: list[dict]) -> FT:
+def _units_tab(units: list[dict], from_import: str = "") -> FT:
     """Units settings tab — table of units with inline edit + add form."""
     rows = []
     for u in units:
@@ -133,7 +133,19 @@ def _units_tab(units: list[dict]) -> FT:
         hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
     )
 
+    return_banner = (
+        Div(
+            Span("Unit added? ", style="font-size:13px;"),
+            A("← Return to import", href="javascript:window.close()",
+              cls="btn btn--secondary btn--sm"),
+            cls="settings-card",
+            style="display:flex;align-items:center;gap:10px;padding:8px 14px;margin-bottom:8px;",
+        )
+        if from_import else ""
+    )
+
     return Div(
+        return_banner,
         H3(t("page.units"), cls="settings-section-title"),
         P(t("inv.configure_measurement_units_available_for_inventor"), cls="settings-hint"),
         Table(
@@ -401,6 +413,7 @@ def setup_routes(app):
             return r
         tab = request.query_params.get("tab", "locations")
         cat = request.query_params.get("cat", "")
+        from_import = request.query_params.get("from_import", "")
 
         # Backward-compat redirects for old tab names
         if tab in {"category-library", "verticals", "schema"}:
@@ -441,7 +454,7 @@ def setup_routes(app):
         elif tab == "categories":
             content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat, cat_display_names)
         elif tab == "units":
-            content = _units_tab(units)
+            content = _units_tab(units, from_import=from_import)
         elif tab == "bulk-attach":
             content = _bulk_attach_tab()
         elif tab == "import-history":
