@@ -4593,7 +4593,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id or ""), cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
-                Td(_desc_input(li.get("description", "") or li.get("name", ""))),
+                Td(_desc_input(li.get("description", "") or li.get("name", "")), cls="col-desc"),
             ]
             if category_cell:
                 cells.append(category_cell)
@@ -4663,7 +4663,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=""), cls="col-checkbox li-checkbox-cell"),
-                Td(_sku_input(), cls="col-sku"), Td(_desc_input()),
+                Td(_sku_input(), cls="col-sku"), Td(_desc_input(), cls="col-desc"),
             ]
             if _cat_cell:
                 cells.append(_cat_cell)
@@ -4698,7 +4698,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if not rows:
             rows = [_li_empty_row()]
 
-        _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"))]
+        _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category")))
             _line_headers.append(Th(t("th.type")))
