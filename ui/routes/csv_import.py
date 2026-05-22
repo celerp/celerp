@@ -402,7 +402,8 @@ def column_mapping_form(
             ),
             showing_hint,
             Div(
-                Button(t("btn.continue_to_preview"), type="submit", cls="btn btn--primary"),
+                Button(t("btn.continue_to_preview"), type="submit", cls="btn btn--primary",
+                       onclick="this.disabled=true;this.textContent='Processing…';this.classList.add('btn--disabled');this.form.submit()"),
                 A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
             ),
@@ -1274,6 +1275,7 @@ def _fix_errors_panel(
                     Button(t("btn.fix_import"),
                         type="submit",
                         cls="btn btn--primary",
+                        hx_disabled_elt="this",
                     ),
                     A(t("msg.download_error_report"), href="#",
                       onclick="document.getElementById('csv-err-dl').submit(); return false",
