@@ -4971,6 +4971,13 @@ async function celerpAcSearch(input, field) {{
         }});
         list.appendChild(custom);
         list.style.display = 'block';
+        // Reposition to fixed so it escapes overflow:auto scroll containers
+        const rect = wrap.getBoundingClientRect();
+        list.style.position = 'fixed';
+        list.style.top = rect.bottom + 'px';
+        list.style.left = rect.left + 'px';
+        list.style.width = rect.width + 'px';
+        list.style.zIndex = '9999';
     }}, 250);
 }}
 function celerpAcBlur(input) {{
