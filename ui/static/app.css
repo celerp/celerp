@@ -512,7 +512,8 @@ a:hover { text-decoration: underline; }
 .doc-lines th.col-tax,        .doc-lines td.col-tax        { width: 90px;  min-width: 90px;  max-width: 110px; }
 .doc-lines td.col-total, .doc-lines th.col-total { width: 160px; min-width: 160px; max-width: 170px; overflow: visible; padding: 0; }
 .doc-lines td.col-total { display: flex; align-items: center; padding-right: 8px; }
-.data-table td.col-total input.line-total { flex: 1; min-width: 0; text-align: right !important; max-width: none !important; box-sizing: border-box; margin: 0; }.line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
+.data-table td.col-total input.line-total { flex: 1; min-width: 0; text-align: right !important; max-width: none !important; box-sizing: border-box; margin: 0; }
+.line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
 
 /* ─── Reports ─────────────────────────────────────────────────────────── */
 .report-view { max-width: 760px; }
@@ -1431,8 +1432,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .data-table td:has(.catalog-ac-wrap) { overflow: visible; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
-/* Total input: centered in column (editable field, not display value); fixed width overrides cell-input base */
-.data-table td.col-total input.line-total { flex: 1; min-width: 0; text-align: right !important; max-width: none !important; box-sizing: border-box; margin: 0; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
