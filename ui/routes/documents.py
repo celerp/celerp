@@ -4698,14 +4698,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if not rows:
             rows = [_li_empty_row()]
 
-        _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem")), Th(t("th.description"))]
+        _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell", style="width:40px"), Th(t("th.skuitem")), Th(t("th.description"))]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category")))
             _line_headers.append(Th(t("th.type")))
         _line_headers.extend([Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
-        _line_headers.extend([Th(t("th.total"), cls="cell--number col-total"), Th("")])
+        _line_headers.extend([Th(t("th.total"), cls="cell--number col-total", style="width:150px"), Th("", style="width:30px")])
 
         # CSV import hidden file input + JS handler
         _csv_import_el = Div(
@@ -5434,7 +5434,7 @@ async function celerpCsvImport(input, entityId) {{
         _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.category")), Th(t("th.type"))]
-        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"), cls="cell--number col-total")]
+        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"), cls="cell--number col-total", style="width:150px")]
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
