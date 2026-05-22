@@ -1141,28 +1141,20 @@ function sendToTypeChanged(docType){
   // Guard: register body-level htmx handlers only once per page load
   if(!window.__celerpHtmxHandlers){
     window.__celerpHtmxHandlers=true;
-  // Preserve scroll position across inline cell edits.
-  // The browser resets .table-scroll-wrap scrollLeft to 0 when the edit input gains
-  // focus. We must save BEFORE the request fires (htmx:beforeRequest on the TD),
-  // not on htmx:beforeSwap which fires after the response arrives (post-focus-reset).
-  // Restore after the cancel/save swap via htmx:afterSettle.
+  // Preserve horizontal scroll position across any HTMX request that may replace
+  // the table or its scroll container (cell edits, sort, search, pagination, etc.).
+  // Save on htmx:beforeRequest (before any focus/reset can occur).
+  // Restore on htmx:afterSettle (after the new DOM is in place).
   var _scrollSnap=null;
   document.body.addEventListener('htmx:beforeRequest',function(e){
-    var tgt=e.detail&&e.detail.elt;
-    if(tgt&&tgt.tagName==='TD'&&!_scrollSnap){
-      var sw=tgt.closest('.table-scroll-wrap');
-      _scrollSnap={swL:sw?sw.scrollLeft:0};
-    }
+    var sw=document.querySelector('.table-scroll-wrap');
+    if(sw){_scrollSnap=sw.scrollLeft;}
   });
   document.body.addEventListener('htmx:afterSettle',function(e){
-    if(_scrollSnap){
+    if(_scrollSnap!=null){
       var s=_scrollSnap;_scrollSnap=null;
       var sw=document.querySelector('.table-scroll-wrap');
-      var attempts=0;
-      var t=setInterval(function(){
-        if(sw)sw.scrollLeft=s.swL;
-        if(++attempts>=30)clearInterval(t);
-      },10);
+      if(sw)sw.scrollLeft=s;
     }
   });
   // Sync derived cells (weight/pieces) after a quantity PATCH.
