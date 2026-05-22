@@ -502,9 +502,9 @@ a:hover { text-decoration: underline; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .doc-lines { margin-top: 12px; table-layout: fixed; width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 50px; }
+.doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 40px; padding-left: 0; padding-right: 0; text-align: center; }
 .doc-lines td.col-total, .doc-lines th.col-total { width: 110px; }
-.line-actions { margin-top: 8px; padding: 4px 0; }
+.line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
 
 /* ─── Reports ─────────────────────────────────────────────────────────── */
 .report-view { max-width: 760px; }
@@ -1046,7 +1046,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 }
 
 /* Line item checkbox column */
-.li-checkbox-cell { width: 32px; text-align: center; }
+.li-checkbox-cell { width: 40px; text-align: center; }
 
 /* ─── Utility classes ─────────────────────────────────────────────────── */
 /* Spacing: margin */
@@ -1423,8 +1423,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .data-table td:has(.catalog-ac-wrap) { overflow: visible; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
-/* Total input: centered in column (editable field, not display value); fixed width */
-.data-table td.cell--number input.line-total { text-align: center; width: 110px; max-width: none; }
+/* Total input: centered in column (editable field, not display value); fixed width overrides cell-input base */
+.data-table td.cell--number input.line-total { text-align: center; width: 110px !important; max-width: none; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
