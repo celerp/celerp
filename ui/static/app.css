@@ -1431,7 +1431,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
 /* Total input: centered in column (editable field, not display value); fixed width overrides cell-input base */
-.data-table td.cell--number input.line-total { text-align: right; width: 150px; max-width: 150px; display: block; margin-left: auto; }
+.data-table td.cell--number input.line-total { text-align: right; width: 100%; display: block; box-sizing: border-box; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
