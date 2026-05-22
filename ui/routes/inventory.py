@@ -3267,6 +3267,12 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
     col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema if f.get("key") not in _cm_exclude]
     col_data_js = _json.dumps(col_data)
+    # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary
+    virtual_followers_js = _json.dumps({
+        f["paired_with"]: [f["key"]]
+        for f in schema
+        if f.get("virtual") and f.get("paired_with")
+    })
     selected_js = _json.dumps(sorted(selected))
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
@@ -3304,6 +3310,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   var ALL_COLS = {col_data_js};
   // Keys that are now merged into their primary column - strip from saved prefs
   var MERGED_SECONDARIES = {paired_secondaries_js};
+  // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
+  var VIRTUAL_FOLLOWERS = {virtual_followers_js};
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
@@ -3358,10 +3366,15 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     var thead_tr = table.querySelector('thead tr');
     if (!thead_tr) return;
     var actionsTh = thead_tr.querySelector('.col-actions');
-    // Move TH elements into order (before actions column)
+    // Move TH elements into order (before actions column); each primary drags its virtual followers
     order.forEach(function(key) {{
       var th = thead_tr.querySelector('th[data-key="' + key + '"]');
       if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
+      // Place virtual followers immediately after their primary
+      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {{
+        var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
+        if (vth && actionsTh) thead_tr.insertBefore(vth, actionsTh);
+      }});
     }});
     // Re-order tbody cells to match header using data-col attribute
     var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
