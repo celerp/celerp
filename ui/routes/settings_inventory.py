@@ -94,7 +94,7 @@ def _unit_type_select(name_attr: str, selected: str = "quantity") -> FT:
     )
 
 
-def _units_tab(units: list[dict]) -> FT:
+def _units_tab(units: list[dict], from_import: str = "") -> FT:
     """Units settings tab — table of units with inline edit + add form."""
     rows = []
     for u in units:
@@ -119,28 +119,44 @@ def _units_tab(units: list[dict]) -> FT:
             cls="data-row",
         ))
 
-    add_form = Form(
-        Tr(
-            Td(Input(name="name", placeholder="piece", required=True, cls="input-sm"), cls="cell"),
-            Td(Input(name="label", placeholder="Piece", required=True, cls="input-sm"), cls="cell"),
-            Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
-            Td(_unit_type_select("unit_type"), cls="cell"),
-            Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
-            cls="data-row",
-        ),
-        hx_post="/settings/units/add",
-        hx_swap="none",
-        hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
+    add_row = Tr(
+        Td(Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm",
+                 pattern="[a-z0-9_]+", title="Lowercase letters, numbers and underscores only"),
+           cls="cell"),
+        Td(Span("(auto)", style="color:var(--c-text2);font-size:12px"), cls="cell"),
+        Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
+        Td(_unit_type_select("unit_type"), cls="cell"),
+        Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
+        cls="data-row",
+    )
+
+    return_banner = (
+        Div(
+            Span("Unit added? ", style="font-size:13px;"),
+            A("← Return to import", href="javascript:window.close()",
+              cls="btn btn--secondary btn--sm"),
+            cls="settings-card",
+            style="display:flex;align-items:center;gap:10px;padding:8px 14px;margin-bottom:8px;",
+        )
+        if from_import else ""
     )
 
     return Div(
+        return_banner,
         H3(t("page.units"), cls="settings-section-title"),
         P(t("inv.configure_measurement_units_available_for_inventor"), cls="settings-hint"),
-        Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th("Type"), Th(""))),
-            Tbody(*rows, add_form),
-            cls="data-table",
+        Form(
+            Table(
+                Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th("Type"), Th(""))),
+                Tbody(*rows),
+                Tfoot(add_row),
+                cls="data-table",
+            ),
+            hx_post="/settings/units/add",
+            hx_swap="none",
+            hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
         ),
+        P("Name: lowercase, numbers and underscores only (e.g. piece, kg, troy_oz). Label auto-fills - click to customise.", cls="form-hint"),
         cls="settings-card",
     )
 
@@ -401,6 +417,7 @@ def setup_routes(app):
             return r
         tab = request.query_params.get("tab", "locations")
         cat = request.query_params.get("cat", "")
+        from_import = request.query_params.get("from_import", "")
 
         # Backward-compat redirects for old tab names
         if tab in {"category-library", "verticals", "schema"}:
@@ -441,7 +458,7 @@ def setup_routes(app):
         elif tab == "categories":
             content = _categories_tab(cat_schemas, cat_schemas_company, vert_categories, vert_presets, cat, cat_display_names)
         elif tab == "units":
-            content = _units_tab(units)
+            content = _units_tab(units, from_import=from_import)
         elif tab == "bulk-attach":
             content = _bulk_attach_tab()
         elif tab == "import-history":
@@ -469,8 +486,8 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        name = (str(form.get("name") or "")).strip()
-        label = (str(form.get("label") or "")).strip()
+        name = (str(form.get("name") or "")).strip().lower().replace(" ", "_")
+        label = (str(form.get("label") or "")).strip() or name.capitalize()
         try:
             decimals = int(form.get("decimals") or 0)
         except (ValueError, TypeError):
@@ -509,7 +526,7 @@ def setup_routes(app):
                 value=str(value), cls="input-sm",
                 hx_patch=f"/settings/units/{name}/{field}",
                 hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                hx_trigger="change, keydown[key=='Enter']",
+                hx_trigger="blur, keydown[key=='Enter']",
             )
         elif field == "unit_type":
             sel = _unit_type_select("value", selected=str(value))
@@ -526,7 +543,7 @@ def setup_routes(app):
                 name="value", type="text", value=str(value), cls="input-sm",
                 hx_patch=f"/settings/units/{name}/{field}",
                 hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                hx_trigger="change, keydown[key=='Enter']",
+                hx_trigger="blur, keydown[key=='Enter']",
             )
         return Td(inp, cls="cell")
 

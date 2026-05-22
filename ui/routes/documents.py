@@ -4449,14 +4449,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Span(t("doc.price_list"), cls="meta-label"),
             _pl_select,
             cls="price-list-bar",
-            style="display:flex;align-items:center;gap:0.5rem;justify-content:flex-end;max-width:250px;margin-left:auto;margin-bottom:0.5rem;",
+            style="display:flex;align-items:center;gap:0.5rem;justify-content:flex-end;max-width:250px;margin-left:auto;margin-bottom:0.5rem;padding-right:8px;",
         )
     else:
         _pl_bar = Div(
             Span(t("doc.price_list"), cls="meta-label"),
             Span(_current_pl or "-", cls="meta-value"),
             cls="price-list-bar",
-            style="display:flex;align-items:center;gap:0.5rem;justify-content:flex-end;max-width:250px;margin-left:auto;margin-bottom:0.5rem;",
+            style="display:flex;align-items:center;gap:0.5rem;justify-content:flex-end;max-width:250px;margin-left:auto;margin-bottom:0.5rem;padding-right:8px;",
         ) if _current_pl else ""
 
     # --- Line items section ---
@@ -4592,8 +4592,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id or ""), cls="col-checkbox li-checkbox-cell"),
-                Td(_sku_input(li.get("sku", "") or "", li_entity_id)),
-                Td(_desc_input(li.get("description", "") or li.get("name", ""))),
+                Td(_sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
+                Td(_desc_input(li.get("description", "") or li.get("name", "")), cls="col-desc"),
             ]
             if category_cell:
                 cells.append(category_cell)
@@ -4603,28 +4603,33 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value=str(qty), step="any",
                          data_name="quantity", oninput="celerpUpdateTotals()",
                          onblur="celerpQtyBlur(this); celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-qty"),
                 Td(Span(li.get("unit", "") or "", data_name="unit", cls="meta-value meta-value--muted",
-                         style="font-size:12px;display:inline-block;min-width:40px;")),
+                         style="font-size:12px;display:inline-block;min-width:40px;"), cls="col-unit"),
                 Td(Input(type="number", value=str(price), step="0.01",
                          data_name="unit_price", oninput="celerpUpdateTotals()",
                          onblur="celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-unit-price"),
                 Td(Input(type="number", value=str(discount_pct) if discount_pct else "0", step="0.01",
                          data_name="discount_pct", oninput="celerpUpdateTotals()",
                          onblur="celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-disc"),
                 Td(_tax_select(float(li.get("tax_rate", 0) or 0), li.get("tax_code", "") or "",
-                              ((li.get("taxes") or [{}])[0].get("label", "") if li.get("taxes") else ""))),
-                Td(Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
-                   Input(type="hidden", value=li_entity_id, data_name="entity_id"),
-                   Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
-                   Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity")),
+                              ((li.get("taxes") or [{}])[0].get("label", "") if li.get("taxes") else "")), cls="col-tax"),
             ])
             if account_cell:
                 cells.append(account_cell)
             cells.extend([
-                Td(Span(fmt_money(line_tot, currency), cls="line-total"), cls="cell--number"),
+                Td(Input(type="number", value=str(round(line_tot, 2)), step="0.01",
+                         cls="cell-input line-total",
+                         oninput="celerpLineTotalInput(this)",
+                         onblur="celerpAutoSave()",
+                         data_name="line_total"),
+                   Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
+                   Input(type="hidden", value=li_entity_id, data_name="entity_id"),
+                   Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
+                   Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity"),
+                   cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -4659,7 +4664,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=""), cls="col-checkbox li-checkbox-cell"),
-                Td(_sku_input()), Td(_desc_input()),
+                Td(_sku_input(), cls="col-sku"), Td(_desc_input(), cls="col-desc"),
             ]
             if _cat_cell:
                 cells.append(_cat_cell)
@@ -4668,21 +4673,26 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             cells.extend([
                 Td(Input(type="number", value="1", step="any", data_name="quantity",
                          oninput="celerpUpdateTotals()", onblur="celerpQtyBlur(this); celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-qty"),
                 Td(Span("", data_name="unit", cls="meta-value meta-value--muted",
-                         style="font-size:12px;display:inline-block;min-width:40px;")),
+                         style="font-size:12px;display:inline-block;min-width:40px;"), cls="col-unit"),
                 Td(Input(type="number", value="0", step="0.01", data_name="unit_price",
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-unit-price"),
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
-                Td(_tax_select()),
-                Td(Input(type="hidden", value="", data_name="hs_code"),
+                         cls="cell-input cell-input--xs"), cls="col-disc"),
+                Td(_tax_select(), cls="col-tax"),
+                Td(Input(type="number", value="0", step="0.01",
+                         cls="cell-input line-total",
+                         oninput="celerpLineTotalInput(this)",
+                         onblur="celerpAutoSave()",
+                         data_name="line_total"),
+                   Input(type="hidden", value="", data_name="hs_code"),
                    Input(type="hidden", value="", data_name="entity_id"),
                    Input(type="hidden", value="", data_name="allow_splitting"),
-                   Input(type="hidden", value="", data_name="item_quantity")),
-                Td(Span(fmt_money(0, currency), cls="line-total"), cls="cell--number"),
+                   Input(type="hidden", value="", data_name="item_quantity"),
+                   cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -4690,14 +4700,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if not rows:
             rows = [_li_empty_row()]
 
-        _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem")), Th(t("th.description"))]
+        _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category")))
             _line_headers.append(Th(t("th.type")))
-        _line_headers.extend([Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
+        _line_headers.extend([Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
-        _line_headers.extend([Th(t("th.total")), Th("")])
+        _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
 
         # CSV import hidden file input + JS handler
         _csv_import_el = Div(
@@ -4760,10 +4770,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-toolbar",
             ),
             _li_bulk_toolbar(entity_id, is_list),
-            Table(
-                Thead(Tr(*_line_headers)),
-                Tbody(*rows, id=line_body_id),
-                cls="data-table doc-lines",
+            Div(
+                Table(
+                    Thead(Tr(*_line_headers)),
+                    Tbody(*rows, id=line_body_id),
+                    cls="data-table doc-lines",
+                ),
+                cls="table-scroll-wrap",
             ),
             Div(
                 Button(t("btn._add_item"), type="button", cls="btn btn--secondary",
@@ -4925,7 +4938,7 @@ async function celerpAcSearch(input, field) {{
             const opt = document.createElement('div');
             opt.className = 'catalog-ac-option';
             const label = field === 'sku'
-                ? (item.sku || '') + (item.description ? ' – ' + item.description : '')
+                ? (item.sku || '')
                 : (item.description || '') + (item.sku ? ' [' + item.sku + ']' : '');
             opt.textContent = label;
             opt.addEventListener('mousedown', e => {{
@@ -4958,6 +4971,13 @@ async function celerpAcSearch(input, field) {{
         }});
         list.appendChild(custom);
         list.style.display = 'block';
+        // Reposition to fixed so it escapes overflow:auto scroll containers
+        const rect = wrap.getBoundingClientRect();
+        list.style.position = 'fixed';
+        list.style.top = rect.bottom + 'px';
+        list.style.left = rect.left + 'px';
+        list.style.width = rect.width + 'px';
+        list.style.zIndex = '9999';
     }}, 250);
 }}
 function celerpAcBlur(input) {{
@@ -5001,6 +5021,19 @@ function celerpAcKey(e, input) {{
     }} else if (e.key === 'Escape') {{
         list.style.display = 'none';
     }}
+}}
+function celerpLineTotalInput(input) {{
+    const row = input.closest('tr');
+    if (!row) return;
+    const tot = parseFloat(input.value);
+    if (isNaN(tot)) return;
+    const qty = parseFloat(row.querySelector('[data-name="quantity"]')?.value || 0);
+    const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
+    const factor = qty * (1 - discPct / 100);
+    if (factor === 0) return;
+    const unitPriceEl = row.querySelector('[data-name="unit_price"]');
+    if (unitPriceEl) unitPriceEl.value = (tot / factor).toFixed(2);
+    celerpUpdateTotals();
 }}
 function celerpQtyBlur(input) {{
     const row = input.closest('tr');
@@ -5113,7 +5146,9 @@ function celerpUpdateTotals() {{
         grossSub += gross;
         totalDiscount += discAmt;
         const totalEl = row.querySelector('.line-total');
-        if (totalEl) totalEl.textContent = _fmt(tot);
+        if (totalEl && totalEl !== document.activeElement) {{
+            totalEl.value = tot.toFixed(2);
+        }}
         sub += tot;
         const rate = _celerpTaxRate(row);
         if (rate !== 0) {{
@@ -5401,7 +5436,7 @@ async function celerpCsvImport(input, entityId) {{
                 Td(format_value(li.get("unit_price"), "money"), cls="cell--number"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "-"),
                 Td(format_value(li.get("tax_rate"))),
-                Td(format_value(line_total, "money"), cls="cell--number"),
+                Td(format_value(line_total, "money"), cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -5411,7 +5446,7 @@ async function celerpCsvImport(input, entityId) {{
         _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.category")), Th(t("th.type"))]
-        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"))]
+        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"), cls="cell--number col-total")]
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(

@@ -113,8 +113,19 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle("on_company_created", session=session, company_id=company.id)
+    # Seed a default "Head Office" location before demo items so items land in it
+    head_office = Location(
+        id=uuid.uuid4(),
+        company_id=company.id,
+        name="Head Office",
+        type="office",
+        address=None,
+        is_default=True,
+    )
+    session.add(head_office)
+    await session.flush()
     from celerp.services.demo import seed_demo_items
-    await seed_demo_items(session, company.id, user.id)
+    await seed_demo_items(session, company.id, user.id, default_location_id=head_office.id)
     # Seed company self-contacts (customer + vendor) with company name, owner name + admin email
     from celerp.services.demo import seed_self_contacts
     await seed_self_contacts(
@@ -125,16 +136,6 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
         company_name=payload.company_name,
         email=payload.email,
     )
-    # Seed a default "Head Office" location
-    head_office = Location(
-        id=uuid.uuid4(),
-        company_id=company.id,
-        name="Head Office",
-        type="office",
-        address=None,
-        is_default=True,
-    )
-    session.add(head_office)
     try:
         await session.commit()
     except Exception as e:

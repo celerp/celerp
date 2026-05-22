@@ -334,7 +334,7 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     type="text", name="value", value=val,
                     hx_patch=f"/settings/{pfx}/{idx}/{field}",
                     hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                    hx_trigger="blur delay:200ms",
+                    hx_trigger="blur delay:200ms, keyup[key=='Enter']",
                     cls="cell-input",
                     autofocus=True,
                 ),
@@ -355,10 +355,27 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                     price_lists[idx][field] = value
                 await getattr(api, pname)(token, price_lists)
                 price_lists = await getattr(api, gname)(token)
+                default_name = await api.get_default_price_list(token)
             except APIError as e:
                 return P(str(e.detail), cls="cell-error")
             pl = price_lists[idx] if idx < len(price_lists) else {}
-            return _price_list_display_cell(idx, field, pl, prefix=pfx)
+            cell = _price_list_display_cell(idx, field, pl, prefix=pfx)
+            if field == "name":
+                # Re-render default price list selector OOB so it reflects the new name
+                visible_names = [p.get("name", "") for p in price_lists if p.get("name") != "Cost"]
+                oob_select = Select(
+                    *[Option(n, value=n, selected=(n == default_name)) for n in visible_names],
+                    name="name", id="default-price-list-select",
+                    cls="form-select",
+                    hx_post="/settings/default-price-list",
+                    hx_target="#default-price-list-status",
+                    hx_swap="outerHTML",
+                    hx_trigger="change",
+                    hx_swap_oob="true",
+                )
+                from fasthtml.common import Div as _Div
+                return _Div(cell, oob_select)
+            return cell
         return price_list_field_patch
 
     def _make_new(gname, pname, redir):
@@ -392,10 +409,15 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                             Span(t("settings.retail_price_list_cannot_be_deleted"), cls="flash flash--error"),
                             id="price-list-error",
                         )
+                    if name in ("Cost", "Wholesale"):
+                        return Div(
+                            Span(t("settings.system_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
+                            id="price-list-error",
+                        )
                     if name == default_name:
                         # Return error fragment instead of redirect
                         return Div(
-                            Span(f"Cannot delete '{name}' — it is the default price list.", cls="flash flash--error"),
+                            Span(t("settings.default_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
                             id="price-list-error",
                         )
                     price_lists.pop(idx)
@@ -1314,6 +1336,7 @@ def setup_routes(app):
                 hx_target="closest td", hx_swap="outerHTML", hx_include="this",
                 hx_trigger="blur delay:200ms",
                 cls="cell-input", autofocus=True,
+                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();}",
             ),
             cls="cell cell--editing",
         )
@@ -3425,16 +3448,10 @@ def _register_tc_crud(app, prefix: str, get_fn_name: str, patch_fn_name: str, re
 
 
 def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: str = "price-lists") -> FT:
-    has_cost = any(pl.get("name") == "Cost" for pl in price_lists)
-
     def _row(idx: int, pl: dict) -> FT:
         name = pl.get("name", "")
-        is_retail = name == "Retail"
-        delete_cell = Td(
-            Button(t("btn.delete"),
-                   cls="btn btn--danger btn--xs",
-                   disabled=True,
-                   title="Retail price list cannot be deleted") if is_retail else
+        is_protected = name in ("Retail", "Wholesale")
+        delete_cell = Td(cls="cell") if is_protected else Td(
             Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                    hx_delete=f"/settings/{prefix}/{idx}",
                    hx_confirm=f"Delete price list '{name}'?",
@@ -3450,18 +3467,15 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: s
             cls="data-row",
         )
 
-    pl_names = [pl.get("name", "") for pl in price_lists]
+    # Filter out Cost - it's a system field, not a user-facing price list
+    visible_price_lists = [(i, pl) for i, pl in enumerate(price_lists) if pl.get("name") != "Cost"]
+    pl_names = [pl.get("name", "") for _, pl in visible_price_lists]
 
     return Div(
         Div(id="price-list-error"),
         H3(t("page.price_lists"), cls="settings-section-title"),
         P(t("settings.define_your_companys_price_tiers_these_names_are_u"),
           cls="settings-hint"),
-        *(
-            [P(t("settings._cost_price_is_tracked_peritem_from_purchase_docum"),
-               cls="settings-hint settings-hint--info")]
-            if has_cost else []
-        ),
         Div(
             Button(t("btn.add_price_list"), cls="btn btn--primary",
                    hx_post=f"/settings/{prefix}/new", hx_swap="none",
@@ -3470,7 +3484,7 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: s
         ),
         Table(
             Thead(Tr(Th(t("th.name")), Th(t("th.description")), Th(""))),
-            Tbody(*[_row(i, pl) for i, pl in enumerate(price_lists)]),
+            Tbody(*[_row(i, pl) for i, pl in visible_price_lists]),
             cls="data-table",
         ),
         H3(t("page.default_price_list"), cls="settings-section-title mt-lg"),
@@ -3480,6 +3494,7 @@ def _price_lists_tab(price_lists: list[dict], default_price_list: str, prefix: s
             Select(
                 *[Option(name, value=name, selected=(name == default_price_list)) for name in pl_names],
                 name="name",
+                id="default-price-list-select",
                 cls="form-select",
                 hx_post="/settings/default-price-list",
                 hx_target="#default-price-list-status",
@@ -3613,7 +3628,7 @@ def _locations_tab(locations: list[dict], lang: str = "en") -> FT:
                 ),
                 cls="cell",
             ),
-            Td(
+            Td(cls="cell") if is_default else Td(
                 Button(t("btn.delete"), cls="btn btn--danger btn--xs",
                        hx_delete=f"/settings/locations/{lid}",
                        hx_confirm=f"Delete location '{loc.get('name', '')}'? Items must be unassigned first.",

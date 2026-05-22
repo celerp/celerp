@@ -1210,6 +1210,7 @@ async def seed_demo_items(
     company_id: uuid.UUID,
     actor_id: uuid.UUID,
     vertical: str | None = None,
+    default_location_id: uuid.UUID | None = None,
 ) -> None:
     """Seed vertical-aware demo items and default price lists in company settings."""
     from celerp.models.company import Company
@@ -1263,6 +1264,8 @@ async def seed_demo_items(
             "attributes": data.get("attributes") or {},
             **price_fields,
         }
+        if default_location_id is not None:
+            payload["location_id"] = str(default_location_id)
         # Strip None values to keep event data clean
         payload = {k: v for k, v in payload.items() if v is not None}
         await emit_event(
@@ -1273,7 +1276,7 @@ async def seed_demo_items(
             event_type="item.created",
             data=payload,
             actor_id=actor_id,
-            location_id=None,
+            location_id=default_location_id,
             source="demo",
             idempotency_key=f"demo:item:{company_id}:{sku}",
         )

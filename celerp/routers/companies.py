@@ -610,17 +610,7 @@ from celerp.services.field_schema import get_effective_field_schema  # noqa: F40
 
 @router.get("/me/item-schema")
 async def get_item_schema(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
-    from celerp.services.field_schema import _BASE_FIELDS
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    stored = company.settings.get("item_schema")
-    if not stored:
-        return DEFAULT_ITEM_SCHEMA
-    # Merge: keep stored fields as-is, add any base fields missing from stored
-    stored_keys = {f["key"] for f in stored}
-    extras = [f for f in _BASE_FIELDS if f["key"] not in stored_keys]
-    return stored + extras
+    return await get_effective_field_schema(session, company_id)
 
 
 @router.patch("/me/item-schema")
@@ -1617,7 +1607,7 @@ async def list_modules(
     import asyncio
     import os
     from pathlib import Path
-    from celerp.modules.loader import loaded_modules
+    from celerp.modules.loader import loaded_modules, read_manifest_metadata
     from celerp.modules.registry import get_enabled
 
     company = await session.get(Company, company_id)
@@ -1644,7 +1634,7 @@ async def list_modules(
                     continue
                 seen.add(pkg_name)
                 loaded = loaded_by_name.get(pkg_name)
-                manifest_source = loaded or {}
+                manifest_source = loaded or read_manifest_metadata(pkg_path)
                 results.append({
                     "name": pkg_name,
                     "label": manifest_source.get("display_name") or manifest_source.get("label") or pkg_name,
@@ -1753,7 +1743,6 @@ async def reactivate_company(
 DEFAULT_PRICE_LISTS: list[dict] = [
     {"name": "Retail", "description": "Standard retail price"},
     {"name": "Wholesale", "description": "Wholesale / trade price"},
-    {"name": "Cost", "description": "Cost / landed price"},
 ]
 DEFAULT_PRICE_LIST_NAME: str = "Retail"
 
@@ -1883,6 +1872,17 @@ async def reseed_demo_items(
     if not vertical:
         company = await session.get(Company, company_id)
         vertical = (company.settings or {}).get("vertical") if company else None
-    await seed_demo_items(session, company_id, user.id, vertical=vertical)
+    # Look up the default location so demo items land in it
+    from sqlalchemy import select as _select
+    from celerp.models.company import Location as _Location
+    _loc_result = await session.execute(
+        _select(_Location).where(
+            _Location.company_id == company_id,
+            _Location.is_default == True,
+        ).limit(1)
+    )
+    _default_loc = _loc_result.scalars().first()
+    await seed_demo_items(session, company_id, user.id, vertical=vertical,
+                          default_location_id=_default_loc.id if _default_loc else None)
     await session.commit()
     return {"ok": True, "vertical": vertical, "wiped": len(demo_entity_ids)}

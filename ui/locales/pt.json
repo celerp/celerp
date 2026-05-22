@@ -1050,6 +1050,8 @@
   "settings.rate_must_be_a_number": "A taxa deve ser um número.",
   "settings.restart_needed": "é necessário reiniciar",
   "settings.retail_price_list_cannot_be_deleted": "A lista de preços de varejo não pode ser excluída.",
+  "settings.system_price_list_cannot_be_deleted": "'{name}' is a system price list and cannot be deleted.",
+  "settings.default_price_list_cannot_be_deleted": "Cannot delete '{name}' — it is the default price list.",
   "settings.role_permissions_reference": "Referência de permissões de função",
   "settings.running": "Correndo",
   "settings.scheduler": "Agendador",

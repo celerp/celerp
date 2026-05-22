@@ -573,3 +573,72 @@ class TestPurchaseConversionFactor:
         result = purchase_display_cell("item-1", "Case", 12, "kg")
         html = result.__html__() if hasattr(result, '__html__') else str(result)
         assert "kg" in html
+
+
+# ── Issue 1: item-schema endpoint uses effective schema ───────────────────────
+
+async def _make_headers(client) -> dict:
+    r = await client.post(
+        "/auth/register",
+        json={"company_name": "SchemaTestCo", "email": "admin@schematest.com", "name": "Admin", "password": "pw"},
+    )
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
+
+
+class TestItemSchemaEndpointUsesEffectiveSchema:
+    @pytest.mark.asyncio
+    async def test_custom_price_list_appears_in_schema(self, client):
+        """item-schema endpoint must reflect dynamically added price lists."""
+        h = await _make_headers(client)
+        price_lists = [
+            {"name": "Cost"},
+            {"name": "Wholesale"},
+            {"name": "Retail"},
+            {"name": "VIP"},
+        ]
+        await client.patch("/companies/me/price-lists", json={"price_lists": price_lists}, headers=h)
+        schema = (await client.get("/companies/me/item-schema", headers=h)).json()
+        keys = {f["key"] for f in schema}
+        assert "vip_price" in keys, "Custom price list 'VIP' must appear in item schema"
+
+    @pytest.mark.asyncio
+    async def test_deleted_price_list_absent_from_schema(self, client):
+        """Removing a user-added price list must remove its column from schema."""
+        h = await _make_headers(client)
+        price_lists = [{"name": "Cost"}, {"name": "Wholesale"}, {"name": "Retail"}]
+        await client.patch("/companies/me/price-lists", json={"price_lists": price_lists}, headers=h)
+        schema = (await client.get("/companies/me/item-schema", headers=h)).json()
+        keys = {f["key"] for f in schema}
+        assert "vip_price" not in keys, "Removed VIP price list must not appear in schema"
+
+
+# ── Issue 4: Net/Gross weight fields in schema ────────────────────────────────
+
+class TestNetGrossWeightSchema:
+    def test_weight_label_is_net_weight(self):
+        from celerp.services.field_schema import _BASE_FIELDS
+        weight_field = next(f for f in _BASE_FIELDS if f["key"] == "weight")
+        assert weight_field["label"] == "Net Weight", f"Expected 'Net Weight', got '{weight_field['label']}'"
+
+    def test_weight_unit_label_is_net_weight_unit(self):
+        from celerp.services.field_schema import _BASE_FIELDS
+        wu = next(f for f in _BASE_FIELDS if f["key"] == "weight_unit")
+        assert wu["label"] == "Net Weight Unit", f"Expected 'Net Weight Unit', got '{wu['label']}'"
+
+    def test_gross_weight_field_present(self):
+        from celerp.services.field_schema import _BASE_FIELDS
+        keys = {f["key"] for f in _BASE_FIELDS}
+        assert "gross_weight" in keys, "gross_weight field must be in _BASE_FIELDS"
+        assert "gross_weight_unit" in keys, "gross_weight_unit field must be in _BASE_FIELDS"
+
+    def test_gross_weight_defaults(self):
+        from celerp.services.field_schema import _BASE_FIELDS
+        gw = next(f for f in _BASE_FIELDS if f["key"] == "gross_weight")
+        assert gw["type"] == "number"
+        assert gw["editable"] is True
+        assert gw["show_in_table"] is False  # hidden by default
+
+    def test_no_duplicate_keys_after_gross_weight(self):
+        from celerp.services.field_schema import _BASE_FIELDS
+        keys = [f["key"] for f in _BASE_FIELDS]
+        assert len(keys) == len(set(keys)), "Duplicate keys in _BASE_FIELDS after adding gross_weight"

@@ -15,7 +15,6 @@ from celerp.models.company import Company
 
 # Default price lists (used when company has none configured)
 _DEFAULT_PRICE_LISTS: list[dict] = [
-    {"name": "Cost"},
     {"name": "Wholesale"},
     {"name": "Retail"},
 ]
@@ -27,9 +26,11 @@ _BASE_FIELDS: list[dict] = [
     {"key": "category",          "label": "Category",          "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 2,  "show_in_table": True},
     {"key": "quantity",          "label": "Qty",               "type": "number", "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3,   "show_in_table": True,  "tooltip_key": "field.tooltip.quantity"},
     {"key": "sell_by",           "label": "Sell Unit",         "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.05,"show_in_table": False, "tooltip_key": "field.tooltip.sell_by"},
-    {"key": "weight",            "label": "Weight",            "type": "number", "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.1, "show_in_table": True,  "tooltip_key": "field.tooltip.weight"},
-    {"key": "weight_unit",       "label": "Weight Unit",       "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.15,"show_in_table": False, "tooltip_key": "field.tooltip.weight_unit"},
+    {"key": "weight",            "label": "Net Weight",        "type": "number", "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.1, "show_in_table": True,  "tooltip_key": "field.tooltip.weight"},
+    {"key": "weight_unit",       "label": "Net Weight Unit",   "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.15,"show_in_table": False, "tooltip_key": "field.tooltip.weight_unit"},
     {"key": "pieces",            "label": "Pieces",            "type": "number", "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.2, "show_in_table": True,  "tooltip_key": "field.tooltip.pieces"},
+    {"key": "gross_weight",      "label": "Gross Weight",      "type": "number", "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.25,"show_in_table": False, "tooltip_key": "field.tooltip.gross_weight"},
+    {"key": "gross_weight_unit", "label": "Gross Weight Unit", "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.3, "show_in_table": False, "tooltip_key": "field.tooltip.gross_weight_unit"},
     {"key": "inventory_type",    "label": "Inventory Type",    "type": "select", "editable": True,  "required": False, "options": ["stocked", "non_stocked", "service"],         "visible_to_roles": [],               "position": 4.2, "show_in_table": False, "tooltip_key": "field.tooltip.inventory_type"},
     {"key": "allow_splitting",   "label": "Allow Splitting",   "type": "bool",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 4.5, "show_in_table": False, "tooltip_key": "field.tooltip.allow_splitting"},
     {"key": "location_name",     "label": "Location",          "type": "text",   "editable": False, "required": False, "options": [],                                            "visible_to_roles": [],               "position": 5,  "show_in_table": True,  "tooltip_key": "field.tooltip.location_name"},
@@ -49,14 +50,23 @@ _BASE_FIELDS: list[dict] = [
 ]
 
 def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dict]:
-    """Insert a money column for each price list after position 5 (location)."""
+    """Insert a money column for each price list after position 5 (location).
+
+    For every cost-type price list (e.g. "Cost"), a paired virtual column
+    ``<key>_total`` is injected immediately after it (position + 0.01).
+    This column displays ``unit_price × quantity`` and is never stored.
+    """
+    existing_keys = {f["key"] for f in base}
     # "Cost" price list is restricted to admin/manager
     cost_names = {"cost", "cost price", "landed", "landed cost"}
     price_cols = []
     for i, pl in enumerate(price_lists):
         name = pl.get("name", "")
         key = f"{name.lower()}_price"
+        if key in existing_keys:
+            continue  # already present (stored schema round-trip)
         restricted = name.lower() in cost_names
+        pos = 6 + i
         price_cols.append({
             "key": key,
             "label": name,
@@ -65,9 +75,24 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
             "required": False,
             "options": [],
             "visible_to_roles": ["admin", "manager"] if restricted else [],
-            "position": 6 + i,
+            "position": pos,
             "show_in_table": True,
         })
+        if restricted:
+            # Virtual total column: always paired with the cost price column
+            price_cols.append({
+                "key": f"{key}_total",
+                "label": f"{name} (Total)",
+                "type": "money",
+                "editable": True,
+                "required": False,
+                "options": [],
+                "visible_to_roles": ["admin", "manager"],
+                "position": pos + 0.01,
+                "show_in_table": True,
+                "virtual": True,           # never stored; computed at render time
+                "paired_with": key,        # always moves with this field
+            })
     return sorted(base + price_cols, key=lambda f: f.get("position", 999))
 
 
@@ -82,6 +107,9 @@ async def get_effective_field_schema(
 
     Price columns are dynamically generated from the company's configured
     price lists (settings["price_lists"]), not hardcoded.
+
+    If the stored schema is missing default fields (e.g. after a partial PATCH),
+    missing defaults are appended so clients always see the full set.
     """
     co = await session.get(
         Company,
@@ -91,10 +119,15 @@ async def get_effective_field_schema(
         return DEFAULT_ITEM_SCHEMA
     settings = co.settings or {}
 
-    # Build base schema with dynamic price columns
-    custom_base: list[dict] = settings.get("item_schema") or _BASE_FIELDS
+    # Build base schema: stored fields + any missing _BASE_FIELDS defaults
+    stored: list[dict] = settings.get("item_schema") or _BASE_FIELDS
     price_lists: list[dict] = settings.get("price_lists") or _DEFAULT_PRICE_LISTS
-    base_schema = _inject_price_columns(custom_base, price_lists)
+    # Inject price columns (idempotent - skips already-present keys)
+    stored_with_prices = _inject_price_columns(stored, price_lists)
+    # Append any _BASE_FIELDS defaults missing from stored schema (no duplicates)
+    stored_keys = {f["key"] for f in stored_with_prices}
+    full_defaults = _inject_price_columns(_BASE_FIELDS, price_lists)
+    base_schema = stored_with_prices + [f for f in full_defaults if f["key"] not in stored_keys]
 
     if category:
         cat_schemas: dict[str, list[dict]] = settings.get("category_schemas") or {}

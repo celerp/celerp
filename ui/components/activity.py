@@ -104,16 +104,31 @@ def entity_url(entity_id: str) -> str:
     return ""
 
 
+_SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
+
+
 def detail_from_entry(data: dict, event_type: str) -> str:
     """Extract a short human-readable detail string from a ledger entry's data dict."""
     if not data or not isinstance(data, dict):
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
-        keys = [k for k in fields_changed if k not in {"attachments", "preview_image_id"}]
-        if keys:
-            preview = ", ".join(keys[:4])
-            return ("Changed: " + preview + ("…" if len(keys) > 4 else ""))
+        # Filter system-managed fields that are never meaningful to show
+        user_fields = {k: v for k, v in fields_changed.items()
+                       if k not in _SYSTEM_FIELDS and k not in {"attachments", "preview_image_id"}}
+        if user_fields:
+            parts = []
+            for k, change in list(user_fields.items())[:4]:
+                old = change.get("old") if isinstance(change, dict) else None
+                new = change.get("new") if isinstance(change, dict) else None
+                old_str = str(old) if old is not None else "none"
+                new_str = str(new) if new is not None else "none"
+                if new is not None:
+                    parts.append(f"{k}: {old_str} → {new_str}")
+                else:
+                    parts.append(k)
+            suffix = "…" if len(user_fields) > 4 else ""
+            return "Changed: " + ", ".join(parts) + suffix
     if event_type in ("item.quantity.adjusted", "item.quantity_adjusted"):
         new_qty = data.get("new_qty") or data.get("quantity")
         if new_qty is not None:
@@ -253,10 +268,21 @@ def _fields_changed_summary(fields_changed: dict) -> str:
     """Compact summary of field changes from a ledger data dict."""
     if not fields_changed or not isinstance(fields_changed, dict):
         return ""
-    keys = [k for k in fields_changed if k not in {"attachments", "preview_image_id"}]
-    if keys:
-        preview = ", ".join(keys[:4])
-        return "Changed: " + preview + ("..." if len(keys) > 4 else "")
+    user_fields = {k: v for k, v in fields_changed.items()
+                   if k not in _SYSTEM_FIELDS and k not in {"attachments", "preview_image_id"}}
+    if user_fields:
+        parts = []
+        for k, change in list(user_fields.items())[:4]:
+            old = change.get("old") if isinstance(change, dict) else None
+            new = change.get("new") if isinstance(change, dict) else None
+            old_str = str(old) if old is not None else "none"
+            new_str = str(new) if new is not None else "none"
+            if new is not None:
+                parts.append(f"{k}: {old_str} → {new_str}")
+            else:
+                parts.append(k)
+        suffix = "..." if len(user_fields) > 4 else ""
+        return "Changed: " + ", ".join(parts) + suffix
     return ""
 
 

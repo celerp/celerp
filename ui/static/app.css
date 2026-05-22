@@ -329,6 +329,7 @@ a:hover { text-decoration: underline; }
 }
 
 .cell--editing { padding: 0; }
+.cell-add-new-link { display: block; font-size: 11px; padding: 2px 6px; color: var(--c-accent); white-space: nowrap; }
 
 /* Paired cells (e.g. Qty + Sell Unit in one column) */
 .cell--paired { white-space: nowrap; }
@@ -349,6 +350,7 @@ a:hover { text-decoration: underline; }
 
 .cell-error { color: var(--c-red); font-size: 11px; padding: 4px 8px; }
 .cell-derived { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; cursor: default; user-select: none; }
+.cell-price-unit { color: var(--c-text-muted, #888); font-style: italic; font-size: 11px; margin-left: 4px; }
 
 /* cell inputs */
 .cell-input {
@@ -498,7 +500,20 @@ a:hover { text-decoration: underline; }
 /* ─── Doc detail ──────────────────────────────────────────────────────── */
 .doc-meta { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
-.doc-lines { margin-top: 12px; }
+.doc-lines { margin-top: 12px; table-layout: auto; width: 100%; max-width: 100%; }
+.doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+.doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 28px; min-width: 28px; max-width: 28px; padding-left: 0; padding-right: 0; text-align: center; overflow: visible; }
+.doc-lines th.col-sku,        .doc-lines td.col-sku        { width: 180px; min-width: 180px; max-width: 190px; }
+.doc-lines th.col-desc,       .doc-lines td.col-desc       { min-width: 180px; }
+.doc-lines th.col-qty,        .doc-lines td.col-qty        { width: 90px;  min-width: 90px;  max-width: 90px; }
+.doc-lines th.col-unit,       .doc-lines td.col-unit       { width: 60px;  min-width: 60px;  max-width: 60px; }
+.doc-lines th.col-unit-price, .doc-lines td.col-unit-price { width: 120px; min-width: 120px; max-width: 130px; }
+.doc-lines th.col-disc,       .doc-lines td.col-disc       { width: 90px;  min-width: 90px;  max-width: 90px; }
+.doc-lines th.col-tax,        .doc-lines td.col-tax        { width: 90px;  min-width: 90px;  max-width: 110px; }
+.doc-lines td.col-total, .doc-lines th.col-total { width: 160px; min-width: 160px; max-width: 170px; overflow: visible; padding: 0; }
+.doc-lines td.col-total { display: flex; align-items: center; padding-right: 8px; }
+.data-table td.col-total input.line-total { flex: 1; width: auto !important; min-width: 0; text-align: right !important; max-width: none !important; box-sizing: border-box; margin: 0; }
+.line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
 
 /* ─── Reports ─────────────────────────────────────────────────────────── */
 .report-view { max-width: 760px; }
@@ -793,6 +808,7 @@ a:hover { text-decoration: underline; }
 .import-cell { background: transparent; border: 1px solid transparent; padding: 2px 6px; width: 100%; color: var(--c-text); font-size: 12px; }
 .import-cell--error { border-color: var(--c-red); background: rgba(239,68,68,0.18); box-shadow: inset 3px 0 0 var(--c-red); font-weight: 500; }
 .import-cell:focus { outline: none; border-color: var(--c-accent); }
+option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .import-stats { padding: 8px 0; }
 .import-summary { font-size: 13px; color: var(--c-text); }
 .import-td { padding: 2px 4px !important; }
@@ -1039,7 +1055,7 @@ a:hover { text-decoration: underline; }
 }
 
 /* Line item checkbox column */
-.li-checkbox-cell { width: 32px; text-align: center; }
+.li-checkbox-cell { width: 40px; text-align: center; }
 
 /* ─── Utility classes ─────────────────────────────────────────────────── */
 /* Spacing: margin */
@@ -1322,7 +1338,7 @@ a:hover { text-decoration: underline; }
 .currency-bar-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 
 /* Compact totals - right-aligned, no card chrome */
-.doc-section--totals { display: flex; flex-direction: column; align-items: flex-end; padding: 8px 0; }
+.doc-section--totals { display: flex; flex-direction: column; align-items: flex-end; padding: 8px 16px; }
 .doc-section--totals-compact { display: flex; flex-direction: column; align-items: flex-end; padding: 12px 0; }
 .section-divider { border: none; border-top: 1px solid var(--c-border); margin: 10px 0; }
 .total-panel { width: 100%; max-width: 320px; padding: 0; }
@@ -1412,6 +1428,11 @@ a:hover { text-decoration: underline; }
 .scan-bar-status--err { color: var(--c-red); font-weight: 600; }
 
 /* Catalog autocomplete dropdowns (SKU/Description in line items) */
+/* td overflow:hidden clips absolutely-positioned dropdowns; override for ac cells */
+.data-table td:has(.catalog-ac-wrap) { overflow: visible; }
+/* Total column: th right-align (!important beats base th{text-align:center}) */
+.data-table th.cell--number { text-align: right !important; }
+.doc-lines th.col-total { text-align: center !important; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }

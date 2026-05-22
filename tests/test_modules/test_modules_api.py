@@ -190,3 +190,55 @@ class TestModulesAPIEndpoints:
         assert "enabled" in gem
         assert "running" in gem
         assert "version" in gem
+
+    @pytest.mark.asyncio
+    async def test_list_modules_disabled_module_has_metadata(self, client, tmp_path):
+        """A disabled (not running) module must still return description, author, version."""
+        import shutil
+        import os
+
+        token = await _register(client)
+
+        # Use celerp-manufacturing which is MIT and has rich manifest fields
+        mfg_src = Path(__file__).parent.parent.parent / "default_modules" / "celerp-manufacturing"
+        module_dir = tmp_path / "modules"
+        module_dir.mkdir()
+        shutil.copytree(mfg_src, module_dir / "celerp-manufacturing")
+
+        # Do NOT enable the module — it must appear as disabled
+        with patch.dict(os.environ, {"MODULE_DIR": str(module_dir)}):
+            r = await client.get("/companies/me/modules", headers=_h(token))
+
+        assert r.status_code == 200
+        data = r.json()
+        names = [m["name"] for m in data]
+        assert "celerp-manufacturing" in names
+
+        m = next(x for x in data if x["name"] == "celerp-manufacturing")
+        assert m["enabled"] is False
+        assert m["running"] is False
+        # These must be populated even when not running
+        assert m["description"] == "Manufacturing orders, BOM management, and production tracking."
+        assert m["author"] == "Celerp"
+        assert m["version"] == "0.1.0"
+        assert m["label"] == "Manufacturing"
+
+    @pytest.mark.asyncio
+    async def test_subscriptions_outer_manifest_is_literal(self):
+        """Outer celerp-subscriptions/__init__.py must define PLUGIN_MANIFEST as a dict literal.
+
+        read_manifest_metadata uses AST parsing and cannot follow import statements.
+        If the outer __init__.py uses 'from celerp_subscriptions import PLUGIN_MANIFEST',
+        disabled-state rendering falls back to the raw package name instead of display_name.
+        """
+        from pathlib import Path
+        from celerp.modules.loader import read_manifest_metadata
+
+        subs_path = Path(__file__).parent.parent.parent / "default_modules" / "celerp-subscriptions"
+        meta = read_manifest_metadata(subs_path)
+        assert meta.get("display_name") == "Subscriptions", (
+            "Outer __init__.py must define PLUGIN_MANIFEST as a literal dict with "
+            f"display_name='Subscriptions'; got: {meta}"
+        )
+        assert meta.get("description"), "description must be non-empty"
+        assert meta.get("version"), "version must be non-empty"

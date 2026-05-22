@@ -119,6 +119,10 @@ _COMMON_ALIASES: dict[str, str] = {
     "cost": "cost_price",
     "unit_cost": "cost_price",
     "purchase_price": "cost_price",
+    "total_cost": "cost_price_total",
+    "cost_total": "cost_price_total",
+    "total cost": "cost_price_total",
+    "cost total": "cost_price_total",
     "wholesale": "wholesale_price",
     "weight_ct": "weight",
     "weight_g": "weight",
@@ -264,6 +268,8 @@ def column_mapping_form(
     category_attrs: list[str] | None = None,
     errors: list[str] | None = None,
     form_values: dict | None = None,
+    col_labels: dict[str, str] | None = None,
+    mutex_groups: list[list[str]] | None = None,
 ) -> FT:
     """Render a horizontal spreadsheet-style column mapping UI.
 
@@ -275,6 +281,8 @@ def column_mapping_form(
     req = required_targets or set()
     fv = form_values or {}
     preview = sample_rows[:5]
+    _col_labels = col_labels or {}
+    _mutex_groups = mutex_groups or []
 
     error_block = ""
     if errors:
@@ -290,7 +298,7 @@ def column_mapping_form(
     option_defs.append({"value": MAPPING_SKIP, "label": "Skip (don't import)", "group": "action"})
     # Core fields
     for tc in target_cols:
-        label = tc.replace("_", " ").title()
+        label = _col_labels.get(tc) or tc.replace("_", " ").title()
         if tc in req:
             label += " *"
         option_defs.append({"value": tc, "label": label, "group": "core"})
@@ -394,7 +402,8 @@ def column_mapping_form(
             ),
             showing_hint,
             Div(
-                Button(t("btn.continue_to_preview"), type="submit", cls="btn btn--primary"),
+                Button(t("btn.continue_to_preview"), type="button", cls="btn btn--primary",
+                       onclick="this.disabled=true;this.textContent='Processing…';this.classList.add('btn--disabled');this.form.submit()"),
                 A(t("btn.cancel"), href=back_href, cls="btn btn--secondary"),
                 cls="flex-row gap-sm mt-md",
             ),
@@ -402,6 +411,7 @@ def column_mapping_form(
             action=confirm_action,
         ),
         Script(f"var _MAPPING_OPTIONS = {_json.dumps(option_defs)};"),
+        Script(f"var _MUTEX_GROUPS = {_json.dumps(_mutex_groups)};"),
         Script(_MAPPING_JS),
         id="import-preview",
         cls="import-panel",
@@ -687,6 +697,23 @@ _MAPPING_JS = """
           updateBadge(dd);
           updateColumnDim(dd);
           updateAttrInput(dd);
+          // Mutex groups: if selected value is in a group, set all other group members to Skip
+          var SKIP = '__skip__';
+          if (typeof _MUTEX_GROUPS !== 'undefined') {
+            _MUTEX_GROUPS.forEach(function(group) {
+              if (group.indexOf(opt.value) !== -1) {
+                allDropdowns.forEach(function(other) {
+                  if (other !== dd && group.indexOf(other.hiddenInput.value) !== -1) {
+                    other.hiddenInput.value = SKIP;
+                    other.container.querySelector('.mapping-dd-trigger').textContent = labelFor(SKIP);
+                    updateBadge(other);
+                    updateColumnDim(other);
+                    updateAttrInput(other);
+                  }
+                });
+              }
+            });
+          }
           // Re-render all other open panels to update used state
           allDropdowns.forEach(function(other) {
             if (other !== dd && other.open) other.render();
@@ -980,7 +1007,7 @@ _INLINE_FIX_JS = """
     if (!input) return;
     var val = input.value;
     if (!val) return;
-    document.querySelectorAll('input[data-col="' + col + '"]').forEach(function(el) {
+    document.querySelectorAll('[data-col="' + col + '"]').forEach(function(el) {
       el.value = val;
       el.classList.remove('input--error');
     });
@@ -1000,12 +1027,51 @@ _INLINE_FIX_JS = """
     e.detail.parameters['fixes_json'] = JSON.stringify(fixes);
   });
 
-  // "Add new unit" option in unit dropdowns: redirect to settings page.
+  // "Add new unit" option in unit dropdowns: open settings page and return.
+  // Keep original value in the cell (do not reset to '') so fixes_json preserves
+  // the bad value on revalidate. Auto-revalidate when tab regains visibility so
+  // the freshly added unit appears as a valid option without a manual click.
   document.addEventListener('change', function(e) {
     if (e.target.matches('select.cell-edit') && e.target.value === '__add_new__') {
-      window.open('/settings/inventory?tab=units', '_blank');
-      e.target.value = '';
+      var origVal = e.target.getAttribute('data-prev') || '';
+      // Restore original value before opening new tab
+      e.target.value = origVal;
+      window.open('/settings/inventory?tab=units&from_import=1', '_blank');
+      // When user returns to this tab, auto-revalidate so new units appear in dropdowns.
+      var revalidateFired = false;
+      document.addEventListener('visibilitychange', function _onVisible() {
+        if (document.visibilityState !== 'visible' || revalidateFired) return;
+        revalidateFired = true;
+        document.removeEventListener('visibilitychange', _onVisible);
+        var btn = document.querySelector('.csv-fix-actions button[type="submit"]');
+        if (btn) btn.click();
+      });
     }
+  });
+
+  // Track previous select values so bulk-sync and add-new can reference them.
+  document.addEventListener('focus', function(e) {
+    if (e.target.matches('select.cell-edit')) {
+      e.target.setAttribute('data-prev', e.target.value);
+    }
+  }, true);
+
+  // When a cell-edit select value changes, sync all other cells in the same
+  // column that still hold the same old value (bulk-update identical bad values).
+  document.addEventListener('change', function(e) {
+    if (!e.target.matches('select.cell-edit') || e.target.value === '__add_new__') return;
+    var col = e.target.getAttribute('data-col');
+    var newVal = e.target.value;
+    var oldVal = e.target.getAttribute('data-prev');
+    if (!col || !oldVal || oldVal === newVal) return;
+    document.querySelectorAll('select.cell-edit[data-col="' + col + '"]').forEach(function(el) {
+      if (el !== e.target && el.value === oldVal) {
+        el.value = newVal;
+        el.classList.remove('input--error');
+      }
+    });
+    // Update data-prev to new value after sync
+    e.target.setAttribute('data-prev', newVal);
   });
 })();
 """
@@ -1080,13 +1146,22 @@ def _fix_errors_panel(
         col_error_count = col_error_counts.get(col, 0)
         if col_error_count > 1:
             label = col.replace("_", " ").title()
-            fill_bars.append(Div(
-                Label(f"{label} ({col_error_count} rows):", _for=f"fill-{col}"),
-                Input(
+            renderer = (cell_renderers or {}).get(col)
+            if renderer:
+                # Reuse the per-cell renderer for the fill widget. ri=-1 marks it as
+                # the fill source (not a target cell). Inject id so csvFillColumn can
+                # read the selected value via document.getElementById('fill-{col}').
+                fill_widget = renderer("", -1, {}, False)
+                fill_widget.attrs["id"] = f"fill-{col}"
+            else:
+                fill_widget = Input(
                     type="text", id=f"fill-{col}",
                     placeholder=f"Value for all {label} cells",
                     cls="form-input form-input--sm",
-                ),
+                )
+            fill_bars.append(Div(
+                Label(f"{label} ({col_error_count} rows):", _for=f"fill-{col}"),
+                fill_widget,
                 Button(t("btn.apply"),
                     type="button",
                     onclick=f"csvFillColumn('{col}')",
@@ -1200,6 +1275,7 @@ def _fix_errors_panel(
                     Button(t("btn.fix_import"),
                         type="submit",
                         cls="btn btn--primary",
+                        hx_disabled_elt="this",
                     ),
                     A(t("msg.download_error_report"), href="#",
                       onclick="document.getElementById('csv-err-dl').submit(); return false",

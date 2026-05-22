@@ -104,6 +104,38 @@ function bulkSplitSubmit(formEl) {
 
 
 
+def _derive_import_qty(row: dict, sell_by: str, unit_map: dict[str, dict]) -> float:
+    """Derive the stock quantity from a CSV row.
+
+    Priority:
+    1. If the row contains an explicit ``quantity`` or ``qty`` column, trust it
+       unconditionally - the user knows what they're doing.
+    2. Otherwise fall back to the semantic field for the unit type:
+       - pieces-type (e.g. ``piece``) → ``pieces`` column
+       - weight-type (e.g. ``carat``, ``gram``) → ``weight`` or ``weight_ct`` column
+       - other (service, volume, length, unknown) → 0.0
+
+    Returns a float; never raises.
+    """
+    def _to_float(val) -> float | None:
+        s = str(val).strip() if val is not None else ""
+        if not s:
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    explicit = _to_float(row.get("quantity")) if "quantity" in row else _to_float(row.get("qty"))
+    if explicit is not None:
+        return explicit
+    if is_pieces_unit(sell_by, unit_map):
+        return _to_float(row.get("pieces")) or 0.0
+    if is_weight_unit(sell_by, unit_map):
+        return _to_float(row.get("weight")) or _to_float(row.get("weight_ct")) or 0.0
+    return 0.0
+
+
 def _parse_params(request: Request) -> dict:
     q = request.query_params
     try:
@@ -199,6 +231,13 @@ async def _inventory_content(
     count_by_status = valuation.get("count_by_status", {})
     active_cat = p.get("category", "")
     eff_schema = _effective_schema(schema, cat_schemas, active_cat)
+    # Patch location_name in eff_schema to be editable with resolved options
+    loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
+    eff_schema = [
+        {**f, "type": "select", "options": loc_names, "editable": True} if f.get("key") == "location_name"
+        else f
+        for f in eff_schema
+    ]
     visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, p.get("cols") or [])
     # Inject resolved cols into URL state so sort links and pagination always carry
     # the exact column set being rendered, even when it came from col_prefs not URL params.
@@ -217,7 +256,7 @@ async def _inventory_content(
             cls="column-manager-row",
         ),
         data_table(
-            eff_schema,
+            _label_price_cols(eff_schema),
             items,
             entity_type="inventory",
             show_cols=visible_cols or None,
@@ -228,7 +267,7 @@ async def _inventory_content(
             currency=currency,
             sort_target="#inventory-content",
             auto_hide_empty=False,
-            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map),
+            cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency),
             hidden_fields=set(_PAIRED_TABLE.values()),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
@@ -507,6 +546,8 @@ def setup_routes(app):
                 back_href="/inventory/import",
                 required_targets=spec.required,
                 category_attrs=cat_attrs,
+                col_labels=_import_price_col_labels(price_lists),
+                mutex_groups=_import_price_mutex_groups(price_lists),
             ),
             title="Import Inventory - Celerp",
             nav_active="inventory",
@@ -565,6 +606,8 @@ def setup_routes(app):
                     category_attrs=cat_attrs,
                     errors=mapping_errors,
                     form_values=dict(form),
+                    col_labels=_import_price_col_labels(price_lists),
+                    mutex_groups=_import_price_mutex_groups(price_lists),
                 ),
                 title="Import Inventory - Celerp",
                 nav_active="inventory",
@@ -707,10 +750,14 @@ def setup_routes(app):
         except Exception:
             pass  # Non-critical; if unavailable, sell_by remains None
 
-        # Build case-insensitive → canonical unit name map for sell_by normalization.
+        # Build unit maps for sell_by normalization and qty derivation.
+        # Both are derived from a single get_units call to stay DRY.
         _unit_canonical: dict[str, str] = {}
+        _unit_map: dict[str, dict] = {}
         try:
-            _unit_canonical = {u["name"].lower(): u["name"] for u in await api.get_units(token)}
+            _units = await api.get_units(token)
+            _unit_canonical = {u["name"].lower(): u["name"] for u in _units}
+            _unit_map = {u["name"]: u for u in _units}
         except Exception:
             pass
 
@@ -757,11 +804,13 @@ def setup_routes(app):
                     has_mapping=True,
                 )
 
-            qty_raw = str(row.get("quantity", "0")).strip()
-            try:
-                qty = float(qty_raw) if qty_raw else 0.0
-            except ValueError:
-                qty = 0.0
+            sell_by = (
+                _unit_canonical.get(str(row.get("sell_by", "")).strip().lower())
+                or str(row.get("sell_by", "")).strip()
+                or _cat_sell_by.get(str(row.get("category", "")).strip())
+                or ""
+            )
+            qty = _derive_import_qty(row, sell_by, _unit_map)
 
             def _flt(key: str, _row: dict = row) -> float | None:
                 raw = str(_row.get(key, "")).strip()
@@ -775,7 +824,7 @@ def setup_routes(app):
             # All columns not in the core field set are treated as attributes
             attrs: dict = {}
             for k, v in row.items():
-                if k not in _CORE_ITEM_COLS and not k.endswith("_price") and v is not None:
+                if k not in _CORE_ITEM_COLS and not k.endswith("_price") and not k.endswith("_price_total") and v is not None:
                     v_str = str(v).strip()
                     if v_str:
                         attrs[k] = v_str
@@ -786,8 +835,11 @@ def setup_routes(app):
                 "quantity": qty,
                 "category": str(row.get("category", "")).strip() or None,
                 "weight": _flt("weight") or _flt("weight_ct"),
-                "weight_unit": str(row.get("weight_unit", "")).strip() or None,
-                "sell_by": _unit_canonical.get(str(row.get("sell_by", "")).strip().lower()) or str(row.get("sell_by", "")).strip() or _cat_sell_by.get(str(row.get("category", "")).strip()) or None,
+                "weight_unit": _unit_canonical.get(str(row.get("weight_unit", "")).strip().lower()) or str(row.get("weight_unit", "")).strip() or None,
+                "gross_weight": _flt("gross_weight"),
+                "gross_weight_unit": _unit_canonical.get(str(row.get("gross_weight_unit", "")).strip().lower()) or str(row.get("gross_weight_unit", "")).strip() or None,
+                "pieces": _flt("pieces"),
+                "sell_by": sell_by or None,
                 "barcode": str(row.get("barcode", "")).strip() or None,
                 "hs_code": str(row.get("hs_code", "")).strip() or None,
                 "short_description": str(row.get("short_description", "")).strip() or None,
@@ -799,10 +851,31 @@ def setup_routes(app):
             # status, created_at, updated_at intentionally omitted:
             # status is always set to available by the backend on creation.
             # created_at/updated_at are system-generated; backend enforces this.
-            # Extract price fields dynamically (any column ending in _price)
+            # Extract price fields dynamically.
+            # _price_total cols: back-calculate unit price = total / qty (Option B).
+            # Only used when the corresponding _price col is not also present.
+            # Requires qty > 0; rows failing this check are hard-errored via records sentinel.
+            _price_errors: list[str] = []
             for col_key in row:
-                if col_key.endswith("_price") and _flt(col_key) is not None:
+                if col_key.endswith("_price_total"):
+                    unit_key = col_key[: -len("_total")]  # e.g. cost_price_total → cost_price
+                    total_val = _flt(col_key)
+                    if total_val is None:
+                        continue
+                    if _flt(unit_key) is not None:
+                        # Unit price already mapped - total is redundant, skip silently
+                        continue
+                    if not qty or qty == 0:
+                        _price_errors.append(
+                            f"Cannot back-calculate {unit_key} from {col_key}: quantity is 0 or missing"
+                        )
+                    else:
+                        data[unit_key] = round(total_val / qty, 10)
+                elif col_key.endswith("_price") and _flt(col_key) is not None:
                     data[col_key] = _flt(col_key)
+            if _price_errors:
+                records.append({"_import_error": "; ".join(_price_errors), "name": name, "sku": sku})
+                continue
             barcode = data["barcode"]
             idem = f"csv:item:bc:{barcode}".lower() if barcode else f"csv:item:{sku}".lower()
             data["idempotency_key"] = idem
@@ -951,7 +1024,7 @@ def setup_routes(app):
         # Include conventional key patterns (e.g. "retail_price" for "Retail")
         pl_conventional = {f"{n.lower()}_price" for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and not f.get("virtual")]
         pricing_fields = [f for f in schema if f.get("key") in pricing_keys]
 
         active_tab = request.query_params.get("tab", "details")
@@ -959,7 +1032,7 @@ def setup_routes(app):
         units_list = units_resp if isinstance(units_resp, list) else []
         unit_names = [u["name"] for u in units_list]
         units_map = {u["name"]: u for u in units_list}
-        detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map)
+        detail_renderers = _inventory_cell_renderers(schema, unit_names, units_map, currency=currency)
 
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Inventory", "/inventory"), (item.get("name") or item.get("sku") or entity_id, None)]),
@@ -1030,22 +1103,70 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return P(f"Error: {e.detail}", cls="cell-error")
         locations = locs.get("items", [])
+
+        # Virtual total field (e.g. cost_price_total): show editable cell with computed value
+        virtual_fields = {f["key"]: f for f in schema if f.get("virtual")}
+        if field in virtual_fields:
+            vf = virtual_fields[field]
+            paired = vf.get("paired_with", "")
+            try:
+                unit_price = float(item.get(paired) or 0)
+                qty = float(item.get("quantity") or 0)
+                total = unit_price * qty
+                display_val = f"{total:.2f}" if total != 0 else ""
+            except (ValueError, TypeError):
+                display_val = ""
+            from ui.components.table import editable_cell
+            return editable_cell(entity_id=entity_id, field=field, value=display_val,
+                                 cell_type="money", options=[], allow_custom=True)
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         from ui.components.table import editable_cell
-        # Apply unit-field override (sell_by, purchase_unit → searchable select)
-        if field in ("sell_by", "purchase_unit"):
+        # Apply unit-field override (sell_by, purchase_unit, weight_unit → searchable select)
+        if field in ("sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"):
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
+                weight_unit_names = [u["name"] for u in units_resp if u.get("unit_type") == "weight"]
             except Exception:
                 unit_names = []
-            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names)
+                weight_unit_names = []
+            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
         label_map: dict | None = None
         if field == "category":
             try:
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        # location_name: render a select cell with locations + "Add new" as last option
+        if field == "location_name":
+            loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
+            current_val = str(item.get("location_name") or "")
+            restore_url = f"/api/items/{entity_id}/field/{field}/display"
+            patch_url = f"/api/items/{entity_id}/field/{field}"
+            swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
+            escape_js = (
+                f"if(event.key==='Escape'){{"
+                f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
+                f"event.preventDefault();}}"
+            )
+            add_new_url = "/settings/inventory?tab=locations"
+            import json as _json_loc
+            safe_val = _json_loc.dumps(current_val)  # JSON-encoded to prevent XSS
+            onchange_js = (
+                f"if(this.value==='__add_new__'){{"
+                f"window.open('{add_new_url}','_blank');this.value={safe_val};}}"
+            )
+            return Td(
+                Select(
+                    *[Option(n, value=n, selected=(n == current_val)) for n in loc_names],
+                    Option("+ Add new location", value="__add_new__"),
+                    name="value", **swap, hx_trigger="change[this.value!='__add_new__']",
+                    cls="cell-input cell-input--select", autofocus=True,
+                    onkeydown=escape_js,
+                    onchange=onchange_js,
+                ),
+                cls="cell cell--editing",
+            )
         return editable_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                              cell_type=cell_type, options=options, allow_custom=allow_custom,
                              label_map=label_map)
@@ -1081,6 +1202,7 @@ function celerpPrintLabel(entityId, templateId) {
 
     _PAIRED_FIELDS: dict[str, str] = {"quantity": "sell_by", "sell_by": "quantity",
                                       "weight": "weight_unit", "weight_unit": "weight",
+                                      "gross_weight": "gross_weight_unit", "gross_weight_unit": "gross_weight",
                                       "purchase_unit": "purchase_conversion_factor",
                                       "purchase_conversion_factor": "purchase_unit"}
 
@@ -1096,7 +1218,7 @@ function celerpPrintLabel(entityId, templateId) {
         if field == "allow_splitting":
             value = value.lower() in ("true", "1", "yes")
         # Convert numeric fields from string to float
-        elif field == "quantity" or field.endswith("_price"):
+        elif field == "quantity" or field.endswith("_price") or field.endswith("_price_total"):
             try:
                 value = float(value)
             except (ValueError, TypeError):
@@ -1110,8 +1232,26 @@ function celerpPrintLabel(entityId, templateId) {
                 if loc is None:
                     return P(f"Unknown location: {value}", cls="cell-error")
                 await api.transfer_item(token, entity_id, loc.get("location_id") or loc.get("id", ""))
+            elif field.endswith("_price_total"):
+                # Virtual total field: back-calculate unit price = total / qty, then patch unit price field
+                unit_price_field = field[: -len("_total")]  # e.g. "cost_price_total" → "cost_price"
+                old_item = await api.get_item(token, entity_id)
+                qty = float(old_item.get("quantity") or 0)
+                if qty == 0:
+                    return P(t("error.cannot_divide_by_zero_qty", "Cannot compute unit price: quantity is zero"), cls="cell-error")
+                unit_price = float(value) / qty
+                old_unit_price = old_item.get(unit_price_field)
+                await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
+                # Patch field variable so downstream re-render uses unit_price_field
+                field = unit_price_field
+                value = unit_price
             else:
-                await api.patch_item(token, entity_id, {field: value})
+                # Fetch old value before patching so activity log shows old → new.
+                # get_item returns a _flatten_item result: attribute fields are already
+                # promoted to top level, so old_item.get(field) is always authoritative.
+                old_item = await api.get_item(token, entity_id)
+                old_val = old_item.get(field)
+                await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
             schema, item, cat_schemas, locs_data = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
@@ -1161,9 +1301,63 @@ function celerpPrintLabel(entityId, templateId) {
         # Paired fields: return the combined paired cell after save
         if field in _PAIRED_FIELDS:
             try:
-                return await _paired_display(token, entity_id, field)
+                paired_td = await _paired_display(token, entity_id, field)
             except Exception:
-                pass  # fall through to single display_cell on error
+                paired_td = None
+            if paired_td is not None:
+                # If quantity changes, any virtual total columns (e.g. cost_price_total) must refresh
+                has_virtual_totals = any(f2.get("virtual") and f2.get("type") == "money" for f2 in schema)
+                if field == "quantity" and has_virtual_totals:
+                    safe_id = entity_id.replace(":", "-")
+                    oob_row = Div(
+                        hx_get=f"/api/items/{entity_id}/row",
+                        hx_trigger="load",
+                        hx_target=f"#row-{safe_id}",
+                        hx_swap="outerHTML",
+                        hx_swap_oob="true",
+                        id=f"oob-row-reload-{safe_id}",
+                        style="display:none",
+                    )
+                    return paired_td, oob_row
+                return paired_td
+        # Price fields: re-render with currency symbol + / sell_unit annotation
+        if cell_type == "money":
+            from ui.components.table import fmt_money
+            sell_by = (item.get("sell_by") or "").strip()
+            val = item.get(field, "")
+            try:
+                company = await api.get_company(token)
+                currency = (company.get("currency") or "").strip() or None
+            except Exception:
+                currency = None
+            try:
+                formatted = fmt_money(val, currency) if val not in (None, "", "--") else "--"
+            except (ValueError, TypeError):
+                formatted = "--"
+            annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+            inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+            price_td = Td(
+                inner, annotation,
+                cls="cell cell--money",
+                data_col=field,
+                hx_get=f"/api/items/{entity_id}/field/{field}/edit",
+                hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+            )
+            # If this price field has a virtual total counterpart, update it OOB
+            virtual_total_field = f"{field}_total"
+            if any(f2.get("key") == virtual_total_field and f2.get("virtual") for f2 in schema):
+                safe_id = entity_id.replace(":", "-")
+                oob_row = Div(
+                    hx_get=f"/api/items/{entity_id}/row",
+                    hx_trigger="load",
+                    hx_target=f"#row-{safe_id}",
+                    hx_swap="outerHTML",
+                    hx_swap_oob="true",
+                    id=f"oob-row-reload-{safe_id}",
+                    style="display:none",
+                )
+                return price_td, oob_row
+            return price_td
         from ui.components.table import display_cell
         try:
             label_map = await api.get_category_display_names(token) if field == "category" else None
@@ -1207,7 +1401,7 @@ function celerpPrintLabel(entityId, templateId) {
         pl_names = {pl.get("name", "") for pl in price_lists}
         pl_conventional = {f"{n.lower()}_price" for n in pl_names}
         pricing_keys = pl_names | pl_conventional | {"total_cost", "total_wholesale", "total_retail"}
-        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS]
+        detail_fields = [f for f in schema if f.get("key") not in pricing_keys and f.get("key") not in _PAIRED_SECONDARY_KEYS and not f.get("virtual")]
         right = [f for f in detail_fields if f.get("key") not in _ITEM_CORE_KEYS]
         currency = None
         try:
@@ -1250,7 +1444,7 @@ function celerpPrintLabel(entityId, templateId) {
         except Exception:
             pass
         visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
-        cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map)
+        cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency)
         from ui.components.table import display_cell, EMPTY
         safe_id = entity_id.replace(":", "-")
         flat = _flatten_item_attrs(item)
@@ -1324,13 +1518,15 @@ function celerpPrintLabel(entityId, templateId) {
         locations = locs.get("items", [])
         f_def, cell_type, options, allow_custom = _resolve_field_def(field, schema, cat_schemas, item, locations)
         # Field-specific overrides
-        if field in ("sell_by", "purchase_unit"):
+        if field in ("sell_by", "purchase_unit", "weight_unit", "gross_weight_unit"):
             try:
                 units_resp = await api.get_units(token)
                 unit_names = [u["name"] for u in units_resp if u.get("name")]
+                weight_unit_names = [u["name"] for u in units_resp if u.get("unit_type") == "weight"]
             except Exception:
                 unit_names = []
-            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names)
+                weight_unit_names = []
+            cell_type, options, allow_custom = _apply_unit_field_override(field, cell_type, options, allow_custom, unit_names, weight_unit_names)
         elif field == "purchase_conversion_factor":
             # Plain number input
             cell_type = "number"
@@ -2872,7 +3068,7 @@ def _inventory_type_tabs(p: dict) -> FT:
         )
 
     return Div(*[_tab(it, label) for it, label in _TABS], cls="category-tabs inventory-type-tabs", id="inventory-type-tabs")
-_PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "purchase_unit": "purchase_conversion_factor"}
+_PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit", "gross_weight": "gross_weight_unit", "purchase_unit": "purchase_conversion_factor"}
 # Derived from _PAIRED_TABLE — secondary fields already rendered inside paired cells; exclude from standalone rows
 _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
 # Core item fields shown in the left (core details) panel on the detail page — single definition
@@ -2884,7 +3080,38 @@ _ITEM_CORE_KEYS: frozenset[str] = frozenset({
 })
 
 
-def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None) -> dict:
+def _label_price_cols(schema: list[dict]) -> list[dict]:
+    """Return schema with '(Unit Price)' appended to price column labels at render time.
+    Virtual columns (e.g. cost_price_total) already have their final label set.
+    Does not mutate the input list."""
+    result = []
+    for f in schema:
+        if f.get("type") == "money" and not f.get("virtual"):
+            result.append({**f, "label": f"{f.get('label', f['key'])} (Unit Price)"})
+        else:
+            result.append(f)
+    return result
+
+
+def _render_virtual_total_cell(entity_id: str, field: str, unit_price: float | None, qty: float | None, currency: str | None) -> FT:
+    """Render a display Td for a virtual total column (unit_price * qty)."""
+    from ui.components.table import fmt_money
+    try:
+        total = float(unit_price or 0) * float(qty or 0)
+        formatted = fmt_money(total, currency) if total != 0 else "--"
+    except (ValueError, TypeError):
+        formatted = "--"
+    inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+    return Td(
+        inner,
+        cls="cell cell--money",
+        data_col=field,
+        hx_get=f"/api/items/{entity_id}/field/{field}/edit",
+        hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+    )
+
+
+def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None = None, units_map: dict[str, dict] | None = None, category_label_map: dict | None = None, currency: str | None = None) -> dict:
     """Build cell_renderers dict for paired/triple columns.
 
     Handles:
@@ -2904,9 +3131,11 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     _umap = units_map or {}
     # sell_by options: company units (searchable select); fallback to text if no units
     sell_by_opts = unit_names or None
+    weight_unit_opts = [n for n, u in _umap.items() if u.get("unit_type") == "weight"] or None
     paired_options: dict[str, list[str] | None] = {
         "sell_by": sell_by_opts,
-        "weight_unit": _UNIVERSAL_FIELD_OPTIONS.get("weight_unit"),
+        "weight_unit": weight_unit_opts,
+        "gross_weight_unit": weight_unit_opts,
     }
     for primary, secondary in _PAIRED_TABLE.items():
         if primary in schema_keys and secondary in schema_keys:
@@ -2999,6 +3228,56 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                                 cell_type="select", editable=True, label_map=_lm)
         renderers["category"] = _cat_renderer
 
+    # Price column renderers: show currency symbol + "/ sell_unit" annotation
+    from ui.components.table import fmt_money
+    price_keys = [f["key"] for f in schema if f.get("type") == "money" and not f.get("virtual")]
+    virtual_total_fields = {f["key"]: f for f in schema if f.get("virtual") and f.get("type") == "money"}
+    _cur = currency
+    for pk in price_keys:
+        def _make_price_renderer(field=pk, _currency=_cur):
+            def renderer(entity_id: str, row: dict) -> FT:
+                sell_by = (row.get("sell_by") or "").strip()
+                val = row.get(field, "")
+                # Render formatted money value with currency symbol
+                try:
+                    formatted = fmt_money(val, _currency) if val not in (None, "", "--") else "--"
+                except (ValueError, TypeError):
+                    formatted = "--"
+                annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+                inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                return Td(
+                    inner, annotation,
+                    cls="cell cell--money",
+                    data_col=field,
+                    hx_get=f"/api/items/{entity_id}/field/{field}/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                )
+            return renderer
+        renderers[pk] = _make_price_renderer()
+
+    # Virtual total column renderers: cost_price_total = cost_price * quantity
+    for vk, vf in virtual_total_fields.items():
+        paired = vf.get("paired_with", "")
+        def _make_total_renderer(total_field=vk, unit_field=paired, _currency=_cur):
+            def renderer(entity_id: str, row: dict) -> FT:
+                try:
+                    unit_price = float(row.get(unit_field) or 0)
+                    qty = float(row.get("quantity") or 0)
+                    total = unit_price * qty
+                    formatted = fmt_money(total, _currency) if total != 0 else "--"
+                except (ValueError, TypeError):
+                    formatted = "--"
+                inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                return Td(
+                    inner,
+                    cls="cell cell--money",
+                    data_col=total_field,
+                    hx_get=f"/api/items/{entity_id}/field/{total_field}/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                )
+            return renderer
+        renderers[vk] = _make_total_renderer()
+
     return renderers
 
 
@@ -3011,15 +3290,22 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     import json as _json
     selected = set(visible_cols) if visible_cols else {f.get("key") for f in schema if f.get("show_in_table", True)}
     cat_pref = active_cat or "__all__"
-    # JS data for all columns (key, label, visible)
-    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema]
+    # JS data for all columns (key, label, visible) — exclude paired secondaries and virtual columns
+    _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
+    col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema if f.get("key") not in _cm_exclude]
     col_data_js = _json.dumps(col_data)
+    # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary
+    virtual_followers_js = _json.dumps({
+        f["paired_with"]: [f["key"]]
+        for f in schema
+        if f.get("virtual") and f.get("paired_with")
+    })
     selected_js = _json.dumps(sorted(selected))
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
     hidden_state["_cat_pref"] = cat_pref
 
-    # Build checkbox list for initial render
+    # Build checkbox list for initial render (exclude paired secondaries - they render inside primary cells)
     checkboxes = [
         Label(
             Input(
@@ -3035,6 +3321,7 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
             data_col=f.get("key", ""),
         )
         for f in schema
+        if f.get("key") not in _cm_exclude
     ]
 
     hidden_inputs = [Input(type="hidden", name=k, value=v) for k, v in hidden_state.items()]
@@ -3050,6 +3337,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
   var ALL_COLS = {col_data_js};
   // Keys that are now merged into their primary column - strip from saved prefs
   var MERGED_SECONDARIES = {paired_secondaries_js};
+  // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
+  var VIRTUAL_FOLLOWERS = {virtual_followers_js};
   var btn = document.getElementById('col-mgr-btn');
   var menu = document.getElementById('col-mgr-menu');
   if (!btn || !menu) return;
@@ -3104,10 +3393,15 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     var thead_tr = table.querySelector('thead tr');
     if (!thead_tr) return;
     var actionsTh = thead_tr.querySelector('.col-actions');
-    // Move TH elements into order (before actions column)
+    // Move TH elements into order (before actions column); each primary drags its virtual followers
     order.forEach(function(key) {{
       var th = thead_tr.querySelector('th[data-key="' + key + '"]');
       if (th && actionsTh) thead_tr.insertBefore(th, actionsTh);
+      // Place virtual followers immediately after their primary
+      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {{
+        var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
+        if (vth && actionsTh) thead_tr.insertBefore(vth, actionsTh);
+      }});
     }});
     // Re-order tbody cells to match header using data-col attribute
     var allThs = Array.from(thead_tr.querySelectorAll('th[data-key]'));
@@ -3402,21 +3696,29 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
 
 
 _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
-    "weight_unit": ["ct", "g", "kg", "oz", "lb", "t"],
     "inventory_type": ["stocked", "non_stocked", "service"],
 }
 
 
 def _apply_unit_field_override(
-    field: str, cell_type: str, options, allow_custom: bool, unit_names: list[str]
+    field: str, cell_type: str, options, allow_custom: bool, unit_names: list[str],
+    weight_unit_names: list[str] | None = None,
 ) -> tuple[str, list | None, bool]:
     """Return (cell_type, options, allow_custom) with unit-field overrides applied.
     sell_by and purchase_unit become searchable selects populated from company units.
+    weight_unit becomes a searchable select filtered to weight-type units only.
     """
     if field in ("sell_by", "purchase_unit"):
         return (
             "select",
             [*unit_names, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
+            True,
+        )
+    if field in ("weight_unit", "gross_weight_unit"):
+        opts = weight_unit_names or unit_names
+        return (
+            "select",
+            [*opts, ("__new__:/settings/inventory?tab=units", "+ Add new unit")],
             True,
         )
     return cell_type, options, allow_custom
@@ -3734,7 +4036,7 @@ def _union_category_attr_keys(cat_schemas: dict) -> list[str]:
 
 # Base import columns (without price columns - those are added dynamically)
 _IMPORT_BASE_COLS = ["sku", "name", "sell_by", "category", "quantity"]
-_IMPORT_TAIL_COLS = ["weight", "weight_unit", "pieces", "barcode", "hs_code",
+_IMPORT_TAIL_COLS = ["weight", "weight_unit", "gross_weight", "gross_weight_unit", "pieces", "barcode", "hs_code",
                      "purchase_sku", "purchase_name", "purchase_unit", "purchase_conversion_factor",
                      "short_description", "description", "notes", "location_name"]
 
@@ -3749,14 +4051,41 @@ _IMPORT_SPEC = CsvImportSpec(
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     """Build import spec with dynamic price columns from company price lists."""
     price_cols = [f"{pl.get('name', '').lower()}_price" for pl in price_lists if pl.get("name")]
+    # Add virtual total cols (one per price col) - back-calculated at confirm time
+    price_total_cols = [f"{col}_total" for col in price_cols]
     type_map = {"quantity": float, "weight": float, "pieces": float}
-    for col in price_cols:
+    for col in price_cols + price_total_cols:
         type_map[col] = float
     return CsvImportSpec(
-        cols=_IMPORT_BASE_COLS + price_cols + _IMPORT_TAIL_COLS,
+        cols=_IMPORT_BASE_COLS + price_cols + price_total_cols + _IMPORT_TAIL_COLS,
         required={"name", "sell_by"},
         type_map=type_map,
     )
+
+
+def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
+    """Human-readable labels for price columns in the import mapping UI."""
+    labels: dict[str, str] = {}
+    for pl in price_lists:
+        name = pl.get("name", "")
+        if not name:
+            continue
+        key = f"{name.lower()}_price"
+        labels[key] = f"{name} (Unit Price)"
+        labels[f"{key}_total"] = f"{name} (Total)"
+    return labels
+
+
+def _import_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
+    """Mutex groups: mapping unit price and total for the same price list is mutually exclusive."""
+    groups = []
+    for pl in price_lists:
+        name = pl.get("name", "")
+        if not name:
+            continue
+        key = f"{name.lower()}_price"
+        groups.append([key, f"{key}_total"])
+    return groups
 
 
 def _import_upload_form(error: str | None = None) -> FT:
@@ -3801,6 +4130,8 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
     valid_unit_names: list[str] = [u["name"] for u in company_units]
     valid_unit_set: frozenset[str] = frozenset(valid_unit_names)
     valid_unit_lower: dict[str, str] = {u.lower(): u for u in valid_unit_names}
+    weight_unit_names: list[str] = [u["name"] for u in company_units if u.get("unit_type") == "weight"]
+    weight_unit_lower: dict[str, str] = {u.lower(): u for u in weight_unit_names}
 
     def _validate(col: str, value: str, row: dict | None = None) -> bool:
         if col == "sell_by":
@@ -3811,6 +4142,17 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
                 return bool(cat_sell_by.get(category))
             # If known units are available, validate membership (case-insensitive)
             return not valid_unit_set or v.lower() in valid_unit_lower
+        if col == "weight_unit":
+            v = value.strip()
+            # weight_unit is optional; if provided it must be a known weight-type unit
+            if not v:
+                return True
+            return not weight_unit_lower or v.lower() in weight_unit_lower
+        if col == "gross_weight_unit":
+            v = value.strip()
+            if not v:
+                return True
+            return not weight_unit_lower or v.lower() in weight_unit_lower
         return _item_validate(col, value)
 
     # Build import fix-table cell renderers for constrained columns.
@@ -3820,10 +4162,21 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
         def _make_unit_renderer(col: str, _opts: list = valid_unit_names) -> "Callable":
             def _render(val: str, ri: int, row: dict, is_bad: bool) -> FT:
                 err_cls = "cell-edit  input--error" if is_bad else "cell-edit"
-                val_lower = val.strip().lower()
+                val_stripped = val.strip()
+                val_lower = val_stripped.lower()
+                matched = any(u.lower() == val_lower for u in _opts)
+                # When value is unrecognised, inject it as a pre-selected invalid option
+                # so the user can see what they had and choose a replacement.
+                unknown_opt = (
+                    Option(f"⚠ \"{val_stripped}\" (unknown)", value=val_stripped,
+                           selected=True, cls="unit-unknown-option")
+                    if val_stripped and not matched
+                    else None
+                )
                 return Select(
-                    Option("-- select unit --", value="", selected=(not val.strip())),
-                    *[Option(u, value=u, selected=(u.lower() == val_lower)) for u in _opts],
+                    Option("-- select unit --", value="", selected=(not val_stripped and not matched)),
+                    *([unknown_opt] if unknown_opt else []),
+                    *[Option(u, value=u, selected=(matched and u.lower() == val_lower)) for u in _opts],
                     Option("+ Add new unit", value="__add_new__"),
                     data_col=col,
                     data_row=str(ri),
@@ -3833,6 +4186,9 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
 
         cell_renderers["sell_by"] = _make_unit_renderer("sell_by")
         cell_renderers["purchase_unit"] = _make_unit_renderer("purchase_unit")
+        if weight_unit_names:
+            cell_renderers["weight_unit"] = _make_unit_renderer("weight_unit", weight_unit_names)
+            cell_renderers["gross_weight_unit"] = _make_unit_renderer("gross_weight_unit", weight_unit_names)
 
     return _validate, cell_renderers
 
@@ -3841,7 +4197,8 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
 # Price columns (any key ending in _price) are excluded from attributes separately.
 _CORE_ITEM_COLS: frozenset[str] = frozenset({
     "sku", "name", "category", "quantity",
-    "weight", "weight_ct", "weight_unit", "sell_by", "pieces", "status",
+    "weight", "weight_ct", "weight_unit", "gross_weight", "gross_weight_unit",
+    "sell_by", "pieces", "status",
     "barcode", "hs_code", "short_description", "description", "notes", "location_name",
     "location_id", "created_at", "updated_at",
 })
@@ -3939,15 +4296,33 @@ def _resolve_visible_cols(
     """Determine visible column list for the current view.
 
     Priority: URL ?cols= override > saved pref for this view > schema defaults.
+
+    Virtual columns (e.g. cost_price_total) are always injected immediately after
+    their ``paired_with`` column when that column is visible.
     """
     if url_cols:
-        return url_cols
-    pref_key = active_cat if active_cat else "__all__"
-    saved = col_prefs.get(pref_key)
-    if saved:
-        return saved
-    # Default: fields where show_in_table is True
-    return [f["key"] for f in eff_schema if f.get("show_in_table", True)]
+        base = url_cols
+    else:
+        pref_key = active_cat if active_cat else "__all__"
+        saved = col_prefs.get(pref_key)
+        base = saved if saved else [f["key"] for f in eff_schema if f.get("show_in_table", True)]
+
+    # Inject virtual columns immediately after their paired_with counterpart
+    virtual_cols = {f["key"]: f for f in eff_schema if f.get("virtual")}
+    result: list[str] = []
+    seen: set[str] = set()
+    for col in base:
+        if col in seen:
+            continue
+        result.append(col)
+        seen.add(col)
+        # Insert virtual columns paired with this column
+        for vk, vf in virtual_cols.items():
+            if vf.get("paired_with") == col and vk not in seen:
+                result.append(vk)
+                seen.add(vk)
+    # Also include any virtual columns whose paired_with wasn't in base (shouldn't happen, but safe)
+    return result
 
 
 # ---------------------------------------------------------------------------

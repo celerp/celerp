@@ -1050,6 +1050,8 @@
   "settings.rate_must_be_a_number": "Tỷ lệ phải là một con số.",
   "settings.restart_needed": "cần khởi động lại",
   "settings.retail_price_list_cannot_be_deleted": "Bảng giá bán lẻ không thể bị xóa.",
+  "settings.system_price_list_cannot_be_deleted": "'{name}' is a system price list and cannot be deleted.",
+  "settings.default_price_list_cannot_be_deleted": "Cannot delete '{name}' — it is the default price list.",
   "settings.role_permissions_reference": "Tham chiếu quyền vai trò",
   "settings.running": "Đang chạy",
   "settings.scheduler": "Người lập lịch trình",

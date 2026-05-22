@@ -1050,6 +1050,8 @@
   "settings.rate_must_be_a_number": "อัตราต้องเป็นตัวเลข",
   "settings.restart_needed": "จำเป็นต้องรีสตาร์ท",
   "settings.retail_price_list_cannot_be_deleted": "รายการราคาขายปลีกไม่สามารถลบได้",
+  "settings.system_price_list_cannot_be_deleted": "'{name}' is a system price list and cannot be deleted.",
+  "settings.default_price_list_cannot_be_deleted": "Cannot delete '{name}' — it is the default price list.",
   "settings.role_permissions_reference": "การอ้างอิงสิทธิ์ของบทบาท",
   "settings.running": "วิ่ง",
   "settings.scheduler": "ผู้จัดกำหนดการ",
