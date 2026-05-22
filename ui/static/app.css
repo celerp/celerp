@@ -795,6 +795,7 @@ a:hover { text-decoration: underline; }
 .import-cell { background: transparent; border: 1px solid transparent; padding: 2px 6px; width: 100%; color: var(--c-text); font-size: 12px; }
 .import-cell--error { border-color: var(--c-red); background: rgba(239,68,68,0.18); box-shadow: inset 3px 0 0 var(--c-red); font-weight: 500; }
 .import-cell:focus { outline: none; border-color: var(--c-accent); }
+option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .import-stats { padding: 8px 0; }
 .import-summary { font-size: 13px; color: var(--c-text); }
 .import-td { padding: 2px 4px !important; }

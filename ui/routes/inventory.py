@@ -4160,10 +4160,21 @@ async def _build_item_validator(token: str) -> tuple[ValidateFn, dict]:
         def _make_unit_renderer(col: str, _opts: list = valid_unit_names) -> "Callable":
             def _render(val: str, ri: int, row: dict, is_bad: bool) -> FT:
                 err_cls = "cell-edit  input--error" if is_bad else "cell-edit"
-                val_lower = val.strip().lower()
+                val_stripped = val.strip()
+                val_lower = val_stripped.lower()
+                matched = any(u.lower() == val_lower for u in _opts)
+                # When value is unrecognised, inject it as a pre-selected invalid option
+                # so the user can see what they had and choose a replacement.
+                unknown_opt = (
+                    Option(f"⚠ \"{val_stripped}\" (unknown)", value=val_stripped,
+                           selected=True, cls="unit-unknown-option")
+                    if val_stripped and not matched
+                    else None
+                )
                 return Select(
-                    Option("-- select unit --", value="", selected=(not val.strip())),
-                    *[Option(u, value=u, selected=(u.lower() == val_lower)) for u in _opts],
+                    Option("-- select unit --", value="", selected=(not val_stripped and not matched)),
+                    *([unknown_opt] if unknown_opt else []),
+                    *[Option(u, value=u, selected=(matched and u.lower() == val_lower)) for u in _opts],
                     Option("+ Add new unit", value="__add_new__"),
                     data_col=col,
                     data_row=str(ri),
