@@ -5,9 +5,6 @@
 from __future__ import annotations
 
 import pytest
-pytest.importorskip("celerp_sales_funnel")
-
-import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch

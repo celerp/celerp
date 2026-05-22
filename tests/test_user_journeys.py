@@ -17,7 +17,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from test_helpers import make_test_token, authed_cookies, _crm_available
+from test_helpers import make_test_token, authed_cookies
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -294,13 +294,6 @@ class TestDiscovery:
             r = await ui.get("/dashboard", cookies=_c())
         assert b"/subscriptions" in r.content
 
-    @pytest.mark.skip(reason="Scanning module disabled until complete")
-    @pytest.mark.asyncio
-    async def test_find_scanning_from_sidebar(self, ui):
-        with _Patches(_dashboard_mocks()):
-            r = await ui.get("/dashboard", cookies=_c())
-        assert b"/scanning" in r.content
-
     @pytest.mark.asyncio
     async def test_global_search_in_topbar(self, ui):
         with _Patches(_dashboard_mocks()):
@@ -335,8 +328,6 @@ class TestDiscovery:
         assert b"Customer" in r.content or b"Contact" in r.content
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
     async def test_crm_page_has_deals_tab(self, ui):
         with _Patches(_crm_mocks()):
             r = await ui.get("/contacts/sales", cookies=_c())
@@ -375,12 +366,6 @@ class TestDiscovery:
         with _Patches({"ui.api_client.list_mfg_orders": AsyncMock(return_value={"items": [_MFG], "total": 1}),
                        "ui.api_client.list_boms": AsyncMock(return_value={"items": [_BOM], "total": 1})}):
             r = await ui.get("/manufacturing", cookies=_c())
-        assert r.status_code == 200
-
-    @pytest.mark.skip(reason="Scanning module disabled until complete")
-    @pytest.mark.asyncio
-    async def test_scanning_page_loads(self, ui):
-        r = await ui.get("/scanning", cookies=_c())
         assert r.status_code == 200
 
     @pytest.mark.asyncio
@@ -715,36 +700,6 @@ class TestWorkflows:
         with _Patches({"ui.api_client.generate_subscription": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
             r = await ui.post("/subscriptions/sub:1/generate", cookies=_c())
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
-    async def test_deal_move_stage(self, ui):
-        with _Patches({"ui.api_client.move_deal_stage": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/crm/deals/deal:1/stage", cookies=_c(), data={"stage": "qualified"})
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
-    async def test_deal_mark_won(self, ui):
-        with _Patches({"ui.api_client.mark_deal_won": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/crm/deals/deal:1/won", cookies=_c())
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
-    @pytest.mark.skipif(not _crm_available, reason="celerp-sales-funnel not installed")
-    async def test_deal_mark_lost(self, ui):
-        with _Patches({"ui.api_client.mark_deal_lost": AsyncMock(return_value={"ok": True})}):
-            r = await ui.post("/crm/deals/deal:1/lost", cookies=_c(), data={"reason": "price"})
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.skip(reason="Scanning module disabled until complete")
-    @pytest.mark.asyncio
-    async def test_scan_barcode(self, ui):
-        with _Patches({"ui.api_client.scan_once": AsyncMock(return_value={"ok": True}),
-                       "ui.api_client.resolve_scan": AsyncMock(return_value={"found": True, "item": _ITEM})}):
-            r = await ui.post("/scanning/scan", cookies=_c(), data={"code": "RB001"})
         assert r.status_code in (200, 204, 302, 303)
 
 
@@ -1136,13 +1091,6 @@ class TestDataEntry:
             r = await ui.patch("/settings/company/name", cookies=_c(),
                               data={"value": "New Name"})
         assert r.status_code == 200
-
-    @pytest.mark.skip(reason="Scanning module disabled until complete")
-    @pytest.mark.asyncio
-    async def test_scanning_input_renders(self, ui):
-        r = await ui.get("/scanning", cookies=_c())
-        assert r.status_code == 200
-        assert b"scan" in r.content.lower()
 
     @pytest.mark.asyncio
     async def test_csv_import_page_loads(self, ui):

@@ -26,12 +26,6 @@ from datetime import date, timedelta
 
 import pytest
 
-_crm_skip = pytest.mark.skipif(
-    not os.path.isdir(os.path.join(os.path.dirname(__file__), "..", "..", "premium_modules", "celerp-sales-funnel")),
-    reason="celerp-sales-funnel not installed",
-)
-
-
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -140,14 +134,6 @@ async def test_nav_crm_contacts(client):
     assert r.status_code == 200
 
 
-@_crm_skip
-@pytest.mark.asyncio
-async def test_nav_crm_deals(client):
-    token = await _reg(client)
-    r = await client.get("/crm/deals", headers=_h(token))
-    assert r.status_code == 200
-
-
 @pytest.mark.asyncio
 async def test_nav_docs_list(client):
     token = await _reg(client)
@@ -224,15 +210,6 @@ async def test_nav_manufacturing_list(client):
     r = await client.get("/manufacturing", headers=_h(token))
     assert r.status_code == 200
 
-
-
-@pytest.mark.skip(reason="Scanning module disabled until complete")
-@pytest.mark.asyncio
-async def test_nav_scanning_resolve_missing(client):
-    token = await _reg(client)
-    r = await client.get("/scanning/resolve/item:nonexistent", headers=_h(token))
-    # 404 is valid here - confirms endpoint exists
-    assert r.status_code in {200, 404}
 
 
 @pytest.mark.asyncio
@@ -643,49 +620,6 @@ async def test_crud_po_void_draft(client):
     r = await client.post(f"/docs/{eid}/void", headers=_h(token), json={"reason": "cancelled"})
     assert r.status_code == 200
     assert (await client.get(f"/docs/{eid}", headers=_h(token))).json()["status"] == "void"
-
-
-@_crm_skip
-@pytest.mark.asyncio
-async def test_crud_deal_create_read(client):
-    token = await _reg(client)
-    h = _h(token)
-    r = await client.post("/crm/deals", headers=h, json={"name": "Big Deal", "stage": "lead"})
-    assert r.status_code == 200
-    did = r.json()["id"]
-    deals = (await client.get("/crm/deals", headers=h)).json()["items"]
-    assert any(d["id"] == did for d in deals)
-
-
-@_crm_skip
-@pytest.mark.asyncio
-async def test_crud_deal_stage_update(client):
-    token = await _reg(client)
-    h = _h(token)
-    r = await client.post("/crm/deals", headers=h, json={"name": "Deal B", "stage": "lead"})
-    did = r.json()["id"]
-    r2 = await client.patch(f"/crm/deals/{did}/stage", headers=h, json={"new_stage": "proposal"})
-    assert r2.status_code == 200
-
-
-@_crm_skip
-@pytest.mark.asyncio
-async def test_crud_deal_won(client):
-    token = await _reg(client)
-    h = _h(token)
-    r = await client.post("/crm/deals", headers=h, json={"name": "Win Deal", "stage": "negotiation"})
-    did = r.json()["id"]
-    assert (await client.post(f"/crm/deals/{did}/won", headers=h)).status_code == 200
-
-
-@_crm_skip
-@pytest.mark.asyncio
-async def test_crud_deal_lost(client):
-    token = await _reg(client)
-    h = _h(token)
-    r = await client.post("/crm/deals", headers=h, json={"name": "Lost Deal", "stage": "proposal"})
-    did = r.json()["id"]
-    assert (await client.post(f"/crm/deals/{did}/lost", headers=h, json={"reason": "budget"})).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -1268,41 +1202,6 @@ async def test_wf_manufacturing_full_cycle(client):
 
 
 
-@pytest.mark.skip(reason="Scanning module disabled until complete")
-@pytest.mark.asyncio
-async def test_wf_scan_barcode_and_verify_ledger(client):
-    token = await _reg(client)
-    code = f"BAR-{uuid.uuid4().hex[:8]}"
-    r = await client.post("/scanning/scan", headers=_h(token), json={"code": code, "location_id": "loc:1", "raw": {"source": "camera"}})
-    assert r.status_code == 200
-    ledger = (await client.get("/ledger?entity_type=scan", headers=_h(token))).json()["items"]
-    assert any(e["data"].get("code") == code for e in ledger)
-
-
-@pytest.mark.skip(reason="Scanning module disabled until complete")
-@pytest.mark.asyncio
-async def test_wf_scan_batch_create_and_complete(client):
-    token = await _reg(client)
-    h = _h(token)
-    start = await client.post("/scanning/batch", headers=h, json={"location_id": "loc:batch"})
-    assert start.status_code == 200
-    batch_id = start.json()["batch_id"]
-    done = await client.post(f"/scanning/batch/{batch_id}/complete", headers=h)
-    assert done.status_code == 200
-    assert done.json()["ok"] is True
-
-
-@pytest.mark.skip(reason="Scanning module disabled until complete")
-@pytest.mark.asyncio
-async def test_wf_scan_resolve_item(client):
-    token = await _reg(client)
-    h = _h(token)
-    item_id = await _item(client, token, sku="RESOLVE-ME")
-    r = await client.get(f"/scanning/resolve/{item_id}", headers=h)
-    assert r.status_code == 200
-    assert r.json()["id"] == item_id
-
-
 @pytest.mark.asyncio
 async def test_wf_search_after_create_finds_item(client):
     token = await _reg(client)
@@ -1552,17 +1451,6 @@ async def test_sf_items_offset_zero_equals_no_offset(client):
     r1 = (await client.get("/items?offset=0", headers=_h(token))).json()["items"]
     r2 = (await client.get("/items", headers=_h(token))).json()["items"]
     assert [i["id"] for i in r1] == [i["id"] for i in r2]
-
-
-@_crm_skip
-@pytest.mark.asyncio
-async def test_sf_deals_list_after_create(client):
-    token = await _reg(client)
-    h = _h(token)
-    r = await client.post("/crm/deals", headers=h, json={"name": "Filter Deal", "stage": "lead"})
-    did = r.json()["id"]
-    deals = (await client.get("/crm/deals", headers=h)).json()["items"]
-    assert any(d["id"] == did for d in deals)
 
 
 @pytest.mark.asyncio

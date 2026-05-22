@@ -230,3 +230,33 @@ async def test_company_contact_seeded_on_registration(client):
     # The seeded contact should have the company name in company_name (name is empty for company contacts)
     assert any(c.get("company_name") == "SeedCo" for c in items), \
         f"Expected seeded contact with company_name 'SeedCo' in {[c.get('company_name') for c in items]}"
+
+
+@pytest.mark.asyncio
+async def test_crm_batch_import_contacts_idempotent(client):
+    """POST /crm/contacts/import/batch is idempotent on duplicate idempotency_key."""
+    tok = await _reg(client)
+    h = {"Authorization": f"Bearer {tok}"}
+
+    import uuid
+    ik = str(uuid.uuid4())
+    entity_id = f"contact:{uuid.uuid4()}"
+    payload = {
+        "records": [
+            {
+                "entity_id": entity_id,
+                "event_type": "crm.contact.created",
+                "data": {"name": "Ada Lovelace", "email": "ada@example.com"},
+                "source": "csv",
+                "idempotency_key": ik,
+            }
+        ]
+    }
+
+    r1 = await client.post("/crm/contacts/import/batch", json=payload, headers=h)
+    assert r1.status_code == 200
+    assert r1.json() == {"created": 1, "skipped": 0, "updated": 0, "errors": []}
+
+    r2 = await client.post("/crm/contacts/import/batch", json=payload, headers=h)
+    assert r2.status_code == 200
+    assert r2.json() == {"created": 0, "skipped": 1, "updated": 0, "errors": []}
