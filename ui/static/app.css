@@ -503,7 +503,7 @@ a:hover { text-decoration: underline; }
 .doc-lines { margin-top: 12px; table-layout: fixed; width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 40px; padding-left: 0; padding-right: 0; text-align: center; }
-.doc-lines td.col-total, .doc-lines th.col-total { width: 150px; }
+.doc-lines td.col-total, .doc-lines th.col-total { width: 150px; overflow: visible; padding: 2px 8px; }
 .line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
 
 /* ─── Reports ─────────────────────────────────────────────────────────── */
@@ -1424,7 +1424,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
 /* Total input: centered in column (editable field, not display value); fixed width overrides cell-input base */
-.data-table td.cell--number input.line-total { text-align: center; width: calc(100% - 16px) !important; max-width: none; margin: 0 8px; display: block; }
+.data-table td.cell--number input.line-total { text-align: center; width: 100% !important; max-width: none; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
