@@ -1431,6 +1431,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* td overflow:hidden clips absolutely-positioned dropdowns; override for ac cells */
 .data-table td:has(.catalog-ac-wrap) { overflow: visible; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
+.doc-lines th.col-total { text-align: center !important; }
 .data-table th.cell--number { text-align: right !important; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
