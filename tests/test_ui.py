@@ -8254,8 +8254,7 @@ class TestDocContactBoxLayout:
     async def test_col_total_css_rules(self):
         """app.css must have all required rules for the Total column:
         - th.cell--number right-aligned (with !important to beat base th{center})
-        - col-total width set on th and td
-        - line-total input fills td (width:100%; max-width:none)
+        - line-total input has a fixed px width so browser auto-sizes column to content
         These rules must coexist with scan-bar and price-list-bar CSS without conflict.
         """
         import pathlib
@@ -8267,21 +8266,15 @@ class TestDocContactBoxLayout:
             "th.cell--number must use text-align: right !important to override base th{text-align:center}"
         )
 
-        # col-total must pin width on both th and td
-        assert "col-total" in css, "col-total class must exist in CSS"
-        # The rule must cover both th and td
-        assert "th.col-total" in css or ".col-total" in css, "col-total width rule must exist"
-
-        # line-total input must fill cell (width:100%, max-width:none)
+        # line-total input must have a fixed pixel width (not a percentage that bloats the column)
         assert "line-total" in css, "line-total input CSS must exist"
-        assert "width: 100%" in css or "width:100%" in css, "line-total must fill col-total td"
-        # must NOT have a small max-width on the input inside col-total td
-        # (old rule was max-width:110px which restricted width)
         import re
-        line_total_rules = [l for l in css.split("\n") if "line-total" in l and "col-total" in l]
+        line_total_rules = [l.strip() for l in css.split("\n") if "line-total" in l]
+        assert line_total_rules, "at least one line-total CSS rule must exist"
+        # width must be a px value, not 100% (100% inflates the column to fill all remaining space)
         for rule in line_total_rules:
-            assert "max-width: none" in rule or "max-width:none" in rule, (
-                f"line-total inside col-total must have max-width:none, got: {rule!r}"
+            assert "width: 100%" not in rule and "width:100%" not in rule, (
+                f"line-total must use a fixed px width, not 100% (causes overflow): {rule!r}"
             )
 
         # scan-bar CSS must exist (co-located with Total rules)

@@ -1418,13 +1418,10 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Catalog autocomplete dropdowns (SKU/Description in line items) */
 /* td overflow:hidden clips absolutely-positioned dropdowns; override for ac cells */
 .data-table td:has(.catalog-ac-wrap) { overflow: visible; }
-/* Total column: th right-align (!important beats base th{text-align:center}); fixed width via col-total */
+/* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
-/* Total input: right-align text; cap width so column doesn't expand beyond content */
-.data-table td.cell--number input.line-total { text-align: right; max-width: 110px; }
-/* Total column: fixed width via col-total class on both th and td; input fills the cell */
-.data-table th.col-total, .data-table td.col-total { width: 130px; min-width: 130px; }
-.data-table td.col-total input.line-total { width: 100%; max-width: none; }
+/* Total input: fixed width so column auto-sizes to content; no overflow */
+.data-table td.cell--number input.line-total { text-align: right; width: 110px; max-width: none; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
