@@ -4609,7 +4609,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value=str(price), step="0.01",
                          data_name="unit_price", oninput="celerpUpdateTotals()",
                          onblur="celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-unit-price"),
                 Td(Input(type="number", value=str(discount_pct) if discount_pct else "0", step="0.01",
                          data_name="discount_pct", oninput="celerpUpdateTotals()",
                          onblur="celerpAutoSave()",
@@ -4677,7 +4677,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          style="font-size:12px;display:inline-block;min-width:40px;"), cls="col-unit"),
                 Td(Input(type="number", value="0", step="0.01", data_name="unit_price",
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-unit-price"),
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
@@ -4702,7 +4702,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category")))
             _line_headers.append(Th(t("th.type")))
-        _line_headers.extend([Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price")), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
+        _line_headers.extend([Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total"), Th("")])
