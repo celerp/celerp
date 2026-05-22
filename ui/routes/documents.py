@@ -4628,7 +4628,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
                          onblur="celerpAutoSave()",
-                         data_name="line_total"), cls="cell--number"),
+                         data_name="line_total"), cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -4690,7 +4690,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
                          onblur="celerpAutoSave()",
-                         data_name="line_total"), cls="cell--number"),
+                         data_name="line_total"), cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -4705,7 +4705,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _line_headers.extend([Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
-        _line_headers.extend([Th(t("th.total")), Th("")])
+        _line_headers.extend([Th(t("th.total"), cls="cell--number col-total"), Th("")])
 
         # CSV import hidden file input + JS handler
         _csv_import_el = Div(
@@ -5424,7 +5424,7 @@ async function celerpCsvImport(input, entityId) {{
                 Td(format_value(li.get("unit_price"), "money"), cls="cell--number"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "-"),
                 Td(format_value(li.get("tax_rate"))),
-                Td(format_value(line_total, "money"), cls="cell--number"),
+                Td(format_value(line_total, "money"), cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -5434,7 +5434,7 @@ async function celerpCsvImport(input, entityId) {{
         _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.category")), Th(t("th.type"))]
-        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"))]
+        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"), cls="cell--number col-total")]
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(

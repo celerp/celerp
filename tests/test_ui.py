@@ -8225,6 +8225,69 @@ class TestDocContactBoxLayout:
         assert b"doc-section--totals-compact" not in r.content
 
     @pytest.mark.asyncio
+    async def test_line_section_scan_bar_and_price_list_present(self, ui_client):
+        """Draft doc renders scan-bar + price-list-bar above the line-items table.
+        These elements must not break the Total column layout.
+        """
+        doc = {**_DOC_DETAIL, "status": "draft", "price_list": "Retail"}
+        with (
+            patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
+            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 1})),
+            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}])),
+            patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
+        ):
+            r = await ui_client.get("/docs/d:1", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        # scan-bar must be present above line items
+        assert "scan-bar" in html
+        assert "scan-bar-input" in html
+        # price-list-bar must be present for draft docs with price lists
+        assert "price-list-bar" in html
+        assert "doc-price-list" in html
+        # Total column th must have col-total class (CSS hook for 130px width + right-align)
+        assert 'col-total' in html, "th.col-total must be rendered so CSS width/alignment rules apply"
+
+    @pytest.mark.asyncio
+    async def test_col_total_css_rules(self):
+        """app.css must have all required rules for the Total column:
+        - th.cell--number right-aligned (with !important to beat base th{center})
+        - col-total width set on th and td
+        - line-total input fills td (width:100%; max-width:none)
+        These rules must coexist with scan-bar and price-list-bar CSS without conflict.
+        """
+        import pathlib
+        css = pathlib.Path(__file__).parent.parent.joinpath("ui/static/app.css").read_text()
+
+        # th.cell--number must be right-aligned (needs !important to beat base th{text-align:center})
+        assert "th.cell--number" in css
+        assert "text-align: right !important" in css or "text-align:right!important" in css, (
+            "th.cell--number must use text-align: right !important to override base th{text-align:center}"
+        )
+
+        # col-total must pin width on both th and td
+        assert "col-total" in css, "col-total class must exist in CSS"
+        # The rule must cover both th and td
+        assert "th.col-total" in css or ".col-total" in css, "col-total width rule must exist"
+
+        # line-total input must fill cell (width:100%, max-width:none)
+        assert "line-total" in css, "line-total input CSS must exist"
+        assert "width: 100%" in css or "width:100%" in css, "line-total must fill col-total td"
+        # must NOT have a small max-width on the input inside col-total td
+        # (old rule was max-width:110px which restricted width)
+        import re
+        line_total_rules = [l for l in css.split("\n") if "line-total" in l and "col-total" in l]
+        for rule in line_total_rules:
+            assert "max-width: none" in rule or "max-width:none" in rule, (
+                f"line-total inside col-total must have max-width:none, got: {rule!r}"
+            )
+
+        # scan-bar CSS must exist (co-located with Total rules)
+        assert "scan-bar" in css, "scan-bar CSS must exist alongside Total column rules"
+
+    @pytest.mark.asyncio
     async def test_doc_detail_shows_company_field(self, ui_client):
         """Doc detail page: Bill To section shows Company: from contact_company_name."""
         doc = {**_DOC_DETAIL, "contact_company_name": "Acme Corp", "contact_id": "ct:1"}
