@@ -503,7 +503,7 @@ a:hover { text-decoration: underline; }
 .doc-lines { margin-top: 12px; table-layout: fixed; width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 40px; padding-left: 0; padding-right: 0; text-align: center; }
-.doc-lines td.col-total, .doc-lines th.col-total { width: 110px; padding-right: 10px; }
+.doc-lines td.col-total, .doc-lines th.col-total { width: 150px; }
 .line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
 
 /* ─── Reports ─────────────────────────────────────────────────────────── */
