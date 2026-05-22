@@ -121,7 +121,11 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
 
     add_form = Form(
         Tr(
-            Td(Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm"), cls="cell"),
+            Td(
+                Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm",
+                      pattern="[a-z0-9_]+", title="Lowercase letters, numbers and underscores only (e.g. piece, kg, troy_oz)"),
+                cls="cell",
+            ),
             Td("(auto)", cls="cell cell--mono", style="color:var(--c-text2);font-size:12px"),
             Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
             Td(_unit_type_select("unit_type"), cls="cell"),
@@ -153,6 +157,7 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
             Tbody(*rows, add_form),
             cls="data-table",
         ),
+        P("Unit names must be lowercase with no spaces (e.g. piece, kg, troy_oz).", cls="form-hint"),
         cls="settings-card",
     )
 
@@ -482,7 +487,7 @@ def setup_routes(app):
         if not token:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
-        name = (str(form.get("name") or "")).strip()
+        name = (str(form.get("name") or "")).strip().lower().replace(" ", "_")
         label = (str(form.get("label") or "")).strip() or name.capitalize()
         try:
             decimals = int(form.get("decimals") or 0)
@@ -522,7 +527,7 @@ def setup_routes(app):
                 value=str(value), cls="input-sm",
                 hx_patch=f"/settings/units/{name}/{field}",
                 hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                hx_trigger="change, keydown[key=='Enter']",
+                hx_trigger="blur, keydown[key=='Enter']",
             )
         elif field == "unit_type":
             sel = _unit_type_select("value", selected=str(value))
@@ -539,7 +544,7 @@ def setup_routes(app):
                 name="value", type="text", value=str(value), cls="input-sm",
                 hx_patch=f"/settings/units/{name}/{field}",
                 hx_target="closest td", hx_swap="outerHTML", hx_include="this",
-                hx_trigger="change, keydown[key=='Enter']",
+                hx_trigger="blur, keydown[key=='Enter']",
             )
         return Td(inp, cls="cell")
 
