@@ -4707,7 +4707,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _line_headers.extend([Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
-        _line_headers.extend([Th(t("th.total"), cls="cell--number col-total"), Th("")])
+        _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
 
         # CSV import hidden file input + JS handler
         _csv_import_el = Div(
