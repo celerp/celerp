@@ -121,8 +121,8 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
 
     add_form = Form(
         Tr(
-            Td(Input(name="name", placeholder="piece", required=True, cls="input-sm"), cls="cell"),
-            Td(Input(name="label", placeholder="Piece", required=True, cls="input-sm"), cls="cell"),
+            Td(Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm"), cls="cell"),
+            Td("(auto)", cls="cell cell--mono", style="color:var(--c-text2);font-size:12px"),
             Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
             Td(_unit_type_select("unit_type"), cls="cell"),
             Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
@@ -483,7 +483,7 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         name = (str(form.get("name") or "")).strip()
-        label = (str(form.get("label") or "")).strip()
+        label = (str(form.get("label") or "")).strip() or name.capitalize()
         try:
             decimals = int(form.get("decimals") or 0)
         except (ValueError, TypeError):

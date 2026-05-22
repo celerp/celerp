@@ -1028,21 +1028,20 @@ _INLINE_FIX_JS = """
 
   // "Add new unit" option in unit dropdowns: open settings page and return.
   // Keep original value in the cell (do not reset to '') so fixes_json preserves
-  // the bad value on revalidate. Auto-revalidate when window regains focus so the
-  // freshly added unit appears as a valid option without a manual click.
+  // the bad value on revalidate. Auto-revalidate when tab regains visibility so
+  // the freshly added unit appears as a valid option without a manual click.
   document.addEventListener('change', function(e) {
     if (e.target.matches('select.cell-edit') && e.target.value === '__add_new__') {
       var origVal = e.target.getAttribute('data-prev') || '';
       // Restore original value before opening new tab
       e.target.value = origVal;
-      var returnUrl = encodeURIComponent(window.location.href);
-      window.open('/settings/inventory?tab=units&from_import=1&return_url=' + returnUrl, '_blank');
+      window.open('/settings/inventory?tab=units&from_import=1', '_blank');
       // When user returns to this tab, auto-revalidate so new units appear in dropdowns.
       var revalidateFired = false;
-      window.addEventListener('focus', function _refocus() {
-        if (revalidateFired) return;
+      document.addEventListener('visibilitychange', function _onVisible() {
+        if (document.visibilityState !== 'visible' || revalidateFired) return;
         revalidateFired = true;
-        window.removeEventListener('focus', _refocus);
+        document.removeEventListener('visibilitychange', _onVisible);
         var btn = document.querySelector('.csv-fix-actions button[type="submit"]');
         if (btn) btn.click();
       });
