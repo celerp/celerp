@@ -1329,7 +1329,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .currency-bar-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 
 /* Compact totals - right-aligned, no card chrome */
-.doc-section--totals { display: flex; flex-direction: column; align-items: flex-end; padding: 8px 0; }
+.doc-section--totals { display: flex; flex-direction: column; align-items: flex-end; padding: 8px 16px; }
 .doc-section--totals-compact { display: flex; flex-direction: column; align-items: flex-end; padding: 12px 0; }
 .section-divider { border: none; border-top: 1px solid var(--c-border); margin: 10px 0; }
 .total-panel { width: 100%; max-width: 320px; padding: 0; }
@@ -1423,8 +1423,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .data-table td:has(.catalog-ac-wrap) { overflow: visible; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
-/* Total input: fixed width so column auto-sizes to content; no overflow */
-.data-table td.cell--number input.line-total { text-align: right; width: 110px; max-width: none; }
+/* Total input: centered in column (editable field, not display value); fixed width */
+.data-table td.cell--number input.line-total { text-align: center; width: 110px; max-width: none; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
