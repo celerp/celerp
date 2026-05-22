@@ -119,20 +119,15 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
             cls="data-row",
         ))
 
-    add_form = Form(
-        Div(
-            Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm",
-                  pattern="[a-z0-9_]+", title="Lowercase letters, numbers and underscores only",
-                  style="width:140px"),
-            _unit_type_select("unit_type"),
-            Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm",
-                  style="width:70px", title="Decimal places"),
-            Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"),
-            cls="flex-row gap-sm", style="align-items:center;margin-top:10px",
-        ),
-        hx_post="/settings/units/add",
-        hx_swap="none",
-        hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
+    add_row = Tr(
+        Td(Input(name="name", placeholder="e.g. piece or kg", required=True, cls="input-sm",
+                 pattern="[a-z0-9_]+", title="Lowercase letters, numbers and underscores only"),
+           cls="cell"),
+        Td(Span("(auto)", style="color:var(--c-text2);font-size:12px"), cls="cell"),
+        Td(Input(name="decimals", type="number", min="0", max="6", value="0", cls="input-sm"), cls="cell"),
+        Td(_unit_type_select("unit_type"), cls="cell"),
+        Td(Button(t("btn._add"), type="submit", cls="btn btn--primary btn--xs"), cls="cell"),
+        cls="data-row",
     )
 
     return_banner = (
@@ -150,13 +145,18 @@ def _units_tab(units: list[dict], from_import: str = "") -> FT:
         return_banner,
         H3(t("page.units"), cls="settings-section-title"),
         P(t("inv.configure_measurement_units_available_for_inventor"), cls="settings-hint"),
-        Table(
-            Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th("Type"), Th(""))),
-            Tbody(*rows),
-            cls="data-table",
+        Form(
+            Table(
+                Thead(Tr(Th(t("th.name")), Th(t("th.label")), Th(t("th.decimals")), Th("Type"), Th(""))),
+                Tbody(*rows),
+                Tfoot(add_row),
+                cls="data-table",
+            ),
+            hx_post="/settings/units/add",
+            hx_swap="none",
+            hx_on__after_request="window.location.href='/settings/inventory?tab=units'",
         ),
-        add_form,
-        P("Name: lowercase letters, numbers and underscores only (e.g. piece, kg, troy_oz). Label auto-filled from name - click to customise.", cls="form-hint"),
+        P("Name: lowercase, numbers and underscores only (e.g. piece, kg, troy_oz). Label auto-fills - click to customise.", cls="form-hint"),
         cls="settings-card",
     )
 
