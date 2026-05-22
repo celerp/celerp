@@ -4938,7 +4938,7 @@ async function celerpAcSearch(input, field) {{
             const opt = document.createElement('div');
             opt.className = 'catalog-ac-option';
             const label = field === 'sku'
-                ? (item.sku || '') + (item.description ? ' – ' + item.description : '')
+                ? (item.sku || '')
                 : (item.description || '') + (item.sku ? ' [' + item.sku + ']' : '');
             opt.textContent = label;
             opt.addEventListener('mousedown', e => {{
