@@ -4624,7 +4624,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             if account_cell:
                 cells.append(account_cell)
             cells.extend([
-                Td(Span(fmt_money(line_tot, currency), cls="line-total"), cls="cell--number"),
+                Td(Input(type="number", value=str(round(line_tot, 2)), step="0.01",
+                         cls="cell-input line-total",
+                         oninput="celerpLineTotalInput(this)",
+                         onblur="celerpAutoSave()",
+                         data_name="line_total"), cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -4682,7 +4686,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value="", data_name="entity_id"),
                    Input(type="hidden", value="", data_name="allow_splitting"),
                    Input(type="hidden", value="", data_name="item_quantity")),
-                Td(Span(fmt_money(0, currency), cls="line-total"), cls="cell--number"),
+                Td(Input(type="number", value="0", step="0.01",
+                         cls="cell-input line-total",
+                         oninput="celerpLineTotalInput(this)",
+                         onblur="celerpAutoSave()",
+                         data_name="line_total"), cls="cell--number col-total"),
             ])
             return Tr(*cells)
 
@@ -4697,7 +4705,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         _line_headers.extend([Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
-        _line_headers.extend([Th(t("th.total")), Th("")])
+        _line_headers.extend([Th(t("th.total"), cls="cell--number col-total"), Th("")])
 
         # CSV import hidden file input + JS handler
         _csv_import_el = Div(
@@ -5002,6 +5010,19 @@ function celerpAcKey(e, input) {{
         list.style.display = 'none';
     }}
 }}
+function celerpLineTotalInput(input) {{
+    const row = input.closest('tr');
+    if (!row) return;
+    const tot = parseFloat(input.value);
+    if (isNaN(tot)) return;
+    const qty = parseFloat(row.querySelector('[data-name="quantity"]')?.value || 0);
+    const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
+    const factor = qty * (1 - discPct / 100);
+    if (factor === 0) return;
+    const unitPriceEl = row.querySelector('[data-name="unit_price"]');
+    if (unitPriceEl) unitPriceEl.value = (tot / factor).toFixed(2);
+    celerpUpdateTotals();
+}}
 function celerpQtyBlur(input) {{
     const row = input.closest('tr');
     if (!row) return;
@@ -5113,7 +5134,9 @@ function celerpUpdateTotals() {{
         grossSub += gross;
         totalDiscount += discAmt;
         const totalEl = row.querySelector('.line-total');
-        if (totalEl) totalEl.textContent = _fmt(tot);
+        if (totalEl && totalEl !== document.activeElement) {{
+            totalEl.value = tot.toFixed(2);
+        }}
         sub += tot;
         const rate = _celerpTaxRate(row);
         if (rate !== 0) {{

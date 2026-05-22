@@ -1417,6 +1417,10 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Catalog autocomplete dropdowns (SKU/Description in line items) */
 /* td overflow:hidden clips absolutely-positioned dropdowns; override for ac cells */
 .data-table td:has(.catalog-ac-wrap) { overflow: visible; }
+/* Total column: th text-align right (!important beats base th{text-align:center}); fixed column width */
+.data-table th.cell--number { text-align: right !important; }
+.data-table th.col-total, .data-table td.col-total { width: 130px; min-width: 130px; }
+.data-table td.col-total input.line-total { text-align: right; width: 100%; max-width: none; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
