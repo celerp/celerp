@@ -4603,9 +4603,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value=str(qty), step="any",
                          data_name="quantity", oninput="celerpUpdateTotals()",
                          onblur="celerpQtyBlur(this); celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-qty"),
                 Td(Span(li.get("unit", "") or "", data_name="unit", cls="meta-value meta-value--muted",
-                         style="font-size:12px;display:inline-block;min-width:40px;")),
+                         style="font-size:12px;display:inline-block;min-width:40px;"), cls="col-unit"),
                 Td(Input(type="number", value=str(price), step="0.01",
                          data_name="unit_price", oninput="celerpUpdateTotals()",
                          onblur="celerpAutoSave()",
@@ -4613,9 +4613,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value=str(discount_pct) if discount_pct else "0", step="0.01",
                          data_name="discount_pct", oninput="celerpUpdateTotals()",
                          onblur="celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-disc"),
                 Td(_tax_select(float(li.get("tax_rate", 0) or 0), li.get("tax_code", "") or "",
-                              ((li.get("taxes") or [{}])[0].get("label", "") if li.get("taxes") else ""))),
+                              ((li.get("taxes") or [{}])[0].get("label", "") if li.get("taxes") else "")), cls="col-tax"),
                 Td(Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
                    Input(type="hidden", value=li_allow_splitting, data_name="allow_splitting"),
@@ -4672,16 +4672,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             cells.extend([
                 Td(Input(type="number", value="1", step="any", data_name="quantity",
                          oninput="celerpUpdateTotals()", onblur="celerpQtyBlur(this); celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
+                         cls="cell-input cell-input--xs"), cls="col-qty"),
                 Td(Span("", data_name="unit", cls="meta-value meta-value--muted",
-                         style="font-size:12px;display:inline-block;min-width:40px;")),
+                         style="font-size:12px;display:inline-block;min-width:40px;"), cls="col-unit"),
                 Td(Input(type="number", value="0", step="0.01", data_name="unit_price",
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs")),
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
-                         cls="cell-input cell-input--xs")),
-                Td(_tax_select()),
+                         cls="cell-input cell-input--xs"), cls="col-disc"),
+                Td(_tax_select(), cls="col-tax"),
                 Td(Input(type="hidden", value="", data_name="hs_code"),
                    Input(type="hidden", value="", data_name="entity_id"),
                    Input(type="hidden", value="", data_name="allow_splitting"),
@@ -4702,7 +4702,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category")))
             _line_headers.append(Th(t("th.type")))
-        _line_headers.extend([Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax"))])
+        _line_headers.extend([Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price")), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account")))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total"), Th("")])

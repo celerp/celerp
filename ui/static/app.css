@@ -502,8 +502,12 @@ a:hover { text-decoration: underline; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .doc-lines { margin-top: 12px; table-layout: auto; width: 100%; max-width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
-.doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 40px; padding-left: 0; padding-right: 0; text-align: center; }
-.doc-lines td.col-total, .doc-lines th.col-total { width: 90px; min-width: 90px; overflow: visible; padding: 2px 8px; }
+.doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 28px; min-width: 28px; max-width: 28px; padding-left: 0; padding-right: 0; text-align: center; overflow: visible; }
+.doc-lines th.col-qty,   .doc-lines td.col-qty   { width: 60px;  min-width: 60px;  max-width: 60px; }
+.doc-lines th.col-unit,  .doc-lines td.col-unit  { width: 70px;  min-width: 70px;  max-width: 70px; }
+.doc-lines th.col-disc,  .doc-lines td.col-disc  { width: 70px;  min-width: 70px;  max-width: 70px; }
+.doc-lines th.col-tax,   .doc-lines td.col-tax   { width: 100px; min-width: 100px; max-width: 120px; }
+.doc-lines td.col-total, .doc-lines th.col-total { width: 110px; min-width: 110px; max-width: 120px; overflow: visible; padding: 2px 4px; }
 .line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
 
 /* ─── Reports ─────────────────────────────────────────────────────────── */
@@ -1424,7 +1428,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
 /* Total input: centered in column (editable field, not display value); fixed width overrides cell-input base */
-.data-table td.cell--number input.line-total { text-align: right; width: 100% !important; max-width: none; }
+.data-table td.cell--number input.line-total { text-align: right; width: 96px; max-width: 96px; }
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
