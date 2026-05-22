@@ -1150,9 +1150,11 @@ function celerpPrintLabel(entityId, templateId) {
                 f"event.preventDefault();}}"
             )
             add_new_url = "/settings/inventory?tab=locations"
+            import json as _json_loc
+            safe_val = _json_loc.dumps(current_val)  # JSON-encoded to prevent XSS
             onchange_js = (
                 f"if(this.value==='__add_new__'){{"
-                f"window.open('{add_new_url}','_blank');this.value='{current_val}';}}"
+                f"window.open('{add_new_url}','_blank');this.value={safe_val};}}"
             )
             return Td(
                 Select(
@@ -3227,7 +3229,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
         renderers["category"] = _cat_renderer
 
     # Price column renderers: show currency symbol + "/ sell_unit" annotation
-    from ui.components.table import fmt_money, currency_symbol
+    from ui.components.table import fmt_money
     price_keys = [f["key"] for f in schema if f.get("type") == "money" and not f.get("virtual")]
     virtual_total_fields = {f["key"]: f for f in schema if f.get("virtual") and f.get("type") == "money"}
     _cur = currency

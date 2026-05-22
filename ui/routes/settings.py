@@ -411,13 +411,13 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
                         )
                     if name in ("Cost", "Wholesale"):
                         return Div(
-                            Span(f"'{name}' is a system price list and cannot be deleted.", cls="flash flash--error"),
+                            Span(t("settings.system_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
                             id="price-list-error",
                         )
                     if name == default_name:
                         # Return error fragment instead of redirect
                         return Div(
-                            Span(f"Cannot delete '{name}' — it is the default price list.", cls="flash flash--error"),
+                            Span(t("settings.default_price_list_cannot_be_deleted").replace("{name}", name), cls="flash flash--error"),
                             id="price-list-error",
                         )
                     price_lists.pop(idx)

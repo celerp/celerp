@@ -1102,6 +1102,8 @@
   "settings.relay_url_must_use_https_set_celerpallowhttprelay1": "Relay URL must use HTTPS. Set CELERP_ALLOW_HTTP_RELAY=1 for development.",
   "settings.restart_needed": "restart needed",
   "settings.retail_price_list_cannot_be_deleted": "Retail price list cannot be deleted.",
+  "settings.system_price_list_cannot_be_deleted": "'{name}' is a system price list and cannot be deleted.",
+  "settings.default_price_list_cannot_be_deleted": "Cannot delete '{name}' — it is the default price list.",
   "settings.role_permissions_reference": "Role permissions reference",
   "settings.running": "Running",
   "settings.scheduler": "Scheduler",
