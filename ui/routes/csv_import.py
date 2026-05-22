@@ -119,6 +119,10 @@ _COMMON_ALIASES: dict[str, str] = {
     "cost": "cost_price",
     "unit_cost": "cost_price",
     "purchase_price": "cost_price",
+    "total_cost": "cost_price_total",
+    "cost_total": "cost_price_total",
+    "total cost": "cost_price_total",
+    "cost total": "cost_price_total",
     "wholesale": "wholesale_price",
     "weight_ct": "weight",
     "weight_g": "weight",
@@ -264,6 +268,8 @@ def column_mapping_form(
     category_attrs: list[str] | None = None,
     errors: list[str] | None = None,
     form_values: dict | None = None,
+    col_labels: dict[str, str] | None = None,
+    mutex_groups: list[list[str]] | None = None,
 ) -> FT:
     """Render a horizontal spreadsheet-style column mapping UI.
 
@@ -275,6 +281,8 @@ def column_mapping_form(
     req = required_targets or set()
     fv = form_values or {}
     preview = sample_rows[:5]
+    _col_labels = col_labels or {}
+    _mutex_groups = mutex_groups or []
 
     error_block = ""
     if errors:
@@ -290,7 +298,7 @@ def column_mapping_form(
     option_defs.append({"value": MAPPING_SKIP, "label": "Skip (don't import)", "group": "action"})
     # Core fields
     for tc in target_cols:
-        label = tc.replace("_", " ").title()
+        label = _col_labels.get(tc) or tc.replace("_", " ").title()
         if tc in req:
             label += " *"
         option_defs.append({"value": tc, "label": label, "group": "core"})
@@ -402,6 +410,7 @@ def column_mapping_form(
             action=confirm_action,
         ),
         Script(f"var _MAPPING_OPTIONS = {_json.dumps(option_defs)};"),
+        Script(f"var _MUTEX_GROUPS = {_json.dumps(_mutex_groups)};"),
         Script(_MAPPING_JS),
         id="import-preview",
         cls="import-panel",
@@ -687,6 +696,23 @@ _MAPPING_JS = """
           updateBadge(dd);
           updateColumnDim(dd);
           updateAttrInput(dd);
+          // Mutex groups: if selected value is in a group, set all other group members to Skip
+          var SKIP = '__skip__';
+          if (typeof _MUTEX_GROUPS !== 'undefined') {
+            _MUTEX_GROUPS.forEach(function(group) {
+              if (group.indexOf(opt.value) !== -1) {
+                allDropdowns.forEach(function(other) {
+                  if (other !== dd && group.indexOf(other.hiddenInput.value) !== -1) {
+                    other.hiddenInput.value = SKIP;
+                    other.container.querySelector('.mapping-dd-trigger').textContent = labelFor(SKIP);
+                    updateBadge(other);
+                    updateColumnDim(other);
+                    updateAttrInput(other);
+                  }
+                });
+              }
+            });
+          }
           // Re-render all other open panels to update used state
           allDropdowns.forEach(function(other) {
             if (other !== dd && other.open) other.render();

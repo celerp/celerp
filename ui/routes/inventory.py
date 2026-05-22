@@ -546,6 +546,8 @@ def setup_routes(app):
                 back_href="/inventory/import",
                 required_targets=spec.required,
                 category_attrs=cat_attrs,
+                col_labels=_import_price_col_labels(price_lists),
+                mutex_groups=_import_price_mutex_groups(price_lists),
             ),
             title="Import Inventory - Celerp",
             nav_active="inventory",
@@ -604,6 +606,8 @@ def setup_routes(app):
                     category_attrs=cat_attrs,
                     errors=mapping_errors,
                     form_values=dict(form),
+                    col_labels=_import_price_col_labels(price_lists),
+                    mutex_groups=_import_price_mutex_groups(price_lists),
                 ),
                 title="Import Inventory - Celerp",
                 nav_active="inventory",
@@ -820,7 +824,7 @@ def setup_routes(app):
             # All columns not in the core field set are treated as attributes
             attrs: dict = {}
             for k, v in row.items():
-                if k not in _CORE_ITEM_COLS and not k.endswith("_price") and v is not None:
+                if k not in _CORE_ITEM_COLS and not k.endswith("_price") and not k.endswith("_price_total") and v is not None:
                     v_str = str(v).strip()
                     if v_str:
                         attrs[k] = v_str
@@ -847,10 +851,31 @@ def setup_routes(app):
             # status, created_at, updated_at intentionally omitted:
             # status is always set to available by the backend on creation.
             # created_at/updated_at are system-generated; backend enforces this.
-            # Extract price fields dynamically (any column ending in _price)
+            # Extract price fields dynamically.
+            # _price_total cols: back-calculate unit price = total / qty (Option B).
+            # Only used when the corresponding _price col is not also present.
+            # Requires qty > 0; rows failing this check are hard-errored via records sentinel.
+            _price_errors: list[str] = []
             for col_key in row:
-                if col_key.endswith("_price") and _flt(col_key) is not None:
+                if col_key.endswith("_price_total"):
+                    unit_key = col_key[: -len("_total")]  # e.g. cost_price_total → cost_price
+                    total_val = _flt(col_key)
+                    if total_val is None:
+                        continue
+                    if _flt(unit_key) is not None:
+                        # Unit price already mapped - total is redundant, skip silently
+                        continue
+                    if not qty or qty == 0:
+                        _price_errors.append(
+                            f"Cannot back-calculate {unit_key} from {col_key}: quantity is 0 or missing"
+                        )
+                    else:
+                        data[unit_key] = round(total_val / qty, 10)
+                elif col_key.endswith("_price") and _flt(col_key) is not None:
                     data[col_key] = _flt(col_key)
+            if _price_errors:
+                records.append({"_import_error": "; ".join(_price_errors), "name": name, "sku": sku})
+                continue
             barcode = data["barcode"]
             idem = f"csv:item:bc:{barcode}".lower() if barcode else f"csv:item:{sku}".lower()
             data["idempotency_key"] = idem
@@ -4024,14 +4049,41 @@ _IMPORT_SPEC = CsvImportSpec(
 def _build_import_spec(price_lists: list[dict]) -> CsvImportSpec:
     """Build import spec with dynamic price columns from company price lists."""
     price_cols = [f"{pl.get('name', '').lower()}_price" for pl in price_lists if pl.get("name")]
+    # Add virtual total cols (one per price col) - back-calculated at confirm time
+    price_total_cols = [f"{col}_total" for col in price_cols]
     type_map = {"quantity": float, "weight": float, "pieces": float}
-    for col in price_cols:
+    for col in price_cols + price_total_cols:
         type_map[col] = float
     return CsvImportSpec(
-        cols=_IMPORT_BASE_COLS + price_cols + _IMPORT_TAIL_COLS,
+        cols=_IMPORT_BASE_COLS + price_cols + price_total_cols + _IMPORT_TAIL_COLS,
         required={"name", "sell_by"},
         type_map=type_map,
     )
+
+
+def _import_price_col_labels(price_lists: list[dict]) -> dict[str, str]:
+    """Human-readable labels for price columns in the import mapping UI."""
+    labels: dict[str, str] = {}
+    for pl in price_lists:
+        name = pl.get("name", "")
+        if not name:
+            continue
+        key = f"{name.lower()}_price"
+        labels[key] = f"{name} (Unit Price)"
+        labels[f"{key}_total"] = f"{name} (Total)"
+    return labels
+
+
+def _import_price_mutex_groups(price_lists: list[dict]) -> list[list[str]]:
+    """Mutex groups: mapping unit price and total for the same price list is mutually exclusive."""
+    groups = []
+    for pl in price_lists:
+        name = pl.get("name", "")
+        if not name:
+            continue
+        key = f"{name.lower()}_price"
+        groups.append([key, f"{key}_total"])
+    return groups
 
 
 def _import_upload_form(error: str | None = None) -> FT:
