@@ -50,7 +50,12 @@ _BASE_FIELDS: list[dict] = [
 ]
 
 def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dict]:
-    """Insert a money column for each price list after position 5 (location)."""
+    """Insert a money column for each price list after position 5 (location).
+
+    For every cost-type price list (e.g. "Cost"), a paired virtual column
+    ``<key>_total`` is injected immediately after it (position + 0.01).
+    This column displays ``unit_price × quantity`` and is never stored.
+    """
     # "Cost" price list is restricted to admin/manager
     cost_names = {"cost", "cost price", "landed", "landed cost"}
     price_cols = []
@@ -58,6 +63,7 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
         name = pl.get("name", "")
         key = f"{name.lower()}_price"
         restricted = name.lower() in cost_names
+        pos = 6 + i
         price_cols.append({
             "key": key,
             "label": name,
@@ -66,9 +72,24 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
             "required": False,
             "options": [],
             "visible_to_roles": ["admin", "manager"] if restricted else [],
-            "position": 6 + i,
+            "position": pos,
             "show_in_table": True,
         })
+        if restricted:
+            # Virtual total column: always paired with the cost price column
+            price_cols.append({
+                "key": f"{key}_total",
+                "label": f"{name} (Total)",
+                "type": "money",
+                "editable": True,
+                "required": False,
+                "options": [],
+                "visible_to_roles": ["admin", "manager"],
+                "position": pos + 0.01,
+                "show_in_table": True,
+                "virtual": True,           # never stored; computed at render time
+                "paired_with": key,        # always moves with this field
+            })
     return sorted(base + price_cols, key=lambda f: f.get("position", 999))
 
 
