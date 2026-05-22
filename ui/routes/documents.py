@@ -4770,10 +4770,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-toolbar",
             ),
             _li_bulk_toolbar(entity_id, is_list),
-            Table(
-                Thead(Tr(*_line_headers)),
-                Tbody(*rows, id=line_body_id),
-                cls="data-table doc-lines",
+            Div(
+                Table(
+                    Thead(Tr(*_line_headers)),
+                    Tbody(*rows, id=line_body_id),
+                    cls="data-table doc-lines",
+                ),
+                cls="table-scroll-wrap",
             ),
             Div(
                 Button(t("btn._add_item"), type="button", cls="btn btn--secondary",
