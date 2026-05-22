@@ -4768,13 +4768,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-toolbar",
             ),
             _li_bulk_toolbar(entity_id, is_list),
-            Div(
-                Table(
-                    Thead(Tr(*_line_headers)),
-                    Tbody(*rows, id=line_body_id),
-                    cls="data-table doc-lines",
-                ),
-                cls="table-scroll-wrap",
+            Table(
+                Thead(Tr(*_line_headers)),
+                Tbody(*rows, id=line_body_id),
+                cls="data-table doc-lines",
             ),
             Div(
                 Button(t("btn._add_item"), type="button", cls="btn btn--secondary",
@@ -5442,15 +5439,12 @@ async function celerpCsvImport(input, entityId) {{
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
             _li_bulk_toolbar(entity_id, is_list, labels_only=True) if _fin_show_bulk else None,
-            Div(
-                Table(
-                    Thead(Tr(*_thead_base)),
-                    Tbody(*([_li_row(li) for li in line_items] if line_items else [
-                        Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
-                    ]), id=_fin_bulk_id),
-                    cls="data-table doc-lines",
-                ),
-                cls="table-scroll-wrap",
+            Table(
+                Thead(Tr(*_thead_base)),
+                Tbody(*([_li_row(li) for li in line_items] if line_items else [
+                    Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
+                ]), id=_fin_bulk_id),
+                cls="data-table doc-lines",
             ),
             Script(f"""
 (function(){{
