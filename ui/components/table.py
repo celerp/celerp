@@ -692,11 +692,18 @@ def data_table(
         _schema_defaults = {f["key"]: (f["key"] in show_cols) for f in visible}
     else:
         _schema_defaults = {f["key"]: f.get("show_in_table", True) for f in visible}
+    # Map primary_key → [virtual_key, ...] so drag and restore both move virtual cols with their primary
+    _virtual_followers: dict[str, list[str]] = {}
+    for f in schema:
+        if f.get("virtual") and f.get("paired_with"):
+            _virtual_followers.setdefault(f["paired_with"], []).append(f["key"])
     _js = f"""
 (function(){{
   var PAGE_KEY = '{page_key}';
   var ORDER_KEY = 'celerp_col_order_{entity_type}';
   var SCHEMA_DEFAULTS = {_json.dumps(_schema_defaults)};
+  // Virtual columns that must move with their primary (e.g. cost_price_total follows cost_price)
+  var VIRTUAL_FOLLOWERS = {_json.dumps(_virtual_followers)};
   var table = document.getElementById('data-table');
   if (!table) return;
   var ths = Array.from(table.querySelectorAll('thead th[data-key]'));
@@ -833,11 +840,16 @@ def data_table(
       e.preventDefault();
       th.classList.remove('col-drag-over');
       if (!dragKey || dragKey === th.dataset.key) return;
-      // Move TH
+      // Move TH (and any virtual followers) before the drop target
       var thead_tr = table.querySelector('thead tr');
       var srcTh = thead_tr.querySelector('th[data-key="' + dragKey + '"]');
       if (!srcTh) return;
       thead_tr.insertBefore(srcTh, th);
+      // Place virtual followers immediately after the dragged column
+      (VIRTUAL_FOLLOWERS[dragKey] || []).forEach(function(vk) {{
+        var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
+        if (vth) srcTh.insertAdjacentElement('afterend', vth);
+      }});
       // Re-order body cells to match header
       var allThs = Array.from(thead_tr.children);
       table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
@@ -876,14 +888,20 @@ def data_table(
     storedOrder.forEach(function(key) {{
       var th2 = thead_tr.querySelector('th[data-key="' + key + '"]');
       if (th2 && actionsTh) thead_tr.insertBefore(th2, actionsTh);
+      // Place virtual followers immediately after their primary
+      (VIRTUAL_FOLLOWERS[key] || []).forEach(function(vk) {{
+        var vth = thead_tr.querySelector('th[data-key="' + vk + '"]');
+        if (vth && actionsTh) thead_tr.insertBefore(vth, actionsTh);
+      }});
     }});
-    // Re-order tbody to match
+    // Re-order tbody to match new header order
+    var allThs2 = Array.from(thead_tr.querySelectorAll('th[data-key]'));
     table.querySelectorAll('tbody tr.data-row').forEach(function(tr) {{
       var cells = Array.from(tr.children);
       var checkboxTd = tr.querySelector('.col-checkbox');
       var actionsTd = tr.querySelector('.col-actions');
-      var dataCells = storedOrder.map(function(key) {{
-        return cells.find(function(td) {{ return td.dataset.col === key; }});
+      var dataCells = allThs2.map(function(th2) {{
+        return cells.find(function(td) {{ return td.dataset.col === th2.dataset.key; }});
       }}).filter(Boolean);
       var ordered = [];
       if (checkboxTd) ordered.push(checkboxTd);
