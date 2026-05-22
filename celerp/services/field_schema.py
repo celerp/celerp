@@ -56,12 +56,15 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
     ``<key>_total`` is injected immediately after it (position + 0.01).
     This column displays ``unit_price × quantity`` and is never stored.
     """
+    existing_keys = {f["key"] for f in base}
     # "Cost" price list is restricted to admin/manager
     cost_names = {"cost", "cost price", "landed", "landed cost"}
     price_cols = []
     for i, pl in enumerate(price_lists):
         name = pl.get("name", "")
         key = f"{name.lower()}_price"
+        if key in existing_keys:
+            continue  # already present (stored schema round-trip)
         restricted = name.lower() in cost_names
         pos = 6 + i
         price_cols.append({
@@ -104,6 +107,9 @@ async def get_effective_field_schema(
 
     Price columns are dynamically generated from the company's configured
     price lists (settings["price_lists"]), not hardcoded.
+
+    If the stored schema is missing default fields (e.g. after a partial PATCH),
+    missing defaults are appended so clients always see the full set.
     """
     co = await session.get(
         Company,
@@ -113,10 +119,15 @@ async def get_effective_field_schema(
         return DEFAULT_ITEM_SCHEMA
     settings = co.settings or {}
 
-    # Build base schema with dynamic price columns
-    custom_base: list[dict] = settings.get("item_schema") or _BASE_FIELDS
+    # Build base schema: stored fields + any missing _BASE_FIELDS defaults
+    stored: list[dict] = settings.get("item_schema") or _BASE_FIELDS
     price_lists: list[dict] = settings.get("price_lists") or _DEFAULT_PRICE_LISTS
-    base_schema = _inject_price_columns(custom_base, price_lists)
+    # Inject price columns (idempotent - skips already-present keys)
+    stored_with_prices = _inject_price_columns(stored, price_lists)
+    # Append any _BASE_FIELDS defaults missing from stored schema (no duplicates)
+    stored_keys = {f["key"] for f in stored_with_prices}
+    full_defaults = _inject_price_columns(_BASE_FIELDS, price_lists)
+    base_schema = stored_with_prices + [f for f in full_defaults if f["key"] not in stored_keys]
 
     if category:
         cat_schemas: dict[str, list[dict]] = settings.get("category_schemas") or {}
