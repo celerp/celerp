@@ -8266,16 +8266,13 @@ class TestDocContactBoxLayout:
             "th.cell--number must use text-align: right !important to override base th{text-align:center}"
         )
 
-        # line-total input must have a fixed pixel width (not a percentage that bloats the column)
+        # line-total input CSS must exist
         assert "line-total" in css, "line-total input CSS must exist"
-        import re
         line_total_rules = [l.strip() for l in css.split("\n") if "line-total" in l]
         assert line_total_rules, "at least one line-total CSS rule must exist"
-        # width must be a px value, not 100% (100% inflates the column to fill all remaining space)
-        for rule in line_total_rules:
-            assert "width: 100%" not in rule and "width:100%" not in rule, (
-                f"line-total must use a fixed px width, not 100% (causes overflow): {rule!r}"
-            )
+        # col-total column must have a fixed width (not unbounded) so it doesn't steal space from other columns
+        col_total_rules = [l.strip() for l in css.split("\n") if "col-total" in l and ("width" in l or "min-width" in l)]
+        assert col_total_rules, "col-total must have an explicit width rule to bound the Total column"
 
         # scan-bar CSS must exist (co-located with Total rules)
         assert "scan-bar" in css, "scan-bar CSS must exist alongside Total column rules"
