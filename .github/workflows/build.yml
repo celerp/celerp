@@ -82,13 +82,7 @@ jobs:
             platform_flag: --mac
             standalone_dir: mac-arm64
             pbs_triple: aarch64-apple-darwin
-            mac_arch: arm64
-          - os: macos-13
-            build_cmd: pnpm run build:mac
-            platform_flag: --mac
-            standalone_dir: mac-x64
-            pbs_triple: x86_64-apple-darwin
-            mac_arch: x64
+            mac_arch: universal
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -127,22 +121,47 @@ jobs:
       - name: Download Python standalone
         shell: bash
         run: |
-          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
-          echo "Downloading: $URL"
-          mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
-          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
+          PKG="cpython-${PBS_PYTHON}+${PBS_TAG}"
+          if [ "${{ matrix.mac_arch }}" = "universal" ]; then
+            # Universal mac build: need both arches so electron-builder can merge them
+            for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+              case $triple in
+                aarch64*) dir="mac-arm64" ;;
+                x86_64*)  dir="mac-x64"   ;;
+              esac
+              echo "Downloading $triple -> $dir"
+              mkdir -p "electron/python-standalone/$dir"
+              curl -fsSL "$BASE/${PKG}-${triple}-install_only_stripped.tar.gz" \
+                | tar xz -C "electron/python-standalone/$dir"
+            done
+          else
+            URL="$BASE/${PKG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
+            echo "Downloading: $URL"
+            mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
+            curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
+          fi
 
       - name: Install Python deps into standalone
         shell: bash
         run: |
-          DIR="electron/python-standalone/${{ matrix.standalone_dir }}/python"
-          if [ -f "$DIR/python.exe" ]; then
-            PY="$DIR/python.exe"
+          if [ "${{ matrix.mac_arch }}" = "universal" ]; then
+            for dir in mac-arm64 mac-x64; do
+              PY="electron/python-standalone/$dir/python/bin/python3"
+              echo "Installing deps into $dir"
+              "$PY" -m pip install --upgrade pip
+              "$PY" -m pip install .
+            done
           else
-            PY="$DIR/bin/python3"
+            DIR="electron/python-standalone/${{ matrix.standalone_dir }}/python"
+            if [ -f "$DIR/python.exe" ]; then
+              PY="$DIR/python.exe"
+            else
+              PY="$DIR/bin/python3"
+            fi
+            "$PY" -m pip install --upgrade pip
+            "$PY" -m pip install .
           fi
-          "$PY" -m pip install --upgrade pip
-          "$PY" -m pip install .
 
       - name: Build macOS (production - signed + notarized)
         if: matrix.mac_arch != '' && startsWith(github.ref, 'refs/tags/v')
@@ -204,7 +223,7 @@ jobs:
               FAIL=1
             fi
           }
-          check_yml electron/dist/latest-mac.yml   "Celerp-mac-arm64.dmg"
+          check_yml electron/dist/latest-mac.yml   "Celerp-mac.dmg"
           check_yml electron/dist/latest.yml        "Celerp-Setup.exe"
           check_yml electron/dist/latest-linux.yml  "Celerp.AppImage"
           exit $FAIL
@@ -216,8 +235,7 @@ jobs:
           name: binaries-${{ matrix.os }}-${{ matrix.standalone_dir }}
           path: |
             electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac-arm64.dmg
-            electron/dist/Celerp-mac-x64.dmg
+            electron/dist/Celerp-mac.dmg
             electron/dist/Celerp.AppImage
           if-no-files-found: warn
 
@@ -229,8 +247,7 @@ jobs:
           name: "Dev Build (latest)"
           files: |
             electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac-arm64.dmg
-            electron/dist/Celerp-mac-x64.dmg
+            electron/dist/Celerp-mac.dmg
             electron/dist/Celerp.AppImage
           draft: false
           prerelease: true
