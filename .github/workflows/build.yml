@@ -70,16 +70,25 @@ jobs:
             platform_flag: --linux
             standalone_dir: linux-x64
             pbs_triple: x86_64-unknown-linux-gnu
+            mac_arch: ""
           - os: windows-latest
             build_cmd: pnpm run build:win
             platform_flag: --win
             standalone_dir: win-x64
             pbs_triple: x86_64-pc-windows-msvc
+            mac_arch: ""
           - os: macos-latest
             build_cmd: pnpm run build:mac
             platform_flag: --mac
             standalone_dir: mac-arm64
             pbs_triple: aarch64-apple-darwin
+            mac_arch: arm64
+          - os: macos-13
+            build_cmd: pnpm run build:mac
+            platform_flag: --mac
+            standalone_dir: mac-x64
+            pbs_triple: x86_64-apple-darwin
+            mac_arch: x64
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -123,15 +132,6 @@ jobs:
           mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
           curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
 
-      - name: Download Python standalone (macOS x64)
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        run: |
-          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
-          echo "Downloading (x64): $URL"
-          mkdir -p "electron/python-standalone/mac-x64"
-          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-x64"
-
       - name: Install Python deps into standalone
         shell: bash
         run: |
@@ -144,16 +144,8 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
 
-      - name: Install Python deps into standalone (macOS x64)
-        if: matrix.os == 'macos-latest'
-        shell: bash
-        run: |
-          DIR="electron/python-standalone/mac-x64/python"
-          "$DIR/bin/python3" -m pip install --upgrade pip
-          "$DIR/bin/python3" -m pip install .
-
       - name: Build macOS (production - signed + notarized)
-        if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
+        if: matrix.mac_arch != '' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 130
         working-directory: electron
         env:
@@ -163,19 +155,19 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm run build:mac -- --publish always
+        run: pnpm exec electron-builder --mac --${{ matrix.mac_arch }} --publish always
 
       - name: Build macOS (dev - signed only, no notarization)
-        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
+        if: matrix.mac_arch != '' && !startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 60
         working-directory: electron
         env:
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
+        run: pnpm exec electron-builder --mac --${{ matrix.mac_arch }} --publish never
 
       - name: Build (Windows / Linux - release tag)
-        if: matrix.os != 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
+        if: matrix.mac_arch == '' && startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -183,7 +175,7 @@ jobs:
         run: ${{ matrix.build_cmd }} -- --publish always
 
       - name: Build (Windows / Linux - dev build)
-        if: matrix.os != 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
+        if: matrix.mac_arch == '' && !startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -221,7 +213,7 @@ jobs:
         if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ matrix.os }}
+          name: binaries-${{ matrix.os }}-${{ matrix.standalone_dir }}
           path: |
             electron/dist/Celerp-Setup.exe
             electron/dist/Celerp-mac-arm64.dmg
