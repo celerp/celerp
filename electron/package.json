@@ -66,10 +66,6 @@
           "!*.egg-info/**",
           "!.venv/**"
         ]
-      },
-      {
-        "from": "python-standalone/${os}-${arch}",
-        "to": "python-${arch}"
       }
     ],
     "win": {
@@ -81,6 +77,12 @@
           "arch": [
             "x64"
           ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "python-standalone/win-x64",
+          "to": "python-x64"
         }
       ]
     },
@@ -94,13 +96,28 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["universal"]
+          "arch": [
+            "universal"
+          ]
         },
         {
           "target": "zip",
-          "arch": ["universal"]
+          "arch": [
+            "universal"
+          ]
         }
-      ]
+      ],
+      "extraResources": [
+        {
+          "from": "python-standalone/mac-arm64",
+          "to": "python-arm64"
+        },
+        {
+          "from": "python-standalone/mac-x64",
+          "to": "python-x64"
+        }
+      ],
+      "x64ArchFiles": "Contents/Resources/python-*/**"
     },
     "dmg": {
       "artifactName": "Celerp-mac.dmg"
@@ -115,6 +132,12 @@
           "arch": [
             "x64"
           ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "python-standalone/linux-x64",
+          "to": "python-x64"
         }
       ]
     },
