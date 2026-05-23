@@ -129,7 +129,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
     },
-    "afterPack": "scripts/after-pack.js",
+    "afterPack": "./afterPack.js",
     "publish": {
       "provider": "github",
       "owner": "celerp",
