@@ -105,8 +105,10 @@
           ]
         }
       ],
-      "singleArchFiles": "**/python-arm64/**",
-      "x64ArchFiles": "**/python-x64/**"
+      "universal": {
+        "singleArchFiles": "**/python-arm64/**",
+        "x64ArchFiles": "**/python-x64/**"
+      }
     },
     "dmg": {
       "artifactName": "Celerp-mac.dmg"
