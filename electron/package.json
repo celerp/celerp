@@ -104,7 +104,9 @@
             "universal"
           ]
         }
-      ]
+      ],
+      "singleArchFiles": "**/python-arm64/**",
+      "x64ArchFiles": "**/python-x64/**"
     },
     "dmg": {
       "artifactName": "Celerp-mac.dmg"
@@ -133,10 +135,6 @@
       "owner": "celerp",
       "repo": "celerp",
       "releaseType": "release"
-    },
-    "universalOptions": {
-      "arm64ArchFiles": "**/python-arm64/**",
-      "x64ArchFiles": "**/python-x64/**"
     }
   },
   "jest": {
