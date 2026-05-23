@@ -102,11 +102,7 @@ jobs:
         run: |
           # Force pnpm to install optional deps for BOTH darwin arches so the
           # universal DMG contains @embedded-postgres/darwin-x64 (not just arm64).
-          cat >> .npmrc <<'EOF'
-          supportedArchitectures[cpu][]=arm64
-          supportedArchitectures[cpu][]=x64
-          supportedArchitectures[os][]=darwin
-          EOF
+          printf 'supportedArchitectures[cpu][]=arm64\nsupportedArchitectures[cpu][]=x64\nsupportedArchitectures[os][]=darwin\n' >> .npmrc
 
       - name: Install Node deps
         working-directory: electron
