@@ -69,7 +69,7 @@
       },
       {
         "from": "python-standalone/${os}-${arch}",
-        "to": "python"
+        "to": "python-${arch}"
       }
     ],
     "win": {
@@ -133,6 +133,10 @@
       "owner": "celerp",
       "repo": "celerp",
       "releaseType": "release"
+    },
+    "universalOptions": {
+      "arm64ArchFiles": "**/python-arm64/**",
+      "x64ArchFiles": "**/python-x64/**"
     }
   },
   "jest": {

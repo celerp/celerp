@@ -150,9 +150,12 @@ function pythonBin() {
     return path.join(APP_DIR, ".venv", "bin", "python3");
   }
   // Packaged: standalone Python bundled via python-build-standalone.
-  // Windows layout: resources/python/python/python.exe
-  // Linux layout:   resources/python/python/bin/python3
-  const base = path.join(process.resourcesPath, "python", "python");
+  // Universal Mac: each arch has its own Python dir (python-arm64 / python-x64)
+  // to avoid mach-o merge conflicts. Pick based on process.arch at runtime.
+  // Windows layout: resources/python-x64/python/python.exe
+  // Linux layout:   resources/python-x64/python/bin/python3
+  const archDir = `python-${process.arch}`;
+  const base = path.join(process.resourcesPath, archDir, "python");
   return process.platform === "win32"
     ? path.join(base, "python.exe")
     : path.join(base, "bin", "python3");
