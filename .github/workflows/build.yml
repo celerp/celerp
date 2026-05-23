@@ -123,6 +123,15 @@ jobs:
           mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
           curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
 
+      - name: Download Python standalone (macOS x64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
+          echo "Downloading (x64): $URL"
+          mkdir -p "electron/python-standalone/mac-x64"
+          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-x64"
+
       - name: Install Python deps into standalone
         shell: bash
         run: |
@@ -134,6 +143,14 @@ jobs:
           fi
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
+
+      - name: Install Python deps into standalone (macOS x64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          DIR="electron/python-standalone/mac-x64/python"
+          "$DIR/bin/python3" -m pip install --upgrade pip
+          "$DIR/bin/python3" -m pip install .
 
       - name: Build macOS (production - signed + notarized)
         if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
@@ -195,7 +212,7 @@ jobs:
               FAIL=1
             fi
           }
-          check_yml electron/dist/latest-mac.yml   "Celerp-mac.dmg"
+          check_yml electron/dist/latest-mac.yml   "Celerp-mac-arm64.dmg"
           check_yml electron/dist/latest.yml        "Celerp-Setup.exe"
           check_yml electron/dist/latest-linux.yml  "Celerp.AppImage"
           exit $FAIL
@@ -207,7 +224,8 @@ jobs:
           name: binaries-${{ matrix.os }}
           path: |
             electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac.dmg
+            electron/dist/Celerp-mac-arm64.dmg
+            electron/dist/Celerp-mac-x64.dmg
             electron/dist/Celerp.AppImage
           if-no-files-found: warn
 
@@ -219,7 +237,8 @@ jobs:
           name: "Dev Build (latest)"
           files: |
             electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac.dmg
+            electron/dist/Celerp-mac-arm64.dmg
+            electron/dist/Celerp-mac-x64.dmg
             electron/dist/Celerp.AppImage
           draft: false
           prerelease: true

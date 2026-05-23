@@ -95,19 +95,21 @@
         {
           "target": "dmg",
           "arch": [
-            "arm64"
+            "arm64",
+            "x64"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "arm64"
+            "arm64",
+            "x64"
           ]
         }
       ]
     },
     "dmg": {
-      "artifactName": "Celerp-mac.dmg"
+      "artifactName": "Celerp-mac-${arch}.dmg"
     },
     "linux": {
       "icon": "assets/icon.png",
