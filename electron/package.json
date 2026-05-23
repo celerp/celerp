@@ -99,7 +99,13 @@
         {
           "target": "dmg",
           "arch": [
-            "x64"
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
           ]
         }
       ],
