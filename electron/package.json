@@ -159,5 +159,10 @@
     "testMatch": [
       "**/tests/**/*.test.js"
     ]
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@electron/universal@2.0.1": "patches/@electron__universal@2.0.1.patch"
+    }
   }
 }
