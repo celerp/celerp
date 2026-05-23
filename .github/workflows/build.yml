@@ -103,7 +103,7 @@ jobs:
           # pnpm 9 reads supportedArchitectures from pnpm-workspace.yaml (NOT .npmrc).
           # Write it before pnpm install so both darwin-arm64 and darwin-x64
           # optional packages are fetched and bundled into the universal DMG.
-          printf 'supportedArchitectures:\n  cpu:\n    - arm64\n    - x64\n  os:\n    - darwin\n' > pnpm-workspace.yaml
+          printf 'packages:\n  - "."\nsupportedArchitectures:\n  cpu:\n    - arm64\n    - x64\n  os:\n    - darwin\n' > pnpm-workspace.yaml
           echo "pnpm-workspace.yaml written:"
           cat pnpm-workspace.yaml
 
