@@ -95,6 +95,19 @@ jobs:
         with:
           version: 9
 
+      - name: Configure pnpm for universal macOS build
+        if: matrix.os == 'macos-latest'
+        working-directory: electron
+        shell: bash
+        run: |
+          # Force pnpm to install optional deps for BOTH darwin arches so the
+          # universal DMG contains @embedded-postgres/darwin-x64 (not just arm64).
+          cat >> .npmrc <<'EOF'
+          supportedArchitectures[cpu][]=arm64
+          supportedArchitectures[cpu][]=x64
+          supportedArchitectures[os][]=darwin
+          EOF
+
       - name: Install Node deps
         working-directory: electron
         run: pnpm install --frozen-lockfile
