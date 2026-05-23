@@ -28,7 +28,6 @@ dependencies = [
     "python-jose[cryptography]>=3.3",
     "cryptography>=42",
     "passlib[bcrypt]>=1.7",
-    "numba>=0.59",
     "numpy>=1.26",
     "python-multipart>=0.0.9",
     "aiofiles>=23.0",

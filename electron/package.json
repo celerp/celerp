@@ -93,15 +93,17 @@
       "entitlementsInherit": "build/entitlements.mac.plist",
       "target": [
         {
-          "target": "dmg"
+          "target": "dmg",
+          "arch": ["universal"]
         },
         {
-          "target": "zip"
+          "target": "zip",
+          "arch": ["universal"]
         }
       ]
     },
     "dmg": {
-      "artifactName": "Celerp-mac-${arch}.dmg"
+      "artifactName": "Celerp-mac.dmg"
     },
     "linux": {
       "icon": "assets/icon.png",

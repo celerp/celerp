@@ -15,7 +15,7 @@ env:
 
 jobs:
   # ── Prepare release (tag builds only) ────────────────────────────────────
-  # Runs once before all platform builds. Creates the GitHub release and
+  # Runs once before all three platform builds. Creates the GitHub release and
   # clears any stale assets from a previous attempt at the same tag. This
   # eliminates the race condition where Mac's electron-builder uploads its first
   # asset before Windows/Linux reach the asset-clearing step.
@@ -70,25 +70,16 @@ jobs:
             platform_flag: --linux
             standalone_dir: linux-x64
             pbs_triple: x86_64-unknown-linux-gnu
-            is_mac: false
           - os: windows-latest
             build_cmd: pnpm run build:win
             platform_flag: --win
             standalone_dir: win-x64
             pbs_triple: x86_64-pc-windows-msvc
-            is_mac: false
           - os: macos-latest
+            build_cmd: pnpm run build:mac
             platform_flag: --mac
             standalone_dir: mac-arm64
             pbs_triple: aarch64-apple-darwin
-            mac_arch_flag: --arm64
-            is_mac: true
-          - os: macos-13
-            platform_flag: --mac
-            standalone_dir: mac-x64
-            pbs_triple: x86_64-apple-darwin
-            mac_arch_flag: --x64
-            is_mac: true
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -124,7 +115,26 @@ jobs:
           PY
           echo "Electron package version set to $VERSION"
 
+      - name: Download Python standalone (arm64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
+          echo "Downloading arm64: $URL"
+          mkdir -p "electron/python-standalone/mac-arm64"
+          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-arm64"
+
+      - name: Download Python standalone (x64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
+          echo "Downloading x64: $URL"
+          mkdir -p "electron/python-standalone/mac-x64"
+          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-x64"
+
       - name: Download Python standalone
+        if: matrix.os != 'macos-latest'
         shell: bash
         run: |
           URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
@@ -132,7 +142,27 @@ jobs:
           mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
           curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
 
+      - name: Install Python deps into standalone (arm64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          PY="electron/python-standalone/mac-arm64/python/bin/python3"
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install .
+
+      - name: Install Python deps into standalone (x64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          # x64 Python runs via Rosetta on arm64 runner - safe for pure-Python
+          # and wheels with pre-built binaries (numpy, pillow, psycopg2-binary, etc.)
+          # numba/llvmlite removed from deps to avoid source build requirement
+          PY="electron/python-standalone/mac-x64/python/bin/python3"
+          "$PY" -m pip install --upgrade pip --prefer-binary
+          "$PY" -m pip install . --prefer-binary
+
       - name: Install Python deps into standalone
+        if: matrix.os != 'macos-latest'
         shell: bash
         run: |
           DIR="electron/python-standalone/${{ matrix.standalone_dir }}/python"
@@ -145,7 +175,7 @@ jobs:
           "$PY" -m pip install .
 
       - name: Build macOS (production - signed + notarized)
-        if: matrix.is_mac == true && startsWith(github.ref, 'refs/tags/v')
+        if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 130
         working-directory: electron
         env:
@@ -155,19 +185,19 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: pnpm exec electron-builder --mac ${{ matrix.mac_arch_flag }} --publish always
+        run: pnpm run build:mac -- --publish always
 
       - name: Build macOS (dev - signed only, no notarization)
-        if: matrix.is_mac == true && !startsWith(github.ref, 'refs/tags/v')
+        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 60
         working-directory: electron
         env:
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-        run: pnpm exec electron-builder --mac ${{ matrix.mac_arch_flag }} --publish never
+        run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
 
       - name: Build (Windows / Linux - release tag)
-        if: matrix.is_mac == false && startsWith(github.ref, 'refs/tags/v')
+        if: matrix.os != 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -175,7 +205,7 @@ jobs:
         run: ${{ matrix.build_cmd }} -- --publish always
 
       - name: Build (Windows / Linux - dev build)
-        if: matrix.is_mac == false && !startsWith(github.ref, 'refs/tags/v')
+        if: matrix.os != 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -203,12 +233,7 @@ jobs:
               FAIL=1
             fi
           }
-          # Each Mac runner produces its own arch DMG; check whichever exists
-          if [ -f electron/dist/latest-mac.yml ]; then
-            grep -q "url: Celerp-mac-arm64.dmg\|url: Celerp-mac-x64.dmg" electron/dist/latest-mac.yml \
-              && echo "OK: latest-mac.yml -> arch-suffixed DMG" \
-              || { echo "FAIL: latest-mac.yml missing arch-suffixed DMG name"; cat electron/dist/latest-mac.yml; FAIL=1; }
-          fi
+          check_yml electron/dist/latest-mac.yml   "Celerp-mac.dmg"
           check_yml electron/dist/latest.yml        "Celerp-Setup.exe"
           check_yml electron/dist/latest-linux.yml  "Celerp.AppImage"
           exit $FAIL
@@ -217,11 +242,10 @@ jobs:
         if: "!startsWith(github.ref, 'refs/tags/v')"
         uses: actions/upload-artifact@v4
         with:
-          name: binaries-${{ matrix.standalone_dir }}
+          name: binaries-${{ matrix.os }}
           path: |
             electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac-arm64.dmg
-            electron/dist/Celerp-mac-x64.dmg
+            electron/dist/Celerp-mac.dmg
             electron/dist/Celerp.AppImage
           if-no-files-found: warn
 
@@ -233,8 +257,7 @@ jobs:
           name: "Dev Build (latest)"
           files: |
             electron/dist/Celerp-Setup.exe
-            electron/dist/Celerp-mac-arm64.dmg
-            electron/dist/Celerp-mac-x64.dmg
+            electron/dist/Celerp-mac.dmg
             electron/dist/Celerp.AppImage
           draft: false
           prerelease: true
