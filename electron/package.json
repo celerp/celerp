@@ -117,7 +117,8 @@
           "to": "python-x64"
         }
       ],
-      "x64ArchFiles": "Contents/Resources/python-*/**"
+      "x64ArchFiles": "Contents/Resources/python-*/**",
+      "mergeASARs": false
     },
     "dmg": {
       "artifactName": "Celerp-mac.dmg"
