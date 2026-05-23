@@ -13,6 +13,12 @@ importers:
 
   .:
     dependencies:
+      '@embedded-postgres/darwin-arm64':
+        specifier: 17.9.0-beta.16
+        version: 17.9.0-beta.16
+      '@embedded-postgres/darwin-x64':
+        specifier: 17.9.0-beta.16
+        version: 17.9.0-beta.16
       electron-updater:
         specifier: ^6.3.0
         version: 6.8.3
@@ -2705,11 +2711,9 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@embedded-postgres/darwin-arm64@17.9.0-beta.16':
-    optional: true
+  '@embedded-postgres/darwin-arm64@17.9.0-beta.16': {}
 
-  '@embedded-postgres/darwin-x64@17.9.0-beta.16':
-    optional: true
+  '@embedded-postgres/darwin-x64@17.9.0-beta.16': {}
 
   '@embedded-postgres/linux-arm64@17.9.0-beta.16':
     optional: true

@@ -95,18 +95,6 @@ jobs:
         with:
           version: 9
 
-      - name: Configure pnpm for universal macOS build
-        if: matrix.os == 'macos-latest'
-        working-directory: electron
-        shell: bash
-        run: |
-          # pnpm 9 reads supportedArchitectures from pnpm-workspace.yaml (NOT .npmrc).
-          # Write it before pnpm install so both darwin-arm64 and darwin-x64
-          # optional packages are fetched and bundled into the universal DMG.
-          printf 'packages:\n  - "."\nsupportedArchitectures:\n  cpu:\n    - arm64\n    - x64\n  os:\n    - darwin\n' > pnpm-workspace.yaml
-          echo "pnpm-workspace.yaml written:"
-          cat pnpm-workspace.yaml
-
       - name: Install Node deps
         working-directory: electron
         run: pnpm install --frozen-lockfile
