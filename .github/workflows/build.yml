@@ -115,7 +115,26 @@ jobs:
           PY
           echo "Electron package version set to $VERSION"
 
+      - name: Download Python standalone (arm64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
+          echo "Downloading arm64: $URL"
+          mkdir -p "electron/python-standalone/mac-arm64"
+          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-arm64"
+
+      - name: Download Python standalone (x64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
+          echo "Downloading x64: $URL"
+          mkdir -p "electron/python-standalone/mac-x64"
+          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-x64"
+
       - name: Download Python standalone
+        if: matrix.os != 'macos-latest'
         shell: bash
         run: |
           URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
@@ -123,7 +142,27 @@ jobs:
           mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
           curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
 
+      - name: Install Python deps into standalone (arm64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          PY="electron/python-standalone/mac-arm64/python/bin/python3"
+          "$PY" -m pip install --upgrade pip
+          "$PY" -m pip install .
+
+      - name: Install Python deps into standalone (x64)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          # x64 Python runs via Rosetta on arm64 runner - safe for pure-Python
+          # and wheels with pre-built binaries (numpy, pillow, psycopg2-binary, etc.)
+          # numba/llvmlite removed from deps to avoid source build requirement
+          PY="electron/python-standalone/mac-x64/python/bin/python3"
+          "$PY" -m pip install --upgrade pip --prefer-binary
+          "$PY" -m pip install . --prefer-binary
+
       - name: Install Python deps into standalone
+        if: matrix.os != 'macos-latest'
         shell: bash
         run: |
           DIR="electron/python-standalone/${{ matrix.standalone_dir }}/python"
@@ -171,7 +210,6 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
-
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"

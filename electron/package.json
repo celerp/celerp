@@ -66,10 +66,6 @@
           "!*.egg-info/**",
           "!.venv/**"
         ]
-      },
-      {
-        "from": "python-standalone/${os}-${arch}",
-        "to": "python"
       }
     ],
     "win": {
@@ -81,6 +77,12 @@
           "arch": [
             "x64"
           ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "python-standalone/win-x64",
+          "to": "python-x64"
         }
       ]
     },
@@ -95,16 +97,28 @@
         {
           "target": "dmg",
           "arch": [
-            "arm64"
+            "universal"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "arm64"
+            "universal"
           ]
         }
-      ]
+      ],
+      "extraResources": [
+        {
+          "from": "python-standalone/mac-arm64",
+          "to": "python-arm64"
+        },
+        {
+          "from": "python-standalone/mac-x64",
+          "to": "python-x64"
+        }
+      ],
+      "x64ArchFiles": "Contents/Resources/python-*/**",
+      "mergeASARs": false
     },
     "dmg": {
       "artifactName": "Celerp-mac.dmg"
@@ -120,6 +134,12 @@
             "x64"
           ]
         }
+      ],
+      "extraResources": [
+        {
+          "from": "python-standalone/linux-x64",
+          "to": "python-x64"
+        }
       ]
     },
     "nsis": {
@@ -127,7 +147,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true
     },
-    "afterPack": "scripts/after-pack.js",
+    "afterPack": "./after-pack.js",
     "publish": {
       "provider": "github",
       "owner": "celerp",
@@ -140,5 +160,10 @@
     "testMatch": [
       "**/tests/**/*.test.js"
     ]
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@electron/universal@2.0.1": "patches/@electron__universal@2.0.1.patch"
+    }
   }
 }

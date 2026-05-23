@@ -1,0 +1,11 @@
+--- a/dist/cjs/index.js
++++ b/dist/cjs/index.js
+@@ -121,7 +121,7 @@ const makeUniversalApp = async (opts) => {
+             const arm64Sha = await (0, sha_1.sha)(path.resolve(opts.arm64AppPath, machOFile.relativePath));
+             if (x64Sha === arm64Sha) {
+                 if (opts.x64ArchFiles === undefined ||
+-                    !(0, minimatch_1.minimatch)(machOFile.relativePath, opts.x64ArchFiles, { matchBase: true })) {
++                    !(0, minimatch_1.minimatch)(machOFile.relativePath, opts.x64ArchFiles, { matchBase: true, dot: true })) {
+                     throw new Error(`Detected file "${machOFile.relativePath}" that's the same in both x64 and arm64 builds and not covered by the ` +
+                         `x64ArchFiles rule: "${opts.x64ArchFiles}"`);
+                 }

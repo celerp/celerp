@@ -7,15 +7,10 @@ from collections import defaultdict
 from typing import Any
 
 import numpy as np
-from numba import njit
 
 
-@njit
-def sum_by_period(values: np.ndarray) -> float:  # pragma: no cover
-    total = 0.0
-    for i in range(len(values)):
-        total += values[i]
-    return total
+def sum_by_period(values: np.ndarray) -> float:
+    return float(np.sum(values))
 
 
 def group_sum(rows: list[dict[str, Any]], *, key: str, value: str) -> dict[str, float]:
