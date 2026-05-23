@@ -148,9 +148,15 @@ jobs:
           if [ "${{ matrix.mac_arch }}" = "universal" ]; then
             for dir in mac-arm64 mac-x64; do
               PY="electron/python-standalone/$dir/python/bin/python3"
+              arch_flag=""
+              if [ "$dir" = "mac-x64" ]; then
+                # Install x64 wheels on an arm64 runner via Rosetta.
+                # --prefer-binary avoids source builds (e.g. llvmlite) that need x64 LLVM.
+                arch_flag="--prefer-binary"
+              fi
               echo "Installing deps into $dir"
               "$PY" -m pip install --upgrade pip
-              "$PY" -m pip install .
+              "$PY" -m pip install $arch_flag .
             done
           else
             DIR="electron/python-standalone/${{ matrix.standalone_dir }}/python"
