@@ -16,7 +16,9 @@
   },
   "dependencies": {
     "electron-updater": "^6.3.0",
-    "embedded-postgres": "^17.9.0-beta.16"
+    "embedded-postgres": "^17.9.0-beta.16",
+    "@embedded-postgres/darwin-arm64": "17.9.0-beta.16",
+    "@embedded-postgres/darwin-x64": "17.9.0-beta.16"
   },
   "devDependencies": {
     "electron": "^30.0.0",
