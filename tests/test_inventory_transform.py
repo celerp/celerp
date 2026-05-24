@@ -54,7 +54,7 @@ async def test_transform_basic(client):
     assert parent.status_code == 200
     p = parent.json()
     assert float(p["quantity"]) == 0.0
-    assert p["status"] == "sold"
+    assert p["status"] == "archived"
 
     # Child created with new category and sell_by
     child = await client.get(f"/items/{data['child_id']}", headers=headers)
@@ -165,7 +165,7 @@ async def test_transform_parent_fully_consumed(client):
 
     parent = (await client.get(f"/items/{parent_id}", headers=headers)).json()
     assert float(parent["quantity"]) == 0.0
-    assert parent["status"] == "sold"
+    assert parent["status"] == "archived"
 
 
 @pytest.mark.asyncio

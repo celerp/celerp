@@ -1206,7 +1206,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             metadata_={},
         )
 
-    # If parent quantity is now 0, mark as sold
+    # If parent quantity is now 0, mark as archived (consumed by split)
     if new_parent_qty == 0:
         await emit_event(
             session,
@@ -1214,12 +1214,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             entity_id=entity_id,
             entity_type="item",
             event_type="item.status.set",
-            data={"new_status": "sold"},
+            data={"new_status": "archived"},
             actor_id=user.id,
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "consumed_by_split"},
         )
 
     # Emit item.split for history
@@ -1351,19 +1351,19 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         metadata_={},
     )
 
-    # 4. Mark parent sold
+    # 4. Mark parent archived (consumed by transform)
     await emit_event(
         session,
         company_id=company_id,
         entity_id=entity_id,
         entity_type="item",
         event_type="item.status.set",
-        data={"new_status": "sold"},
+        data={"new_status": "archived"},
         actor_id=user.id,
         location_id=None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
-        metadata_={},
+        metadata_={"reason": "consumed_by_transform"},
     )
 
     # 5. Emit transform event
