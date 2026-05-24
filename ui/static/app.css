@@ -1559,6 +1559,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .sp-sku-input { width: 160px !important; font-family: monospace; font-size: 0.82rem !important; padding: 2px 6px !important; height: auto !important; }
 .sp-input { width: 72px !important; padding: 2px 5px !important; font-size: 0.82rem !important; height: auto !important; text-align: left; }
 .sp-confirm-btn { margin-top: 8px; }
+.tr-locked { color: var(--c-text2) !important; font-style: italic; background: var(--c-bg2, #f5f5f5) !important; }
 
 /* ── Contact detail: two-column layout ────────────────────────────────── */
 .detail-layout { display: flex; gap: 2rem; }

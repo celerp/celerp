@@ -143,6 +143,12 @@ function transformQtyChanged(input) {
   var unitSelect = form.querySelector('[name="child_sell_by"]');
   if (unitSelect) transformUnitChanged(unitSelect);
 }
+function transformPreviewInit(formId) {
+  var form = document.getElementById(formId);
+  if (!form) return;
+  var unitSelect = form.querySelector('[name="child_sell_by"]');
+  if (unitSelect) transformUnitChanged(unitSelect);
+}
 """
 
 
@@ -2030,8 +2036,6 @@ function celerpPrintLabel(entityId, templateId) {
         child_sku = await _next_split_sku(token, item.get("sku", ""))
 
         fmt = lambda v, d=2: f"{float(v):.{d}f}" if v is not None else ""
-        show_weight = parent_weight is not None
-        show_pieces = parent_pieces is not None
 
         def _static_td(val):
             return Td(val, cls="sp-td")
@@ -2045,21 +2049,21 @@ function celerpPrintLabel(entityId, templateId) {
         cat_select = Select(
             *[Option(c, value=c, selected=(c == parent_category)) for c in categories],
             name="child_category",
-            cls="form-input form-input--xs",
+            cls="form-input form-input--sm",
+            style="min-width:160px",
         )
 
+        # Weight and pieces columns always shown (may be empty if item has no value)
         mother_cells = [
             Td("Mother", cls="sp-row-label"),
             _static_td(item.get("sku", "")),
             _static_td(parent_category),
             _static_td(f"{fmt(parent_qty)} {parent_sell_by}"),
+            _static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--"),
+            _static_td(str(int(parent_pieces)) if parent_pieces is not None else "--"),
+            _static_td(""),
+            _static_td(fmt(parent_cost_total)),
         ]
-        if show_weight:
-            mother_cells.append(_static_td(f"{fmt(parent_weight)} {parent_weight_unit}"))
-        if show_pieces:
-            mother_cells.append(_static_td(str(int(parent_pieces))))
-        mother_cells.append(_static_td(""))
-        mother_cells.append(_static_td(fmt(parent_cost_total)))
 
         child_qty_input = Td(
             Input(type="number", name="child_qty", value=fmt(parent_qty), step="any", min="0",
@@ -2073,44 +2077,40 @@ function celerpPrintLabel(entityId, templateId) {
                   value=fmt(parent_weight) if parent_weight is not None else "",
                   step="any", cls="form-input form-input--xs sp-input"),
             cls="sp-td tr-weight-td",
-        ) if show_weight else None
+        )
         child_pieces_td = Td(
             Input(type="number", name="child_pieces",
                   value=str(int(parent_pieces)) if parent_pieces is not None else "",
                   step="1", cls="form-input form-input--xs sp-input"),
             cls="sp-td tr-pieces-td",
-        ) if show_pieces else None
+        )
 
         child_cells = [
             Td("Child", cls="sp-row-label"),
             Td(Input(type="text", name="child_sku", value=child_sku, cls="form-input sp-sku-input"), cls="sp-td"),
             Td(cat_select, cls="sp-td"),
             child_qty_input,
+            child_weight_td,
+            child_pieces_td,
+            Td(
+                Input(type="number", name="loss_percent", value="0", step="0.01", min="0", max="99.99",
+                      cls="form-input form-input--xs sp-input",
+                      oninput="transformRecalcCost(this)"),
+                cls="sp-td",
+            ),
+            Td(
+                Input(type="number", name="child_cost_total", value=fmt(parent_cost_total), step="0.01",
+                      cls="form-input form-input--xs sp-input",
+                      oninput="transformCostManualEdit(this)"),
+                cls="sp-td",
+            ),
         ]
-        if show_weight:
-            child_cells.append(child_weight_td)
-        if show_pieces:
-            child_cells.append(child_pieces_td)
-        child_cells.append(Td(
-            Input(type="number", name="loss_percent", value="0", step="0.01", min="0", max="99.99",
-                  cls="form-input form-input--xs sp-input",
-                  oninput="transformRecalcCost(this)"),
-            cls="sp-td",
-        ))
-        child_cells.append(Td(
-            Input(type="number", name="child_cost_total", value=fmt(parent_cost_total), step="0.01",
-                  cls="form-input form-input--xs sp-input",
-                  oninput="transformCostManualEdit(this)"),
-            cls="sp-td",
-        ))
 
-        headers = [Th(""), Th("SKU", cls="sp-th"), Th("Category", cls="sp-th"), Th("Qty + Unit", cls="sp-th")]
-        if show_weight:
-            headers.append(Th("Weight", cls="sp-th"))
-        if show_pieces:
-            headers.append(Th("Pieces", cls="sp-th"))
-        headers.append(Th("Loss %", cls="sp-th"))
-        headers.append(Th("Cost Total", cls="sp-th"))
+        headers = [
+            Th(""), Th("SKU", cls="sp-th"), Th("Category", cls="sp-th"),
+            Th("Qty + Unit", cls="sp-th"), Th("Weight", cls="sp-th"),
+            Th("Pieces", cls="sp-th"), Th("Loss %", cls="sp-th"), Th("Cost Total", cls="sp-th"),
+        ]
 
         form_attrs = {
             "data-parent-cost-total": str(parent_cost_total),

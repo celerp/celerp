@@ -1003,7 +1003,10 @@ function bulkActionChanged(action){
     var entityId = ids[0];
     var url = '/api/items/bulk/transform-preview?entity_id=' + encodeURIComponent(entityId);
     htmx.ajax('GET', url, { target: '#bulk-transform-preview', swap: 'innerHTML' })
-      .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-transform-preview')); });
+      .then(function() {
+        if (window.htmx) htmx.process(document.getElementById('bulk-transform-preview'));
+        if (typeof transformPreviewInit === 'function') transformPreviewInit('bulk-transform-preview-form');
+      });
     return;
   }
   // Merge: populate target dropdown with selected items
