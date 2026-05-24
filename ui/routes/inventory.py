@@ -2022,7 +2022,7 @@ function celerpPrintLabel(entityId, templateId) {
         parent_sell_by = item.get("sell_by") or "piece"
         parent_category = item.get("category") or ""
         parent_weight_unit = item.get("weight_unit") or parent_sell_by
-        parent_pieces = (item.get("attributes") or {}).get("pieces")
+        parent_pieces = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
         parent_cost_price = float(item.get("cost_price") or 0)
         parent_cost_total = round(parent_cost_price * parent_qty, 2)
 
