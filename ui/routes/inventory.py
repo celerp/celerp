@@ -2135,7 +2135,6 @@ function celerpPrintLabel(entityId, templateId) {
 
         try:
             child_qty = float(str(form.get("child_qty", "0")).strip())
-            loss_pct = 0.0
             child_cost_total = float(str(form.get("child_cost_total", "0")).strip())
         except ValueError:
             return Div(P("Invalid numeric input.", cls="flash flash--warning"), id="bulk-action-result")
@@ -2150,7 +2149,6 @@ function celerpPrintLabel(entityId, templateId) {
             "child_quantity": child_qty,
             "child_weight": float(child_weight_raw) if child_weight_raw else None,
             "child_pieces": int(child_pieces_raw) if child_pieces_raw else None,
-            "loss_percent": loss_pct,
             "child_cost_total": child_cost_total,
         }
 

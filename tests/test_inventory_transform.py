@@ -31,7 +31,6 @@ def _transform_payload(**overrides) -> dict:
         "child_category": "Processed",
         "child_sell_by": "gram",
         "child_quantity": 8.0,
-        "loss_percent": 0.0,
         "child_cost_total": 1000.0,
     }
     base.update(overrides)
@@ -73,7 +72,7 @@ async def test_transform_cost_formula_zero_loss(client):
 
     r = await client.post(
         f"/items/{parent_id}/transform",
-        json=_transform_payload(child_quantity=1.0, loss_percent=0.0, child_cost_total=500.0),
+        json=_transform_payload(child_quantity=1.0, child_cost_total=500.0),
         headers=headers,
     )
     assert r.status_code == 200
@@ -92,7 +91,7 @@ async def test_transform_cost_formula_20pct(client):
     # child_cost_total = 125.0 (100 / (1 - 0.20)); child_qty=1
     r = await client.post(
         f"/items/{parent_id}/transform",
-        json=_transform_payload(child_quantity=1.0, loss_percent=20.0, child_cost_total=125.0),
+        json=_transform_payload(child_quantity=1.0, child_cost_total=125.0),
         headers=headers,
     )
     assert r.status_code == 200
@@ -109,7 +108,7 @@ async def test_transform_cost_manual_override(client):
 
     r = await client.post(
         f"/items/{parent_id}/transform",
-        json=_transform_payload(child_quantity=2.0, loss_percent=0.0, child_cost_total=200.0),
+        json=_transform_payload(child_quantity=2.0, child_cost_total=200.0),
         headers=headers,
     )
     assert r.status_code == 200
@@ -177,7 +176,7 @@ async def test_transform_audit_event(client):
 
     r = await client.post(
         f"/items/{parent_id}/transform",
-        json=_transform_payload(child_quantity=2.0, loss_percent=10.0, child_cost_total=111.11),
+        json=_transform_payload(child_quantity=2.0, child_cost_total=111.11),
         headers=headers,
     )
     assert r.status_code == 200
@@ -192,7 +191,6 @@ async def test_transform_audit_event(client):
     d = transform_events[0]["data"]
     assert d["child_id"] == child_id
     assert d["child_sku"] == "CHILD-SKU"
-    assert d["loss_percent"] == pytest.approx(10.0)
     assert d["parent_cost_total"] == pytest.approx(100.0)
     assert d["child_cost_total"] == pytest.approx(111.11)
 
@@ -207,26 +205,6 @@ async def test_transform_child_sku_collision(client):
 
     r = await client.post(f"/items/{parent_id}/transform", json=_transform_payload(child_sku="CHILD-SKU"), headers=headers)
     assert r.status_code == 409
-
-
-@pytest.mark.asyncio
-async def test_transform_loss_100_rejected(client):
-    token = await _token(client)
-    headers = {"Authorization": f"Bearer {token}"}
-    parent_id = await _seed_item(client, headers)
-
-    r = await client.post(f"/items/{parent_id}/transform", json=_transform_payload(loss_percent=100.0), headers=headers)
-    assert r.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_transform_loss_negative_rejected(client):
-    token = await _token(client)
-    headers = {"Authorization": f"Bearer {token}"}
-    parent_id = await _seed_item(client, headers)
-
-    r = await client.post(f"/items/{parent_id}/transform", json=_transform_payload(loss_percent=-1.0), headers=headers)
-    assert r.status_code == 422
 
 
 @pytest.mark.asyncio

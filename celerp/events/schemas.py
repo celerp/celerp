@@ -99,7 +99,6 @@ class ItemTransform(BaseModel):
     child_id: str
     child_sku: str
     child_category: str
-    loss_percent: float
     parent_cost_total: float
     child_cost_total: float
 

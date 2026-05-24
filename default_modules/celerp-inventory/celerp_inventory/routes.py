@@ -162,7 +162,6 @@ class TransformBody(BaseModel):
     child_weight: float | None = None
     child_weight_unit: str | None = None
     child_pieces: int | None = None
-    loss_percent: float  # 0.0 to 99.99
     child_cost_total: float  # final cost (may be user-overridden)
     idempotency_key: str | None = None
 
@@ -1257,8 +1256,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
     # Validate
-    if not (0 <= payload.loss_percent < 100):
-        raise HTTPException(status_code=422, detail="loss_percent must be in [0, 99.99)")
     if payload.child_quantity <= 0:
         raise HTTPException(status_code=422, detail="child_quantity must be > 0")
     if not payload.child_category.strip():
@@ -1320,7 +1317,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
-        metadata_={"parent_id": entity_id, "transform_loss_pct": payload.loss_percent},
+        metadata_={"parent_id": entity_id},
     )
 
     # 2. Copy prices
@@ -1381,7 +1378,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             "child_id": child_eid,
             "child_sku": payload.child_sku,
             "child_category": payload.child_category,
-            "loss_percent": payload.loss_percent,
             "parent_cost_total": parent_cost_total,
             "child_cost_total": payload.child_cost_total,
         },

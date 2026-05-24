@@ -153,7 +153,6 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["child_skus"] = data.get("child_skus", [])
     elif event_type == "item.transform":
         current["transformed_into"] = data.get("child_id")
-        current["transform_loss_pct"] = data.get("loss_percent")
     elif event_type == "item.merged":
         # No-op: marker event only. Real state is set by item.created on the new item.
         pass
