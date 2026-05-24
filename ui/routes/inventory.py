@@ -2157,9 +2157,12 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(str(e.detail), cls="flash flash--warning"), id="bulk-action-result")
 
         child_sku = result.get("child_sku", "")
-        return Div(
-            P(f"Transformed \u2192 {child_sku}", cls="flash flash--success"),
-            id="bulk-action-result",
+        parent_sku = result.get("parent_sku", "")
+        from urllib.parse import quote
+        exact_skus = f"{quote(parent_sku)},{quote(child_sku)}"
+        return _bulk_destructive_success(
+            f"Transformed: {parent_sku} → {child_sku}",
+            f"?skus={exact_skus}&status=all",
         )
 
     # ── Send-to search (HTMX dropdown) ───────────────────────────────────

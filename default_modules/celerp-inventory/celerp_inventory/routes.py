@@ -1400,7 +1400,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     )
 
     await session.commit()
-    return {"child_id": child_eid, "child_sku": payload.child_sku}
+    return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}
 
 
 @router.post("/merge")
