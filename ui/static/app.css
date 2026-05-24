@@ -301,6 +301,8 @@ a:hover { text-decoration: underline; }
 .data-table td { padding: 0 10px; height: var(--c-row-h); border-bottom: 1px solid var(--c-border); vertical-align: middle; }
 .data-row:last-child td { border-bottom: none; }
 .data-row:hover { background: var(--c-bg3); }
+.data-row--inactive td { background: var(--c-bg3); color: var(--c-text2); }
+.data-row--inactive:hover td { background: var(--c-border); }
 .section-header { background: var(--c-bg3); color: var(--c-text2); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 10px; }
 
 /* clickable / editable cells */

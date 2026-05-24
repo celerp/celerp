@@ -661,6 +661,8 @@ def data_table(
                      data_weight_unit=row.get("weight_unit", ""),
                      data_sell_by=row.get("sell_by", ""),
                ), cls="col-checkbox")] if show_checkboxes else []
+        status_val = str(row.get("status", "") or "").lower()
+        row_cls = "data-row data-row--inactive" if status_val and status_val != "available" else "data-row"
         return Tr(
             *checkbox_td,
             *[
@@ -680,7 +682,7 @@ def data_table(
             ],
             *action_cell,
             id=f"row-{safe_id}",
-            cls="data-row",
+            cls=row_cls,
         )
 
     # JS: smart column defaults + localStorage persistence + drag-to-resize
