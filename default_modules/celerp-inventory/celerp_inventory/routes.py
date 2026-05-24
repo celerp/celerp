@@ -1336,21 +1336,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             metadata_={},
         )
 
-    # 3. Consume parent qty
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=entity_id,
-        entity_type="item",
-        event_type="item.quantity.adjusted",
-        data={"new_qty": 0},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
-
     # 4. Mark parent archived (consumed by transform)
     await emit_event(
         session,

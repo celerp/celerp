@@ -49,11 +49,11 @@ async def test_transform_basic(client):
     assert "child_id" in data
     assert data["child_sku"] == "CHILD-SKU"
 
-    # Parent consumed
+    # Parent archived with qty preserved (audit record)
     parent = await client.get(f"/items/{parent_id}", headers=headers)
     assert parent.status_code == 200
     p = parent.json()
-    assert float(p["quantity"]) == 0.0
+    assert float(p["quantity"]) == 10.0  # original qty preserved
     assert p["status"] == "archived"
 
     # Child created with new category and sell_by
@@ -164,7 +164,7 @@ async def test_transform_parent_fully_consumed(client):
     assert r.status_code == 200
 
     parent = (await client.get(f"/items/{parent_id}", headers=headers)).json()
-    assert float(parent["quantity"]) == 0.0
+    assert float(parent["quantity"]) == 10.0  # original qty preserved
     assert parent["status"] == "archived"
 
 
