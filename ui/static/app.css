@@ -1428,8 +1428,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .scan-bar-status--err { color: var(--c-red); font-weight: 600; }
 
 /* Catalog autocomplete dropdowns (SKU/Description in line items) */
-/* td overflow:hidden clips absolutely-positioned dropdowns; override for ac cells */
-.data-table td:has(.catalog-ac-wrap) { overflow: visible; }
+/* td overflow:hidden clips absolutely-positioned dropdowns; override for ac/combobox cells */
+.data-table td:has(.catalog-ac-wrap),
+.data-table td:has(.combobox-wrap) { overflow: visible; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
 .doc-lines th.col-total { text-align: center !important; }
