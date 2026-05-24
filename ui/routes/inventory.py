@@ -102,18 +102,6 @@ function bulkSplitSubmit(formEl) {
 """
 
 _BULK_TRANSFORM_JS = """
-function transformRecalcCost(input) {
-  var form = input.closest('form');
-  var parentCost = parseFloat(form.dataset.parentCostTotal || '0');
-  var lossPct = parseFloat(input.value || '0');
-  if (isNaN(lossPct) || lossPct < 0 || lossPct >= 100) return;
-  var childCost = parentCost / (1 - lossPct / 100);
-  var costInput = form.querySelector('[name="child_cost_total"]');
-  if (costInput) {
-    costInput.value = childCost.toFixed(2);
-    form.dataset.costOverridden = 'false';
-  }
-}
 function transformCostManualEdit(input) {
   input.closest('form').dataset.costOverridden = 'true';
 }
@@ -2101,12 +2089,6 @@ function celerpPrintLabel(entityId, templateId) {
             child_weight_td,
             child_pieces_td,
             Td(
-                Input(type="number", name="loss_percent", value="0", step="0.01", min="0", max="99.99",
-                      cls="form-input form-input--xs sp-input",
-                      oninput="transformRecalcCost(this)"),
-                cls="sp-td",
-            ),
-            Td(
                 Input(type="number", name="child_cost_total", value=fmt(parent_cost_total), step="0.01",
                       cls="form-input form-input--xs sp-input",
                       oninput="transformCostManualEdit(this)"),
@@ -2117,7 +2099,7 @@ function celerpPrintLabel(entityId, templateId) {
         headers = [
             Th(""), Th("SKU", cls="sp-th"), Th("Category", cls="sp-th"),
             Th("Qty + Unit", cls="sp-th"), Th("Weight", cls="sp-th"),
-            Th("Pieces", cls="sp-th"), Th("Loss %", cls="sp-th"), Th("Cost Total", cls="sp-th"),
+            Th("Pieces", cls="sp-th"), Th("Cost Total", cls="sp-th"),
         ]
 
         form_attrs = {
@@ -2153,7 +2135,7 @@ function celerpPrintLabel(entityId, templateId) {
 
         try:
             child_qty = float(str(form.get("child_qty", "0")).strip())
-            loss_pct = float(str(form.get("loss_percent", "0")).strip())
+            loss_pct = 0.0
             child_cost_total = float(str(form.get("child_cost_total", "0")).strip())
         except ValueError:
             return Div(P("Invalid numeric input.", cls="flash flash--warning"), id="bulk-action-result")
