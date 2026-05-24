@@ -2021,15 +2021,23 @@ function celerpPrintLabel(entityId, templateId) {
         parent_qty = float(item.get("quantity") or 0)
         parent_sell_by = item.get("sell_by") or "piece"
         parent_category = item.get("category") or ""
-        parent_weight = item.get("weight")
-        parent_weight_unit = item.get("weight_unit") or "carat"
+        parent_weight_unit = item.get("weight_unit") or parent_sell_by
         parent_pieces = (item.get("attributes") or {}).get("pieces")
         parent_cost_price = float(item.get("cost_price") or 0)
         parent_cost_total = round(parent_cost_price * parent_qty, 2)
 
         units = await api.get_units(token)
+        unit_map = {u["name"]: u for u in units}
         unit_names = [u["name"] for u in units]
         weight_unit_names = [u["name"] for u in units if u.get("unit_type") == "weight"]
+
+        # For weight-sold items, quantity IS the weight; no separate weight field
+        sell_by_is_weight = is_weight_unit(parent_sell_by, unit_map)
+        if sell_by_is_weight:
+            parent_weight = parent_qty
+            parent_weight_unit = parent_sell_by
+        else:
+            parent_weight = item.get("weight")
 
         categories = await api.list_item_categories(token)
 
