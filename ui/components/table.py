@@ -998,7 +998,7 @@ function bulkActionChanged(action){
   }
   // Transform: auto-load preview immediately
   if(action==='transform'){
-    var ids = CelerpSelection.getIds ? CelerpSelection.getIds() : [];
+    var ids = CelerpSelection.ids();
     if(!ids.length) return;
     var entityId = ids[0];
     var url = '/api/items/bulk/transform-preview?entity_id=' + encodeURIComponent(entityId);
