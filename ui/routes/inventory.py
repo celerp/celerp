@@ -2057,7 +2057,6 @@ function celerpPrintLabel(entityId, templateId) {
             _static_td(f"{fmt(parent_qty)} {parent_sell_by}"),
             _static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--"),
             _static_td(str(int(parent_pieces)) if parent_pieces is not None else "--"),
-            _static_td(""),
             _static_td(fmt(parent_cost_total)),
         ]
 
