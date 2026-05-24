@@ -99,7 +99,9 @@ def compute_pick_plan(
             if avail <= 1e-9:
                 continue
 
-            cost = float(item.get("cost_price") or 0)
+            cost_total = float(item.get("cost_total") or 0)
+            item_qty = float(item.get("quantity") or 1)
+            cost = cost_total / item_qty if item_qty else 0.0
             allow_split = item.get("allow_splitting", True)
 
             if avail <= needed + 1e-9:

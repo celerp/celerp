@@ -71,6 +71,12 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
         flat["location_id"] = location_id
     if location_name:
         flat["location_name"] = location_name
+    qty = float(flat.get("quantity") or 0)
+    if flat.get("cost_total") is not None:
+        flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
+    elif flat.get("cost_price") is not None:
+        flat["cost_total"] = round(float(flat["cost_price"]) * qty, 2)
+    # else: both remain absent (item has no cost set)
     return flat
 
 
@@ -407,8 +413,8 @@ async def get_valuation(
             key = f"{pl_name.lower()}_price"
             try:
                 if pl_name.lower() in ("cost", "cost price", "landed"):
-                    # Cost uses pre-computed total_cost (qty * unit_cost), else fallback
-                    tc = state.get("total_cost")
+                    # Cost uses stored cost_total (lot total), else fallback to unit price * qty
+                    tc = state.get("cost_total")
                     if tc is not None:
                         price_totals[pl_name] += Decimal(str(tc))
                     elif state.get(key) is not None:
