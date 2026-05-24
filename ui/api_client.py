@@ -1342,6 +1342,11 @@ async def split_item(token: str, entity_id: str, children: list[dict]) -> dict:
         return _raise(await c.post(f"/items/{entity_id}/split", json=body)).json()
 
 
+async def transform_item(token: str, entity_id: str, payload: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/items/{entity_id}/transform", json=payload)).json()
+
+
 async def split_preview(token: str, entity_id: str, child_sku: str | None = None) -> dict:
     params: dict = {}
     if child_sku:

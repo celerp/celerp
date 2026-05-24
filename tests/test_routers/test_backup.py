@@ -154,8 +154,8 @@ async def test_list_htmx_with_items(auth_client, monkeypatch):
     import httpx as _httpx
     import respx
 
-    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
 
     items = [
         {"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 1048576, "label": "daily"},
@@ -180,8 +180,8 @@ async def test_list_htmx_empty_items(auth_client, monkeypatch):
     import httpx as _httpx
     import respx
 
-    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
 
     with respx.mock:
         respx.get("https://relay.test.com/backup/").mock(
@@ -199,8 +199,8 @@ async def test_list_json(auth_client, monkeypatch):
     import httpx as _httpx
     import respx
 
-    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
 
     items = [{"id": "bkp-1", "created_at": "2026-05-01T10:00:00Z", "size_bytes": 100, "label": "x"}]
     with respx.mock:
@@ -219,8 +219,8 @@ async def test_list_relay_error(auth_client, monkeypatch):
     import httpx as _httpx
     import respx
 
-    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
 
     with respx.mock:
         respx.get("https://relay.test.com/backup/").mock(

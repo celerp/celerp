@@ -20,6 +20,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
+from celerp.services.auto_je import create_for_item_transform
 from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -150,6 +151,19 @@ class MergeBody(BaseModel):
     resulting_cost_price: float | None = None  # optional override (default = weighted avg)
     resulting_name: str | None = None          # optional override (default = target's name)
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
+    idempotency_key: str | None = None
+
+
+class TransformBody(BaseModel):
+    child_sku: str
+    child_category: str
+    child_sell_by: str
+    child_quantity: float
+    child_weight: float | None = None
+    child_weight_unit: str | None = None
+    child_pieces: int | None = None
+    loss_percent: float  # 0.0 to 99.99
+    child_cost_total: float  # final cost (may be user-overridden)
     idempotency_key: str | None = None
 
 
@@ -1233,6 +1247,164 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         "event_id": entry.id,
         "children": [{"id": eid, "sku": sku} for eid, sku in zip(child_eids, child_skus)],
     }
+
+
+@router.post("/{entity_id}/transform")
+async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    # Fetch parent
+    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if parent is None or not parent.state.get("is_available", True):
+        raise HTTPException(status_code=404, detail="Item not found or unavailable")
+
+    # Validate
+    if not (0 <= payload.loss_percent < 100):
+        raise HTTPException(status_code=422, detail="loss_percent must be in [0, 99.99)")
+    if payload.child_quantity <= 0:
+        raise HTTPException(status_code=422, detail="child_quantity must be > 0")
+    if not payload.child_category.strip():
+        raise HTTPException(status_code=422, detail="child_category cannot be empty")
+
+    # Check child SKU uniqueness
+    existing = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            Projection.state["sku"].as_string() == payload.child_sku,
+        )
+    )).scalars().first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"SKU '{payload.child_sku}' already exists")
+
+    parent_qty = float(parent.state.get("quantity") or 0)
+    parent_attrs = dict(parent.state.get("attributes") or {})
+    # Exclude cost_price: child cost is set explicitly from child_cost_total
+    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
+    parent_cost_total = float(parent.state.get("cost_price") or 0) * parent_qty
+    parent_location_id = parent.state.get("location_id")
+
+    child_eid = f"item:{uuid.uuid4()}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    child_data: dict = {
+        "sku": payload.child_sku,
+        "name": parent.state.get("name", payload.child_sku),
+        "quantity": payload.child_quantity,
+        "sell_by": payload.child_sell_by,
+        "category": payload.child_category,
+        "allow_splitting": True,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "attributes": {**parent_attrs},
+    }
+    if payload.child_weight is not None:
+        child_data["weight"] = payload.child_weight
+    child_weight_unit = payload.child_weight_unit or parent.state.get("weight_unit")
+    if child_weight_unit:
+        child_data["weight_unit"] = child_weight_unit
+    if payload.child_pieces is not None:
+        child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
+    if parent_location_id:
+        child_data["location_id"] = parent_location_id
+    child_data["cost_price"] = payload.child_cost_total / payload.child_quantity
+    child_data["barcode"] = str(await _next_seq(session, company_id)).zfill(6)
+
+    # 1. Create child
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=child_eid,
+        entity_type="item",
+        event_type="item.created",
+        data=child_data,
+        actor_id=user.id,
+        location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={"parent_id": entity_id, "transform_loss_pct": payload.loss_percent},
+    )
+
+    # 2. Copy prices
+    for price_type, price_val in parent_prices.items():
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=child_eid,
+            entity_type="item",
+            event_type="item.pricing.set",
+            data={"price_type": price_type, "new_price": price_val},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    # 3. Consume parent qty
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.quantity.adjusted",
+        data={"new_qty": 0},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    # 4. Mark parent sold
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": "sold"},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+
+    # 5. Emit transform event
+    idempotency_key = payload.idempotency_key or str(uuid.uuid4())
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.transform",
+        data={
+            "child_id": child_eid,
+            "child_sku": payload.child_sku,
+            "child_category": payload.child_category,
+            "loss_percent": payload.loss_percent,
+            "parent_cost_total": parent_cost_total,
+            "child_cost_total": payload.child_cost_total,
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=idempotency_key,
+        metadata_={},
+    )
+
+    # 6. Auto JE
+    await create_for_item_transform(
+        session,
+        company_id=company_id,
+        user_id=user.id,
+        parent_entity_id=entity_id,
+        parent_cost_total=parent_cost_total,
+        parent_category=parent.state.get("category", ""),
+        child_category=payload.child_category,
+    )
+
+    await session.commit()
+    return {"child_id": child_eid, "child_sku": payload.child_sku}
 
 
 @router.post("/merge")

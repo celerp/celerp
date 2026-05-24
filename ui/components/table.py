@@ -986,6 +986,7 @@ function bulkActionChanged(action){
   if(!tpl) return;
   // Validate selection count constraints
   if(action==='split'&&n!==1){alert('Select exactly 1 item to split.');return;}
+  if(action==='transform'&&n!==1){alert('Select exactly 1 item to transform.');return;}
   if(action==='merge'&&n<2){alert('Select at least 2 items to merge.');return;}
   var clone=tpl.content.cloneNode(true);
   ctx.appendChild(clone);
@@ -993,6 +994,16 @@ function bulkActionChanged(action){
   if(action==='split'){
     if(window.htmx) htmx.process(ctx);
     if(typeof bulkSplitAutoLoad==='function') bulkSplitAutoLoad();
+    return;
+  }
+  // Transform: auto-load preview immediately
+  if(action==='transform'){
+    var ids = CelerpSelection.getIds ? CelerpSelection.getIds() : [];
+    if(!ids.length) return;
+    var entityId = ids[0];
+    var url = '/api/items/bulk/transform-preview?entity_id=' + encodeURIComponent(entityId);
+    htmx.ajax('GET', url, { target: '#bulk-transform-preview', swap: 'innerHTML' })
+      .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-transform-preview')); });
     return;
   }
   // Merge: populate target dropdown with selected items

@@ -101,6 +101,50 @@ function bulkSplitSubmit(formEl) {
 }
 """
 
+_BULK_TRANSFORM_JS = """
+function transformRecalcCost(input) {
+  var form = input.closest('form');
+  var parentCost = parseFloat(form.dataset.parentCostTotal || '0');
+  var lossPct = parseFloat(input.value || '0');
+  if (isNaN(lossPct) || lossPct < 0 || lossPct >= 100) return;
+  var childCost = parentCost / (1 - lossPct / 100);
+  var costInput = form.querySelector('[name="child_cost_total"]');
+  if (costInput) {
+    costInput.value = childCost.toFixed(2);
+    form.dataset.costOverridden = 'false';
+  }
+}
+function transformCostManualEdit(input) {
+  input.closest('form').dataset.costOverridden = 'true';
+}
+function transformUnitChanged(select) {
+  var form = select.closest('form');
+  var unit = select.value;
+  var weightTd = form.querySelector('.tr-weight-td');
+  var piecesTd = form.querySelector('.tr-pieces-td');
+  var weightInput = weightTd ? weightTd.querySelector('input') : null;
+  var piecesInput = piecesTd ? piecesTd.querySelector('input') : null;
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  var qtyInput = form.querySelector('[name="child_qty"]');
+  var qtyVal = qtyInput ? qtyInput.value : '0';
+  if (weightUnits.indexOf(unit) !== -1) {
+    if (weightInput) { weightInput.value = qtyVal; weightInput.disabled = true; weightInput.classList.add('tr-locked'); }
+    if (piecesInput) { piecesInput.disabled = false; piecesInput.classList.remove('tr-locked'); }
+  } else if (unit === 'piece') {
+    if (piecesInput) { piecesInput.value = Math.round(parseFloat(qtyVal || '0')); piecesInput.disabled = true; piecesInput.classList.add('tr-locked'); }
+    if (weightInput) { weightInput.disabled = false; weightInput.classList.remove('tr-locked'); }
+  } else {
+    if (weightInput) { weightInput.disabled = false; weightInput.classList.remove('tr-locked'); }
+    if (piecesInput) { piecesInput.disabled = false; piecesInput.classList.remove('tr-locked'); }
+  }
+}
+function transformQtyChanged(input) {
+  var form = input.closest('form');
+  var unitSelect = form.querySelector('[name="child_sell_by"]');
+  if (unitSelect) transformUnitChanged(unitSelect);
+}
+"""
+
 
 
 
@@ -323,6 +367,7 @@ def setup_routes(app):
             ),
             content,
             Script(_BULK_SPLIT_JS),
+            Script(_BULK_TRANSFORM_JS),
             title="Inventory - Celerp",
             nav_active="inventory",
             lang=lang,
@@ -1954,6 +1999,182 @@ function celerpPrintLabel(entityId, templateId) {
             f"?skus={exact_skus}&status=all",
         )
 
+    @app.get("/api/items/bulk/transform-preview")
+    async def bulk_transform_preview(request: Request):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        entity_id = request.query_params.get("entity_id", "").strip()
+        if not entity_id:
+            return Div()
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"))
+
+        parent_qty = float(item.get("quantity") or 0)
+        parent_sell_by = item.get("sell_by") or "piece"
+        parent_category = item.get("category") or ""
+        parent_weight = item.get("weight")
+        parent_weight_unit = item.get("weight_unit") or "carat"
+        parent_pieces = (item.get("attributes") or {}).get("pieces")
+        parent_cost_price = float(item.get("cost_price") or 0)
+        parent_cost_total = round(parent_cost_price * parent_qty, 2)
+
+        units = await api.get_units(token)
+        unit_names = [u["name"] for u in units]
+        weight_unit_names = [u["name"] for u in units if u.get("unit_type") == "weight"]
+
+        categories = await api.list_item_categories(token)
+
+        child_sku = await _next_split_sku(token, item.get("sku", ""))
+
+        fmt = lambda v, d=2: f"{float(v):.{d}f}" if v is not None else ""
+        show_weight = parent_weight is not None
+        show_pieces = parent_pieces is not None
+
+        def _static_td(val):
+            return Td(val, cls="sp-td")
+
+        unit_select = Select(
+            *[Option(u, value=u, selected=(u == parent_sell_by)) for u in unit_names],
+            name="child_sell_by",
+            cls="form-input form-input--xs",
+            onchange="transformUnitChanged(this)",
+        )
+        cat_select = Select(
+            *[Option(c, value=c, selected=(c == parent_category)) for c in categories],
+            name="child_category",
+            cls="form-input form-input--xs",
+        )
+
+        mother_cells = [
+            Td("Mother", cls="sp-row-label"),
+            _static_td(item.get("sku", "")),
+            _static_td(parent_category),
+            _static_td(f"{fmt(parent_qty)} {parent_sell_by}"),
+        ]
+        if show_weight:
+            mother_cells.append(_static_td(f"{fmt(parent_weight)} {parent_weight_unit}"))
+        if show_pieces:
+            mother_cells.append(_static_td(str(int(parent_pieces))))
+        mother_cells.append(_static_td(""))
+        mother_cells.append(_static_td(fmt(parent_cost_total)))
+
+        child_qty_input = Td(
+            Input(type="number", name="child_qty", value=fmt(parent_qty), step="any", min="0",
+                  cls="form-input form-input--xs sp-input",
+                  onchange="transformQtyChanged(this)"),
+            unit_select,
+            cls="sp-td",
+        )
+        child_weight_td = Td(
+            Input(type="number", name="child_weight",
+                  value=fmt(parent_weight) if parent_weight is not None else "",
+                  step="any", cls="form-input form-input--xs sp-input"),
+            cls="sp-td tr-weight-td",
+        ) if show_weight else None
+        child_pieces_td = Td(
+            Input(type="number", name="child_pieces",
+                  value=str(int(parent_pieces)) if parent_pieces is not None else "",
+                  step="1", cls="form-input form-input--xs sp-input"),
+            cls="sp-td tr-pieces-td",
+        ) if show_pieces else None
+
+        child_cells = [
+            Td("Child", cls="sp-row-label"),
+            Td(Input(type="text", name="child_sku", value=child_sku, cls="form-input sp-sku-input"), cls="sp-td"),
+            Td(cat_select, cls="sp-td"),
+            child_qty_input,
+        ]
+        if show_weight:
+            child_cells.append(child_weight_td)
+        if show_pieces:
+            child_cells.append(child_pieces_td)
+        child_cells.append(Td(
+            Input(type="number", name="loss_percent", value="0", step="0.01", min="0", max="99.99",
+                  cls="form-input form-input--xs sp-input",
+                  oninput="transformRecalcCost(this)"),
+            cls="sp-td",
+        ))
+        child_cells.append(Td(
+            Input(type="number", name="child_cost_total", value=fmt(parent_cost_total), step="0.01",
+                  cls="form-input form-input--xs sp-input",
+                  oninput="transformCostManualEdit(this)"),
+            cls="sp-td",
+        ))
+
+        headers = [Th(""), Th("SKU", cls="sp-th"), Th("Category", cls="sp-th"), Th("Qty + Unit", cls="sp-th")]
+        if show_weight:
+            headers.append(Th("Weight", cls="sp-th"))
+        if show_pieces:
+            headers.append(Th("Pieces", cls="sp-th"))
+        headers.append(Th("Loss %", cls="sp-th"))
+        headers.append(Th("Cost Total", cls="sp-th"))
+
+        form_attrs = {
+            "data-parent-cost-total": str(parent_cost_total),
+            "data-weight-units": ",".join(weight_unit_names),
+            "data-parent-qty": str(parent_qty),
+        }
+
+        return Form(
+            Input(type="hidden", name="entity_id", value=entity_id),
+            Table(
+                Thead(Tr(*headers)),
+                Tbody(Tr(*mother_cells), Tr(*child_cells)),
+                cls="split-preview-table",
+            ),
+            Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+            hx_post="/api/items/bulk/transform",
+            hx_target="#bulk-action-result",
+            hx_swap="outerHTML",
+            id="bulk-transform-preview-form",
+            **form_attrs,
+        )
+
+    @app.post("/api/items/bulk/transform")
+    async def bulk_item_transform(request: Request):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        form = await request.form()
+        entity_id = str(form.get("entity_id", "")).strip()
+        if not entity_id:
+            return Div(P("No item selected.", cls="flash flash--warning"), id="bulk-action-result")
+
+        try:
+            child_qty = float(str(form.get("child_qty", "0")).strip())
+            loss_pct = float(str(form.get("loss_percent", "0")).strip())
+            child_cost_total = float(str(form.get("child_cost_total", "0")).strip())
+        except ValueError:
+            return Div(P("Invalid numeric input.", cls="flash flash--warning"), id="bulk-action-result")
+
+        child_weight_raw = str(form.get("child_weight", "")).strip()
+        child_pieces_raw = str(form.get("child_pieces", "")).strip()
+
+        payload = {
+            "child_sku": str(form.get("child_sku", "")).strip(),
+            "child_category": str(form.get("child_category", "")).strip(),
+            "child_sell_by": str(form.get("child_sell_by", "")).strip(),
+            "child_quantity": child_qty,
+            "child_weight": float(child_weight_raw) if child_weight_raw else None,
+            "child_pieces": int(child_pieces_raw) if child_pieces_raw else None,
+            "loss_percent": loss_pct,
+            "child_cost_total": child_cost_total,
+        }
+
+        try:
+            result = await api.transform_item(token, entity_id, payload)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"), id="bulk-action-result")
+
+        child_sku = result.get("child_sku", "")
+        return Div(
+            P(f"Transformed \u2192 {child_sku}", cls="flash flash--success"),
+            id="bulk-action-result",
+        )
+
     # ── Send-to search (HTMX dropdown) ───────────────────────────────────
 
     @app.get("/api/items/send-to/search")
@@ -2652,6 +2873,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
         Option(t("inv.action"), value="", disabled=True, selected=True),
         Option(t("btn.transfer"), value="transfer"),
         Option(t("inv.split"), value="split"),
+        Option(t("inv.transform"), value="transform"),
         Option(t("inv.merge"), value="merge"),
     ]
     if send_to_opts:
@@ -2731,6 +2953,15 @@ def _bulk_context_templates(
             id="bulk-split-form",
         ),
         id="tpl-split",
+    )
+
+    # Transform: auto-loads preview on action select
+    transform_tpl = Template(
+        Div(
+            Div(id="bulk-transform-preview"),
+            id="bulk-transform-form",
+        ),
+        id="tpl-transform",
     )
 
     # Merge: target dropdown + confirm
@@ -2827,6 +3058,7 @@ def _bulk_context_templates(
     return Div(
         transfer_tpl,
         split_tpl,
+        transform_tpl,
         merge_tpl,
         send_to_tpl,
         *module_tpls,

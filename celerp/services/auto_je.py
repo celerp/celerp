@@ -708,3 +708,35 @@ async def upsert_opening_inventory_je(
         metadata_={"trigger": "opening_inventory.auto"},
         ts=today,
     )
+
+
+def _category_inventory_account(category: str) -> str:
+    """Placeholder: all categories map to 1300 until category-level CoA mapping is built."""
+    return "1300"
+
+
+async def create_for_item_transform(
+    session, *, company_id, user_id, parent_entity_id: str,
+    parent_cost_total: float, parent_category: str, child_category: str,
+) -> None:
+    """Inventory reclassification JE for transform. Moves parent_cost_total exactly.
+    Currently a no-op (both categories -> 1300). Scaffolded for future category-CoA mapping.
+    """
+    dr_account = _category_inventory_account(child_category)
+    cr_account = _category_inventory_account(parent_category)
+    if dr_account == cr_account:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:transform:{parent_entity_id}",
+        idem_create=je_idempotency_key(parent_entity_id, "item.transform", "c"),
+        idem_posted=je_idempotency_key(parent_entity_id, "item.transform", "p"),
+        memo=f"Inventory transform: {parent_category} -> {child_category}",
+        entries=[
+            {"account": dr_account, "debit": parent_cost_total, "credit": 0.0},
+            {"account": cr_account, "debit": 0.0, "credit": parent_cost_total},
+        ],
+        metadata_={"trigger": "item.transform", "parent_entity_id": parent_entity_id},
+    )

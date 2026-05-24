@@ -95,6 +95,15 @@ class ItemSplit(BaseModel):
     quantities: list[float]
 
 
+class ItemTransform(BaseModel):
+    child_id: str
+    child_sku: str
+    child_category: str
+    loss_percent: float
+    parent_cost_total: float
+    child_cost_total: float
+
+
 class ItemMerged(BaseModel):
     """Marker event on the NEW item created by a merge. Real state comes from item.created."""
     source_entity_ids: list[str]
@@ -766,6 +775,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
     "item.split": ItemSplit,
+    "item.transform": ItemTransform,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,
     "item.patched": ItemPatched,
