@@ -904,6 +904,10 @@ def setup_routes(app):
                     if _flt(unit_key) is not None:
                         # Unit price already mapped - total is redundant, skip silently
                         continue
+                    if unit_key == "cost_price":
+                        # cost_total is the primitive; store directly (no back-calculation)
+                        data["cost_total"] = total_val
+                        continue
                     if not qty or qty == 0:
                         _price_errors.append(
                             f"Cannot back-calculate {unit_key} from {col_key}: quantity is 0 or missing"
@@ -1149,9 +1153,13 @@ function celerpPrintLabel(entityId, templateId) {
             vf = virtual_fields[field]
             paired = vf.get("paired_with", "")
             try:
-                unit_price = float(item.get(paired) or 0)
-                qty = float(item.get("quantity") or 0)
-                total = unit_price * qty
+                if field == "cost_price_total" and item.get("cost_total") is not None:
+                    # cost_total is the primitive; display it directly
+                    total = float(item["cost_total"])
+                else:
+                    unit_price = float(item.get(paired) or 0)
+                    qty = float(item.get("quantity") or 0)
+                    total = unit_price * qty
                 display_val = f"{total:.2f}" if total != 0 else ""
             except (ValueError, TypeError):
                 display_val = ""
@@ -1272,18 +1280,24 @@ function celerpPrintLabel(entityId, templateId) {
                     return P(f"Unknown location: {value}", cls="cell-error")
                 await api.transfer_item(token, entity_id, loc.get("location_id") or loc.get("id", ""))
             elif field.endswith("_price_total"):
-                # Virtual total field: back-calculate unit price = total / qty, then patch unit price field
+                # Virtual total field: patch cost_total directly; back-calculate unit for other price lists
                 unit_price_field = field[: -len("_total")]  # e.g. "cost_price_total" → "cost_price"
                 old_item = await api.get_item(token, entity_id)
-                qty = float(old_item.get("quantity") or 0)
-                if qty == 0:
-                    return P(t("error.cannot_divide_by_zero_qty", "Cannot compute unit price: quantity is zero"), cls="cell-error")
-                unit_price = float(value) / qty
-                old_unit_price = old_item.get(unit_price_field)
-                await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
-                # Patch field variable so downstream re-render uses unit_price_field
-                field = unit_price_field
-                value = unit_price
+                if unit_price_field == "cost_price":
+                    # cost_total is the primitive; patch it directly
+                    old_cost_total = old_item.get("cost_total")
+                    await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": float(value)}})
+                    field = "cost_total"
+                    value = float(value)
+                else:
+                    qty = float(old_item.get("quantity") or 0)
+                    if qty == 0:
+                        return P(t("error.cannot_divide_by_zero_qty", "Cannot compute unit price: quantity is zero"), cls="cell-error")
+                    unit_price = float(value) / qty
+                    old_unit_price = old_item.get(unit_price_field)
+                    await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
+                    field = unit_price_field
+                    value = unit_price
             else:
                 # Fetch old value before patching so activity log shows old → new.
                 # get_item returns a _flatten_item result: attribute fields are already
@@ -2011,8 +2025,7 @@ function celerpPrintLabel(entityId, templateId) {
         parent_category = item.get("category") or ""
         parent_weight_unit = item.get("weight_unit") or parent_sell_by
         parent_pieces = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
-        parent_cost_price = float(item.get("cost_price") or 0)
-        parent_cost_total = round(parent_cost_price * parent_qty, 2)
+        parent_cost_total = float(item.get("cost_total") or 0) or round(float(item.get("cost_price") or 0) * parent_qty, 2)
 
         units = await api.get_units(token)
         unit_map = {u["name"]: u for u in units}
@@ -2598,14 +2611,14 @@ function celerpPrintLabel(entityId, templateId) {
         if not source_entity_ids or not target_sku_from:
             return Span(t("inv.source_items_and_target_selection_are_required"), cls="flash flash--error")
         raw_qty = str(form.get("resulting_quantity", "")).strip()
-        raw_cost = str(form.get("resulting_cost_price", "")).strip()
+        raw_cost = str(form.get("resulting_cost_total", "")).strip()
         resulting_name = str(form.get("resulting_name", "")).strip() or None
         try:
             resulting_quantity = float(raw_qty) if raw_qty else None
         except ValueError:
             return Span(t("error.invalid_resulting_quantity"), cls="flash flash--error")
         try:
-            resulting_cost_price = float(raw_cost) if raw_cost else None
+            resulting_cost_total = float(raw_cost) if raw_cost else None
         except ValueError:
             return Span(t("inv.invalid_resulting_cost_price"), cls="flash flash--error")
         # Collect resolved attributes for string conflicts.
@@ -2626,7 +2639,7 @@ function celerpPrintLabel(entityId, templateId) {
                 source_entity_ids=source_entity_ids,
                 target_sku_from=target_sku_from,
                 resulting_quantity=resulting_quantity,
-                resulting_cost_price=resulting_cost_price,
+                resulting_cost_total=resulting_cost_total,
                 resulting_name=resulting_name,
                 resolved_attributes=resolved_attributes or None,
             )
@@ -3477,15 +3490,19 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             return renderer
         renderers[pk] = _make_price_renderer()
 
-    # Virtual total column renderers: cost_price_total = cost_price * quantity
+    # Virtual total column renderers
     for vk, vf in virtual_total_fields.items():
         paired = vf.get("paired_with", "")
         def _make_total_renderer(total_field=vk, unit_field=paired, _currency=_cur):
             def renderer(entity_id: str, row: dict) -> FT:
                 try:
-                    unit_price = float(row.get(unit_field) or 0)
-                    qty = float(row.get("quantity") or 0)
-                    total = unit_price * qty
+                    if total_field == "cost_price_total" and row.get("cost_total") is not None:
+                        # cost_total is the primitive; display it directly
+                        total = float(row["cost_total"])
+                    else:
+                        unit_price = float(row.get(unit_field) or 0)
+                        qty = float(row.get("quantity") or 0)
+                        total = unit_price * qty
                     formatted = fmt_money(total, _currency) if total != 0 else "--"
                 except (ValueError, TypeError):
                     formatted = "--"
@@ -3516,12 +3533,18 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
     col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema if f.get("key") not in _cm_exclude]
     col_data_js = _json.dumps(col_data)
-    # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary
-    virtual_followers_js = _json.dumps({
-        f["paired_with"]: [f["key"]]
-        for f in schema
-        if f.get("virtual") and f.get("paired_with")
-    })
+    # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary.
+    # For cost: cost_price_total is primary; cost_price follows it.
+    # For all other price lists: _price_total follows _price.
+    _vf_map: dict[str, list[str]] = {}
+    for f in schema:
+        if f.get("virtual") and f.get("paired_with"):
+            key, paired = f["key"], f["paired_with"]
+            if key == "cost_price_total":
+                _vf_map.setdefault(key, []).append(paired)
+            else:
+                _vf_map.setdefault(paired, []).append(key)
+    virtual_followers_js = _json.dumps(_vf_map)
     selected_js = _json.dumps(sorted(selected))
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}

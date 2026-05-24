@@ -141,7 +141,7 @@ async def seed_items(client: httpx.AsyncClient, token: str) -> list[str]:
             "event_type": "item.created",
             "data": {
                 "sku": sku, "name": name, "category": category,
-                "quantity": qty, "cost_price": cost, "retail_price": retail,
+                "quantity": qty, "cost_total": cost * qty, "retail_price": retail,
                 "wholesale_price": wholesale, "status": "active",
             },
             "source": "seed",

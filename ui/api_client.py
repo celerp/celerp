@@ -1360,7 +1360,7 @@ async def merge_items(
     source_entity_ids: list[str],
     target_sku_from: str,
     resulting_quantity: float | None = None,
-    resulting_cost_price: float | None = None,
+    resulting_cost_total: float | None = None,
     resulting_name: str | None = None,
     resolved_attributes: dict | None = None,
     idempotency_key: str | None = None,
@@ -1368,8 +1368,8 @@ async def merge_items(
     body: dict = {"source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from}
     if resulting_quantity is not None:
         body["resulting_quantity"] = resulting_quantity
-    if resulting_cost_price is not None:
-        body["resulting_cost_price"] = resulting_cost_price
+    if resulting_cost_total is not None:
+        body["resulting_cost_total"] = resulting_cost_total
     if resulting_name is not None:
         body["resulting_name"] = resulting_name
     if resolved_attributes:

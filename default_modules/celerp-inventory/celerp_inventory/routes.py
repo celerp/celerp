@@ -109,7 +109,8 @@ class ItemCreate(BaseModel):
     quantity: float = 0
     category: str | None = None
     location_id: uuid.UUID | None = None
-    cost_price: float | None = None
+    cost_price: float | None = None  # legacy alias; prefer cost_total
+    cost_total: float | None = None
     wholesale_price: float | None = None
     retail_price: float | None = None
     description: str | None = None
@@ -154,7 +155,7 @@ class MergeBody(BaseModel):
     source_entity_ids: list[str]
     target_sku_from: str                       # entity_id of the source whose SKU/barcode to use
     resulting_quantity: float | None = None    # optional override (default = sum)
-    resulting_cost_price: float | None = None  # optional override (default = weighted avg)
+    resulting_cost_total: float | None = None  # optional override (default = sum of source cost_totals)
     resulting_name: str | None = None          # optional override (default = target's name)
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
     idempotency_key: str | None = None
@@ -587,8 +588,8 @@ async def _next_seq(session: AsyncSession, company_id: uuid.UUID) -> int:
 
 @router.post("")
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
-    # Guard: operator/viewer cannot set cost_price on creation (manager+ required)
-    if payload.cost_price is not None and ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
+    # Guard: operator/viewer cannot set cost fields on creation (manager+ required)
+    if (payload.cost_price is not None or payload.cost_total is not None) and ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
         raise HTTPException(status_code=403, detail=f"Role '{role}' cannot set cost_price")
 
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
@@ -669,8 +670,14 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     data.setdefault("updated_at", now_iso)
 
     # Strip price fields from create event data - they go via pricing events.
-    # Any key ending in _price is treated as a pricing field.
+    # Any key ending in _price is treated as a pricing field. cost_total is also a pricing field.
     price_fields = {k: data.pop(k) for k in list(data) if k.endswith("_price") and data[k] is not None}
+    if "cost_total" in data and data["cost_total"] is not None:
+        # cost_total takes precedence over cost_price if both supplied
+        price_fields["cost_total"] = data.pop("cost_total")
+        price_fields.pop("cost_price", None)  # discard cost_price if cost_total provided
+    elif "cost_total" in data:
+        data.pop("cost_total")
 
     entry = await emit_event(
         session,
@@ -1026,8 +1033,11 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     parent_location_id = parent.state.get("location_id")
     parent_attrs = dict(parent.state.get("attributes") or {})
 
-    # Fields to preserve on children (everything except identity/qty)
-    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None}
+    # Fields to preserve on children (everything except identity/qty/cost - cost split proportionally)
+    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
+    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
+        float(parent.state.get("cost_price") or 0) * parent_qty
+    )
     parent_description = parent.state.get("description")
     parent_status = parent.state.get("status")
     parent_tax_codes = parent.state.get("tax_codes")
@@ -1147,7 +1157,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             metadata_={"parent_id": entity_id},
         )
 
-        # Preserve prices from parent via pricing events
+        # Preserve prices from parent via pricing events (excluding cost - set proportionally below)
         for price_type, price_val in parent_prices.items():
             await emit_event(
                 session,
@@ -1156,6 +1166,22 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 entity_type="item",
                 event_type="item.pricing.set",
                 data={"price_type": price_type, "new_price": price_val},
+                actor_id=user.id,
+                location_id=None,
+                source="api",
+                idempotency_key=str(uuid.uuid4()),
+                metadata_={},
+            )
+        # Assign proportional cost_total to child
+        if parent_cost_total and parent_qty:
+            child_cost_total = round(parent_cost_total * (child.quantity / parent_qty), 10)
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=child_eid,
+                entity_type="item",
+                event_type="item.pricing.set",
+                data={"price_type": "cost_total", "new_price": child_cost_total},
                 actor_id=user.id,
                 location_id=None,
                 source="api",
@@ -1178,6 +1204,26 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
+
+    # Update parent cost_total (Q1=A: reduce by sum of child cost_totals)
+    if parent_cost_total and parent_qty:
+        total_child_cost = sum(
+            round(parent_cost_total * (c.quantity / parent_qty), 10) for c in children
+        )
+        parent_remaining_cost = round(parent_cost_total - total_child_cost, 10)
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.pricing.set",
+            data={"price_type": "cost_total", "new_price": parent_remaining_cost},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
@@ -1280,9 +1326,11 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
 
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_attrs = dict(parent.state.get("attributes") or {})
-    # Exclude cost_price: child cost is set explicitly from child_cost_total
+    # Exclude cost fields: child cost is set explicitly from child_cost_total
     parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
-    parent_cost_total = float(parent.state.get("cost_price") or 0) * parent_qty
+    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
+        float(parent.state.get("cost_price") or 0) * parent_qty
+    )
     parent_location_id = parent.state.get("location_id")
 
     child_eid = f"item:{uuid.uuid4()}"
@@ -1308,7 +1356,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
     if parent_location_id:
         child_data["location_id"] = parent_location_id
-    child_data["cost_price"] = payload.child_cost_total / payload.child_quantity
+    child_data["cost_total"] = payload.child_cost_total
     child_data["barcode"] = str(await _next_seq(session, company_id)).zfill(6)
 
     # 1. Create child
@@ -1432,18 +1480,13 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
     weights = [float(p.state["weight"]) for p in source_projections if p.state.get("weight") is not None]
     total_weight = sum(weights) if weights else None
-    total_cost_qty = sum(
-        float(p.state.get("quantity") or 0)
-        for p in source_projections
-        if p.state.get("cost_price") is not None
-    )
-    if total_cost_qty > 0:
-        weighted_cost = sum(
+    # Compute merged cost_total: sum of all source cost_totals (Q2=Option A)
+    merged_cost_total = sum(
+        float(p.state.get("cost_total") or 0) or (
             float(p.state.get("cost_price") or 0) * float(p.state.get("quantity") or 0)
-            for p in source_projections
-        ) / total_cost_qty
-    else:
-        weighted_cost = float(target_proj.state.get("cost_price") or 0) or None
+        )
+        for p in source_projections
+    ) or None
 
     expiry_dates = sorted(e for p in source_projections if (e := _get_expiry(p)))
     earliest_expiry = expiry_dates[0] if expiry_dates else None
@@ -1493,7 +1536,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Apply user overrides.
     resulting_qty = payload.resulting_quantity if payload.resulting_quantity is not None else total_qty
-    resulting_cost = payload.resulting_cost_price if payload.resulting_cost_price is not None else weighted_cost
+    resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
     # Update expiry_date attribute to earliest.
@@ -1542,10 +1585,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         metadata_={"merged_from": payload.source_entity_ids},
     )
 
-    # Emit pricing events for all price fields from target (or computed cost).
+    # Emit pricing events for all price fields from target; emit cost_total (not cost_price) for cost.
     price_fields: dict = {}
     if resulting_cost is not None:
-        price_fields["cost_price"] = resulting_cost
+        price_fields["cost_total"] = resulting_cost
     for pf, val in target_state.items():
         if pf.endswith("_price") and pf != "cost_price" and val is not None:
             price_fields[pf] = val

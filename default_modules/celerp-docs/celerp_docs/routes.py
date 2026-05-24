@@ -1623,7 +1623,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 "location_id": payload.location_id,
             })
             if it.cost_price is not None:
-                item_data["cost_price"] = it.cost_price
+                # Emit cost_total when quantity is known (cost_total is the primitive)
+                _recv_qty = float(it.quantity_received) * conversion
+                item_data["cost_total"] = it.cost_price * _recv_qty if _recv_qty else it.cost_price
             if is_consignment:
                 item_data["consignment_flag"] = "in"
             new_eid = f"item:{uuid.uuid4()}"
@@ -3134,7 +3136,7 @@ async def undo_receive_return(
     now = datetime.now(UTC).isoformat()
     item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
     total_cogs = sum(
-        float(r.get("cost_price") or 0) * float(r.get("quantity") or 0)
+        float(r.get("cost_total") or 0) or (float(r.get("cost_price") or 0) * float(r.get("quantity") or 0))
         for r in received_items
     )
 

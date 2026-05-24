@@ -617,9 +617,9 @@ async def upsert_opening_inventory_je(
             continue
         if (s.get("inventory_type") or "stocked") != "stocked":
             continue
-        tc = s.get("total_cost")
-        if tc is not None:
-            catalog_total += _Dec(str(tc))
+        cost_total = float(s.get("cost_total") or 0)
+        if cost_total:
+            catalog_total += _Dec(str(cost_total))
         else:
             cost = s.get("cost_price") or s.get("cost price")
             qty = s.get("quantity") or 0

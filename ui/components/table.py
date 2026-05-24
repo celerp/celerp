@@ -694,11 +694,19 @@ def data_table(
         _schema_defaults = {f["key"]: (f["key"] in show_cols) for f in visible}
     else:
         _schema_defaults = {f["key"]: f.get("show_in_table", True) for f in visible}
-    # Map primary_key → [virtual_key, ...] so drag and restore both move virtual cols with their primary
+    # Map primary_key → [virtual_key, ...] so drag and restore both move virtual cols with their primary.
+    # For cost: cost_price_total is the primary (editable); cost_price follows it (derived read-only).
+    # For all other price lists: _price_total follows _price (total is derived).
     _virtual_followers: dict[str, list[str]] = {}
     for f in schema:
         if f.get("virtual") and f.get("paired_with"):
-            _virtual_followers.setdefault(f["paired_with"], []).append(f["key"])
+            paired = f["paired_with"]
+            key = f["key"]
+            if key == "cost_price_total":
+                # cost_price_total is primary; cost_price follows it
+                _virtual_followers.setdefault(key, []).append(paired)
+            else:
+                _virtual_followers.setdefault(paired, []).append(key)
     _js = f"""
 (function(){{
   var PAGE_KEY = '{page_key}';

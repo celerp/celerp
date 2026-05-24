@@ -32,7 +32,7 @@ class TestPickAlgorithm:
             "quantity": qty,
             "created_at": created_at or "2026-01-01T00:00:00",
             "expires_at": expires_at,
-            "cost_price": cost_price,
+            "cost_total": cost_price * qty,  # cost_total is now the primitive
         }
 
     def test_fifo_single_item(self):
@@ -237,7 +237,7 @@ async def _create_item(client, auth, sku, qty, cost_price=0, created_at=None, ex
     """Helper: create inventory item via API."""
     data = {"sku": sku, "name": sku, "quantity": qty, "sell_by": sell_by}
     if cost_price:
-        data["cost_price"] = cost_price
+        data["cost_total"] = cost_price * qty  # cost_total is now the primitive
     if created_at:
         data["created_at"] = created_at
     if expires_at:
@@ -288,7 +288,7 @@ async def test_fulfill_creates_events_and_updates_projections(client, session, a
         "quantity": float(inv_row.state["quantity"]),
         "created_at": inv_row.state.get("created_at", ""),
         "expires_at": inv_row.state.get("expires_at"),
-        "cost_price": float(inv_row.state.get("cost_price", 0)),
+        "cost_total": float(inv_row.state.get("cost_total", 0)),
     }]
     pick_result = compute_pick_plan(doc_state.get("line_items", []), available_inv)
     result = await execute_fulfill(
@@ -323,7 +323,7 @@ async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
     available_inv = [{
         "entity_id": item_id, "sku": "RESTORE-A", "quantity": 10,
-        "created_at": "", "expires_at": None, "cost_price": 3.0,
+        "created_at": "", "expires_at": None, "cost_total": 30.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     await execute_fulfill(
@@ -376,7 +376,7 @@ async def test_void_does_not_change_fulfillment_status(client, session, auth, _s
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
     available_inv = [{
         "entity_id": item_id, "sku": "VOID-A", "quantity": 5,
-        "created_at": "", "expires_at": None, "cost_price": 10.0,
+        "created_at": "", "expires_at": None, "cost_total": 50.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     await execute_fulfill(
@@ -418,7 +418,7 @@ async def test_revert_to_draft_does_not_change_fulfillment_status(client, sessio
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
     available_inv = [{
         "entity_id": item_id, "sku": "REVERT-A", "quantity": 8,
-        "created_at": "", "expires_at": None, "cost_price": 4.0,
+        "created_at": "", "expires_at": None, "cost_total": 32.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     await execute_fulfill(
@@ -460,7 +460,7 @@ async def test_unvoid_does_not_auto_refulfill(client, session, auth, _setup_ids)
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
     available_inv = [{
         "entity_id": item_id, "sku": "UNVOID-A", "quantity": 10,
-        "created_at": "", "expires_at": None, "cost_price": 2.0,
+        "created_at": "", "expires_at": None, "cost_total": 20.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     await execute_fulfill(
@@ -530,7 +530,7 @@ async def test_mixed_invoice_physical_and_service(client, session, auth, _setup_
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
     available_inv = [{
         "entity_id": item_id, "sku": "MIX-PHYS", "quantity": 5,
-        "created_at": "", "expires_at": None, "cost_price": 7.0,
+        "created_at": "", "expires_at": None, "cost_total": 35.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     result = await execute_fulfill(
@@ -567,7 +567,7 @@ class TestPickAllowSplitting:
     def test_no_split_when_allow_splitting_false(self):
         """Items with allow_splitting=False must not be split during picking; mark as unfulfilled if no full item available."""
         line_items = [{"sku": "NS-A", "quantity": 3}]
-        inventory = [{"entity_id": "e1", "sku": "NS-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 5.0, "allow_splitting": False}]
+        inventory = [{"entity_id": "e1", "sku": "NS-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 50.0, "allow_splitting": False}]
         result = compute_pick_plan(line_items, inventory)
         # The item has qty 10 > 3 needed; cannot split -> unfulfilled
         assert result.picks == []
@@ -577,7 +577,7 @@ class TestPickAllowSplitting:
     def test_full_pick_still_works_when_allow_splitting_false(self):
         """Full pick (no split needed) must still succeed when allow_splitting=False."""
         line_items = [{"sku": "NS-B", "quantity": 10}]
-        inventory = [{"entity_id": "e2", "sku": "NS-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 2.0, "allow_splitting": False}]
+        inventory = [{"entity_id": "e2", "sku": "NS-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 20.0, "allow_splitting": False}]
         result = compute_pick_plan(line_items, inventory)
         assert len(result.picks) == 1
         assert result.picks[0].action == "full"
@@ -586,7 +586,7 @@ class TestPickAllowSplitting:
     def test_split_when_allow_splitting_true(self):
         """Items with allow_splitting=True must be split as usual."""
         line_items = [{"sku": "SP-A", "quantity": 3}]
-        inventory = [{"entity_id": "e3", "sku": "SP-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 1.0, "allow_splitting": True}]
+        inventory = [{"entity_id": "e3", "sku": "SP-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 10.0, "allow_splitting": True}]
         result = compute_pick_plan(line_items, inventory)
         assert len(result.picks) == 1
         assert result.picks[0].action == "split"
@@ -595,7 +595,7 @@ class TestPickAllowSplitting:
     def test_split_when_allow_splitting_missing_defaults_to_allowed(self):
         """Items without allow_splitting key default to splittable (backward compat for existing data)."""
         line_items = [{"sku": "SP-B", "quantity": 3}]
-        inventory = [{"entity_id": "e4", "sku": "SP-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 1.0}]
+        inventory = [{"entity_id": "e4", "sku": "SP-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 10.0}]
         result = compute_pick_plan(line_items, inventory)
         assert len(result.picks) == 1
         assert result.picks[0].action == "split"
