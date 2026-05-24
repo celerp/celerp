@@ -507,6 +507,7 @@
   "inv.send_to": "送信先...",
   "inv.source_items_and_target_selection_are_required": "ソース項目とターゲットの選択が必要です。",
   "inv.split": "スプリット",
+  "inv.transform": "Transform",
   "inv.split_quantity_must_be_greater_than_0": "分割数量は 0 より大きくなければなりません。",
   "inv.splitting_disabled_hint": "このアイテムの分割は無効です。上の「分割を許可」から有効にしてください。",
   "inv.target_item_selection_is_required": "対象アイテムの選択が必要です。",

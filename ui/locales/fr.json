@@ -507,6 +507,7 @@
   "inv.send_to": "Envoyer à...",
   "inv.source_items_and_target_selection_are_required": "Les éléments source et la sélection de la cible sont requis.",
   "inv.split": "Diviser",
+  "inv.transform": "Transform",
   "inv.split_quantity_must_be_greater_than_0": "La quantité fractionnée doit être supérieure à 0.",
   "inv.splitting_disabled_hint": "La division est désactivée pour cet article. Activez-la dans « Autoriser la division » ci-dessus.",
   "inv.target_item_selection_is_required": "La sélection de l’élément cible est requise.",

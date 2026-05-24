@@ -507,6 +507,7 @@
   "inv.send_to": "Enviar a...",
   "inv.source_items_and_target_selection_are_required": "Se requieren elementos de origen y selección de destino.",
   "inv.split": "Dividir",
+  "inv.transform": "Transform",
   "inv.split_quantity_must_be_greater_than_0": "La cantidad dividida debe ser mayor que 0.",
   "inv.splitting_disabled_hint": "La división está desactivada para este artículo. Actlívala en «Permitir división» arriba.",
   "inv.target_item_selection_is_required": "Se requiere la selección del elemento de destino.",

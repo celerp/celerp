@@ -507,6 +507,7 @@
   "inv.send_to": "Invia a...",
   "inv.source_items_and_target_selection_are_required": "Gli articoli sorgente e la selezione della destinazione sono obbligatori.",
   "inv.split": "Dividi",
+  "inv.transform": "Transform",
   "inv.split_quantity_must_be_greater_than_0": "La quantità di divisione deve essere maggiore di 0.",
   "inv.splitting_disabled_hint": "La divisione è disabilitata per questo articolo. Abilitala in «Consenti divisione» in alto.",
   "inv.target_item_selection_is_required": "La selezione dell'articolo di destinazione è obbligatoria.",
