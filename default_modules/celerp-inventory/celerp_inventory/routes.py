@@ -1110,7 +1110,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     parent_pieces: int | None = _to_int_pieces(_pieces_float) if _pieces_float is not None else None
     if parent_pieces is not None:
         total_child_pieces = sum(_to_int_pieces(c.attributes.get("pieces", 0)) for c in children)
-        if total_child_pieces > parent_pieces:
+        if total_child_pieces >= parent_pieces:
             raise HTTPException(
                 status_code=422,
                 detail=f"Total child pieces ({total_child_pieces}) must not exceed parent pieces ({parent_pieces})",
