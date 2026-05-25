@@ -1097,12 +1097,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         if child.weight is not None and child.weight < 0:
             raise HTTPException(status_code=422, detail="Child weight cannot be negative")
 
-    # Validate total <= parent qty
+    # Validate total <= parent qty (100% consumption allowed - parent will be archived)
     total_child_qty = sum(c.quantity for c in children)
-    if round(total_child_qty, 10) >= round(parent_qty, 10):
+    if round(total_child_qty, 10) > round(parent_qty, 10):
         raise HTTPException(
             status_code=422,
-            detail=f"Child quantities ({total_child_qty}) exceed or equal parent quantity ({parent_qty})",
+            detail=f"Child quantities ({total_child_qty}) exceed parent quantity ({parent_qty})",
         )
 
     # Pieces conservation: if parent has pieces, validate and compute mother
@@ -1110,10 +1110,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     parent_pieces: int | None = _to_int_pieces(_pieces_float) if _pieces_float is not None else None
     if parent_pieces is not None:
         total_child_pieces = sum(_to_int_pieces(c.attributes.get("pieces", 0)) for c in children)
-        if total_child_pieces >= parent_pieces:
+        if total_child_pieces > parent_pieces:
             raise HTTPException(
                 status_code=422,
-                detail=f"Total child pieces ({total_child_pieces}) must be less than parent pieces ({parent_pieces})",
+                detail=f"Total child pieces ({total_child_pieces}) must not exceed parent pieces ({parent_pieces})",
             )
 
     # Validate child SKU uniqueness within batch

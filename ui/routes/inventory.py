@@ -2850,9 +2850,9 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         available = float(item.get("quantity") or 0)
-        if batch_qty * batch_count >= available:
+        if batch_qty * batch_count > available:
             return Span(
-                f"Total ({batch_qty * batch_count}) meets or exceeds available ({available}).",
+                f"Total ({batch_qty * batch_count}) exceeds available ({available}).",
                 cls="flash flash--error", id="item-action-error",
             )
         orig_sku = str(item.get("sku", "") or "")
@@ -4931,8 +4931,6 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                 # ── Manual split rows ──
                 Div(
                     Div(
-                        Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
-                               onclick="addSplitRow(this)"),
                         Input(type="number", name="split_qty",
                               placeholder=f"{sell_by_label} to split off",
                               title=_qty_title,
@@ -4943,9 +4941,13 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                     ),
                     id="split-qty-rows",
                 ),
-                Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
-                       style="margin-top:4px",
-                       onclick="(function(btn){btn.disabled=true;btn.style.opacity='0.5';btn.form.requestSubmit();})(this);return false;"),
+                Div(
+                    Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
+                           onclick="addSplitRow(this)"),
+                    Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
+                           onclick="(function(btn){btn.disabled=true;btn.style.opacity='0.5';btn.form.requestSubmit();})(this);return false;"),
+                    cls="action-card-row", style="margin-top:4px",
+                ),
                 # ── Divider + Batch Split heading ──
                 Hr(cls="action-card-divider"),
                 Strong(t("inv.batch_split"), cls="action-card-title", style="margin-bottom:4px"),
@@ -4982,8 +4984,7 @@ function addSplitRow(btn) {{
   var container = document.getElementById('split-qty-rows');
   var row = document.createElement('div');
   row.className = 'split-qty-row';
-  row.innerHTML = '<button type="button" class="btn btn--secondary btn--xs split-add-btn" onclick="addSplitRow(this)">+</button>'
-    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" class="form-input form-input--sm split-qty-main" required>'
+  row.innerHTML = '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" class="form-input form-input--sm split-qty-main" required>'
     {_comp_js}
     + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">\u2715</button>';
   container.appendChild(row);
@@ -4998,7 +4999,7 @@ function batchSplitPreview_{safe_id}(form) {{
   if (!el) return;
   if (!qty || !count) {{ el.innerHTML = ''; return; }}
   var total = qty * count;
-  var over  = total >= avail;
+  var over  = total > avail;
   el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
     + ' = ' + total.toFixed(2) + '\u00a0' + unit
     + (over ? ' <span class="batch-split-over">exceeds available (' + avail + ')</span>' : '');
@@ -5010,8 +5011,11 @@ function batchSplitSubmit_{safe_id}(form) {{
   if (!count || count < 2) {{ alert('Count must be at least 2.'); return; }}
   var btn = form.querySelector('.btn--batch-submit');
   if (btn) {{ btn.disabled = true; btn.style.opacity = '0.5'; }}
+  var compEl = form.querySelector('[name=batch_complement]');
+  var vals = {{ batch_qty: qty, batch_count: count }};
+  if (compEl && compEl.value) vals.batch_complement = compEl.value;
   htmx.ajax('POST', '/api/items/{entity_id}/batch-split',
-    {{ source: form, target: '#item-action-error', swap: 'outerHTML' }});
+    {{ target: '#item-action-error', swap: 'outerHTML', values: vals }});
 }}
 """),
                 hx_post=f"/api/items/{entity_id}/split-inline",
