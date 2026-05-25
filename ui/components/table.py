@@ -323,12 +323,15 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # Scroll preservation is handled by the htmx:beforeRequest/afterSettle global handlers
-    # in data_table's script block — no per-cell scroll logic needed here.
+    # ESC: save scroll position explicitly at keydown time, then restore after swap
+    # (global beforeRequest/afterSettle can miss the scroll reset if blur fires first).
     escape_js = (
         f"if(event.key==='Escape'){{"
+        f"var _sw=document.querySelector('.table-scroll-wrap');"
+        f"var _sl=_sw?_sw.scrollLeft:0;"
         f"this._escaping=true;"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
+        f"if(_sw){{var _tid=setInterval(function(){{_sw.scrollLeft=_sl;clearInterval(_tid);}},16);}}"
         f"event.preventDefault();}}"
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
     )
@@ -336,7 +339,10 @@ def editable_cell(
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
+        f"var _sw=document.querySelector('.table-scroll-wrap');"
+        f"var _sl=_sw?_sw.scrollLeft:0;"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
+        f"if(_sw){{var _tid=setInterval(function(){{_sw.scrollLeft=_sl;clearInterval(_tid);}},16);}}"
         f"event.preventDefault();}}"
     )
 
@@ -695,18 +701,13 @@ def data_table(
     else:
         _schema_defaults = {f["key"]: f.get("show_in_table", True) for f in visible}
     # Map primary_key → [virtual_key, ...] so drag and restore both move virtual cols with their primary.
-    # For cost: cost_price_total is the primary (editable); cost_price follows it (derived read-only).
-    # For all other price lists: _price_total follows _price (total is derived).
+    # Virtual total always follows its paired unit-price column (the primary).
     _virtual_followers: dict[str, list[str]] = {}
     for f in schema:
         if f.get("virtual") and f.get("paired_with"):
             paired = f["paired_with"]
             key = f["key"]
-            if key == "cost_price_total":
-                # cost_price_total is primary; cost_price follows it
-                _virtual_followers.setdefault(key, []).append(paired)
-            else:
-                _virtual_followers.setdefault(paired, []).append(key)
+            _virtual_followers.setdefault(paired, []).append(key)
     _js = f"""
 (function(){{
   var PAGE_KEY = '{page_key}';
