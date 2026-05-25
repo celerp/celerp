@@ -12788,6 +12788,52 @@ class TestItemRowColumnParity:
             f"Extra in row: {set(row_data_cols) - set(table_data_cols)}."
         )
 
+    def test_data_table_price_cells_have_ids_for_oob(self):
+        """data_table must render cost_price and cost_price_total cells with id attrs.
+
+        OOB swap after cost_price_total PATCH targets these ids to update cost_price
+        in-place without a full row reload. If the id is missing, the OOB silently fails
+        and the cell only updates after a page reload.
+        """
+        from fasthtml.common import to_xml
+        from bs4 import BeautifulSoup
+        from ui.components.table import data_table
+        from ui.routes.inventory import _PAIRED_SECONDARY_KEYS, _inventory_cell_renderers
+
+        schema = [
+            {"key": "sku", "label": "SKU", "type": "text", "editable": True, "show_in_table": True},
+            {"key": "cost_price", "label": "Cost (Unit)", "type": "money", "editable": True, "show_in_table": True},
+            {"key": "cost_price_total", "label": "Cost (Total)", "type": "money", "editable": True,
+             "show_in_table": True, "virtual": True, "paired_with": "cost_price"},
+        ]
+        item = {
+            "id": "item:42", "entity_id": "item:42", "sku": "X", "status": "available",
+            "cost_price": 10.0, "cost_total": 50.0, "quantity": 5.0,
+        }
+        renderers = _inventory_cell_renderers(schema, [], {}, {}, currency="USD")
+        html = to_xml(data_table(
+            schema, [item],
+            entity_type="inventory",
+            hidden_fields=_PAIRED_SECONDARY_KEYS,
+            currency="USD",
+            cell_renderers=renderers,
+        ))
+        soup = BeautifulSoup(html, "html.parser")
+        row = soup.find("tr", class_="data-row")
+        assert row is not None
+
+        cost_price_td = row.find("td", attrs={"data-col": "cost_price"})
+        assert cost_price_td is not None, "cost_price td must exist"
+        assert cost_price_td.get("id") == "cell-item-42-cost_price", (
+            f"cost_price td must have id=cell-item-42-cost_price for OOB swap, got {cost_price_td.get('id')}"
+        )
+
+        total_td = row.find("td", attrs={"data-col": "cost_price_total"})
+        assert total_td is not None, "cost_price_total td must exist"
+        assert total_td.get("id") == "cell-item-42-cost_price_total", (
+            f"cost_price_total td must have id=cell-item-42-cost_price_total, got {total_td.get('id')}"
+        )
+
     @pytest.mark.asyncio
     async def test_cost_total_patch_returns_oob_cost_price_cell(self, ui_client):
         """PATCH cost_price_total must return two tds: main swap (cost_price_total) + OOB (cost_price)."""

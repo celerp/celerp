@@ -3603,9 +3603,11 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     formatted = "--"
                 annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
                 inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                _safe_eid = entity_id.replace(":", "-")
                 return Td(
                     inner, annotation,
-                    cls="cell cell--money",
+                    id=f"cell-{_safe_eid}-{field}",
+                    cls="cell cell--money cell--clickable",
                     data_col=field,
                     hx_get=f"/api/items/{entity_id}/field/{field}/edit",
                     hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
