@@ -7,6 +7,7 @@ import asyncio
 import csv
 import io
 import logging
+import re
 from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
@@ -4878,7 +4879,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
             A(action.get("label", "Action"), href=href, cls="btn btn--secondary btn--sm")
         )
 
-    safe_id = entity_id.replace(":", "-")
+    safe_id = re.sub(r"[^a-zA-Z0-9]", "_", entity_id)
 
     # 2x2 compact action cards
     allow_splitting = item.get("allow_splitting", True)
@@ -4936,14 +4937,15 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                               placeholder=f"{sell_by_label} to split off",
                               title=_qty_title,
                               step="any", min="0.001",
-                              cls="form-input form-input--sm", required=True),
+                              cls="form-input form-input--sm", style="width:80px", required=True),
                         *_comp_inputs,
                         cls="split-qty-row",
                     ),
                     id="split-qty-rows",
                 ),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
-                       style="margin-top:4px"),
+                       style="margin-top:4px",
+                       onclick="(function(btn){btn.disabled=true;btn.style.opacity='0.5';btn.form.requestSubmit();})(this);return false;"),
                 # ── Divider + Batch Split heading ──
                 Hr(cls="action-card-divider"),
                 Strong(t("inv.batch_split"), cls="action-card-title", style="margin-bottom:4px"),
@@ -4953,7 +4955,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                           placeholder=f"{sell_by_label} per child",
                           title=_batch_qty_title,
                           step="any", min="0.001",
-                          cls="form-input form-input--sm",
+                          cls="form-input form-input--sm", style="width:80px",
                           oninput=f"batchSplitPreview_{safe_id}(this.form)"),
                     *([Input(type="number", name="batch_complement",
                              placeholder=_comp_ph, title=_comp_title,
@@ -4970,7 +4972,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                           oninput=f"batchSplitPreview_{safe_id}(this.form)"),
                     Button("Batch", type="button",
                            title=t("inv.tooltip.batch_submit"),
-                           cls="btn btn--primary btn--xs",
+                           cls="btn btn--primary btn--xs btn--batch-submit",
                            onclick=f"batchSplitSubmit_{safe_id}(this.closest('form'))"),
                     cls="action-card-row",
                 ),
@@ -4981,7 +4983,7 @@ function addSplitRow(btn) {{
   var row = document.createElement('div');
   row.className = 'split-qty-row';
   row.innerHTML = '<button type="button" class="btn btn--secondary btn--xs split-add-btn" onclick="addSplitRow(this)">+</button>'
-    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" class="form-input form-input--sm" required>'
+    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" class="form-input form-input--sm" style="width:80px" required>'
     {_comp_js}
     + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">\u2715</button>';
   container.appendChild(row);
@@ -5006,6 +5008,8 @@ function batchSplitSubmit_{safe_id}(form) {{
   var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
   if (!qty || qty <= 0) {{ alert('Enter a valid quantity per child.'); return; }}
   if (!count || count < 2) {{ alert('Count must be at least 2.'); return; }}
+  var btn = form.querySelector('.btn--batch-submit');
+  if (btn) {{ btn.disabled = true; btn.style.opacity = '0.5'; }}
   htmx.ajax('POST', '/api/items/{entity_id}/batch-split',
     {{ source: form, target: '#item-action-error', swap: 'outerHTML' }});
 }}
