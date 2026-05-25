@@ -2841,7 +2841,7 @@ async def fulfill_lines(
             continue
         to_fulfill.append(item_eid)
 
-    if errors:
+    if errors and not to_fulfill:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
     now = datetime.now(UTC).isoformat()
@@ -2971,7 +2971,7 @@ async def revert_lines(
             continue
         to_revert.append(item_eid)
 
-    if errors:
+    if errors and not to_revert:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
     now = datetime.now(UTC).isoformat()

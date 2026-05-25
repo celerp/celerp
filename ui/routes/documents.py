@@ -1564,16 +1564,18 @@ def setup_routes(app):
         item_status_map: dict[str, str] = {}
         if doc_type in ("memo", "consignment_in") and status not in ("draft",):
             try:
-                _all_items = await api.list_items(token, {})
-                _line_eids = {
+                _line_eids = [
                     li.get("entity_id") or li.get("item_id") or ""
                     for li in doc.get("line_items", [])
                     if li.get("entity_id") or li.get("item_id")
-                }
-                for _it in (_all_items.get("items", []) if isinstance(_all_items, dict) else []):
-                    _eid = _it.get("entity_id") or _it.get("id") or ""
-                    if _eid in _line_eids:
-                        item_status_map[_eid] = _it.get("status", "")
+                ]
+                if _line_eids:
+                    # Fetch all statuses with a high limit; doc line counts are always small
+                    _all_items = await api.list_items(token, {"limit": 1000, "status": "all"})
+                    for _it in (_all_items.get("items", []) if isinstance(_all_items, dict) else []):
+                        _eid = _it.get("entity_id") or _it.get("id") or ""
+                        if _eid in set(_line_eids):
+                            item_status_map[_eid] = _it.get("status", "")
             except Exception:
                 pass
         return base_shell(
@@ -5465,11 +5467,15 @@ async function celerpCsvImport(input, entityId) {{
   var countEl=document.getElementById('li-bulk-count');
   var sel=document.getElementById('li-bulk-select');
   function _n(){{return table?table.querySelectorAll('.li-select:checked').length:0;}}
+  var fulfillBtn=document.getElementById('li-bulk-fulfill-btn');
+  var revertBtn=document.getElementById('li-bulk-revert-btn');
   function _update(){{
     var n=_n();
     if(countEl) countEl.textContent=n+' row'+(n===1?'':'s')+' selected';
     if(toolbar) toolbar.style.display=n>0?'flex':'none';
     if(sel&&n===0) sel.value='';
+    if(fulfillBtn) fulfillBtn.style.display=n>0?'':'none';
+    if(revertBtn) revertBtn.style.display=n>0?'':'none';
   }}
   if(table) table.addEventListener('change',function(e){{
     if(e.target&&e.target.classList.contains('li-select')) _update();
