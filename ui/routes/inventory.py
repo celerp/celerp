@@ -1500,6 +1500,11 @@ function celerpPrintLabel(entityId, templateId) {
             category_label_map = await api.get_category_display_names(token)
         except Exception:
             category_label_map = {}
+        try:
+            company = await api.get_company(token)
+            currency = (company.get("currency") or "").strip() or None
+        except Exception:
+            currency = None
         active_cat = item.get("category", "")
         eff_schema = _effective_schema(schema, cat_schemas, active_cat)
         col_prefs: dict = {}
