@@ -12708,3 +12708,111 @@ class TestUnknownUnitRendererInFixTable:
         assert "csv-fix-panel" in html, "__add_new__ must not be accepted as a valid unit"
         assert "unit-unknown-option" in html, \
             "__add_new__ must be shown as an unknown/invalid value, not silently accepted"
+
+
+class TestItemRowColumnParity:
+    """item_row must render the same set of <td> columns as data_table.
+
+    When /api/items/{id}/row is used to replace a list-page row (via HX-Retarget),
+    the returned <tr> must contain exactly the same <td data-col=...> columns that
+    data_table renders - including hidden-but-present columns (those not in show_cols
+    are rendered with style="display:none"). Missing or extra columns cause a visual
+    column shift for that row.
+    """
+
+    _SCHEMA = [
+        {"key": "sku", "label": "SKU", "type": "text", "editable": True, "show_in_table": True},
+        {"key": "name", "label": "Name", "type": "text", "editable": True, "show_in_table": True},
+        {"key": "quantity", "label": "Qty", "type": "number", "editable": True, "show_in_table": True, "paired_with": "sell_by"},
+        {"key": "sell_by", "label": "Unit", "type": "text", "editable": True, "show_in_table": False},
+        {"key": "cost_price", "label": "Cost (Unit)", "type": "money", "editable": True, "show_in_table": True},
+        {"key": "cost_price_total", "label": "Cost (Total)", "type": "money", "editable": True, "show_in_table": True, "virtual": True, "paired_with": "cost_price"},
+        {"key": "hidden_col", "label": "Hidden", "type": "text", "editable": True, "show_in_table": False},
+    ]
+
+    _ITEM = {
+        "id": "item:1", "entity_id": "item:1", "sku": "SKU-1", "name": "Widget",
+        "quantity": 5.0, "sell_by": "pcs", "status": "available",
+        "cost_price": 10.0, "cost_total": 50.0,
+        "hidden_col": "x",
+    }
+
+    @pytest.mark.asyncio
+    async def test_item_row_col_count_matches_data_table(self, ui_client):
+        """GET /api/items/{id}/row must return same number of data-col tds as data_table."""
+        from fasthtml.common import to_xml
+        from bs4 import BeautifulSoup
+        from ui.components.table import data_table
+
+        item = self._ITEM.copy()
+        schema = self._SCHEMA
+
+        # Build what data_table would render (hidden_fields=paired secondaries)
+        from ui.components.table import data_table
+        from ui.routes.inventory import _PAIRED_SECONDARY_KEYS
+        hidden = _PAIRED_SECONDARY_KEYS
+        table_html = to_xml(data_table(
+            schema, [item],
+            entity_type="inventory",
+            hidden_fields=hidden,
+            currency=None,
+        ))
+        table_soup = BeautifulSoup(table_html, "html.parser")
+        # Count data-col tds in the first data row
+        first_row = table_soup.find("tr", class_="data-row")
+        assert first_row is not None, "data_table must render at least one data row"
+        table_data_cols = [td["data-col"] for td in first_row.find_all("td") if td.get("data-col")]
+
+        # Fetch item_row endpoint
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+        ):
+            r = await ui_client.get("/api/items/item:1/row", cookies=_authed())
+
+        assert r.status_code == 200
+        row_soup = BeautifulSoup(r.text, "html.parser")
+        tr = row_soup.find("tr")
+        assert tr is not None, "item_row must return a <tr>"
+        row_data_cols = [td["data-col"] for td in tr.find_all("td") if td.get("data-col")]
+
+        assert sorted(row_data_cols) == sorted(table_data_cols), (
+            f"item_row columns {row_data_cols} != data_table columns {table_data_cols}. "
+            f"Missing from row: {set(table_data_cols) - set(row_data_cols)}. "
+            f"Extra in row: {set(row_data_cols) - set(table_data_cols)}."
+        )
+
+    @pytest.mark.asyncio
+    async def test_cost_total_patch_returns_hx_retarget(self, ui_client):
+        """PATCH cost_price_total must return HX-Retarget header pointing to #row-{safe_id}."""
+        item = self._ITEM.copy()
+        schema = self._SCHEMA
+
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value=item)),
+        ):
+            r = await ui_client.patch(
+                "/api/items/item:1/field/cost_price_total",
+                data={"value": "60.00"},
+                cookies=_authed(),
+            )
+
+        assert r.status_code == 200
+        assert "HX-Retarget" in r.headers or "hx-retarget" in r.headers, \
+            "cost_price_total PATCH must return HX-Retarget header for full row swap"
+        retarget = r.headers.get("HX-Retarget") or r.headers.get("hx-retarget")
+        assert retarget == "#row-item-1", f"HX-Retarget must point to #row-item-1, got {retarget}"

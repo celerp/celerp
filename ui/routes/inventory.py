@@ -1513,26 +1513,34 @@ function celerpPrintLabel(entityId, templateId) {
         except Exception:
             pass
         visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
+        visible_cols_set = set(visible_cols) if visible_cols else None
         cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency)
         from ui.components.table import display_cell
         safe_id = entity_id.replace(":", "-")
         flat = _flatten_item_attrs(item)
-        visible = [f for f in eff_schema if f.get("key") in set(visible_cols)] if visible_cols else eff_schema
-        # Exclude paired secondary fields (sell_by, weight_unit, etc.) — they render inside paired cells
-        visible = [f for f in visible if f["key"] not in _PAIRED_SECONDARY_KEYS]
-        data_cells = [
-            cell_renderers[f["key"]](entity_id, flat) if f["key"] in cell_renderers
-            else display_cell(
-                entity_id=entity_id,
-                field=f["key"],
-                value=flat.get(f["key"], ""),
-                cell_type=f.get("type", "text"),
-                options=f.get("options"),
-                editable=f.get("editable", True),
-                currency=currency,
-            )
-            for f in visible
-        ]
+        # Render ALL schema columns (minus paired secondaries), matching data_table behaviour.
+        # Columns not in visible_cols are still rendered but hidden via style="display:none" so
+        # that the td count matches the header and JS column toggling works correctly.
+        all_cols = [f for f in eff_schema if f["key"] not in _PAIRED_SECONDARY_KEYS]
+        data_cells = []
+        for f in all_cols:
+            col_hidden = visible_cols_set is not None and f["key"] not in visible_cols_set
+            if f["key"] in cell_renderers:
+                td = cell_renderers[f["key"]](entity_id, flat)
+            else:
+                td = display_cell(
+                    entity_id=entity_id,
+                    field=f["key"],
+                    value=flat.get(f["key"], ""),
+                    cell_type=f.get("type", "text"),
+                    options=f.get("options"),
+                    editable=f.get("editable", True),
+                    currency=currency,
+                )
+            if col_hidden:
+                # Inject display:none to match what data_table JS would apply
+                td.attrs["style"] = "display:none"
+            data_cells.append(td)
         # Checkbox cell (matches data_table output)
         checkbox_td = Td(
             Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
