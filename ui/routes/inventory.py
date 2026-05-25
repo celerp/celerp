@@ -4937,7 +4937,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                               placeholder=f"{sell_by_label} to split off",
                               title=_qty_title,
                               step="any", min="0.001",
-                              cls="form-input form-input--sm", style="width:80px", required=True),
+                              cls="form-input form-input--sm split-qty-main", required=True),
                         *_comp_inputs,
                         cls="split-qty-row",
                     ),
@@ -4955,7 +4955,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                           placeholder=f"{sell_by_label} per child",
                           title=_batch_qty_title,
                           step="any", min="0.001",
-                          cls="form-input form-input--sm", style="width:80px",
+                          cls="form-input form-input--sm split-qty-main",
                           oninput=f"batchSplitPreview_{safe_id}(this.form)"),
                     *([Input(type="number", name="batch_complement",
                              placeholder=_comp_ph, title=_comp_title,
@@ -4983,7 +4983,7 @@ function addSplitRow(btn) {{
   var row = document.createElement('div');
   row.className = 'split-qty-row';
   row.innerHTML = '<button type="button" class="btn btn--secondary btn--xs split-add-btn" onclick="addSplitRow(this)">+</button>'
-    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" class="form-input form-input--sm" style="width:80px" required>'
+    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" class="form-input form-input--sm split-qty-main" required>'
     {_comp_js}
     + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">\u2715</button>';
   container.appendChild(row);
