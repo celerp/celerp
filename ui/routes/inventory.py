@@ -1194,9 +1194,8 @@ function celerpPrintLabel(entityId, templateId) {
             escape_js = (
                 f"if(event.key==='Escape'){{"
                 f"var _sw=document.querySelector('.table-scroll-wrap');"
-                f"var _sl=_sw?_sw.scrollLeft:0;"
+                f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
                 f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-                f"if(_sw){{var _tid=setInterval(function(){{_sw.scrollLeft=_sl;clearInterval(_tid);}},16);}}"
                 f"event.preventDefault();}}"
             )
             add_new_url = "/settings/inventory?tab=locations"
@@ -1284,10 +1283,10 @@ function celerpPrintLabel(entityId, templateId) {
                 await api.transfer_item(token, entity_id, loc.get("location_id") or loc.get("id", ""))
             elif field.endswith("_price_total"):
                 # Virtual total field: patch cost_total directly; back-calculate unit for other price lists.
-                # After patch, reload the full row so both the total and unit-price cells update with
-                # correct formatting (cost_total is not a displayable schema field; single-cell render fails).
+                # Return: a placeholder td (keeps the cell in place) + OOB row reload (refreshes all cells
+                # with correct formatting). Single-cell render can't work here because cost_total is not
+                # a schema field, so field resolution produces no formatting.
                 unit_price_field = field[: -len("_total")]  # e.g. "cost_price_total" → "cost_price"
-                original_virtual_field = field
                 old_item = await api.get_item(token, entity_id)
                 if unit_price_field == "cost_price":
                     # cost_total is the primitive; patch it directly
@@ -1300,15 +1299,23 @@ function celerpPrintLabel(entityId, templateId) {
                     unit_price = float(value) / qty
                     old_unit_price = old_item.get(unit_price_field)
                     await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
-                # Row reload: both total and unit-price cells must refresh together
                 safe_id = entity_id.replace(":", "-")
-                return Div(
+                # Placeholder td keeps the cell in the DOM while OOB reload fires
+                placeholder_td = Td(
+                    Span("…", cls="cell-money"),
+                    cls="cell cell--money",
+                    data_col=field,
+                )
+                oob_row = Div(
                     hx_get=f"/api/items/{entity_id}/row",
                     hx_trigger="load",
                     hx_target=f"#row-{safe_id}",
                     hx_swap="outerHTML",
+                    hx_swap_oob="true",
+                    id=f"oob-row-reload-{safe_id}",
                     style="display:none",
                 )
+                return placeholder_td, oob_row
             else:
                 # Fetch old value before patching so activity log shows old → new.
                 # get_item returns a _flatten_item result: attribute fields are already

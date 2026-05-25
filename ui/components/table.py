@@ -323,15 +323,14 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # ESC: save scroll position explicitly at keydown time, then restore after swap
-    # (global beforeRequest/afterSettle can miss the scroll reset if blur fires first).
+    # ESC: capture scroll position synchronously at keydown (before browser may reset it),
+    # then force-set _scrollSnap so the global htmx:afterSettle handler restores it.
     escape_js = (
         f"if(event.key==='Escape'){{"
         f"var _sw=document.querySelector('.table-scroll-wrap');"
-        f"var _sl=_sw?_sw.scrollLeft:0;"
+        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"this._escaping=true;"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-        f"if(_sw){{var _tid=setInterval(function(){{_sw.scrollLeft=_sl;clearInterval(_tid);}},16);}}"
         f"event.preventDefault();}}"
         f"else if(event.key==='Enter'){{event.preventDefault();htmx.trigger(this,'blur');}}"
     )
@@ -340,9 +339,8 @@ def editable_cell(
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
         f"var _sw=document.querySelector('.table-scroll-wrap');"
-        f"var _sl=_sw?_sw.scrollLeft:0;"
+        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
-        f"if(_sw){{var _tid=setInterval(function(){{_sw.scrollLeft=_sl;clearInterval(_tid);}},16);}}"
         f"event.preventDefault();}}"
     )
 
@@ -1168,18 +1166,21 @@ function sendToTypeChanged(docType){
     window.__celerpHtmxHandlers=true;
   // Preserve horizontal scroll position across any HTMX request that may replace
   // the table or its scroll container (cell edits, sort, search, pagination, etc.).
-  // Save on htmx:beforeRequest (before any focus/reset can occur).
-  // Restore on htmx:afterSettle (after the new DOM is in place).
-  var _scrollSnap=null;
+  // Save on htmx:beforeRequest AND eagerly exposed as window.__celerpScrollSnap so
+  // inline ESC handlers can set it synchronously before the browser resets scroll.
+  // Restore on htmx:afterSettle using requestAnimationFrame to run after browser reflow.
+  window.__celerpScrollSnap=null;
   document.body.addEventListener('htmx:beforeRequest',function(e){
     var sw=document.querySelector('.table-scroll-wrap');
-    if(sw){_scrollSnap=sw.scrollLeft;}
+    if(sw){window.__celerpScrollSnap=sw.scrollLeft;}
   });
   document.body.addEventListener('htmx:afterSettle',function(e){
-    if(_scrollSnap!=null){
-      var s=_scrollSnap;_scrollSnap=null;
-      var sw=document.querySelector('.table-scroll-wrap');
-      if(sw)sw.scrollLeft=s;
+    if(window.__celerpScrollSnap!=null){
+      var s=window.__celerpScrollSnap;window.__celerpScrollSnap=null;
+      requestAnimationFrame(function(){
+        var sw=document.querySelector('.table-scroll-wrap');
+        if(sw)sw.scrollLeft=s;
+      });
     }
   });
   // Sync derived cells (weight/pieces) after a quantity PATCH.
