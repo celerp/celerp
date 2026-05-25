@@ -1244,6 +1244,23 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        # Virtual total fields store no value in item state; derive from primitives
+        virtual_fields = {f["key"]: f for f in schema if f.get("virtual")}
+        if field in virtual_fields:
+            vf = virtual_fields[field]
+            paired = vf.get("paired_with", "")
+            try:
+                if field == "cost_price_total" and item.get("cost_total") is not None:
+                    unit_price = float(item["cost_total"])
+                    qty = 1.0
+                else:
+                    unit_price = float(item.get(paired) or 0)
+                    qty = float(item.get("quantity") or 0)
+            except (ValueError, TypeError):
+                unit_price, qty = 0.0, 0.0
+            company = await api.get_company(token)
+            currency = (company or {}).get("currency") or "USD"
+            return _render_virtual_total_cell(entity_id, field, unit_price, qty, currency)
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
