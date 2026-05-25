@@ -1454,6 +1454,63 @@ function celerpPrintLabel(entityId, templateId) {
                             hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
                         ))
                     return paired_td, *oob_cells
+                # sell_by change: re-render weight and pieces cells as they may switch
+                # between derived (read-only) and independent (editable) display
+                if field in ("sell_by", "quantity"):
+                    safe_id = entity_id.replace(":", "-")
+                    try:
+                        units_resp2 = await api.get_units(token)
+                        _umap2 = {u["name"]: u for u in units_resp2 if u.get("name")}
+                    except Exception:
+                        _umap2 = {}
+                    new_sell_by = item.get("sell_by") or ""
+                    derived_weight = is_weight_unit(new_sell_by, _umap2)
+                    derived_pieces = is_pieces_unit(new_sell_by, _umap2)
+                    from celerp.services.units import format_qty
+                    from ui.components.table import display_cell as _dc
+                    oob_derived = []
+                    if any(f2["key"] == "weight" for f2 in schema):
+                        if derived_weight:
+                            qty_val = item.get("quantity", "")
+                            fmt = format_qty(qty_val, new_sell_by, _umap2)
+                            decimals = _umap2.get(new_sell_by, {}).get("decimals", "")
+                            weight_td = Td(
+                                Span(f"{fmt} {new_sell_by}" if fmt not in ("", None) else EMPTY,
+                                     title="Derived from Qty column", cls="cell-derived"),
+                                id=f"cell-{safe_id}-weight",
+                                hx_swap_oob="true",
+                                cls="cell cell--number",
+                                data_col="weight",
+                                data_decimals=str(decimals),
+                            )
+                        else:
+                            weight_td = _dc(entity_id=entity_id, field="weight",
+                                            value=item.get("weight", ""), cell_type="number", editable=True)
+                            weight_td.attrs["id"] = f"cell-{safe_id}-weight"
+                            weight_td.attrs["hx_swap_oob"] = "true"
+                        oob_derived.append(weight_td)
+                    if any(f2["key"] == "pieces" for f2 in schema):
+                        if derived_pieces:
+                            qty_val = item.get("quantity", "")
+                            fmt = format_qty(qty_val, new_sell_by, _umap2)
+                            decimals = _umap2.get(new_sell_by, {}).get("decimals", "")
+                            pieces_td = Td(
+                                Span(fmt if fmt not in ("", None) else EMPTY,
+                                     title="Derived from Qty column", cls="cell-derived"),
+                                id=f"cell-{safe_id}-pieces",
+                                hx_swap_oob="true",
+                                cls="cell cell--number",
+                                data_col="pieces",
+                                data_decimals=str(decimals),
+                            )
+                        else:
+                            pieces_td = _dc(entity_id=entity_id, field="pieces",
+                                            value=item.get("pieces", ""), cell_type="number", editable=True)
+                            pieces_td.attrs["id"] = f"cell-{safe_id}-pieces"
+                            pieces_td.attrs["hx_swap_oob"] = "true"
+                        oob_derived.append(pieces_td)
+                    if oob_derived:
+                        return paired_td, *oob_derived
                 return paired_td
         # Price fields: re-render with currency symbol + / sell_unit annotation
         if cell_type == "money":
