@@ -1300,22 +1300,17 @@ function celerpPrintLabel(entityId, templateId) {
                     old_unit_price = old_item.get(unit_price_field)
                     await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
                 safe_id = entity_id.replace(":", "-")
-                # Placeholder td keeps the cell in the DOM while OOB reload fires
-                placeholder_td = Td(
-                    Span("…", cls="cell-money"),
-                    cls="cell cell--money",
-                    data_col=field,
+                # Retarget the swap to the full row so both cost_price_total and cost_price
+                # cells refresh immediately without a separate OOB reload round-trip.
+                row_html = await item_row(request, entity_id)
+                from starlette.responses import HTMLResponse
+                return HTMLResponse(
+                    to_xml(row_html),
+                    headers={
+                        "HX-Retarget": f"#row-{safe_id}",
+                        "HX-Reswap": "outerHTML",
+                    },
                 )
-                oob_row = Div(
-                    hx_get=f"/api/items/{entity_id}/row",
-                    hx_trigger="load",
-                    hx_target=f"#row-{safe_id}",
-                    hx_swap="outerHTML",
-                    hx_swap_oob="true",
-                    id=f"oob-row-reload-{safe_id}",
-                    style="display:none",
-                )
-                return placeholder_td, oob_row
             else:
                 # Fetch old value before patching so activity log shows old → new.
                 # get_item returns a _flatten_item result: attribute fields are already
@@ -1380,16 +1375,15 @@ function celerpPrintLabel(entityId, templateId) {
                 has_virtual_totals = any(f2.get("virtual") and f2.get("type") == "money" for f2 in schema)
                 if field == "quantity" and has_virtual_totals:
                     safe_id = entity_id.replace(":", "-")
-                    oob_row = Div(
-                        hx_get=f"/api/items/{entity_id}/row",
-                        hx_trigger="load",
-                        hx_target=f"#row-{safe_id}",
-                        hx_swap="outerHTML",
-                        hx_swap_oob="true",
-                        id=f"oob-row-reload-{safe_id}",
-                        style="display:none",
+                    row_html = await item_row(request, entity_id)
+                    from starlette.responses import HTMLResponse
+                    return HTMLResponse(
+                        to_xml(row_html),
+                        headers={
+                            "HX-Retarget": f"#row-{safe_id}",
+                            "HX-Reswap": "outerHTML",
+                        },
                     )
-                    return paired_td, oob_row
                 return paired_td
         # Price fields: re-render with currency symbol + / sell_unit annotation
         if cell_type == "money":
@@ -1414,20 +1408,19 @@ function celerpPrintLabel(entityId, templateId) {
                 hx_get=f"/api/items/{entity_id}/field/{field}/edit",
                 hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
             )
-            # If this price field has a virtual total counterpart, update it OOB
+            # If this price field has a virtual total counterpart, update it via row retarget
             virtual_total_field = f"{field}_total"
             if any(f2.get("key") == virtual_total_field and f2.get("virtual") for f2 in schema):
                 safe_id = entity_id.replace(":", "-")
-                oob_row = Div(
-                    hx_get=f"/api/items/{entity_id}/row",
-                    hx_trigger="load",
-                    hx_target=f"#row-{safe_id}",
-                    hx_swap="outerHTML",
-                    hx_swap_oob="true",
-                    id=f"oob-row-reload-{safe_id}",
-                    style="display:none",
+                row_html = await item_row(request, entity_id)
+                from starlette.responses import HTMLResponse
+                return HTMLResponse(
+                    to_xml(row_html),
+                    headers={
+                        "HX-Retarget": f"#row-{safe_id}",
+                        "HX-Reswap": "outerHTML",
+                    },
                 )
-                return price_td, oob_row
             return price_td
         from ui.components.table import display_cell
         try:
