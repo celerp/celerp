@@ -5393,11 +5393,11 @@ async function celerpCsvImport(input, entityId) {{
         _show_item_status = _fin_show_fulfill  # status column only on memo/consignment_in
 
         _STATUS_BADGE: dict[str, tuple[str, str]] = {
-            "available": ("In Stock", "badge--green"),
-            "memo_out":  ("On Memo",  "badge--amber"),
-            "sold":      ("Sold",     "badge--grey"),
-            "archived":  ("Archived", "badge--grey"),
-            "expired":   ("Expired",  "badge--grey"),
+            "available": ("In Stock",  "badge--available"),
+            "memo_out":  ("On Memo",   "badge--memo_out"),
+            "sold":      ("Sold",      "badge--sold"),
+            "archived":  ("Archived",  "badge--inactive"),
+            "expired":   ("Expired",   "badge--expired"),
         }
 
         def _li_row(li: dict) -> FT:
