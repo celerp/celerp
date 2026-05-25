@@ -3693,6 +3693,7 @@ class TestSprint5ItemActions:
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 5.0})),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={"event_id": "e1"})),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
             r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "300", "wholesale_price": "200", "cost_price": "100"}, cookies=_authed())
         assert r.status_code == 204
@@ -4053,6 +4054,7 @@ class TestItemActionRouteCompleteness:
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 5.0})),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={"event_id": "e1"})),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
             r = await ui_client.post("/api/items/gc:123/price", data={"cost_price": "10", "wholesale_price": "20", "retail_price": "30"}, cookies=_authed())
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
@@ -4060,24 +4062,29 @@ class TestItemActionRouteCompleteness:
     @pytest.mark.asyncio
     async def test_price_passes_only_provided_fields(self, ui_client):
         """Only non-empty price fields trigger set_item_price calls.
-        cost_price is converted to cost_total (price * qty) to avoid being overwritten by derivation."""
-        calls = []
-        async def _mock(token, entity_id, price_type, new_price):
-            calls.append((price_type, new_price))
+        cost_price is converted to patch_item cost_total (price * qty) to avoid being overwritten by derivation."""
+        price_calls = []
+        patch_calls = []
+        async def _mock_set(token, entity_id, price_type, new_price):
+            price_calls.append((price_type, new_price))
+            return {"event_id": "e1"}
+        async def _mock_patch(token, entity_id, fields):
+            patch_calls.append(fields)
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 2.0})),
-            patch("ui.api_client.set_item_price", new=_mock),
+            patch("ui.api_client.set_item_price", new=_mock_set),
+            patch("ui.api_client.patch_item", new=_mock_patch),
         ):
             await ui_client.post("/api/items/gc:123/price", data={"cost_price": "50", "wholesale_price": "", "retail_price": "99"}, cookies=_authed())
-        price_types = {pt for pt, _ in calls}
-        # cost_price is converted to cost_total save (50 * 2 = 100)
-        assert "cost_total" in price_types
+        # cost_price saved via patch_item as cost_total = 50 * 2 = 100
+        assert any("cost_total" in f for f in patch_calls)
+        cost_total_val = next(f["cost_total"]["new"] for f in patch_calls if "cost_total" in f)
+        assert cost_total_val == 100.0
+        price_types = {pt for pt, _ in price_calls}
         assert "Retail" in price_types
         assert "Wholesale" not in price_types
-        cost_total_call = next((v for pt, v in calls if pt == "cost_total"), None)
-        assert cost_total_call == 100.0
 
     @pytest.mark.asyncio
     async def test_price_api_error_shown(self, ui_client):
@@ -4085,7 +4092,7 @@ class TestItemActionRouteCompleteness:
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 1.0})),
-            patch("ui.api_client.set_item_price", new=AsyncMock(side_effect=APIError(400, "bad price"))),
+            patch("ui.api_client.patch_item", new=AsyncMock(side_effect=APIError(400, "bad price"))),
         ):
             r = await ui_client.post("/api/items/gc:123/price", data={"cost_price": "10"}, cookies=_authed())
         assert r.status_code == 200

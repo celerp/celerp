@@ -2591,9 +2591,11 @@ function celerpPrintLabel(entityId, templateId) {
                     except ValueError:
                         continue
                     # cost_price is a derived field; always save as cost_total to avoid being
-                    # overwritten by _flatten_item on the next read
+                    # overwritten by _flatten_item on the next read.
+                    # Use patch_item (not set_item_price) so price_type normalization doesn't mangle "cost_total".
                     if conventional_key == "cost_price" and item_qty > 0:
-                        await api.set_item_price(token, entity_id, "cost_total", round(price * item_qty, 10))
+                        old_cost_total = item_for_price.get("cost_total")
+                        await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}})
                     else:
                         await api.set_item_price(token, entity_id, pl_name, price)
         except APIError as e:
