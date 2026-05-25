@@ -8686,7 +8686,6 @@ class TestInventoryItemDetailFixes:
             r = await ui_client.get(f"/inventory/{item['entity_id']}", cookies=_authed())
         assert r.status_code == 200
         html = r.content.decode()
-        assert "Batch Split" in html
         assert "batch_qty" in html
         assert "batch_count" in html
         assert "batch-split-preview" in html

@@ -2378,3 +2378,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .batch-split-sep { font-size:13px; color:var(--c-muted); flex-shrink:0; padding:0 2px; line-height:1; align-self:center; }
 .batch-split-preview { font-size:11px; color:var(--c-muted); min-height:16px; margin-top:2px; }
 .batch-split-over { color:var(--c-red); font-weight:600; }
+.action-card--wide { grid-column: span 2; }
+.action-card-divider { border: none; border-top: 1px solid var(--c-border); margin: 8px 0; }
+.split-complement { max-width: 90px; }
+@media (max-width: 640px) { .action-card--wide { grid-column: span 1; } }

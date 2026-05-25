@@ -2780,13 +2780,35 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         orig_sku = str(item.get("sku", "") or "")
+        sell_by = str(item.get("sell_by") or "piece")
+        from celerp.services.units import DEFAULT_UNITS
+        _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
+        # Optional complement fields (one value per row; may be empty)
+        comp_weights  = form.getlist("split_weight")
+        comp_pieces_l = form.getlist("split_pieces")
         # Auto-generate sequential SKUs for each child
         children: list[dict] = []
         used_skus: set[str] = set()
-        for qty in children_qtys:
+        for idx, qty in enumerate(children_qtys):
             child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
             used_skus.add(child_sku)
-            children.append({"sku": child_sku, "quantity": qty})
+            child: dict = {"sku": child_sku, "quantity": qty}
+            # Attach complement if provided for this row
+            if is_pieces_unit(sell_by, _default_umap) and idx < len(comp_weights):
+                raw_w = (comp_weights[idx] or "").strip()
+                if raw_w:
+                    try:
+                        child["weight"] = float(raw_w)
+                    except (ValueError, TypeError):
+                        pass
+            elif is_weight_unit(sell_by, _default_umap) and idx < len(comp_pieces_l):
+                raw_p = (comp_pieces_l[idx] or "").strip()
+                if raw_p:
+                    try:
+                        child["pieces"] = int(round(float(raw_p)))
+                    except (ValueError, TypeError):
+                        pass
+            children.append(child)
         try:
             await api.split_item(token, entity_id, children)
         except APIError as e:
@@ -2827,18 +2849,35 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         available = float(item.get("quantity") or 0)
-        if batch_qty * batch_count > available:
+        if batch_qty * batch_count >= available:
             return Span(
-                f"Total ({batch_qty * batch_count}) exceeds available ({available}).",
+                f"Total ({batch_qty * batch_count}) meets or exceeds available ({available}).",
                 cls="flash flash--error", id="item-action-error",
             )
         orig_sku = str(item.get("sku", "") or "")
+        # Optional complement field (weight when sell_by is pieces, pieces when sell_by is weight)
+        raw_comp = str(form.get("batch_complement", "")).strip()
+        complement: float | None = None
+        if raw_comp:
+            try:
+                complement = float(raw_comp)
+            except (ValueError, TypeError):
+                pass
         used_skus: set[str] = set()
         children: list[dict] = []
+        sell_by = item.get("sell_by") or "piece"
+        from celerp.services.units import DEFAULT_UNITS
+        _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
         for _ in range(batch_count):
             child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
             used_skus.add(child_sku)
-            children.append({"sku": child_sku, "quantity": batch_qty})
+            child: dict = {"sku": child_sku, "quantity": batch_qty}
+            if complement is not None:
+                if is_weight_unit(sell_by, _default_umap):
+                    child["pieces"] = int(round(complement))
+                elif is_pieces_unit(sell_by, _default_umap):
+                    child["weight"] = complement
+            children.append(child)
         try:
             await api.split_item(token, entity_id, children)
         except APIError as e:
@@ -4846,41 +4885,135 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
     sell_by = item.get("sell_by") or "piece"
     if allow_splitting:
         sell_by_label = sell_by.capitalize()
+        # Determine complement field: pieces sell_by → optional weight; weight sell_by → optional pieces
+        from celerp.services.units import DEFAULT_UNITS
+        _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
+        _is_weight = is_weight_unit(sell_by, _default_umap)
+        _is_pieces = is_pieces_unit(sell_by, _default_umap)
+        if _is_weight:
+            _comp_name   = "split_pieces"
+            _comp_ph     = "Pieces (optional)"
+            _comp_title  = "Optionally record how many pieces this child lot contains"
+            _comp_step   = "1"
+        elif _is_pieces:
+            _comp_name   = "split_weight"
+            _comp_ph     = "Weight (optional)"
+            _comp_title  = "Optionally record the weight of this child lot"
+            _comp_step   = "0.001"
+        else:
+            _comp_name   = None
+            _comp_ph     = None
+            _comp_title  = None
+            _comp_step   = None
+
+        _qty_title         = f"Enter the {sell_by_label} quantity to split off into this child lot"
+        _batch_qty_title   = f"Enter the {sell_by_label} quantity for each identical child lot"
+        _batch_count_title = "Number of identical parcels to create (minimum 2)"
+
+        # Complement input for manual rows (rendered inline via FastHTML and duplicated by JS)
+        _comp_inputs = ([Input(type="number", name=_comp_name,
+                               placeholder=_comp_ph, title=_comp_title,
+                               step=_comp_step, min="0",
+                               cls="form-input form-input--sm split-complement")]
+                        if _comp_name else [])
+        # JS fragment for complement field in dynamically added rows
+        _comp_js = (
+            f'+ \'<input type="number" name="{_comp_name}" placeholder="{_comp_ph}"'
+            f' title="{_comp_title}" step="{_comp_step}" min="0"'
+            f' class="form-input form-input--sm split-complement">\''
+        ) if _comp_name else ""
+
+        # Combined Split + Batch Split card (single card, divider between sections)
         split_card = Div(
             Form(
                 Strong(t("inv.u2702_split"), cls="action-card-title"),
+                # ── Manual split rows ──
                 Div(
-                    # Dynamic qty rows - JS adds more via addSplitRow()
                     Div(
-                        Div(
-                            Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
-                                   onclick="addSplitRow(this)"),
-                            Input(type="number", name="split_qty", placeholder=f"{sell_by_label} to split off",
-                                  step="any", min="0.001", cls="form-input form-input--sm", required=True),
-                            cls="split-qty-row",
-                        ),
-                        id="split-qty-rows",
+                        Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
+                               onclick="addSplitRow(this)"),
+                        Input(type="number", name="split_qty",
+                              placeholder=f"{sell_by_label} to split off",
+                              title=_qty_title,
+                              step="any", min="0.001",
+                              cls="form-input form-input--sm", required=True),
+                        *_comp_inputs,
+                        cls="split-qty-row",
                     ),
-                    Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
-                    cls="action-card-row action-card-row--col",
+                    id="split-qty-rows",
                 ),
+                Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
+                       style="margin-top:4px"),
+                # ── Divider ──
+                Hr(cls="action-card-divider"),
+                # ── Batch split row ──
+                Div(
+                    Input(type="number", name="batch_qty",
+                          placeholder=f"{sell_by_label} per child",
+                          title=_batch_qty_title,
+                          step="any", min="0.001",
+                          cls="form-input form-input--sm",
+                          oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                    *([Input(type="number", name="batch_complement",
+                             placeholder=_comp_ph, title=_comp_title,
+                             step=_comp_step, min="0",
+                             cls="form-input form-input--sm split-complement",
+                             oninput=f"batchSplitPreview_{safe_id}(this.form)")]
+                      if _comp_name else []),
+                    Span("\u00d7", cls="batch-split-sep"),
+                    Input(type="number", name="batch_count",
+                          placeholder="Count",
+                          title=_batch_count_title,
+                          step="1", min="2",
+                          cls="form-input form-input--sm batch-split-count",
+                          oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                    Button("Batch", type="button",
+                           title="Create N identical child lots",
+                           cls="btn btn--primary btn--xs",
+                           onclick=f"batchSplitSubmit_{safe_id}(this.closest('form'))"),
+                    cls="action-card-row",
+                ),
+                Div(id=f"batch-split-preview-{safe_id}", cls="batch-split-preview"),
                 Script(f"""
 function addSplitRow(btn) {{
   var container = document.getElementById('split-qty-rows');
   var row = document.createElement('div');
   row.className = 'split-qty-row';
   row.innerHTML = '<button type="button" class="btn btn--secondary btn--xs split-add-btn" onclick="addSplitRow(this)">+</button>'
-    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" step="any" min="0.001" class="form-input form-input--sm" required>'
-    + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">✕</button>';
+    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" class="form-input form-input--sm" required>'
+    {_comp_js}
+    + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">\u2715</button>';
   container.appendChild(row);
   row.querySelector('input').focus();
+}}
+function batchSplitPreview_{safe_id}(form) {{
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)     || 0;
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
+  var avail = {current_qty};
+  var unit  = '{sell_by_label}';
+  var el    = document.getElementById('batch-split-preview-{safe_id}');
+  if (!el) return;
+  if (!qty || !count) {{ el.innerHTML = ''; return; }}
+  var total = qty * count;
+  var over  = total >= avail;
+  el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
+    + ' = ' + total.toFixed(2) + '\u00a0' + unit
+    + (over ? ' <span class="batch-split-over">exceeds available (' + avail + ')</span>' : '');
+}}
+function batchSplitSubmit_{safe_id}(form) {{
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value);
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
+  if (!qty || qty <= 0) {{ alert('Enter a valid quantity per child.'); return; }}
+  if (!count || count < 2) {{ alert('Count must be at least 2.'); return; }}
+  htmx.ajax('POST', '/api/items/{entity_id}/batch-split',
+    {{ source: form, target: '#item-action-error', swap: 'outerHTML' }});
 }}
 """),
                 hx_post=f"/api/items/{entity_id}/split-inline",
                 hx_target="#item-action-error",
                 hx_swap="outerHTML",
             ),
-            cls="action-card",
+            cls="action-card action-card--wide",
         )
     else:
         split_card = Div(
@@ -4889,55 +5022,7 @@ function addSplitRow(btn) {{
             cls="action-card action-card--disabled",
         )
 
-    if allow_splitting:
-        batch_split_card = Div(
-            Form(
-                Strong("✂ Batch Split", cls="action-card-title"),
-                Div(
-                    Div(
-                        Input(type="number", name="batch_qty",
-                              placeholder=f"{sell_by_label} per child",
-                              step="any", min="0.001",
-                              cls="form-input form-input--sm",
-                              required=True,
-                              oninput=f"batchSplitPreview_{safe_id}(this.form)"),
-                        Span("×", cls="batch-split-sep"),
-                        Input(type="number", name="batch_count",
-                              placeholder="Count",
-                              step="1", min="2",
-                              cls="form-input form-input--sm",
-                              required=True,
-                              oninput=f"batchSplitPreview_{safe_id}(this.form)"),
-                        cls="action-card-row",
-                    ),
-                    Div(id=f"batch-split-preview-{safe_id}", cls="batch-split-preview"),
-                    Button("Batch Split", type="submit", cls="btn btn--primary btn--xs"),
-                    cls="action-card-row--col",
-                ),
-                Script(f"""
-function batchSplitPreview_{safe_id}(form) {{
-  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)    || 0;
-  var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
-  var avail = {current_qty};
-  var unit  = '{sell_by_label}';
-  var el    = document.getElementById('batch-split-preview-{safe_id}');
-  if (!el) return;
-  if (!qty || !count) {{ el.innerHTML = ''; return; }}
-  var total = qty * count;
-  var over  = total > avail;
-  el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
-    + ' = ' + total.toFixed(2) + '\u00a0' + unit
-    + (over ? ' <span class="batch-split-over">exceeds available (' + avail + ')</span>' : '');
-}}
-"""),
-                hx_post=f"/api/items/{entity_id}/batch-split",
-                hx_target="#item-action-error",
-                hx_swap="outerHTML",
-            ),
-            cls="action-card",
-        )
-    else:
-        batch_split_card = ""
+    batch_split_card = ""  # merged into split_card above
 
     duplicate_card = Div(
         Form(
