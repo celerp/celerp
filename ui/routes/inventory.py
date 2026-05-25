@@ -2578,6 +2578,9 @@ function celerpPrintLabel(entityId, templateId) {
         except Exception:
             price_lists = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
         try:
+            # Fetch item once to get qty (needed for cost_price → cost_total conversion)
+            item_for_price = await api.get_item(token, entity_id)
+            item_qty = float(item_for_price.get("quantity") or 0)
             for pl in price_lists:
                 pl_name = pl.get("name", "")
                 conventional_key = f"{pl_name.lower()}_price"
@@ -2587,7 +2590,12 @@ function celerpPrintLabel(entityId, templateId) {
                         price = float(val)
                     except ValueError:
                         continue
-                    await api.set_item_price(token, entity_id, pl_name, price)
+                    # cost_price is a derived field; always save as cost_total to avoid being
+                    # overwritten by _flatten_item on the next read
+                    if conventional_key == "cost_price" and item_qty > 0:
+                        await api.set_item_price(token, entity_id, "cost_total", round(price * item_qty, 10))
+                    else:
+                        await api.set_item_price(token, entity_id, pl_name, price)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
