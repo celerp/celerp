@@ -1794,16 +1794,18 @@ async def test_memo_fulfill_sets_memo_out_status(client, session):
 
     await client.post(f"/docs/{doc_id}/finalize", headers=h)
 
-    # Fulfill (deliver to consignee)
-    fulfill_r = await client.post(f"/docs/{doc_id}/fulfill", headers=h)
+    # Fulfill via per-line endpoint (entity_id = item_id for linked items)
+    fulfill_r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=h,
+                                  json={"line_entity_ids": [item_id]})
     assert fulfill_r.status_code == 200
 
     item_state = (await client.get(f"/items/{item_id}", headers=h)).json()
     assert item_state["status"] == "memo_out", f"Expected memo_out, got {item_state['status']}"
     assert item_state["is_available"] is False
 
-    # Unfulfill (item comes back)
-    unfulfill_r = await client.post(f"/docs/{doc_id}/unfulfill", headers=h)
+    # Revert via per-line endpoint
+    unfulfill_r = await client.post(f"/docs/{doc_id}/revert-lines", headers=h,
+                                    json={"line_entity_ids": [item_id]})
     assert unfulfill_r.status_code == 200
 
     item_state2 = (await client.get(f"/items/{item_id}", headers=h)).json()

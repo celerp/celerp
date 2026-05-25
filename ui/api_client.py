@@ -663,14 +663,14 @@ async def unvoid_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/unvoid", json={})).json()
 
 
-async def fulfill_doc(token: str, entity_id: str) -> dict:
+async def fulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/fulfill", json={})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={"line_entity_ids": line_entity_ids})).json()
 
 
-async def unfulfill_doc(token: str, entity_id: str) -> dict:
+async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/unfulfill", json={})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json={"line_entity_ids": line_entity_ids})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None) -> dict:

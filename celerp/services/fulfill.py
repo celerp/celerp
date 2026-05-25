@@ -27,6 +27,11 @@ _SERVICE_SELL_BY = {"service", "hour"}
 # from the receive step. Fulfillment merely closes the doc.
 _INBOUND_DOC_TYPES = frozenset({"consignment_in"})
 
+# Doc types where COGS must NOT be recognized at fulfillment time.
+# consignment_in: goods not owned; COGS when vendor bill settled.
+# memo: goods still nominally owned; COGS recognized when invoice is issued.
+_NO_COGS_DOC_TYPES = _INBOUND_DOC_TYPES | frozenset({"memo"})
+
 
 def _to_uuid(val) -> _uuid.UUID:
     """Coerce str or UUID to UUID."""
@@ -227,17 +232,19 @@ async def execute_fulfill(
             metadata_={},
         )
 
-    # COGS journal entry (outbound only; consignment_in has no COGS)
-    if total_cogs > 0:
+    # COGS journal entry: skip for inbound docs and memos.
+    # Memo COGS is recognized when the memo converts to an invoice.
+    je_cogs = 0.0 if doc_type in _NO_COGS_DOC_TYPES else total_cogs
+    if je_cogs > 0:
         await auto_je.create_for_doc_fulfilled(
             session, company_id=cid, user_id=uid,
-            doc_id=doc_entity_id, total_cogs=total_cogs,
+            doc_id=doc_entity_id, total_cogs=je_cogs,
         )
 
     return {
         "fulfillment_status": fulfillment_status,
         "fulfilled_items": fulfilled_items,
-        "total_cogs": total_cogs,
+        "total_cogs": je_cogs,
     }
 
 

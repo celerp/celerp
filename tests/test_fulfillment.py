@@ -640,8 +640,9 @@ async def test_consignment_in_fulfill_does_not_deduct_inventory(client, session,
         {"sku": sku, "name": sku, "quantity": 10, "unit_price": 5.0},
     ])
 
-    # Fulfill the consignment_in
-    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    # Fulfill the consignment_in via new per-line endpoint (empty list = full inbound fulfill)
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": []})
     assert r.status_code == 200, r.text
     result = r.json()
     assert result["fulfillment_status"] == "fulfilled"
@@ -671,11 +672,13 @@ async def test_consignment_in_unfulfill_does_not_touch_inventory(client, session
         {"sku": sku, "name": sku, "quantity": 8, "unit_price": 3.0},
     ])
 
-    # Fulfill then unfulfill
-    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    # Fulfill then unfulfill via new per-line endpoints
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": []})
     assert r.status_code == 200, r.text
 
-    r2 = await client.post(f"/docs/{doc_id}/unfulfill", headers=auth["headers"])
+    r2 = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": []})
     assert r2.status_code == 200, r2.text
 
     # Quantity still unchanged
@@ -701,7 +704,8 @@ async def test_consignment_in_fulfill_no_cogs_je(client, session, auth, _setup_i
     r_before = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
     je_count_before = len(r_before.json().get("items", []))
 
-    await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": []})
 
     # JE count must not have increased (no COGS for consignment)
     r_after = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
@@ -709,3 +713,354 @@ async def test_consignment_in_fulfill_no_cogs_je(client, session, auth, _setup_i
     assert je_count_after == je_count_before, (
         f"consignment_in fulfill must not create COGS JE: before={je_count_before}, after={je_count_after}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for memo tests
+# ---------------------------------------------------------------------------
+
+
+async def _create_memo(client, auth, line_items) -> str:
+    """Create a finalized memo document. line_items should include entity_id for linked items."""
+    total = sum(li.get("quantity", 0) * li.get("unit_price", 0) for li in line_items)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "memo",
+        "ref_id": f"MEMO-{uuid.uuid4().hex[:6]}",
+        "line_items": line_items,
+        "total": total,
+    })
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    r2 = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
+    assert r2.status_code == 200, r2.text
+    return doc_id
+
+
+# ---------------------------------------------------------------------------
+# Update existing consignment_in tests to use /fulfill-lines
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_consignment_in_fulfill_lines_does_not_deduct_inventory(client, session, auth, _setup_ids):
+    """Fulfilling a consignment_in via /fulfill-lines must NOT decrease item quantities."""
+    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
+    initial_qty = 10.0
+
+    item_id = await _create_item(client, auth, sku, initial_qty, cost_price=5.0)
+    doc_id = await _create_consignment_in(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 10, "unit_price": 5.0},
+    ])
+
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": []})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "fulfilled"
+
+    r2 = await client.get(f"/items/{item_id}", headers=auth["headers"])
+    assert float(r2.json()["quantity"]) == initial_qty
+
+    r3 = await client.get(f"/docs/{doc_id}", headers=auth["headers"])
+    assert r3.json().get("fulfillment_status") == "fulfilled"
+
+
+@pytest.mark.asyncio
+async def test_consignment_in_revert_lines_does_not_touch_inventory(client, session, auth, _setup_ids):
+    """Reversing fulfillment on a consignment_in via /revert-lines must not alter item quantities."""
+    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
+    initial_qty = 8.0
+
+    item_id = await _create_item(client, auth, sku, initial_qty, cost_price=3.0)
+    doc_id = await _create_consignment_in(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 8, "unit_price": 3.0},
+    ])
+
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": []})
+    assert r.status_code == 200, r.text
+
+    r2 = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": []})
+    assert r2.status_code == 200, r2.text
+
+    r3 = await client.get(f"/items/{item_id}", headers=auth["headers"])
+    assert float(r3.json()["quantity"]) == initial_qty
+
+    r4 = await client.get(f"/docs/{doc_id}", headers=auth["headers"])
+    assert r4.json().get("fulfillment_status") in (None, "", "unfulfilled", "partial")
+
+
+@pytest.mark.asyncio
+async def test_consignment_in_fulfill_lines_no_cogs_je(client, session, auth, _setup_ids):
+    """Fulfilling a consignment_in via /fulfill-lines must produce no COGS journal entry."""
+    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
+
+    await _create_item(client, auth, sku, 5, cost_price=10.0)
+    doc_id = await _create_consignment_in(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 10.0},
+    ])
+
+    r_before = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
+    je_count_before = len(r_before.json().get("items", []))
+
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": []})
+
+    r_after = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
+    je_count_after = len(r_after.json().get("items", []))
+    assert je_count_after == je_count_before, (
+        f"consignment_in fulfill-lines must not create COGS JE: before={je_count_before}, after={je_count_after}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# New tests: per-line fulfill/revert on memo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_marks_items_memo_out(client, session, auth, _setup_ids):
+    """fulfill-lines on a memo marks selected items memo_out and doc partially_fulfilled."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+    sku_c = f"MEMO-C-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+    eid_c = await _create_item(client, auth, sku_c, 1, cost_price=300.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+        {"sku": sku_c, "name": sku_c, "quantity": 1, "unit_price": 300.0, "entity_id": eid_c},
+    ])
+
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a, eid_b]})
+    assert r.status_code == 200, r.text
+    result = r.json()
+    assert result["fulfillment_status"] == "partial"
+    assert set(result["fulfilled"]) == {eid_a, eid_b}
+
+    # Items A and B are memo_out; C is still available
+    ra = await client.get(f"/items/{eid_a}", headers=auth["headers"])
+    assert ra.json()["status"] == "memo_out"
+    rb = await client.get(f"/items/{eid_b}", headers=auth["headers"])
+    assert rb.json()["status"] == "memo_out"
+    rc = await client.get(f"/items/{eid_c}", headers=auth["headers"])
+    assert rc.json()["status"] == "available"
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") in ("partial", "partially_fulfilled")
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_all_items_marks_doc_fulfilled(client, session, auth, _setup_ids):
+    """fulfill-lines on all items marks doc fulfilled."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=50.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=75.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 50.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 75.0, "entity_id": eid_b},
+    ])
+
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a, eid_b]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "fulfilled"
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") == "fulfilled"
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_rejects_already_memo_out(client, session, auth, _setup_ids):
+    """fulfill-lines rejects items that are already memo_out."""
+    sku = f"MEMO-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=50.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 50.0, "entity_id": eid},
+    ])
+
+    # First fulfill
+    r1 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert r1.status_code == 200, r1.text
+
+    # Second fulfill on same item should 422
+    r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert r2.status_code == 422, r2.text
+    body = r2.json()
+    assert "errors" in body or "detail" in body
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_no_cogs_je_on_memo(client, session, auth, _setup_ids):
+    """fulfill-lines on a memo must NOT create a COGS journal entry."""
+    sku = f"MEMO-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=500.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 500.0, "entity_id": eid},
+    ])
+
+    r_before = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
+    je_count_before = len(r_before.json().get("items", []))
+
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid]})
+    assert r.status_code == 200, r.text
+
+    r_after = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
+    je_count_after = len(r_after.json().get("items", []))
+    assert je_count_after == je_count_before, (
+        f"memo fulfill-lines must not create COGS JE: before={je_count_before}, after={je_count_after}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_marks_items_available(client, session, auth, _setup_ids):
+    """revert-lines restores memo_out items to available."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+    ])
+
+    # Fulfill both
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid_a, eid_b]})
+
+    # Revert only A
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "partial"
+
+    ra = await client.get(f"/items/{eid_a}", headers=auth["headers"])
+    assert ra.json()["status"] == "available"
+
+    rb = await client.get(f"/items/{eid_b}", headers=auth["headers"])
+    assert rb.json()["status"] == "memo_out"
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_rejects_available_item(client, session, auth, _setup_ids):
+    """revert-lines rejects items that are already available."""
+    sku = f"MEMO-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=50.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 50.0, "entity_id": eid},
+    ])
+
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid]})
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_all_items_clears_fulfillment(client, session, auth, _setup_ids):
+    """Reverting all fulfilled items sets doc fulfillment_status back to unfulfilled."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+    ])
+
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid_a, eid_b]})
+
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a, eid_b]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "unfulfilled"
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") in (None, "", "unfulfilled")
+
+
+@pytest.mark.asyncio
+async def test_memo_to_invoice_conversion_excludes_reverted_items(client, session, auth, _setup_ids):
+    """Memo→invoice conversion only carries memo_out items; reverted items are excluded."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+    sku_c = f"MEMO-C-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+    eid_c = await _create_item(client, auth, sku_c, 1, cost_price=300.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+        {"sku": sku_c, "name": sku_c, "quantity": 1, "unit_price": 300.0, "entity_id": eid_c},
+    ])
+
+    # Fulfill A and B; revert A → only B is memo_out
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid_a, eid_b]})
+    await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid_a]})
+
+    r = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    invoice_id = r.json()["target_doc_id"]
+
+    invoice = (await client.get(f"/docs/{invoice_id}", headers=auth["headers"])).json()
+    invoice_skus = [li.get("sku") for li in invoice.get("line_items", [])]
+    assert sku_b in invoice_skus, f"Expected {sku_b} in invoice; got {invoice_skus}"
+    assert sku_a not in invoice_skus, f"Reverted item {sku_a} must not be in invoice"
+    assert sku_c not in invoice_skus, f"Never-fulfilled item {sku_c} must not be in invoice"
+
+
+@pytest.mark.asyncio
+async def test_memo_to_invoice_fails_when_no_memo_out_items(client, session, auth, _setup_ids):
+    """Memo→invoice conversion 422s when no items are memo_out."""
+    sku = f"MEMO-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
+    ])
+
+    # Don't fulfill - all items still available
+    r = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
+    assert r.status_code == 422, r.text
+    assert "memo_out" in r.text.lower() or "on memo" in r.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_old_fulfill_endpoint_removed(client, session, auth, _setup_ids):
+    """POST /docs/{id}/fulfill no longer exists."""
+    sku = f"TEST-{uuid.uuid4().hex[:6]}"
+    await _create_item(client, auth, sku, 1)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 10.0},
+    ])
+    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    assert r.status_code in (404, 405), f"Expected 404/405, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_old_unfulfill_endpoint_removed(client, session, auth, _setup_ids):
+    """POST /docs/{id}/unfulfill no longer exists."""
+    sku = f"TEST-{uuid.uuid4().hex[:6]}"
+    await _create_item(client, auth, sku, 1)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 10.0},
+    ])
+    r = await client.post(f"/docs/{doc_id}/unfulfill", headers=auth["headers"])
+    assert r.status_code in (404, 405), f"Expected 404/405, got {r.status_code}"
