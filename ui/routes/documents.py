@@ -5393,11 +5393,11 @@ async function celerpCsvImport(input, entityId) {{
         _show_item_status = _fin_show_fulfill  # status column only on memo/consignment_in
 
         _STATUS_BADGE: dict[str, tuple[str, str]] = {
-            "available": ("In Stock", "badge--green"),
-            "memo_out":  ("On Memo",  "badge--amber"),
-            "sold":      ("Sold",     "badge--grey"),
-            "archived":  ("Archived", "badge--grey"),
-            "expired":   ("Expired",  "badge--grey"),
+            "available": ("In Stock",  "badge--available"),
+            "memo_out":  ("On Memo",   "badge--memo_out"),
+            "sold":      ("Sold",      "badge--sold"),
+            "archived":  ("Archived",  "badge--inactive"),
+            "expired":   ("Expired",   "badge--expired"),
         }
 
         def _li_row(li: dict) -> FT:
@@ -5407,14 +5407,6 @@ async function celerpCsvImport(input, entityId) {{
             discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
             line_total = float(li.get("line_total", 0) or 0) or discounted
             cells = []
-            if _show_item_status:
-                li_eid = li.get("entity_id") or li.get("item_id") or ""
-                status_val = item_status_map.get(li_eid, "") if item_status_map else ""
-                if status_val and status_val in _STATUS_BADGE:
-                    label, badge_cls = _STATUS_BADGE[status_val]
-                    cells.append(Td(Span(label, cls=f"badge {badge_cls}"), cls="col-item-status"))
-                else:
-                    cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
             if _fin_show_bulk:
                 li_eid = li.get("entity_id") or li.get("item_id") or ""
                 li_sku = li.get("sku") or ""
@@ -5423,6 +5415,14 @@ async function celerpCsvImport(input, entityId) {{
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
+            if _show_item_status:
+                li_eid = li.get("entity_id") or li.get("item_id") or ""
+                status_val = item_status_map.get(li_eid, "") if item_status_map else ""
+                if status_val and status_val in _STATUS_BADGE:
+                    label, badge_cls = _STATUS_BADGE[status_val]
+                    cells.append(Td(Span(label, cls=f"badge {badge_cls}"), cls="col-item-status"))
+                else:
+                    cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
             cells += [
                 Td(format_value(li.get("description") or li.get("name"))),
                 Td(format_value(li.get("sku") or None)),
@@ -5441,10 +5441,10 @@ async function celerpCsvImport(input, entityId) {{
             return Tr(*cells)
 
         _thead_base = []
-        if _show_item_status:
-            _thead_base.append(Th("Status", cls="col-item-status"))
         if _fin_show_bulk:
             _thead_base.append(Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"))
+        if _show_item_status:
+            _thead_base.append(Th("Status", cls="col-item-status"))
         _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.category")), Th(t("th.type"))]
