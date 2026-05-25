@@ -3598,6 +3598,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
         _weight_paired = renderers.get("weight")  # paired renderer built above (may be None)
         def _weight_renderer(entity_id: str, row: dict, _umap=_umap, _paired=_weight_paired) -> FT:
             sell_by = row.get("sell_by") or ""
+            _safe_id = entity_id.replace(":", "-")
             if is_weight_unit(sell_by, _umap):
                 qty_val = row.get("quantity", "")
                 fmt = format_qty(qty_val, sell_by, _umap)
@@ -3608,6 +3609,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                         title="Derived from Qty column",
                         cls="cell-derived",
                     ),
+                    id=f"cell-{_safe_id}-weight",
                     cls="cell cell--number",
                     data_col="weight",
                     data_decimals=str(decimals),
@@ -3622,6 +3624,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     if "pieces" in schema_keys:
         def _pieces_renderer(entity_id: str, row: dict, _umap=_umap) -> FT:
             sell_by = row.get("sell_by") or ""
+            _safe_id = entity_id.replace(":", "-")
             if is_pieces_unit(sell_by, _umap):
                 qty_val = row.get("quantity", "")
                 fmt = format_qty(qty_val, sell_by, _umap)
@@ -3632,6 +3635,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                         title="Derived from Qty column",
                         cls="cell-derived",
                     ),
+                    id=f"cell-{_safe_id}-pieces",
                     cls="cell cell--number",
                     data_col="pieces",
                     data_decimals=str(decimals),
