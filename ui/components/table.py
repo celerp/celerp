@@ -470,12 +470,14 @@ def display_cell(
     display_value = label_map.get(value, value) if label_map and value is not None else value
     inner = _display_val(display_value, cell_type, currency)
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
+    _safe_id = entity_id.replace(":", "-")
+    _cell_id = f"cell-{_safe_id}-{field}"
 
     if not editable:
         # Only render hyperlink when there's actual content (not empty/placeholder)
         if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
-            return Td(A(inner, href=link_href, cls="table-link"), cls=f"cell cell--{cell_type}", data_col=field)
-        return Td(inner, cls=f"cell cell--{cell_type}", data_col=field)
+            return Td(A(inner, href=link_href, cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}", data_col=field)
+        return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}", data_col=field)
 
     if cell_type == "image":
         # Drag-drop zone: dropping a file POSTs to the attachment endpoint.
@@ -503,6 +505,7 @@ def display_cell(
     if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
         return Td(
             A(inner, href=link_href, cls="table-link"),
+            id=_cell_id,
             title="Double-click to edit",
             hx_get=_edit,
             hx_target="this",
@@ -515,6 +518,7 @@ def display_cell(
     if field == "sku":
         return Td(
             A(inner, href=f"/inventory/{entity_id}", cls="table-link"),
+            id=_cell_id,
             title="Double-click to edit",
             hx_get=_edit,
             hx_target="this",
@@ -526,6 +530,7 @@ def display_cell(
 
     return Td(
         inner,
+        id=_cell_id,
         title="Double-click to edit",
         hx_get=_edit,
         hx_target="this",

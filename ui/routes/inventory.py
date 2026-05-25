@@ -1300,17 +1300,44 @@ function celerpPrintLabel(entityId, templateId) {
                     old_unit_price = old_item.get(unit_price_field)
                     await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
                 safe_id = entity_id.replace(":", "-")
-                # Retarget the swap to the full row so both cost_price_total and cost_price
-                # cells refresh immediately without a separate OOB reload round-trip.
-                row_html = await item_row(request, entity_id)
-                from starlette.responses import HTMLResponse
-                return HTMLResponse(
-                    to_xml(row_html),
-                    headers={
-                        "HX-Retarget": f"#row-{safe_id}",
-                        "HX-Reswap": "outerHTML",
-                    },
+                # Fetch updated item and currency for cell rendering
+                updated_item = await api.get_item(token, entity_id)
+                try:
+                    company = await api.get_company(token)
+                    currency = (company.get("currency") or "").strip() or None
+                except Exception:
+                    currency = None
+                flat = _flatten_item_attrs(updated_item)
+                qty = float(flat.get("quantity") or 0)
+                new_cost_total = float(value)
+                new_cost_price = new_cost_total / qty if qty else 0.0
+                from ui.components.table import fmt_money, display_cell
+                # Cell 1: cost_price_total (the edited cell, main swap target)
+                total_formatted = fmt_money(new_cost_total, currency) if new_cost_total != 0 else "--"
+                total_inner = Span(total_formatted, cls="cell-money") if total_formatted != "--" else Span("--")
+                total_td = Td(
+                    total_inner,
+                    id=f"cell-{safe_id}-cost_price_total",
+                    cls="cell cell--money cell--clickable",
+                    data_col="cost_price_total",
+                    hx_get=f"/api/items/{entity_id}/field/cost_price_total/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
                 )
+                # Cell 2: cost_price (OOB swap into its existing td by id)
+                unit_formatted = fmt_money(new_cost_price, currency) if new_cost_price != 0 else "--"
+                unit_inner = Span(unit_formatted, cls="cell-money") if unit_formatted != "--" else Span("--")
+                sell_by = (flat.get("sell_by") or "").strip()
+                annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+                unit_td = Td(
+                    unit_inner, annotation,
+                    id=f"cell-{safe_id}-cost_price",
+                    hx_swap_oob="true",
+                    cls="cell cell--money cell--clickable",
+                    data_col="cost_price",
+                    hx_get=f"/api/items/{entity_id}/field/cost_price/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                )
+                return total_td, unit_td
             else:
                 # Fetch old value before patching so activity log shows old → new.
                 # get_item returns a _flatten_item result: attribute fields are already
@@ -1375,15 +1402,41 @@ function celerpPrintLabel(entityId, templateId) {
                 has_virtual_totals = any(f2.get("virtual") and f2.get("type") == "money" for f2 in schema)
                 if field == "quantity" and has_virtual_totals:
                     safe_id = entity_id.replace(":", "-")
-                    row_html = await item_row(request, entity_id)
-                    from starlette.responses import HTMLResponse
-                    return HTMLResponse(
-                        to_xml(row_html),
-                        headers={
-                            "HX-Retarget": f"#row-{safe_id}",
-                            "HX-Reswap": "outerHTML",
-                        },
-                    )
+                    # Re-fetch updated item for new virtual total values
+                    updated_item = await api.get_item(token, entity_id)
+                    flat = _flatten_item_attrs(updated_item)
+                    try:
+                        company = await api.get_company(token)
+                        currency2 = (company.get("currency") or "").strip() or None
+                    except Exception:
+                        currency2 = None
+                    # Build OOB cells for all virtual totals
+                    oob_cells = []
+                    for vf in schema:
+                        if not (vf.get("virtual") and vf.get("type") == "money"):
+                            continue
+                        vkey = vf["key"]
+                        cell_id = f"cell-{safe_id}-{vkey}"
+                        if vkey == "cost_price_total":
+                            cost_total = float(flat.get("cost_total") or 0)
+                            formatted = fmt_money(cost_total, currency2) if cost_total != 0 else "--"
+                        else:
+                            unit_field = vf.get("paired_with", "")
+                            unit_price = float(flat.get(unit_field) or 0)
+                            new_qty = float(flat.get("quantity") or 0)
+                            total = unit_price * new_qty
+                            formatted = fmt_money(total, currency2) if total != 0 else "--"
+                        inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                        oob_cells.append(Td(
+                            inner,
+                            id=cell_id,
+                            hx_swap_oob="true",
+                            cls="cell cell--money cell--clickable",
+                            data_col=vkey,
+                            hx_get=f"/api/items/{entity_id}/field/{vkey}/edit",
+                            hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                        ))
+                    return paired_td, *oob_cells
                 return paired_td
         # Price fields: re-render with currency symbol + / sell_unit annotation
         if cell_type == "money":
@@ -1401,26 +1454,36 @@ function celerpPrintLabel(entityId, templateId) {
                 formatted = "--"
             annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+            safe_id = entity_id.replace(":", "-")
             price_td = Td(
                 inner, annotation,
-                cls="cell cell--money",
+                id=f"cell-{safe_id}-{field}",
+                cls="cell cell--money cell--clickable",
                 data_col=field,
                 hx_get=f"/api/items/{entity_id}/field/{field}/edit",
                 hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
             )
-            # If this price field has a virtual total counterpart, update it via row retarget
+            # If this price field has a virtual total counterpart, update it OOB by cell id
             virtual_total_field = f"{field}_total"
-            if any(f2.get("key") == virtual_total_field and f2.get("virtual") for f2 in schema):
-                safe_id = entity_id.replace(":", "-")
-                row_html = await item_row(request, entity_id)
-                from starlette.responses import HTMLResponse
-                return HTMLResponse(
-                    to_xml(row_html),
-                    headers={
-                        "HX-Retarget": f"#row-{safe_id}",
-                        "HX-Reswap": "outerHTML",
-                    },
+            vf_def = next((f2 for f2 in schema if f2.get("key") == virtual_total_field and f2.get("virtual")), None)
+            if vf_def:
+                qty = float(item.get("quantity") or 0)
+                if virtual_total_field == "cost_price_total":
+                    total_val = float(item.get("cost_total") or 0)
+                else:
+                    total_val = float(val) * qty if val not in (None, "", "--") else 0.0
+                total_formatted = fmt_money(total_val, currency) if total_val != 0 else "--"
+                total_inner = Span(total_formatted, cls="cell-money") if total_formatted != "--" else Span("--")
+                total_td = Td(
+                    total_inner,
+                    id=f"cell-{safe_id}-{virtual_total_field}",
+                    hx_swap_oob="true",
+                    cls="cell cell--money cell--clickable",
+                    data_col=virtual_total_field,
+                    hx_get=f"/api/items/{entity_id}/field/{virtual_total_field}/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
                 )
+                return price_td, total_td
             return price_td
         from ui.components.table import display_cell
         try:
@@ -3395,9 +3458,11 @@ def _render_virtual_total_cell(entity_id: str, field: str, unit_price: float | N
     except (ValueError, TypeError):
         formatted = "--"
     inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+    safe_eid = entity_id.replace(":", "-")
     return Td(
         inner,
-        cls="cell cell--money",
+        id=f"cell-{safe_eid}-{field}",
+        cls="cell cell--money cell--clickable",
         data_col=field,
         hx_get=f"/api/items/{entity_id}/field/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
@@ -3565,9 +3630,11 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 except (ValueError, TypeError):
                     formatted = "--"
                 inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                _safe_eid = entity_id.replace(":", "-")
                 return Td(
                     inner,
-                    cls="cell cell--money",
+                    id=f"cell-{_safe_eid}-{total_field}",
+                    cls="cell cell--money cell--clickable",
                     data_col=total_field,
                     hx_get=f"/api/items/{entity_id}/field/{total_field}/edit",
                     hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",

@@ -12789,8 +12789,9 @@ class TestItemRowColumnParity:
         )
 
     @pytest.mark.asyncio
-    async def test_cost_total_patch_returns_hx_retarget(self, ui_client):
-        """PATCH cost_price_total must return HX-Retarget header pointing to #row-{safe_id}."""
+    async def test_cost_total_patch_returns_oob_cost_price_cell(self, ui_client):
+        """PATCH cost_price_total must return two tds: main swap (cost_price_total) + OOB (cost_price)."""
+        from bs4 import BeautifulSoup
         item = self._ITEM.copy()
         schema = self._SCHEMA
 
@@ -12812,7 +12813,17 @@ class TestItemRowColumnParity:
             )
 
         assert r.status_code == 200
-        assert "HX-Retarget" in r.headers or "hx-retarget" in r.headers, \
-            "cost_price_total PATCH must return HX-Retarget header for full row swap"
-        retarget = r.headers.get("HX-Retarget") or r.headers.get("hx-retarget")
-        assert retarget == "#row-item-1", f"HX-Retarget must point to #row-item-1, got {retarget}"
+        soup = BeautifulSoup(r.text, "html.parser")
+        tds = soup.find_all("td")
+        assert len(tds) == 2, f"Expected 2 tds (main + OOB), got {len(tds)}: {r.text[:300]}"
+        # Main swap cell: cost_price_total
+        total_td = next((td for td in tds if td.get("data-col") == "cost_price_total"), None)
+        assert total_td is not None, "Response must contain cost_price_total td"
+        assert total_td.get("id") == "cell-item-1-cost_price_total", \
+            f"cost_price_total td must have id=cell-item-1-cost_price_total, got {total_td.get('id')}"
+        # OOB cell: cost_price
+        unit_td = next((td for td in tds if td.get("data-col") == "cost_price"), None)
+        assert unit_td is not None, "Response must contain OOB cost_price td"
+        assert unit_td.get("hx-swap-oob") == "true", "cost_price td must have hx-swap-oob=true"
+        assert unit_td.get("id") == "cell-item-1-cost_price", \
+            f"cost_price td must have id=cell-item-1-cost_price, got {unit_td.get('id')}"
