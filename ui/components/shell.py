@@ -58,10 +58,8 @@ function showGlobalUiError(message) {
 
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
-    /* If any edit cell is open, reload to cancel */
+    /* If any edit cell is open, let per-cell onkeydown handle the restore */
     if (document.querySelector('.cell--editing')) {
-      e.preventDefault();
-      window.location.reload();
       return;
     }
     document.querySelectorAll('.row-menu-dropdown.open').forEach(function(m) { m.classList.remove('open'); });

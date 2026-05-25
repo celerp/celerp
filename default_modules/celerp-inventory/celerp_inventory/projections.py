@@ -134,7 +134,15 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                 current[field] = change.get("new")
         current = _sync_expiry_from_attributes(current)
     elif event_type == "item.pricing.set":
-        current[data["price_type"]] = data["new_price"]
+        pt = data["price_type"]
+        price = data["new_price"]
+        if pt == "cost_total":
+            current["cost_total"] = price
+            current.pop("cost_price", None)  # cost_price is now derived
+        elif pt == "cost_price":
+            current["cost_price"] = price   # legacy path - do NOT pop cost_total here
+        else:
+            current[pt] = price
     elif event_type == "item.status.set":
         current["status"] = data["new_status"]
     elif event_type == "item.transferred":
@@ -151,6 +159,8 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])
         current["child_skus"] = data.get("child_skus", [])
+    elif event_type == "item.transform":
+        current["transformed_into"] = data.get("child_id")
     elif event_type == "item.merged":
         # No-op: marker event only. Real state is set by item.created on the new item.
         pass

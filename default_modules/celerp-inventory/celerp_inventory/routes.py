@@ -20,7 +20,8 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
-from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map
+from celerp.services.auto_je import create_for_item_transform
+from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -70,6 +71,12 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
         flat["location_id"] = location_id
     if location_name:
         flat["location_name"] = location_name
+    qty = float(flat.get("quantity") or 0)
+    if flat.get("cost_total") is not None:
+        flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
+    elif flat.get("cost_price") is not None:
+        flat["cost_total"] = round(float(flat["cost_price"]) * qty, 2)
+    # else: both remain absent (item has no cost set)
     return flat
 
 
@@ -102,7 +109,8 @@ class ItemCreate(BaseModel):
     quantity: float = 0
     category: str | None = None
     location_id: uuid.UUID | None = None
-    cost_price: float | None = None
+    cost_price: float | None = None  # legacy alias; prefer cost_total
+    cost_total: float | None = None
     wholesale_price: float | None = None
     retail_price: float | None = None
     description: str | None = None
@@ -147,9 +155,21 @@ class MergeBody(BaseModel):
     source_entity_ids: list[str]
     target_sku_from: str                       # entity_id of the source whose SKU/barcode to use
     resulting_quantity: float | None = None    # optional override (default = sum)
-    resulting_cost_price: float | None = None  # optional override (default = weighted avg)
+    resulting_cost_total: float | None = None  # optional override (default = sum of source cost_totals)
     resulting_name: str | None = None          # optional override (default = target's name)
     resolved_attributes: dict | None = None    # user picks for conflicting string attributes
+    idempotency_key: str | None = None
+
+
+class TransformBody(BaseModel):
+    child_sku: str
+    child_category: str
+    child_sell_by: str
+    child_quantity: float
+    child_weight: float | None = None
+    child_weight_unit: str | None = None
+    child_pieces: int | None = None
+    child_cost_total: float  # final cost (may be user-overridden)
     idempotency_key: str | None = None
 
 
@@ -394,8 +414,8 @@ async def get_valuation(
             key = f"{pl_name.lower()}_price"
             try:
                 if pl_name.lower() in ("cost", "cost price", "landed"):
-                    # Cost uses pre-computed total_cost (qty * unit_cost), else fallback
-                    tc = state.get("total_cost")
+                    # Cost uses stored cost_total (lot total), else fallback to unit price * qty
+                    tc = state.get("cost_total")
                     if tc is not None:
                         price_totals[pl_name] += Decimal(str(tc))
                     elif state.get(key) is not None:
@@ -568,8 +588,8 @@ async def _next_seq(session: AsyncSession, company_id: uuid.UUID) -> int:
 
 @router.post("")
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
-    # Guard: operator/viewer cannot set cost_price on creation (manager+ required)
-    if payload.cost_price is not None and ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
+    # Guard: operator/viewer cannot set cost fields on creation (manager+ required)
+    if (payload.cost_price is not None or payload.cost_total is not None) and ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
         raise HTTPException(status_code=403, detail=f"Role '{role}' cannot set cost_price")
 
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
@@ -650,8 +670,14 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     data.setdefault("updated_at", now_iso)
 
     # Strip price fields from create event data - they go via pricing events.
-    # Any key ending in _price is treated as a pricing field.
+    # Any key ending in _price is treated as a pricing field. cost_total is also a pricing field.
     price_fields = {k: data.pop(k) for k in list(data) if k.endswith("_price") and data[k] is not None}
+    if "cost_total" in data and data["cost_total"] is not None:
+        # cost_total takes precedence over cost_price if both supplied
+        price_fields["cost_total"] = data.pop("cost_total")
+        price_fields.pop("cost_price", None)  # discard cost_price if cost_total provided
+    elif "cost_total" in data:
+        data.pop("cost_total")
 
     entry = await emit_event(
         session,
@@ -707,7 +733,9 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             if new_sell_by not in unit_map:
                 raise HTTPException(status_code=422, detail=f"sell_by '{new_sell_by}' is not a valid unit name")
 
-    # Validate quantity change against current sell_by unit
+    # Validate quantity change against current sell_by unit.
+    # Also sync derived weight/pieces field: if sell_by is a weight unit,
+    # weight tracks quantity directly; if sell_by is a pieces unit, pieces tracks it.
     if "quantity" in changed_keys:
         new_qty_raw = (payload.fields_changed["quantity"] or {}).get("new")
         if new_qty_raw is not None:
@@ -718,6 +746,18 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
                 unit_map = {u["name"]: u for u in units}
                 if current_sell_by and current_sell_by in unit_map:
                     validate_quantity(float(new_qty_raw), unit_map[current_sell_by]["decimals"])
+                    new_qty = float(new_qty_raw)
+                    if is_weight_unit(current_sell_by, unit_map):
+                        payload.fields_changed["weight"] = {
+                            "old": row.state.get("weight"),
+                            "new": new_qty,
+                        }
+                    elif is_pieces_unit(current_sell_by, unit_map):
+                        old_pieces = (row.state.get("attributes") or {}).get("pieces")
+                        payload.fields_changed["pieces"] = {
+                            "old": old_pieces,
+                            "new": int(round(new_qty)),
+                        }
 
     # Validate SKU uniqueness if changing
     if "sku" in changed_keys:
@@ -765,6 +805,25 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
 
     # Always stamp updated_at so the projection reflects the mutation time.
     payload.fields_changed["updated_at"] = {"old": None, "new": datetime.now(timezone.utc).isoformat()}
+
+    # sell_by sync: when sell_by changes unit type, sync quantity → weight or pieces so
+    # the independent stored fields stay consistent with what the derived display showed.
+    # Without this, switching piece→carat→edit qty→piece restores stale weight/pieces value.
+    if "sell_by" in changed_keys:
+        new_sell_by = (payload.fields_changed["sell_by"] or {}).get("new")
+        if new_sell_by:
+            _sync_row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+            if _sync_row:
+                _sync_units = await _get_company_units(session, company_id)
+                _sync_unit_map = {u["name"]: u for u in _sync_units}
+                qty = _sync_row.state.get("quantity")
+                if qty is not None:
+                    if is_weight_unit(new_sell_by, _sync_unit_map):
+                        payload.fields_changed["weight"] = {"old": _sync_row.state.get("weight"), "new": float(qty)}
+                        payload.fields_changed["weight_unit"] = {"old": _sync_row.state.get("weight_unit"), "new": new_sell_by}
+                    elif is_pieces_unit(new_sell_by, _sync_unit_map):
+                        payload.fields_changed["pieces"] = {"old": (_sync_row.state.get("attributes") or {}).get("pieces"), "new": int(round(float(qty)))}
+
     entry = await emit_event(
         session,
         company_id=company_id,
@@ -1007,8 +1066,11 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     parent_location_id = parent.state.get("location_id")
     parent_attrs = dict(parent.state.get("attributes") or {})
 
-    # Fields to preserve on children (everything except identity/qty)
-    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None}
+    # Fields to preserve on children (everything except identity/qty/cost - cost split proportionally)
+    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
+    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
+        float(parent.state.get("cost_price") or 0) * parent_qty
+    )
     parent_description = parent.state.get("description")
     parent_status = parent.state.get("status")
     parent_tax_codes = parent.state.get("tax_codes")
@@ -1035,12 +1097,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         if child.weight is not None and child.weight < 0:
             raise HTTPException(status_code=422, detail="Child weight cannot be negative")
 
-    # Validate total <= parent qty
+    # Validate total <= parent qty (100% consumption allowed - parent will be archived)
     total_child_qty = sum(c.quantity for c in children)
-    if round(total_child_qty, 10) >= round(parent_qty, 10):
+    if round(total_child_qty, 10) > round(parent_qty, 10):
         raise HTTPException(
             status_code=422,
-            detail=f"Child quantities ({total_child_qty}) exceed or equal parent quantity ({parent_qty})",
+            detail=f"Child quantities ({total_child_qty}) exceed parent quantity ({parent_qty})",
         )
 
     # Pieces conservation: if parent has pieces, validate and compute mother
@@ -1051,7 +1113,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         if total_child_pieces >= parent_pieces:
             raise HTTPException(
                 status_code=422,
-                detail=f"Total child pieces ({total_child_pieces}) must be less than parent pieces ({parent_pieces})",
+                detail=f"Total child pieces ({total_child_pieces}) must not exceed parent pieces ({parent_pieces})",
             )
 
     # Validate child SKU uniqueness within batch
@@ -1128,7 +1190,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             metadata_={"parent_id": entity_id},
         )
 
-        # Preserve prices from parent via pricing events
+        # Preserve prices from parent via pricing events (excluding cost - set proportionally below)
         for price_type, price_val in parent_prices.items():
             await emit_event(
                 session,
@@ -1137,6 +1199,22 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 entity_type="item",
                 event_type="item.pricing.set",
                 data={"price_type": price_type, "new_price": price_val},
+                actor_id=user.id,
+                location_id=None,
+                source="api",
+                idempotency_key=str(uuid.uuid4()),
+                metadata_={},
+            )
+        # Assign proportional cost_total to child
+        if parent_cost_total and parent_qty:
+            child_cost_total = round(parent_cost_total * (child.quantity / parent_qty), 10)
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=child_eid,
+                entity_type="item",
+                event_type="item.pricing.set",
+                data={"price_type": "cost_total", "new_price": child_cost_total},
                 actor_id=user.id,
                 location_id=None,
                 source="api",
@@ -1159,6 +1237,26 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
+
+    # Update parent cost_total (Q1=A: reduce by sum of child cost_totals)
+    if parent_cost_total and parent_qty:
+        total_child_cost = sum(
+            round(parent_cost_total * (c.quantity / parent_qty), 10) for c in children
+        )
+        parent_remaining_cost = round(parent_cost_total - total_child_cost, 10)
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="item",
+            event_type="item.pricing.set",
+            data={"price_type": "cost_total", "new_price": parent_remaining_cost},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
     computed_mother_pieces: int | None = None
@@ -1193,7 +1291,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             metadata_={},
         )
 
-    # If parent quantity is now 0, mark as sold
+    # If parent quantity is now 0, mark as archived (consumed by split)
     if new_parent_qty == 0:
         await emit_event(
             session,
@@ -1201,12 +1299,12 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             entity_id=entity_id,
             entity_type="item",
             event_type="item.status.set",
-            data={"new_status": "sold"},
+            data={"new_status": "archived"},
             actor_id=user.id,
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "consumed_by_split"},
         )
 
     # Emit item.split for history
@@ -1233,6 +1331,148 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         "event_id": entry.id,
         "children": [{"id": eid, "sku": sku} for eid, sku in zip(child_eids, child_skus)],
     }
+
+
+@router.post("/{entity_id}/transform")
+async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    # Fetch parent
+    parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    if parent is None or not parent.state.get("is_available", True):
+        raise HTTPException(status_code=404, detail="Item not found or unavailable")
+
+    # Validate
+    if payload.child_quantity <= 0:
+        raise HTTPException(status_code=422, detail="child_quantity must be > 0")
+    if not payload.child_category.strip():
+        raise HTTPException(status_code=422, detail="child_category cannot be empty")
+
+    # Check child SKU uniqueness
+    existing = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type == "item",
+            Projection.state["sku"].as_string() == payload.child_sku,
+        )
+    )).scalars().first()
+    if existing:
+        raise HTTPException(status_code=409, detail=f"SKU '{payload.child_sku}' already exists")
+
+    parent_qty = float(parent.state.get("quantity") or 0)
+    parent_attrs = dict(parent.state.get("attributes") or {})
+    # Exclude cost fields: child cost is set explicitly from child_cost_total
+    parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
+    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
+        float(parent.state.get("cost_price") or 0) * parent_qty
+    )
+    parent_location_id = parent.state.get("location_id")
+
+    child_eid = f"item:{uuid.uuid4()}"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    child_data: dict = {
+        "sku": payload.child_sku,
+        "name": parent.state.get("name", payload.child_sku),
+        "quantity": payload.child_quantity,
+        "sell_by": payload.child_sell_by,
+        "category": payload.child_category,
+        "allow_splitting": True,
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "attributes": {**parent_attrs},
+    }
+    if payload.child_weight is not None:
+        child_data["weight"] = payload.child_weight
+    child_weight_unit = payload.child_weight_unit or parent.state.get("weight_unit")
+    if child_weight_unit:
+        child_data["weight_unit"] = child_weight_unit
+    if payload.child_pieces is not None:
+        child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
+    if parent_location_id:
+        child_data["location_id"] = parent_location_id
+    child_data["cost_total"] = payload.child_cost_total
+    child_data["barcode"] = str(await _next_seq(session, company_id)).zfill(6)
+
+    # 1. Create child
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=child_eid,
+        entity_type="item",
+        event_type="item.created",
+        data=child_data,
+        actor_id=user.id,
+        location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={"parent_id": entity_id},
+    )
+
+    # 2. Copy prices
+    for price_type, price_val in parent_prices.items():
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=child_eid,
+            entity_type="item",
+            event_type="item.pricing.set",
+            data={"price_type": price_type, "new_price": price_val},
+            actor_id=user.id,
+            location_id=None,
+            source="api",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={},
+        )
+
+    # 4. Mark parent archived (consumed by transform)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": "archived"},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={"reason": "consumed_by_transform"},
+    )
+
+    # 5. Emit transform event
+    idempotency_key = payload.idempotency_key or str(uuid.uuid4())
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=entity_id,
+        entity_type="item",
+        event_type="item.transform",
+        data={
+            "child_id": child_eid,
+            "child_sku": payload.child_sku,
+            "child_category": payload.child_category,
+            "parent_cost_total": parent_cost_total,
+            "child_cost_total": payload.child_cost_total,
+        },
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=idempotency_key,
+        metadata_={},
+    )
+
+    # 6. Auto JE
+    await create_for_item_transform(
+        session,
+        company_id=company_id,
+        user_id=user.id,
+        parent_entity_id=entity_id,
+        parent_cost_total=parent_cost_total,
+        parent_category=parent.state.get("category", ""),
+        child_category=payload.child_category,
+    )
+
+    await session.commit()
+    return {"child_id": child_eid, "child_sku": payload.child_sku, "parent_sku": parent.state.get("sku", "")}
 
 
 @router.post("/merge")
@@ -1273,18 +1513,13 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
     weights = [float(p.state["weight"]) for p in source_projections if p.state.get("weight") is not None]
     total_weight = sum(weights) if weights else None
-    total_cost_qty = sum(
-        float(p.state.get("quantity") or 0)
-        for p in source_projections
-        if p.state.get("cost_price") is not None
-    )
-    if total_cost_qty > 0:
-        weighted_cost = sum(
+    # Compute merged cost_total: sum of all source cost_totals (Q2=Option A)
+    merged_cost_total = sum(
+        float(p.state.get("cost_total") or 0) or (
             float(p.state.get("cost_price") or 0) * float(p.state.get("quantity") or 0)
-            for p in source_projections
-        ) / total_cost_qty
-    else:
-        weighted_cost = float(target_proj.state.get("cost_price") or 0) or None
+        )
+        for p in source_projections
+    ) or None
 
     expiry_dates = sorted(e for p in source_projections if (e := _get_expiry(p)))
     earliest_expiry = expiry_dates[0] if expiry_dates else None
@@ -1334,7 +1569,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Apply user overrides.
     resulting_qty = payload.resulting_quantity if payload.resulting_quantity is not None else total_qty
-    resulting_cost = payload.resulting_cost_price if payload.resulting_cost_price is not None else weighted_cost
+    resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
     # Update expiry_date attribute to earliest.
@@ -1383,10 +1618,10 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         metadata_={"merged_from": payload.source_entity_ids},
     )
 
-    # Emit pricing events for all price fields from target (or computed cost).
+    # Emit pricing events for all price fields from target; emit cost_total (not cost_price) for cost.
     price_fields: dict = {}
     if resulting_cost is not None:
-        price_fields["cost_price"] = resulting_cost
+        price_fields["cost_total"] = resulting_cost
     for pf, val in target_state.items():
         if pf.endswith("_price") and pf != "cost_price" and val is not None:
             price_fields[pf] = val

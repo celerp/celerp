@@ -656,6 +656,8 @@ class TestCompanySwitcher:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
         assert r.status_code == 200
@@ -1296,6 +1298,8 @@ class TestSettingsPage:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
         assert r.status_code == 200
@@ -1311,6 +1315,8 @@ class TestSettingsPage:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/settings/general?tab=users", cookies=_authed())
         assert r.status_code == 200
@@ -1326,6 +1332,8 @@ class TestSettingsPage:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/settings/sales?tab=taxes", cookies=_authed())
         assert r.status_code == 200
@@ -1766,6 +1774,8 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
         assert b"cell--clickable" in r.content
@@ -1780,6 +1790,8 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/settings/general?tab=users", cookies=_authed())
         assert b"cell--clickable" in r.content
@@ -1794,6 +1806,8 @@ class TestInventoryCategoryTabs:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/settings/sales?tab=taxes", cookies=_authed())
         assert b"cell--clickable" in r.content
@@ -2269,6 +2283,8 @@ class TestSettingsPolish:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
         assert b"Click to edit" in r.content
@@ -2383,6 +2399,8 @@ class TestPhase2DeepPolish:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -3582,6 +3600,8 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -3604,6 +3624,8 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -3621,6 +3643,8 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -3638,6 +3662,8 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -3655,6 +3681,8 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -3691,7 +3719,9 @@ class TestSprint5ItemActions:
     async def test_price_item_route(self, ui_client):
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 5.0})),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={"event_id": "e1"})),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
             r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "300", "wholesale_price": "200", "cost_price": "100"}, cookies=_authed())
         assert r.status_code == 204
@@ -3727,6 +3757,8 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert b"Split" in r.content
@@ -3812,6 +3844,8 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert b"Merging" in r.content
@@ -3870,6 +3904,8 @@ class TestSprint5ItemActions:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert b"Duplicate" in r.content
@@ -4050,25 +4086,37 @@ class TestItemActionRouteCompleteness:
     async def test_price_redirects_to_item(self, ui_client):
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 5.0})),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={"event_id": "e1"})),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
             r = await ui_client.post("/api/items/gc:123/price", data={"cost_price": "10", "wholesale_price": "20", "retail_price": "30"}, cookies=_authed())
         assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
 
     @pytest.mark.asyncio
     async def test_price_passes_only_provided_fields(self, ui_client):
-        """Only non-empty price fields trigger set_item_price calls."""
-        calls = []
-        async def _mock(token, entity_id, price_type, new_price):
-            calls.append((price_type, new_price))
+        """Only non-empty price fields trigger set_item_price calls.
+        cost_price is converted to patch_item cost_total (price * qty) to avoid being overwritten by derivation."""
+        price_calls = []
+        patch_calls = []
+        async def _mock_set(token, entity_id, price_type, new_price):
+            price_calls.append((price_type, new_price))
+            return {"event_id": "e1"}
+        async def _mock_patch(token, entity_id, fields):
+            patch_calls.append(fields)
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
-            patch("ui.api_client.set_item_price", new=_mock),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 2.0})),
+            patch("ui.api_client.set_item_price", new=_mock_set),
+            patch("ui.api_client.patch_item", new=_mock_patch),
         ):
             await ui_client.post("/api/items/gc:123/price", data={"cost_price": "50", "wholesale_price": "", "retail_price": "99"}, cookies=_authed())
-        price_types = {pt for pt, _ in calls}
-        assert "Cost" in price_types
+        # cost_price saved via patch_item as cost_total = 50 * 2 = 100
+        assert any("cost_total" in f for f in patch_calls)
+        cost_total_val = next(f["cost_total"]["new"] for f in patch_calls if "cost_total" in f)
+        assert cost_total_val == 100.0
+        price_types = {pt for pt, _ in price_calls}
         assert "Retail" in price_types
         assert "Wholesale" not in price_types
 
@@ -4077,7 +4125,8 @@ class TestItemActionRouteCompleteness:
         from ui.api_client import APIError
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Cost"}])),
-            patch("ui.api_client.set_item_price", new=AsyncMock(side_effect=APIError(400, "bad price"))),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 1.0})),
+            patch("ui.api_client.patch_item", new=AsyncMock(side_effect=APIError(400, "bad price"))),
         ):
             r = await ui_client.post("/api/items/gc:123/price", data={"cost_price": "10"}, cookies=_authed())
         assert r.status_code == 200
@@ -4288,7 +4337,7 @@ class TestItemActionRouteCompleteness:
     async def test_merge_passes_correct_args(self, ui_client):
         captured = {}
         async def _mock(token, source_entity_ids, target_sku_from, resulting_quantity=None,
-                        resulting_cost_price=None, resulting_name=None, resolved_attributes=None, idempotency_key=None):
+                        resulting_cost_total=None, resulting_name=None, resolved_attributes=None, idempotency_key=None):
             captured.update({
                 "sources": source_entity_ids,
                 "target": target_sku_from,
@@ -4314,6 +4363,85 @@ class TestItemActionRouteCompleteness:
         )
         assert r.status_code == 200
         assert b"Invalid" in r.content
+
+
+class TestBatchSplit:
+    """Tests for POST /api/items/{entity_id}/batch-split (detail-page batch split card)."""
+
+    _SPLIT_ITEM = {
+        **_ITEM,
+        "sku": "BS-PARENT", "quantity": 10, "sell_by": "piece", "allow_splitting": True,
+    }
+
+    @pytest.mark.asyncio
+    async def test_batch_split_success_redirects(self, ui_client):
+        """Valid batch split (qty=1, count=5, total=5 ≤ 10) must redirect to filtered inventory."""
+        split_calls = []
+
+        async def mock_split(token, entity_id, children):
+            split_calls.append(children)
+            return {}
+
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
+            patch("ui.api_client.split_item", new=mock_split),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/batch-split",
+                data={"batch_qty": "1", "batch_count": "5"},
+                cookies=_authed(),
+                follow_redirects=False,
+            )
+        # HTMX redirect: 204 + HX-Redirect header
+        assert r.status_code == 204
+        assert "HX-Redirect" in r.headers
+        assert "skus=" in r.headers["HX-Redirect"]
+        # Must have generated 5 children
+        assert len(split_calls) == 1
+        assert len(split_calls[0]) == 5
+
+    @pytest.mark.asyncio
+    async def test_batch_split_total_exceeds_available_rejected(self, ui_client):
+        """qty=3, count=5 → total=15 > available=10: must return error span, not redirect."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/batch-split",
+                data={"batch_qty": "3", "batch_count": "5"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"exceeds" in r.content.lower() or b"flash--error" in r.content
+
+    @pytest.mark.asyncio
+    async def test_batch_split_count_1_rejected(self, ui_client):
+        """count=1 must return error (use normal split for single child)."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/batch-split",
+                data={"batch_qty": "1", "batch_count": "1"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"flash--error" in r.content
+
+    @pytest.mark.asyncio
+    async def test_batch_split_nonnumeric_qty_rejected(self, ui_client):
+        """Non-numeric batch_qty must return error span."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/batch-split",
+                data={"batch_qty": "abc", "batch_count": "5"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"flash--error" in r.content
 
 
 class TestItemActionHtmlContracts:
@@ -4344,6 +4472,8 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -4361,6 +4491,8 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -4378,6 +4510,8 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -4397,6 +4531,8 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -4419,6 +4555,8 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -4439,6 +4577,8 @@ class TestItemActionHtmlContracts:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -4789,6 +4929,8 @@ class TestInventoryBulkActions:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
@@ -4809,6 +4951,8 @@ class TestInventoryBulkActions:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [loc], "total": 1})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert b"Main Office" in r.content
@@ -5011,6 +5155,8 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
@@ -5031,6 +5177,8 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
@@ -5064,6 +5212,8 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         clear_slots()
@@ -5213,6 +5363,8 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert b"splitRecalcMother" in r.content
@@ -5248,6 +5400,8 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
@@ -5270,6 +5424,8 @@ class TestBulkActionsPhase1to5:
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
@@ -5594,6 +5750,8 @@ class TestSprint5NoPopups:
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert b"<dialog" not in r.content.lower()
@@ -6760,6 +6918,8 @@ class TestCurrencyThreading:
             })),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         assert r.status_code == 200
@@ -7337,6 +7497,8 @@ class TestMultiTenantIsolation:
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             await ui_client.get("/inventory", cookies={"celerp_token": "tenant-A-token"})
         assert calls == ["tenant-A-token"]
@@ -7372,6 +7534,8 @@ class TestMultiTenantIsolation:
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             await ui_client.get("/settings/general?tab=company", cookies={"celerp_token": tenant_token})
         assert calls[0] == tenant_token
@@ -7480,6 +7644,8 @@ class TestApiErrorHandling:
             patch("ui.api_client.get_valuation", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
             patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory", cookies=_authed())
         # Must not 500 — redirect or graceful error page
@@ -7955,6 +8121,11 @@ class TestModuleSlotInjection:
             patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
             patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -7977,6 +8148,9 @@ class TestModuleSlotInjection:
             patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
             patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
         ):
             r = await ui_client.get("/inventory/gc:123", cookies=_authed())
         assert r.status_code == 200
@@ -8543,6 +8717,92 @@ class TestInventoryItemDetailFixes:
         # Must render as a clickable display cell (not editing state)
         assert 'hx-get="/api/items/item:abc1/field/location_name/edit"' in html
         assert "<select" not in html
+
+    @pytest.mark.asyncio
+    async def test_patch_qty_invalid_returns_editable_td_with_error_class(self, ui_client):
+        """PATCH quantity with non-numeric value must return editable <td class='... cell--error'> so
+        user can correct inline — not a bare <p> that breaks layout and requires page reload."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/gc:123/field/quantity",
+                data={"value": "abc"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.content.decode()
+        # Must return a <td>, not a bare <p>
+        assert "<td" in html, "Expected <td>, got bare element"
+        assert "<p" not in html or "cell-error" not in html, "Must not return a bare <p class='cell-error'>"
+        # Must carry error styling
+        assert "cell--error" in html
+        # Must still be editable (input present) so user can correct without page reload
+        assert "<input" in html
+
+    @pytest.mark.asyncio
+    async def test_patch_price_invalid_returns_editable_td_with_error_class(self, ui_client):
+        """PATCH a price field with non-numeric value must return editable <td cell--error>."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/gc:123/field/retail_price",
+                data={"value": "notanumber"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert "<td" in html
+        assert "cell--error" in html
+        assert "<input" in html
+
+    @pytest.mark.asyncio
+    async def test_batch_split_card_rendered_when_splitting_allowed(self, ui_client):
+        """Item detail page must include Batch Split card when allow_splitting=True."""
+        item = {**_ITEM, "allow_splitting": True, "quantity": 100, "sell_by": "piece"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get(f"/inventory/{item['entity_id']}", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert "batch_qty" in html
+        assert "batch_count" in html
+        assert "batch-split-preview" in html
+
+    @pytest.mark.asyncio
+    async def test_batch_split_card_absent_when_splitting_disabled(self, ui_client):
+        """Batch Split card must not appear when allow_splitting=False."""
+        item = {**_ITEM, "allow_splitting": False, "quantity": 100, "sell_by": "piece"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get(f"/inventory/{item['entity_id']}", cookies=_authed())
+        assert r.status_code == 200
+        assert b"batch_qty" not in r.content
 
 
 class TestListFieldPatch:
@@ -12708,3 +12968,168 @@ class TestUnknownUnitRendererInFixTable:
         assert "csv-fix-panel" in html, "__add_new__ must not be accepted as a valid unit"
         assert "unit-unknown-option" in html, \
             "__add_new__ must be shown as an unknown/invalid value, not silently accepted"
+
+
+class TestItemRowColumnParity:
+    """item_row must render the same set of <td> columns as data_table.
+
+    When /api/items/{id}/row is used to replace a list-page row (via HX-Retarget),
+    the returned <tr> must contain exactly the same <td data-col=...> columns that
+    data_table renders - including hidden-but-present columns (those not in show_cols
+    are rendered with style="display:none"). Missing or extra columns cause a visual
+    column shift for that row.
+    """
+
+    _SCHEMA = [
+        {"key": "sku", "label": "SKU", "type": "text", "editable": True, "show_in_table": True},
+        {"key": "name", "label": "Name", "type": "text", "editable": True, "show_in_table": True},
+        {"key": "quantity", "label": "Qty", "type": "number", "editable": True, "show_in_table": True, "paired_with": "sell_by"},
+        {"key": "sell_by", "label": "Unit", "type": "text", "editable": True, "show_in_table": False},
+        {"key": "cost_price", "label": "Cost (Unit)", "type": "money", "editable": True, "show_in_table": True},
+        {"key": "cost_price_total", "label": "Cost (Total)", "type": "money", "editable": True, "show_in_table": True, "virtual": True, "paired_with": "cost_price"},
+        {"key": "hidden_col", "label": "Hidden", "type": "text", "editable": True, "show_in_table": False},
+    ]
+
+    _ITEM = {
+        "id": "item:1", "entity_id": "item:1", "sku": "SKU-1", "name": "Widget",
+        "quantity": 5.0, "sell_by": "pcs", "status": "available",
+        "cost_price": 10.0, "cost_total": 50.0,
+        "hidden_col": "x",
+    }
+
+    @pytest.mark.asyncio
+    async def test_item_row_col_count_matches_data_table(self, ui_client):
+        """GET /api/items/{id}/row must return same number of data-col tds as data_table."""
+        from fasthtml.common import to_xml
+        from bs4 import BeautifulSoup
+        from ui.components.table import data_table
+
+        item = self._ITEM.copy()
+        schema = self._SCHEMA
+
+        # Build what data_table would render (hidden_fields=paired secondaries)
+        from ui.components.table import data_table
+        from ui.routes.inventory import _PAIRED_SECONDARY_KEYS
+        hidden = _PAIRED_SECONDARY_KEYS
+        table_html = to_xml(data_table(
+            schema, [item],
+            entity_type="inventory",
+            hidden_fields=hidden,
+            currency=None,
+        ))
+        table_soup = BeautifulSoup(table_html, "html.parser")
+        # Count data-col tds in the first data row
+        first_row = table_soup.find("tr", class_="data-row")
+        assert first_row is not None, "data_table must render at least one data row"
+        table_data_cols = [td["data-col"] for td in first_row.find_all("td") if td.get("data-col")]
+
+        # Fetch item_row endpoint
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+        ):
+            r = await ui_client.get("/api/items/item:1/row", cookies=_authed())
+
+        assert r.status_code == 200
+        row_soup = BeautifulSoup(r.text, "html.parser")
+        tr = row_soup.find("tr")
+        assert tr is not None, "item_row must return a <tr>"
+        row_data_cols = [td["data-col"] for td in tr.find_all("td") if td.get("data-col")]
+
+        assert sorted(row_data_cols) == sorted(table_data_cols), (
+            f"item_row columns {row_data_cols} != data_table columns {table_data_cols}. "
+            f"Missing from row: {set(table_data_cols) - set(row_data_cols)}. "
+            f"Extra in row: {set(row_data_cols) - set(table_data_cols)}."
+        )
+
+    def test_data_table_price_cells_have_ids_for_oob(self):
+        """data_table must render cost_price and cost_price_total cells with id attrs.
+
+        OOB swap after cost_price_total PATCH targets these ids to update cost_price
+        in-place without a full row reload. If the id is missing, the OOB silently fails
+        and the cell only updates after a page reload.
+        """
+        from fasthtml.common import to_xml
+        from bs4 import BeautifulSoup
+        from ui.components.table import data_table
+        from ui.routes.inventory import _PAIRED_SECONDARY_KEYS, _inventory_cell_renderers
+
+        schema = [
+            {"key": "sku", "label": "SKU", "type": "text", "editable": True, "show_in_table": True},
+            {"key": "cost_price", "label": "Cost (Unit)", "type": "money", "editable": True, "show_in_table": True},
+            {"key": "cost_price_total", "label": "Cost (Total)", "type": "money", "editable": True,
+             "show_in_table": True, "virtual": True, "paired_with": "cost_price"},
+        ]
+        item = {
+            "id": "item:42", "entity_id": "item:42", "sku": "X", "status": "available",
+            "cost_price": 10.0, "cost_total": 50.0, "quantity": 5.0,
+        }
+        renderers = _inventory_cell_renderers(schema, [], {}, {}, currency="USD")
+        html = to_xml(data_table(
+            schema, [item],
+            entity_type="inventory",
+            hidden_fields=_PAIRED_SECONDARY_KEYS,
+            currency="USD",
+            cell_renderers=renderers,
+        ))
+        soup = BeautifulSoup(html, "html.parser")
+        row = soup.find("tr", class_="data-row")
+        assert row is not None
+
+        cost_price_td = row.find("td", attrs={"data-col": "cost_price"})
+        assert cost_price_td is not None, "cost_price td must exist"
+        assert cost_price_td.get("id") == "cell-item-42-cost_price", (
+            f"cost_price td must have id=cell-item-42-cost_price for OOB swap, got {cost_price_td.get('id')}"
+        )
+
+        total_td = row.find("td", attrs={"data-col": "cost_price_total"})
+        assert total_td is not None, "cost_price_total td must exist"
+        assert total_td.get("id") == "cell-item-42-cost_price_total", (
+            f"cost_price_total td must have id=cell-item-42-cost_price_total, got {total_td.get('id')}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_cost_total_patch_returns_oob_cost_price_cell(self, ui_client):
+        """PATCH cost_price_total must return two tds: main swap (cost_price_total) + OOB (cost_price)."""
+        from bs4 import BeautifulSoup
+        item = self._ITEM.copy()
+        schema = self._SCHEMA
+
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=schema)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
+            patch("ui.api_client.get_category_display_names", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_column_prefs", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"currency": "USD"})),
+            patch("ui.api_client.patch_item", new=AsyncMock(return_value=item)),
+        ):
+            r = await ui_client.patch(
+                "/api/items/item:1/field/cost_price_total",
+                data={"value": "60.00"},
+                cookies=_authed(),
+            )
+
+        assert r.status_code == 200
+        soup = BeautifulSoup(r.text, "html.parser")
+        tds = soup.find_all("td")
+        assert len(tds) == 2, f"Expected 2 tds (main + OOB), got {len(tds)}: {r.text[:300]}"
+        # Main swap cell: cost_price_total
+        total_td = next((td for td in tds if td.get("data-col") == "cost_price_total"), None)
+        assert total_td is not None, "Response must contain cost_price_total td"
+        assert total_td.get("id") == "cell-item-1-cost_price_total", \
+            f"cost_price_total td must have id=cell-item-1-cost_price_total, got {total_td.get('id')}"
+        # OOB cell: cost_price
+        unit_td = next((td for td in tds if td.get("data-col") == "cost_price"), None)
+        assert unit_td is not None, "Response must contain OOB cost_price td"
+        assert unit_td.get("hx-swap-oob") == "true", "cost_price td must have hx-swap-oob=true"
+        assert unit_td.get("id") == "cell-item-1-cost_price", \
+            f"cost_price td must have id=cell-item-1-cost_price, got {unit_td.get('id')}"

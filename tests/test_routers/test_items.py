@@ -1775,3 +1775,60 @@ async def test_download_item_file_route_exists(client):
         "Route is likely shadowed by GET /{entity_id} from the main items router."
     )
     assert rd.content == fake_jpg
+
+
+# ── qty→weight/pieces sync ──────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_patch_qty_syncs_weight_for_weight_sell_by(client):
+    """When sell_by is a weight unit, PATCH quantity must also update weight to the same value."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Create item with sell_by=ct (weight unit from DEFAULT_UNITS)
+    r = await client.post("/items", json={
+        "sku": "QTY-SYNC-W-001", "name": "Weight sync test",
+        "quantity": 5.0, "sell_by": "carat", "weight": 5.0, "weight_unit": "carat",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    # Patch quantity
+    r2 = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"quantity": {"old": 5.0, "new": 8.0}},
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    # Verify weight was synced
+    r3 = await client.get(f"/items/{item_id}", headers=h)
+    assert r3.status_code == 200
+    state = r3.json()
+    assert float(state.get("quantity", 0)) == 8.0
+    assert float(state.get("weight", 0)) == 8.0
+
+
+@pytest.mark.asyncio
+async def test_patch_qty_syncs_pieces_for_pieces_sell_by(client):
+    """When sell_by is a pieces unit, PATCH quantity must also update pieces to the same value."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Create item with sell_by=piece
+    r = await client.post("/items", json={
+        "sku": "QTY-SYNC-P-001", "name": "Pieces sync test",
+        "quantity": 3, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    # Patch quantity
+    r2 = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"quantity": {"old": 3, "new": 7}},
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    # Verify pieces was synced
+    r3 = await client.get(f"/items/{item_id}", headers=h)
+    assert r3.status_code == 200
+    state = r3.json()
+    assert int(state.get("quantity", 0)) == 7
+    pieces = (state.get("attributes") or {}).get("pieces") or state.get("pieces")
+    assert int(pieces) == 7

@@ -67,7 +67,7 @@ async def test_items_valuation_with_total_cost_and_retail(client):
                 "name": "ValuationItem",
                 "sell_by": "piece",
                 "quantity": 1,
-                "total_cost": 100.0,
+                "cost_total": 100.0,
                 "wholesale_price": 120.0,
                 "retail_price": 150.0,
             },

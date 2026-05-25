@@ -122,56 +122,6 @@ def _doc_section_label(doc_type: str) -> str:
 # Inline fulfillment helpers (no celerp-fulfillment module needed)
 # ---------------------------------------------------------------------------
 
-def _render_fulfill_section(doc: dict):
-    """Fulfill / Revert Fulfillment button.
-
-    Revert: shows whenever fulfillment_status == "fulfilled" (no status restriction - even void docs).
-    Fulfill: hidden only on draft and void statuses; shown on all other statuses.
-    Requires celerp-inventory to be installed.
-    """
-    from celerp.modules.loader import loaded_modules
-    from celerp_docs.doc_constants import UNFULFILLABLE_STATUSES, TEMPLATE_DOC_TYPES
-    if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
-        return ""
-    if doc.get("doc_type") in TEMPLATE_DOC_TYPES:
-        return ""  # Subscription templates are never fulfilled
-    if doc.get("doc_type") in ("credit_note", "bill"):
-        return ""  # CNs use Receive Returns; bills receive INTO stock, never deduct
-    entity_id = doc.get("entity_id") or doc.get("id") or ""
-    # CSS IDs cannot contain colons (e.g. "doc:PF-2604-0002") - sanitize for use as selector
-    cid_safe = f"fulfill-toggle-{entity_id}".replace(":", "-")
-    fs = doc.get("fulfillment_status") or "unfulfilled"
-    if fs == "fulfilled":
-        # Revert always shows when fulfilled, regardless of doc status
-        return Div(
-            Form(
-                Button(t("btn.revert_fulfillment"),
-                    cls="btn btn--warning btn--sm",
-                    title="Undo fulfillment. Returns stock to inventory. If a pick instruction exists, it will be reopened. This action is logged.",
-                ),
-                hx_post=f"/docs/{entity_id}/unfulfill",
-                hx_confirm="Revert fulfillment? This will return stock to inventory and reopen any associated pick instruction.",
-                hx_target=f"#{cid_safe}",
-                hx_swap="outerHTML",
-            ),
-            id=cid_safe,
-        )
-    # Fulfill button hidden on draft and void only
-    if doc.get("status") in UNFULFILLABLE_STATUSES:
-        return ""
-    return Div(
-        Button(t("btn.fulfill_deduct_inventory"),
-            hx_post=f"/docs/{entity_id}/fulfill",
-            hx_confirm="Mark this document as fulfilled?",
-            hx_target=f"#{cid_safe}",
-            hx_swap="outerHTML",
-            cls="btn btn--primary btn--sm",
-            title="Mark this document as fulfilled. Use this after goods have been handed off to the customer. This action affects inventory stock levels.",
-        ),
-        id=cid_safe,
-    )
-
-
 def _render_fulfillment_badge(doc: dict):
     """Fulfillment badge - shown when doc is fulfilled."""
     fs = doc.get("fulfillment_status") or ""
@@ -1610,10 +1560,28 @@ def setup_routes(app):
         section_label = _doc_section_label(doc_type)
         section_url = _doc_section_url(doc_type)
         back_url = _doc_section_url(doc_type)
+        # Bulk-fetch inventory statuses for memo/consignment_in to show status column
+        item_status_map: dict[str, str] = {}
+        if doc_type in ("memo", "consignment_in") and status not in ("draft",):
+            try:
+                _line_eids = [
+                    li.get("entity_id") or li.get("item_id") or ""
+                    for li in doc.get("line_items", [])
+                    if li.get("entity_id") or li.get("item_id")
+                ]
+                if _line_eids:
+                    # Fetch all statuses with a high limit; doc line counts are always small
+                    _all_items = await api.list_items(token, {"limit": 1000, "status": "all"})
+                    for _it in (_all_items.get("items", []) if isinstance(_all_items, dict) else []):
+                        _eid = _it.get("entity_id") or _it.get("id") or ""
+                        if _eid in set(_line_eids):
+                            item_status_map[_eid] = _it.get("status", "")
+            except Exception:
+                pass
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -2840,49 +2808,43 @@ celerpUpdateBulkAlloc();
     # Fulfillment toggle routes
     # -----------------------------------------------------------------------
 
-    @app.post("/docs/{entity_id}/fulfill")
-    async def doc_fulfill(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
+    @app.post("/docs/{entity_id}/fulfill-lines")
+    async def doc_fulfill_lines(request: Request, entity_id: str):
+        from starlette.responses import Response as _R, JSONResponse
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.fulfill_doc(token, entity_id)
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"detail": "Invalid JSON"}, status_code=400)
+        line_entity_ids = body.get("line_entity_ids", [])
+        try:
+            result = await api.fulfill_lines(token, entity_id, line_entity_ids)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(
-                Span(str(e.detail), cls="flash flash--error"),
-                hx_swap_oob="true", id="action-error",
-            )
-        # Re-fetch doc and return updated toggle
-        try:
-            doc = await api.get_doc(token, entity_id)
-        except Exception:
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        return _render_fulfill_section(doc)
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
+        return JSONResponse(result)
 
-    @app.post("/docs/{entity_id}/unfulfill")
-    async def doc_unfulfill(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
+    @app.post("/docs/{entity_id}/revert-lines")
+    async def doc_revert_lines(request: Request, entity_id: str):
+        from starlette.responses import Response as _R, JSONResponse
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
-            await api.unfulfill_doc(token, entity_id)
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"detail": "Invalid JSON"}, status_code=400)
+        line_entity_ids = body.get("line_entity_ids", [])
+        try:
+            result = await api.unfulfill_lines(token, entity_id, line_entity_ids)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(
-                Span(str(e.detail), cls="flash flash--error"),
-                hx_swap_oob="true", id="action-error",
-            )
-        # Re-fetch doc and return updated section
-        try:
-            doc = await api.get_doc(token, entity_id)
-        except Exception:
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        return _render_fulfill_section(doc)
+            return JSONResponse({"detail": e.detail}, status_code=e.status)
+        return JSONResponse(result)
 
     @app.post("/docs/{entity_id}/receive-return")
     async def doc_receive_return(request: Request, entity_id: str):
@@ -4021,9 +3983,10 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
+    show_fulfill=True: add Fulfill Selected / Revert Selected buttons.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -4060,6 +4023,25 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False) -
                onclick="liBulkLabelsConfirmed()"),
         Div(id="li-bulk-context"),
     ]
+    if show_fulfill:
+        children += [
+            Button(
+                "Fulfill Selected",
+                type="button",
+                id="li-bulk-fulfill-btn",
+                cls="btn btn--primary btn--sm",
+                style="display:none",
+                onclick=f"liBulkFulfillConfirmed('{entity_id}')",
+            ),
+            Button(
+                "Revert Selected",
+                type="button",
+                id="li-bulk-revert-btn",
+                cls="btn btn--warning btn--sm",
+                style="display:none",
+                onclick=f"liBulkRevertConfirmed('{entity_id}')",
+            ),
+        ]
     return Div(
         *children,
         id="li-bulk-toolbar",
@@ -4068,7 +4050,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False) -
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -4367,7 +4349,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 pass
 
     # --- Inventory section action buttons (rendered above line items, not in the top bar) ---
-    _fulfill_el = _render_fulfill_section(doc)
     _receive_return_el = _render_receive_return_section(doc)
     _receive_goods_el = _render_receive_goods_section(doc)
 
@@ -5404,9 +5385,20 @@ async function celerpCsvImport(input, entityId) {{
     else:
         _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
         # Show checkboxes + bulk toolbar on finalized docs when celerp-labels is installed
+        # or when doc type supports per-line fulfill/revert
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
-        _fin_show_bulk = _fin_labels_active and bool(line_items)
+        _fin_show_fulfill = doc_type in ("memo", "consignment_in") and bool(line_items)
+        _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
+        _show_item_status = _fin_show_fulfill  # status column only on memo/consignment_in
+
+        _STATUS_BADGE: dict[str, tuple[str, str]] = {
+            "available": ("In Stock", "badge--green"),
+            "memo_out":  ("On Memo",  "badge--amber"),
+            "sold":      ("Sold",     "badge--grey"),
+            "archived":  ("Archived", "badge--grey"),
+            "expired":   ("Expired",  "badge--grey"),
+        }
 
         def _li_row(li: dict) -> FT:
             qty = float(li.get("quantity", 0) or 0)
@@ -5415,6 +5407,14 @@ async function celerpCsvImport(input, entityId) {{
             discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
             line_total = float(li.get("line_total", 0) or 0) or discounted
             cells = []
+            if _show_item_status:
+                li_eid = li.get("entity_id") or li.get("item_id") or ""
+                status_val = item_status_map.get(li_eid, "") if item_status_map else ""
+                if status_val and status_val in _STATUS_BADGE:
+                    label, badge_cls = _STATUS_BADGE[status_val]
+                    cells.append(Td(Span(label, cls=f"badge {badge_cls}"), cls="col-item-status"))
+                else:
+                    cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
             if _fin_show_bulk:
                 li_eid = li.get("entity_id") or li.get("item_id") or ""
                 li_sku = li.get("sku") or ""
@@ -5441,6 +5441,8 @@ async function celerpCsvImport(input, entityId) {{
             return Tr(*cells)
 
         _thead_base = []
+        if _show_item_status:
+            _thead_base.append(Th("Status", cls="col-item-status"))
         if _fin_show_bulk:
             _thead_base.append(Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"))
         _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
@@ -5450,7 +5452,7 @@ async function celerpCsvImport(input, entityId) {{
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
-            _li_bulk_toolbar(entity_id, is_list, labels_only=True) if _fin_show_bulk else None,
+            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li) for li in line_items] if line_items else [
@@ -5465,11 +5467,15 @@ async function celerpCsvImport(input, entityId) {{
   var countEl=document.getElementById('li-bulk-count');
   var sel=document.getElementById('li-bulk-select');
   function _n(){{return table?table.querySelectorAll('.li-select:checked').length:0;}}
+  var fulfillBtn=document.getElementById('li-bulk-fulfill-btn');
+  var revertBtn=document.getElementById('li-bulk-revert-btn');
   function _update(){{
     var n=_n();
     if(countEl) countEl.textContent=n+' row'+(n===1?'':'s')+' selected';
     if(toolbar) toolbar.style.display=n>0?'flex':'none';
     if(sel&&n===0) sel.value='';
+    if(fulfillBtn) fulfillBtn.style.display=n>0?'':'none';
+    if(revertBtn) revertBtn.style.display=n>0?'':'none';
   }}
   if(table) table.addEventListener('change',function(e){{
     if(e.target&&e.target.classList.contains('li-select')) _update();
@@ -5502,6 +5508,18 @@ async function celerpCsvImport(input, entityId) {{
     document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
   }};
   window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
+  window.liBulkFulfillConfirmed=function(docId){{
+    var checked=table?Array.from(table.querySelectorAll('.li-select:checked')).map(function(c){{return c.value;}}):[];
+    if(!checked.length) return;
+    if(!confirm('Fulfill '+checked.length+' selected item(s)?')) return;
+    fetch('/docs/'+docId+'/fulfill-lines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{line_entity_ids:checked}})}}).then(function(r){{return r.json();}}).then(function(){{window.location.reload();}});
+  }};
+  window.liBulkRevertConfirmed=function(docId){{
+    var checked=table?Array.from(table.querySelectorAll('.li-select:checked')).map(function(c){{return c.value;}}):[];
+    if(!checked.length) return;
+    if(!confirm('Revert fulfillment for '+checked.length+' selected item(s)?')) return;
+    fetch('/docs/'+docId+'/revert-lines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{line_entity_ids:checked}})}}).then(function(r){{return r.json();}}).then(function(){{window.location.reload();}});
+  }};
 }})();
 """) if _fin_show_bulk else None,
         )
@@ -5679,9 +5697,9 @@ async function celerpCsvImport(input, entityId) {{
         ),
         # Inventory action button - appears just above the line items section, aligned right
         Div(
-            _fulfill_el or _receive_return_el or _receive_goods_el or "",
+            _receive_return_el or _receive_goods_el or "",
             cls="doc-inventory-action",
-        ) if (_fulfill_el or _receive_return_el or _receive_goods_el) else "",
+        ) if (_receive_return_el or _receive_goods_el) else "",
         # Line items + price list bar
         Div(
             lines_section,

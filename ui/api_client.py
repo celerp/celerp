@@ -663,14 +663,14 @@ async def unvoid_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/docs/{entity_id}/unvoid", json={})).json()
 
 
-async def fulfill_doc(token: str, entity_id: str) -> dict:
+async def fulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/fulfill", json={})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/fulfill-lines", json={"line_entity_ids": line_entity_ids})).json()
 
 
-async def unfulfill_doc(token: str, entity_id: str) -> dict:
+async def unfulfill_lines(token: str, entity_id: str, line_entity_ids: list[str]) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/docs/{entity_id}/unfulfill", json={})).json()
+        return _raise(await c.post(f"/docs/{entity_id}/revert-lines", json={"line_entity_ids": line_entity_ids})).json()
 
 
 async def receive_return(token: str, entity_id: str, items: list[dict], notes: str | None = None) -> dict:
@@ -1342,6 +1342,11 @@ async def split_item(token: str, entity_id: str, children: list[dict]) -> dict:
         return _raise(await c.post(f"/items/{entity_id}/split", json=body)).json()
 
 
+async def transform_item(token: str, entity_id: str, payload: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/items/{entity_id}/transform", json=payload)).json()
+
+
 async def split_preview(token: str, entity_id: str, child_sku: str | None = None) -> dict:
     params: dict = {}
     if child_sku:
@@ -1355,7 +1360,7 @@ async def merge_items(
     source_entity_ids: list[str],
     target_sku_from: str,
     resulting_quantity: float | None = None,
-    resulting_cost_price: float | None = None,
+    resulting_cost_total: float | None = None,
     resulting_name: str | None = None,
     resolved_attributes: dict | None = None,
     idempotency_key: str | None = None,
@@ -1363,8 +1368,8 @@ async def merge_items(
     body: dict = {"source_entity_ids": source_entity_ids, "target_sku_from": target_sku_from}
     if resulting_quantity is not None:
         body["resulting_quantity"] = resulting_quantity
-    if resulting_cost_price is not None:
-        body["resulting_cost_price"] = resulting_cost_price
+    if resulting_cost_total is not None:
+        body["resulting_cost_total"] = resulting_cost_total
     if resulting_name is not None:
         body["resulting_name"] = resulting_name
     if resolved_attributes:

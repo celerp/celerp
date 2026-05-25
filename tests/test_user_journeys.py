@@ -395,7 +395,12 @@ class TestCRUDRead:
                        "ui.api_client.get_item_schema": AsyncMock(return_value=_SCHEMA),
                        "ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
                        "ui.api_client.list_ledger": AsyncMock(return_value={"items": [], "total": 0}),
-                       "ui.api_client.get_locations": AsyncMock(return_value={"items": _LOCATIONS, "total": len(_LOCATIONS)})}):
+                       "ui.api_client.get_locations": AsyncMock(return_value={"items": _LOCATIONS, "total": len(_LOCATIONS)}),
+                       "ui.api_client.get_units": AsyncMock(return_value=[]),
+                       "ui.api_client.get_price_lists": AsyncMock(return_value=[]),
+                       "ui.api_client.get_all_category_schemas": AsyncMock(return_value={}),
+                       "ui.api_client.get_company_category_schemas": AsyncMock(return_value={}),
+                       "ui.api_client.list_import_batches": AsyncMock(return_value={"batches": []})}):
             r = await ui.get("/inventory/item:1", cookies=_c())
         assert r.status_code == 200
 
