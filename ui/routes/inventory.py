@@ -2759,7 +2759,6 @@ function celerpPrintLabel(entityId, templateId) {
     @app.post("/api/items/{entity_id}/split-inline")
     async def item_split_inline(request: Request, entity_id: str):
         """Detail page split: one or more children, auto-SKU, redirect to exact filtered inventory."""
-        from urllib.parse import quote as _quote
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -2793,9 +2792,58 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         child_skus = [c["sku"] for c in children]
+        return _split_redirect(orig_sku, child_skus)
+
+    def _split_redirect(orig_sku: str, child_skus: list[str]) -> Response:
+        """Build the HX-Redirect response after a successful split."""
+        from urllib.parse import quote as _quote
         skus_param = ",".join(_quote(s) for s in [orig_sku] + child_skus)
         redirect = f"/inventory?skus={skus_param}&status=all" if orig_sku else "/inventory"
         return Response("", status_code=204, headers={"HX-Redirect": redirect})
+
+    @app.post("/api/items/{entity_id}/batch-split")
+    async def item_batch_split(request: Request, entity_id: str):
+        """Batch split: N identical children of the same qty, auto-SKU, redirect to filtered inventory."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        raw_qty   = str(form.get("batch_qty",   "")).strip()
+        raw_count = str(form.get("batch_count", "")).strip()
+        try:
+            batch_qty = float(raw_qty)
+        except (ValueError, TypeError):
+            return Span(t("inv.invalid_split_quantity"), cls="flash flash--error", id="item-action-error")
+        try:
+            batch_count = int(raw_count)
+        except (ValueError, TypeError):
+            return Span("Count must be a whole number.", cls="flash flash--error", id="item-action-error")
+        if batch_qty <= 0:
+            return Span(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--error", id="item-action-error")
+        if batch_count < 2:
+            return Span("Count must be at least 2.", cls="flash flash--error", id="item-action-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
+        available = float(item.get("quantity") or 0)
+        if batch_qty * batch_count > available:
+            return Span(
+                f"Total ({batch_qty * batch_count}) exceeds available ({available}).",
+                cls="flash flash--error", id="item-action-error",
+            )
+        orig_sku = str(item.get("sku", "") or "")
+        used_skus: set[str] = set()
+        children: list[dict] = []
+        for _ in range(batch_count):
+            child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
+            used_skus.add(child_sku)
+            children.append({"sku": child_sku, "quantity": batch_qty})
+        try:
+            await api.split_item(token, entity_id, children)
+        except APIError as e:
+            return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
+        return _split_redirect(orig_sku, [c["sku"] for c in children])
 
     @app.post("/api/items/merge")
     async def item_merge(request: Request):
@@ -4791,6 +4839,8 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
             A(action.get("label", "Action"), href=href, cls="btn btn--secondary btn--sm")
         )
 
+    safe_id = entity_id.replace(":", "-")
+
     # 2x2 compact action cards
     allow_splitting = item.get("allow_splitting", True)
     sell_by = item.get("sell_by") or "piece"
@@ -4838,6 +4888,56 @@ function addSplitRow(btn) {{
             P(t("inv.splitting_disabled_hint"), cls="action-card-hint"),
             cls="action-card action-card--disabled",
         )
+
+    if allow_splitting:
+        batch_split_card = Div(
+            Form(
+                Strong("✂ Batch Split", cls="action-card-title"),
+                Div(
+                    Div(
+                        Input(type="number", name="batch_qty",
+                              placeholder=f"{sell_by_label} per child",
+                              step="any", min="0.001",
+                              cls="form-input form-input--sm",
+                              required=True,
+                              oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                        Span("×", cls="batch-split-sep"),
+                        Input(type="number", name="batch_count",
+                              placeholder="Count",
+                              step="1", min="2",
+                              cls="form-input form-input--sm",
+                              required=True,
+                              oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                        cls="action-card-row",
+                    ),
+                    Div(id=f"batch-split-preview-{safe_id}", cls="batch-split-preview"),
+                    Button("Batch Split", type="submit", cls="btn btn--primary btn--xs"),
+                    cls="action-card-row--col",
+                ),
+                Script(f"""
+function batchSplitPreview_{safe_id}(form) {{
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)    || 0;
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
+  var avail = {current_qty};
+  var unit  = '{sell_by_label}';
+  var el    = document.getElementById('batch-split-preview-{safe_id}');
+  if (!el) return;
+  if (!qty || !count) {{ el.innerHTML = ''; return; }}
+  var total = qty * count;
+  var over  = total > avail;
+  el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
+    + ' = ' + total.toFixed(2) + '\u00a0' + unit
+    + (over ? ' <span class="batch-split-over">exceeds available (' + avail + ')</span>' : '');
+}}
+"""),
+                hx_post=f"/api/items/{entity_id}/batch-split",
+                hx_target="#item-action-error",
+                hx_swap="outerHTML",
+            ),
+            cls="action-card",
+        )
+    else:
+        batch_split_card = ""
 
     duplicate_card = Div(
         Form(
@@ -4950,6 +5050,7 @@ function addSplitRow(btn) {{
         Span("", id="item-action-error"),
         Div(
             split_card,
+            batch_split_card,
             duplicate_card,
             *lifecycle_cards,
             rtv_card,

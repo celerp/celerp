@@ -4316,6 +4316,85 @@ class TestItemActionRouteCompleteness:
         assert b"Invalid" in r.content
 
 
+class TestBatchSplit:
+    """Tests for POST /api/items/{entity_id}/batch-split (detail-page batch split card)."""
+
+    _SPLIT_ITEM = {
+        **_ITEM,
+        "sku": "BS-PARENT", "quantity": 10, "sell_by": "piece", "allow_splitting": True,
+    }
+
+    @pytest.mark.asyncio
+    async def test_batch_split_success_redirects(self, ui_client):
+        """Valid batch split (qty=1, count=5, total=5 ≤ 10) must redirect to filtered inventory."""
+        split_calls = []
+
+        async def mock_split(token, entity_id, children):
+            split_calls.append(children)
+            return {}
+
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
+            patch("ui.api_client.split_item", new=mock_split),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/batch-split",
+                data={"batch_qty": "1", "batch_count": "5"},
+                cookies=_authed(),
+                follow_redirects=False,
+            )
+        # HTMX redirect: 204 + HX-Redirect header
+        assert r.status_code == 204
+        assert "HX-Redirect" in r.headers
+        assert "skus=" in r.headers["HX-Redirect"]
+        # Must have generated 5 children
+        assert len(split_calls) == 1
+        assert len(split_calls[0]) == 5
+
+    @pytest.mark.asyncio
+    async def test_batch_split_total_exceeds_available_rejected(self, ui_client):
+        """qty=3, count=5 → total=15 > available=10: must return error span, not redirect."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/batch-split",
+                data={"batch_qty": "3", "batch_count": "5"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"exceeds" in r.content.lower() or b"flash--error" in r.content
+
+    @pytest.mark.asyncio
+    async def test_batch_split_count_1_rejected(self, ui_client):
+        """count=1 must return error (use normal split for single child)."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/batch-split",
+                data={"batch_qty": "1", "batch_count": "1"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"flash--error" in r.content
+
+    @pytest.mark.asyncio
+    async def test_batch_split_nonnumeric_qty_rejected(self, ui_client):
+        """Non-numeric batch_qty must return error span."""
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=self._SPLIT_ITEM)),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/batch-split",
+                data={"batch_qty": "abc", "batch_count": "5"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert b"flash--error" in r.content
+
+
 class TestItemActionHtmlContracts:
     """HTML-rendering contract tests: assert the item detail page generates
     the correct hx-post/hx-delete URLs for every action card. These tests
@@ -8588,6 +8667,48 @@ class TestInventoryItemDetailFixes:
         assert "<td" in html
         assert "cell--error" in html
         assert "<input" in html
+
+    @pytest.mark.asyncio
+    async def test_batch_split_card_rendered_when_splitting_allowed(self, ui_client):
+        """Item detail page must include Batch Split card when allow_splitting=True."""
+        item = {**_ITEM, "allow_splitting": True, "quantity": 100, "sell_by": "piece"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get(f"/inventory/{item['entity_id']}", cookies=_authed())
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert "Batch Split" in html
+        assert "batch_qty" in html
+        assert "batch_count" in html
+        assert "batch-split-preview" in html
+
+    @pytest.mark.asyncio
+    async def test_batch_split_card_absent_when_splitting_disabled(self, ui_client):
+        """Batch Split card must not appear when allow_splitting=False."""
+        item = {**_ITEM, "allow_splitting": False, "quantity": 100, "sell_by": "piece"}
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=item)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "T", "currency": "USD"})),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_company_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
+            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
+        ):
+            r = await ui_client.get(f"/inventory/{item['entity_id']}", cookies=_authed())
+        assert r.status_code == 200
+        assert b"batch_qty" not in r.content
 
 
 class TestListFieldPatch:

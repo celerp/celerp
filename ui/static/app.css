@@ -2375,3 +2375,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .cat-section-details summary::before { content: "▶"; font-size: 10px; transition: transform 0.15s; }
 .cat-section-details[open] summary::before { transform: rotate(90deg); }
 .cat-section-details > div { padding: 16px; }
+.batch-split-sep { font-size:13px; color:var(--c-muted); flex-shrink:0; padding:0 2px; line-height:1; align-self:center; }
+.batch-split-preview { font-size:11px; color:var(--c-muted); min-height:16px; margin-top:2px; }
+.batch-split-over { color:var(--c-red); font-weight:600; }
