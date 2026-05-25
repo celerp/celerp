@@ -733,7 +733,9 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             if new_sell_by not in unit_map:
                 raise HTTPException(status_code=422, detail=f"sell_by '{new_sell_by}' is not a valid unit name")
 
-    # Validate quantity change against current sell_by unit
+    # Validate quantity change against current sell_by unit.
+    # Also sync derived weight/pieces field: if sell_by is a weight unit,
+    # weight tracks quantity directly; if sell_by is a pieces unit, pieces tracks it.
     if "quantity" in changed_keys:
         new_qty_raw = (payload.fields_changed["quantity"] or {}).get("new")
         if new_qty_raw is not None:
@@ -744,6 +746,18 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
                 unit_map = {u["name"]: u for u in units}
                 if current_sell_by and current_sell_by in unit_map:
                     validate_quantity(float(new_qty_raw), unit_map[current_sell_by]["decimals"])
+                    new_qty = float(new_qty_raw)
+                    if is_weight_unit(current_sell_by, unit_map):
+                        payload.fields_changed["weight"] = {
+                            "old": row.state.get("weight"),
+                            "new": new_qty,
+                        }
+                    elif is_pieces_unit(current_sell_by, unit_map):
+                        old_pieces = (row.state.get("attributes") or {}).get("pieces")
+                        payload.fields_changed["pieces"] = {
+                            "old": old_pieces,
+                            "new": int(round(new_qty)),
+                        }
 
     # Validate SKU uniqueness if changing
     if "sku" in changed_keys:

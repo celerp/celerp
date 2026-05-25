@@ -8544,6 +8544,51 @@ class TestInventoryItemDetailFixes:
         assert 'hx-get="/api/items/item:abc1/field/location_name/edit"' in html
         assert "<select" not in html
 
+    @pytest.mark.asyncio
+    async def test_patch_qty_invalid_returns_editable_td_with_error_class(self, ui_client):
+        """PATCH quantity with non-numeric value must return editable <td class='... cell--error'> so
+        user can correct inline — not a bare <p> that breaks layout and requires page reload."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/gc:123/field/quantity",
+                data={"value": "abc"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.content.decode()
+        # Must return a <td>, not a bare <p>
+        assert "<td" in html, "Expected <td>, got bare element"
+        assert "<p" not in html or "cell-error" not in html, "Must not return a bare <p class='cell-error'>"
+        # Must carry error styling
+        assert "cell--error" in html
+        # Must still be editable (input present) so user can correct without page reload
+        assert "<input" in html
+
+    @pytest.mark.asyncio
+    async def test_patch_price_invalid_returns_editable_td_with_error_class(self, ui_client):
+        """PATCH a price field with non-numeric value must return editable <td cell--error>."""
+        with (
+            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_all_category_schemas", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
+        ):
+            r = await ui_client.patch(
+                "/api/items/gc:123/field/retail_price",
+                data={"value": "notanumber"},
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.content.decode()
+        assert "<td" in html
+        assert "cell--error" in html
+        assert "<input" in html
+
 
 class TestListFieldPatch:
     """Verify PATCH /lists/{id}/field/{field} returns display cell, not 405."""

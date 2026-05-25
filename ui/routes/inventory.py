@@ -1285,10 +1285,25 @@ function celerpPrintLabel(entityId, templateId) {
             value = value.lower() in ("true", "1", "yes")
         # Convert numeric fields from string to float
         elif field == "quantity" or field.endswith("_price") or field.endswith("_price_total"):
+            raw_str = str(form.get("value", ""))
             try:
                 value = float(value)
             except (ValueError, TypeError):
-                return P(t("error.invalid_number"), cls="cell-error")
+                # Return editable cell with error so user can correct without a page reload.
+                cell_type = "number" if field == "quantity" else "money"
+                patch_url = f"/api/items/{entity_id}/field/{field}"
+                restore_url = (
+                    f"/api/items/{entity_id}/field/{field}/paired-display"
+                    if field in _PAIRED_FIELDS
+                    else f"/api/items/{entity_id}/field/{field}/display"
+                )
+                from ui.components.table import editable_cell
+                edit_td = editable_cell(
+                    entity_id=entity_id, field=field, value=raw_str,
+                    cell_type=cell_type, restore_url=restore_url,
+                )
+                edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                return edit_td
 
         try:
             if field == "location_name":
