@@ -1455,61 +1455,31 @@ function celerpPrintLabel(entityId, templateId) {
                             hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
                         ))
                     return paired_td, *oob_cells
-                # sell_by change: re-render weight and pieces cells as they may switch
-                # between derived (read-only) and independent (editable) display
+                # sell_by change: re-render weight and pieces cells via shared renderers so
+                # they correctly switch between derived (read-only) and paired/editable display.
                 if field in ("sell_by", "quantity"):
                     safe_id = entity_id.replace(":", "-")
                     try:
                         units_resp2 = await api.get_units(token)
                         _umap2 = {u["name"]: u for u in units_resp2 if u.get("name")}
+                        unit_names2 = [u["name"] for u in units_resp2 if u.get("name")]
                     except Exception:
-                        _umap2 = {}
-                    new_sell_by = item.get("sell_by") or ""
-                    derived_weight = is_weight_unit(new_sell_by, _umap2)
-                    derived_pieces = is_pieces_unit(new_sell_by, _umap2)
-                    from celerp.services.units import format_qty
-                    from ui.components.table import display_cell as _dc
+                        _umap2, unit_names2 = {}, []
+                    cell_renderers2 = _inventory_cell_renderers(schema, unit_names2, _umap2)
+                    flat = _flatten_item_attrs(item)
                     oob_derived = []
-                    if any(f2["key"] == "weight" for f2 in schema):
-                        if derived_weight:
-                            qty_val = item.get("quantity", "")
-                            fmt = format_qty(qty_val, new_sell_by, _umap2)
-                            decimals = _umap2.get(new_sell_by, {}).get("decimals", "")
-                            weight_td = Td(
-                                Span(f"{fmt} {new_sell_by}" if fmt not in ("", None) else EMPTY,
-                                     title="Derived from Qty column", cls="cell-derived"),
-                                id=f"cell-{safe_id}-weight",
-                                hx_swap_oob="true",
-                                cls="cell cell--number",
-                                data_col="weight",
-                                data_decimals=str(decimals),
-                            )
-                        else:
-                            weight_td = _dc(entity_id=entity_id, field="weight",
-                                            value=item.get("weight", ""), cell_type="number", editable=True)
-                            weight_td.attrs["id"] = f"cell-{safe_id}-weight"
-                            weight_td.attrs["hx_swap_oob"] = "true"
-                        oob_derived.append(weight_td)
-                    if any(f2["key"] == "pieces" for f2 in schema):
-                        if derived_pieces:
-                            qty_val = item.get("quantity", "")
-                            fmt = format_qty(qty_val, new_sell_by, _umap2)
-                            decimals = _umap2.get(new_sell_by, {}).get("decimals", "")
-                            pieces_td = Td(
-                                Span(fmt if fmt not in ("", None) else EMPTY,
-                                     title="Derived from Qty column", cls="cell-derived"),
-                                id=f"cell-{safe_id}-pieces",
-                                hx_swap_oob="true",
-                                cls="cell cell--number",
-                                data_col="pieces",
-                                data_decimals=str(decimals),
-                            )
-                        else:
-                            pieces_td = _dc(entity_id=entity_id, field="pieces",
-                                            value=item.get("pieces", ""), cell_type="number", editable=True)
-                            pieces_td.attrs["id"] = f"cell-{safe_id}-pieces"
-                            pieces_td.attrs["hx_swap_oob"] = "true"
-                        oob_derived.append(pieces_td)
+                    for derive_field in ("weight", "pieces"):
+                        if derive_field not in cell_renderers2:
+                            continue
+                        rendered = cell_renderers2[derive_field](entity_id, flat)
+                        # Ensure the td carries id + hx-swap-oob for OOB targeting.
+                        # display_cell already sets id=cell-{safe_id}-{field}; derived Td does not.
+                        # Re-create with both attrs as constructor kwargs (underscore→hyphen by FastHTML).
+                        children = list(rendered.children) if hasattr(rendered, "children") else []
+                        attrs = {k: v for k, v in rendered.attrs.items() if k not in ("id",)}
+                        oob_td = Td(*children, id=f"cell-{safe_id}-{derive_field}",
+                                    hx_swap_oob="true", **attrs)
+                        oob_derived.append(oob_td)
                     if oob_derived:
                         return paired_td, *oob_derived
                 return paired_td
