@@ -1410,6 +1410,7 @@ function celerpPrintLabel(entityId, templateId) {
                 )
         # Paired fields: return the combined paired cell after save
         if field in _PAIRED_FIELDS:
+            from ui.components.table import fmt_money
             try:
                 paired_td = await _paired_display(token, entity_id, field)
             except Exception:
@@ -3503,10 +3504,10 @@ _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit",
 _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
 # Core item fields shown in the left (core details) panel on the detail page — single definition
 _ITEM_CORE_KEYS: frozenset[str] = frozenset({
-    "sku", "name", "status", "category", "quantity", "weight", "weight_unit",
-    "sell_by", "allow_splitting", "barcode", "hs_code", "location_name",
-    "short_description", "purchase_sku", "purchase_name", "purchase_unit",
-    "purchase_conversion_factor",
+    "sku", "name", "status", "category", "quantity", "pieces", "weight", "weight_unit",
+    "gross_weight", "gross_weight_unit", "sell_by", "allow_splitting", "barcode",
+    "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name",
+    "purchase_unit", "purchase_conversion_factor",
 })
 
 
