@@ -1514,11 +1514,11 @@ function celerpPrintLabel(entityId, templateId) {
             pass
         visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
         cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency)
-        from ui.components.table import display_cell, EMPTY
+        from ui.components.table import display_cell
         safe_id = entity_id.replace(":", "-")
         flat = _flatten_item_attrs(item)
         visible = [f for f in eff_schema if f.get("key") in set(visible_cols)] if visible_cols else eff_schema
-        cells = [
+        data_cells = [
             cell_renderers[f["key"]](entity_id, flat) if f["key"] in cell_renderers
             else display_cell(
                 entity_id=entity_id,
@@ -1527,10 +1527,42 @@ function celerpPrintLabel(entityId, templateId) {
                 cell_type=f.get("type", "text"),
                 options=f.get("options"),
                 editable=f.get("editable", True),
+                currency=currency,
             )
             for f in visible
         ]
-        return Tr(*cells, id=f"row-{safe_id}", cls="data-row")
+        # Checkbox cell (matches data_table output)
+        checkbox_td = Td(
+            Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
+                  data_entity_id=entity_id,
+                  data_sku=flat.get("sku", ""),
+                  data_name=flat.get("name", ""),
+                  data_qty=str(flat.get("quantity", 0)),
+                  data_weight=str(flat.get("weight", "") or ""),
+                  data_weight_unit=flat.get("weight_unit", ""),
+                  data_sell_by=flat.get("sell_by", ""),
+            ),
+            cls="col-checkbox",
+        )
+        # Action cell (matches data_table output)
+        action_td = Td(
+            Div(
+                Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
+                Div(
+                    A(t("btn.edit"), href=f"/inventory/{entity_id}", cls="row-menu-item"),
+                    Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
+                           onclick=f"if(!confirm('Delete this item? This cannot be undone.'))return;"
+                                   f"htmx.ajax('DELETE','/api/items/{entity_id}',"
+                                   f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
+                    cls="row-menu-dropdown", id=f"menu-{safe_id}",
+                ),
+                cls="row-menu",
+            ),
+            cls="col-actions",
+        )
+        status_val = str(flat.get("status", "") or "").lower()
+        row_cls = "data-row data-row--inactive" if status_val and status_val != "available" else "data-row"
+        return Tr(checkbox_td, *data_cells, action_td, id=f"row-{safe_id}", cls=row_cls)
 
     async def _paired_display(token: str, entity_id: str, field: str):
         """Return a display cell TD for the pair/triple containing `field`."""
