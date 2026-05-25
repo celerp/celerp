@@ -4893,12 +4893,12 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         if _is_weight:
             _comp_name   = "split_pieces"
             _comp_ph     = "Pieces (optional)"
-            _comp_title  = "Optionally record how many pieces this child lot contains"
+            _comp_title  = t("inv.tooltip.split_pieces_opt")
             _comp_step   = "1"
         elif _is_pieces:
             _comp_name   = "split_weight"
             _comp_ph     = "Weight (optional)"
-            _comp_title  = "Optionally record the weight of this child lot"
+            _comp_title  = t("inv.tooltip.split_weight_opt")
             _comp_step   = "0.001"
         else:
             _comp_name   = None
@@ -4906,9 +4906,9 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
             _comp_title  = None
             _comp_step   = None
 
-        _qty_title         = f"Enter the {sell_by_label} quantity to split off into this child lot"
-        _batch_qty_title   = f"Enter the {sell_by_label} quantity for each identical child lot"
-        _batch_count_title = "Number of identical parcels to create (minimum 2)"
+        _qty_title         = t("inv.tooltip.split_qty").replace("{unit}", sell_by_label)
+        _batch_qty_title   = t("inv.tooltip.batch_qty").replace("{unit}", sell_by_label)
+        _batch_count_title = t("inv.tooltip.batch_count")
 
         # Complement input for manual rows (rendered inline via FastHTML and duplicated by JS)
         _comp_inputs = ([Input(type="number", name=_comp_name,
@@ -4944,8 +4944,9 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                 ),
                 Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
                        style="margin-top:4px"),
-                # ── Divider ──
+                # ── Divider + Batch Split heading ──
                 Hr(cls="action-card-divider"),
+                Strong(t("inv.batch_split"), cls="action-card-title", style="margin-bottom:4px"),
                 # ── Batch split row ──
                 Div(
                     Input(type="number", name="batch_qty",
@@ -4968,7 +4969,7 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
                           cls="form-input form-input--sm batch-split-count",
                           oninput=f"batchSplitPreview_{safe_id}(this.form)"),
                     Button("Batch", type="button",
-                           title="Create N identical child lots",
+                           title=t("inv.tooltip.batch_submit"),
                            cls="btn btn--primary btn--xs",
                            onclick=f"batchSplitSubmit_{safe_id}(this.closest('form'))"),
                     cls="action-card-row",
@@ -5013,7 +5014,7 @@ function batchSplitSubmit_{safe_id}(form) {{
                 hx_target="#item-action-error",
                 hx_swap="outerHTML",
             ),
-            cls="action-card action-card--wide",
+            cls="action-card",
         )
     else:
         split_card = Div(
