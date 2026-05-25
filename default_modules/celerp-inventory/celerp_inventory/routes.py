@@ -807,12 +807,8 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
                     if is_weight_unit(new_sell_by, _sync_unit_map):
                         payload.fields_changed["weight"] = {"old": _sync_row.state.get("weight"), "new": float(qty)}
                         payload.fields_changed["weight_unit"] = {"old": _sync_row.state.get("weight_unit"), "new": new_sell_by}
-                        if (_sync_row.state.get("attributes") or {}).get("pieces") is not None:
-                            payload.fields_changed["pieces"] = {"old": (_sync_row.state.get("attributes") or {}).get("pieces"), "new": None}
                     elif is_pieces_unit(new_sell_by, _sync_unit_map):
                         payload.fields_changed["pieces"] = {"old": (_sync_row.state.get("attributes") or {}).get("pieces"), "new": int(round(float(qty)))}
-                        payload.fields_changed["weight"] = {"old": _sync_row.state.get("weight"), "new": None}
-                        payload.fields_changed["weight_unit"] = {"old": _sync_row.state.get("weight_unit"), "new": None}
 
     entry = await emit_event(
         session,
