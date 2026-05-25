@@ -1454,10 +1454,26 @@ function celerpPrintLabel(entityId, templateId) {
                             hx_get=f"/api/items/{entity_id}/field/{vkey}/edit",
                             hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
                         ))
+                    # Also re-render derived weight/pieces cells (qty value changed)
+                    try:
+                        units_resp2 = await api.get_units(token)
+                        _umap2 = {u["name"]: u for u in units_resp2 if u.get("name")}
+                        unit_names2 = [u["name"] for u in units_resp2 if u.get("name")]
+                    except Exception:
+                        _umap2, unit_names2 = {}, []
+                    cell_renderers2 = _inventory_cell_renderers(schema, unit_names2, _umap2)
+                    for derive_field in ("weight", "pieces"):
+                        if derive_field not in cell_renderers2:
+                            continue
+                        rendered = cell_renderers2[derive_field](entity_id, flat)
+                        children = list(rendered.children) if hasattr(rendered, "children") else []
+                        attrs = {k: v for k, v in rendered.attrs.items() if k not in ("id",)}
+                        oob_cells.append(Td(*children, id=f"cell-{safe_id}-{derive_field}",
+                                            hx_swap_oob="true", **attrs))
                     return paired_td, *oob_cells
                 # sell_by change: re-render weight and pieces cells via shared renderers so
                 # they correctly switch between derived (read-only) and paired/editable display.
-                if field in ("sell_by", "quantity"):
+                if field == "sell_by":
                     safe_id = entity_id.replace(":", "-")
                     try:
                         units_resp2 = await api.get_units(token)
