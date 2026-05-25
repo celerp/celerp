@@ -21,7 +21,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
-from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map
+from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -791,6 +791,29 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
 
     # Always stamp updated_at so the projection reflects the mutation time.
     payload.fields_changed["updated_at"] = {"old": None, "new": datetime.now(timezone.utc).isoformat()}
+
+    # sell_by sync: when sell_by changes unit type, sync quantity → weight or pieces so
+    # the independent stored fields stay consistent with what the derived display showed.
+    # Without this, switching piece→carat→edit qty→piece restores stale weight/pieces value.
+    if "sell_by" in changed_keys:
+        new_sell_by = (payload.fields_changed["sell_by"] or {}).get("new")
+        if new_sell_by:
+            _sync_row = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+            if _sync_row:
+                _sync_units = await _get_company_units(session, company_id)
+                _sync_unit_map = {u["name"]: u for u in _sync_units}
+                qty = _sync_row.state.get("quantity")
+                if qty is not None:
+                    if is_weight_unit(new_sell_by, _sync_unit_map):
+                        payload.fields_changed["weight"] = {"old": _sync_row.state.get("weight"), "new": float(qty)}
+                        payload.fields_changed["weight_unit"] = {"old": _sync_row.state.get("weight_unit"), "new": new_sell_by}
+                        if (_sync_row.state.get("attributes") or {}).get("pieces") is not None:
+                            payload.fields_changed["pieces"] = {"old": (_sync_row.state.get("attributes") or {}).get("pieces"), "new": None}
+                    elif is_pieces_unit(new_sell_by, _sync_unit_map):
+                        payload.fields_changed["pieces"] = {"old": (_sync_row.state.get("attributes") or {}).get("pieces"), "new": int(round(float(qty)))}
+                        payload.fields_changed["weight"] = {"old": _sync_row.state.get("weight"), "new": None}
+                        payload.fields_changed["weight_unit"] = {"old": _sync_row.state.get("weight_unit"), "new": None}
+
     entry = await emit_event(
         session,
         company_id=company_id,
