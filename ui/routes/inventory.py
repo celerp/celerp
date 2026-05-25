@@ -3616,7 +3616,9 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                 )
             # Not a weight unit - use paired cell (weight + weight_unit) or plain editable
             if _paired:
-                return _paired(entity_id, row)
+                td = _paired(entity_id, row)
+                td.attrs["id"] = f"cell-{_safe_id}-weight"
+                return td
             return display_cell(entity_id=entity_id, field="weight", value=row.get("weight", ""), cell_type="number", editable=True)
         renderers["weight"] = _weight_renderer
 
