@@ -1518,6 +1518,8 @@ function celerpPrintLabel(entityId, templateId) {
         safe_id = entity_id.replace(":", "-")
         flat = _flatten_item_attrs(item)
         visible = [f for f in eff_schema if f.get("key") in set(visible_cols)] if visible_cols else eff_schema
+        # Exclude paired secondary fields (sell_by, weight_unit, etc.) — they render inside paired cells
+        visible = [f for f in visible if f["key"] not in _PAIRED_SECONDARY_KEYS]
         data_cells = [
             cell_renderers[f["key"]](entity_id, flat) if f["key"] in cell_renderers
             else display_cell(
