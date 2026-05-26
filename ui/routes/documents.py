@@ -135,6 +135,11 @@ def _render_fulfillment_badge(doc: dict):
     return None
 
 
+def _action_error(msg: str) -> FT:
+    """Return an error fragment that OOB-swaps into the persistent #action-error container."""
+    return Div(Span(msg, cls="flash flash--error"), id="action-error", hx_swap_oob="true")
+
+
 def _render_receive_return_section(doc: dict):
     """Receive Returns button - shown on credit notes when celerp-inventory is installed.
 
@@ -2880,7 +2885,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+            return _action_error(str(e.detail))
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -2899,7 +2904,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+            return _action_error(str(e.detail))
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
@@ -2922,7 +2927,7 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 from starlette.responses import Response as _R2
                 return _R2("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+            return _action_error(str(e.detail))
         return _render_receive_goods_section(doc)
 
     @app.delete("/docs/{entity_id}/receive-goods")
@@ -2937,7 +2942,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id=cid_safe)
+            return _action_error(str(e.detail))
         try:
             doc = await api.get_doc(token, entity_id)
         except Exception:
