@@ -760,13 +760,14 @@ def data_table(
     }});
   }}
 
-  // Apply visibility — use data-col attribute so order-independent
+  // Apply visibility — re-query rows each call so HTMX-swapped rows are never missed
   function applyVis() {{
+    var liveRows = Array.from(table.querySelectorAll('tbody tr.data-row'));
     ths.forEach(function(th) {{
       var key = th.dataset.key;
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
-      rows.forEach(function(tr) {{
+      liveRows.forEach(function(tr) {{
         var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
       }});
@@ -774,6 +775,12 @@ def data_table(
     localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
   }}
   applyVis();
+  // Re-apply after HTMX settles so rows added during the swap phase are also covered
+  document.body.addEventListener('htmx:afterSettle', function _visSettle(e) {{
+    if (e.detail && e.detail.target && e.detail.target.id === 'inventory-content') {{
+      applyVis();
+    }}
+  }});
 
   // Drag-to-resize column headers — persist widths to localStorage
   var WIDTH_KEY = 'celerp_col_widths_{entity_type}';
