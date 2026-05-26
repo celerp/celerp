@@ -135,9 +135,15 @@ def _render_fulfillment_badge(doc: dict):
     return None
 
 
-def _action_error(msg: str) -> FT:
-    """Return an error fragment that OOB-swaps into the persistent #action-error container."""
-    return Div(Span(msg, cls="flash flash--error"), id="action-error", hx_swap_oob="true")
+def _action_error(msg: str):
+    """OOB-swap error into #action-error; HX-Reswap:none preserves the triggering element."""
+    from starlette.responses import HTMLResponse as _HR
+    from fasthtml.common import to_xml as _to_xml
+    fragment = Div(Span(msg, cls="flash flash--error"), id="action-error", hx_swap_oob="true")
+    return _HR(
+        _to_xml(fragment),
+        headers={"HX-Reswap": "none"},
+    )
 
 
 def _render_receive_return_section(doc: dict):
@@ -5524,6 +5530,7 @@ async function celerpCsvImport(input, entityId) {{
   window.submitLiBulkAction=function(formEl){{
     formEl.querySelectorAll('input[name="selected"]').forEach(function(el){{el.remove();}});
     if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{
+      if(!cb.value) return;
       var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=cb.value;
       formEl.appendChild(inp);
     }});
