@@ -46,6 +46,9 @@ _LIST_DATE_FIELDS = {"date", "link_expiry"}
 _PER_PAGE = 50
 _PER_PAGE_OPTIONS = [25, 50, 100, 250]
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
+# Doc types that support per-line inventory item status display (fetch + render).
+# Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
+_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "consignment_in", "invoice"})
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "invoice": "Invoices",
     "purchase_order": "Draft Bills & POs",
@@ -1560,9 +1563,9 @@ def setup_routes(app):
         section_label = _doc_section_label(doc_type)
         section_url = _doc_section_url(doc_type)
         back_url = _doc_section_url(doc_type)
-        # Bulk-fetch inventory statuses for memo/consignment_in to show status column
+        # Bulk-fetch inventory statuses for fulfillable doc types to show status column
         item_status_map: dict[str, str] = {}
-        if doc_type in ("memo", "consignment_in") and status not in ("draft",):
+        if doc_type in _FULFILLABLE_DOC_TYPES and status not in ("draft",):
             try:
                 _line_eids = [
                     li.get("entity_id") or li.get("item_id") or ""
@@ -5389,9 +5392,9 @@ async function celerpCsvImport(input, entityId) {{
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
         # Fulfillable doc types: keep in sync with doc_constants.FULFILLABLE_STATUSES (different package).
-        _fin_show_fulfill = doc_type in ("memo", "consignment_in", "invoice") and bool(line_items)
+        _fin_show_fulfill = doc_type in _FULFILLABLE_DOC_TYPES and bool(line_items)
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
-        _show_item_status = doc_type in ("memo", "consignment_in", "invoice") and bool(line_items)
+        _show_item_status = doc_type in _FULFILLABLE_DOC_TYPES and bool(line_items)
 
         _STATUS_BADGE: dict[str, tuple[str, str]] = {
             "available": ("In Stock",  "badge--available"),
