@@ -9,6 +9,10 @@ from ui.i18n import t, get_lang
 # Canonical empty-value placeholder (rule k)
 EMPTY = "--"
 
+# Statuses that dim a row to indicate it is not actively available for sale/use.
+# Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
+INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out"})
+
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
 _DEFAULT_COL_WIDTHS: dict[str, str] = {
@@ -671,7 +675,7 @@ def data_table(
                      data_sell_by=row.get("sell_by", ""),
                ), cls="col-checkbox")] if show_checkboxes else []
         status_val = str(row.get("status", "") or "").lower()
-        row_cls = "data-row data-row--inactive" if status_val and status_val != "available" else "data-row"
+        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
         return Tr(
             *checkbox_td,
             *[

@@ -49,6 +49,9 @@ _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "me
 # Doc types that support per-line inventory item status display (fetch + render).
 # Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
 _FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "consignment_in", "invoice"})
+# Inbound doc types: fulfilled at the whole-doc level (no per-item entity_ids on line items).
+# Keep in sync with doc_constants.INBOUND_DOC_TYPES (different package).
+_INBOUND_DOC_TYPES_UI: frozenset[str] = frozenset({"consignment_in"})
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
 # show the button on statuses the backend will reject.  Update when backend allowlist changes.
 _FULFILLABLE_STATUSES_UI: dict[str, frozenset[str]] = {
@@ -142,11 +145,11 @@ def _render_fulfillment_badge(doc: dict):
     return None
 
 
-def _action_error(msg: str):
-    """OOB-swap error into #action-error; HX-Reswap:none preserves the triggering element."""
+def _action_error(msg: str, target_id: str = "action-error"):
+    """OOB-swap error into the specified target id; HX-Reswap:none preserves the triggering element."""
     from starlette.responses import HTMLResponse as _HR
     from fasthtml.common import to_xml as _to_xml
-    fragment = Div(Span(msg, cls="flash flash--error"), id="action-error", hx_swap_oob="true")
+    fragment = Div(Span(msg, cls="flash flash--error"), id=target_id, hx_swap_oob="true")
     return _HR(
         _to_xml(fragment),
         headers={"HX-Reswap": "none"},
@@ -2393,7 +2396,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="action-error")
+            return _action_error(str(e.detail), target_id="receive-action-error")
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T7: Refund payment
@@ -4436,7 +4439,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                         cls="form-group"),
                     Div(Label(t("th.notes"), cls="form-label"),
                         Textarea("", name="notes", rows="2", cls="form-input"), cls="form-group"),
-                    Span("", id="action-error"),
+                    Span("", id="receive-action-error"),
                     Button(t("btn.record_receipt"), type="submit", cls="btn btn--primary"),
                     hx_post=f"/docs/{entity_id}/receive", hx_swap="none", cls="form-card",
                 ),
@@ -5418,13 +5421,41 @@ async function celerpCsvImport(input, entityId) {{
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
         # Fulfillable doc types: keep in sync with doc_constants.FULFILLABLE_STATUSES (different package).
-        _fin_show_fulfill = (
+        _fulfillable_status = (
             doc_type in _FULFILLABLE_DOC_TYPES
             and status in _FULFILLABLE_STATUSES_UI.get(doc_type, frozenset())
             and bool(line_items)
         )
+        # Inbound docs (consignment_in) use whole-doc fulfill - no per-line selection.
+        _fin_show_inbound_fulfill = _fulfillable_status and doc_type in _INBOUND_DOC_TYPES_UI
+        # Outbound/bilateral docs (memo, invoice) use per-line bulk toolbar.
+        _fin_show_fulfill = _fulfillable_status and doc_type not in _INBOUND_DOC_TYPES_UI
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
         _show_item_status = doc_type in _FULFILLABLE_DOC_TYPES and bool(line_items)
+
+        # Inbound: single whole-doc Fulfill / Revert buttons in the top action bar.
+        if _fin_show_inbound_fulfill and _is_manager:
+            _inbound_fs = doc.get("fulfillment_status") or ""
+            if _inbound_fs != "fulfilled":
+                action_btns_left.append(
+                    Button(
+                        "Fulfill",
+                        hx_post=f"/docs/{entity_id}/fulfill-lines",
+                        hx_swap="none",
+                        hx_confirm="Mark this consignment as fulfilled?",
+                        cls="btn btn--primary",
+                    )
+                )
+            else:
+                action_btns_left.append(
+                    Button(
+                        "Revert Fulfillment",
+                        hx_post=f"/docs/{entity_id}/revert-lines",
+                        hx_swap="none",
+                        hx_confirm="Revert fulfillment for this consignment?",
+                        cls="btn btn--warning",
+                    )
+                )
 
         _STATUS_BADGE: dict[str, tuple[str, str]] = {
             "available": ("In Stock",  "badge--available"),

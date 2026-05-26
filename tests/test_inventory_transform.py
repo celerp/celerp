@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 
@@ -214,3 +216,34 @@ async def test_transform_parent_not_found(client):
 
     r = await client.post("/items/item:00000000-0000-0000-0000-000000000000/transform", json=_transform_payload(), headers=headers)
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_transform_rejects_invalid_sell_by(client):
+    """transform_item must reject child_sell_by not in the company unit map."""
+    token = await _token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    parent_id = await _seed_item(client, headers, sku=f"TRANSFORM-UNIT-{uuid.uuid4().hex[:6]}")
+
+    payload = _transform_payload()
+    payload["child_sell_by"] = "invalid_unit_that_does_not_exist"
+
+    r = await client.post(f"/items/{parent_id}/transform", json=payload, headers=headers)
+    assert r.status_code == 422, f"Expected 422 for invalid sell_by, got {r.status_code}: {r.text}"
+    assert "invalid_unit_that_does_not_exist" in r.text
+
+
+@pytest.mark.asyncio
+async def test_transform_cost_set_via_pricing_event(client):
+    """transform_item must set child cost via item.pricing.set, not item.created data."""
+    token = await _token(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    parent_id = await _seed_item(client, headers, sku=f"TRANSFORM-COST-{uuid.uuid4().hex[:6]}", cost_price=100.0)
+
+    r = await client.post(f"/items/{parent_id}/transform", json=_transform_payload(child_cost_total=75.0), headers=headers)
+    assert r.status_code == 200, r.text
+    child_id = r.json()["child_id"]
+
+    # Verify cost_total is reflected in child projection
+    child = (await client.get(f"/items/{child_id}", headers=headers)).json()
+    assert child.get("cost_total") == pytest.approx(75.0), f"Child cost_total should be 75.0, got {child.get('cost_total')}"

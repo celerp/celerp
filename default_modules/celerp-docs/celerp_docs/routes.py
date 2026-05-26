@@ -2842,6 +2842,9 @@ async def fulfill_lines(
 
     _validate_line_entity_ids_subset(body.line_entity_ids, state)
 
+    if not body.line_entity_ids:
+        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty for non-inbound docs")
+
     errors: list[str] = []
     to_fulfill: list[str] = []
     for item_eid in body.line_entity_ids:
@@ -2859,6 +2862,9 @@ async def fulfill_lines(
 
     if errors and not to_fulfill:
         raise HTTPException(status_code=422, detail={"errors": errors})
+
+    if not to_fulfill:
+        raise HTTPException(status_code=422, detail="No fulfillable items in the provided line_entity_ids")
 
     now = datetime.now(UTC).isoformat()
     cid = uuid.UUID(str(company_id))
@@ -2973,6 +2979,9 @@ async def revert_lines(
 
     _validate_line_entity_ids_subset(body.line_entity_ids, state)
 
+    if not body.line_entity_ids:
+        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty for non-inbound docs")
+
     errors: list[str] = []
     to_revert: list[str] = []
     for item_eid in body.line_entity_ids:
@@ -2990,6 +2999,9 @@ async def revert_lines(
 
     if errors and not to_revert:
         raise HTTPException(status_code=422, detail={"errors": errors})
+
+    if not to_revert:
+        raise HTTPException(status_code=422, detail="No revertible items in the provided line_entity_ids")
 
     now = datetime.now(UTC).isoformat()
     cid = uuid.UUID(str(company_id))

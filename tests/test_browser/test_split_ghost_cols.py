@@ -256,15 +256,3 @@ def test_piece_sync_02_pieces_mirrors_to_qty(page, ui_server, splittable_piece_i
 
     _save_screenshot(page, "piece-sync-02-pieces-to-qty")
 
-# SPDX-License-Identifier: LicenseRef-Proprietary
-"""Browser regression tests for feat/inventory-transform: ghost column bug.
-
-After split or transform, all rows in the filtered result must have the same
-visible column set. Before the fix, the mother row showed ghost columns
-(hidden cols appeared visible) because applyVis() used a stale row reference
-during the HTMX partial swap.
-
-Covers:
-  GHOST-COL-01: After split, mother and child rows have identical visible columns
-  GHOST-COL-02: After transform, result rows have identical visible columns
-"""

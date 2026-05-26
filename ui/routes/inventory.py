@@ -20,7 +20,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, INACTIVE_ITEM_STATUSES
 from ui.config import get_token as _token, API_BASE as _api_base
 from ui.i18n import t, get_lang
 from celerp.services.units import is_weight_unit, is_pieces_unit
@@ -1794,7 +1794,7 @@ function celerpPrintLabel(entityId, templateId) {
             cls="col-actions",
         )
         status_val = str(flat.get("status", "") or "").lower()
-        row_cls = "data-row data-row--inactive" if status_val and status_val != "available" else "data-row"
+        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
         return Tr(checkbox_td, *data_cells, action_td, id=f"row-{safe_id}", cls=row_cls)
 
     async def _paired_display(token: str, entity_id: str, field: str):

@@ -1097,3 +1097,33 @@ async def test_fulfill_lines_invoice_marks_items_sold(client, session, auth, _se
 
     doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
     assert doc.get("fulfillment_status") == "fulfilled"
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_rejects_empty_line_entity_ids(client, session, auth, _setup_ids):
+    """fulfill-lines with empty line_entity_ids must return 422 for non-inbound docs."""
+    sku = f"EMPTY-{uuid.uuid4().hex[:6]}"
+    await _create_item(client, auth, sku, 1)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 50.0},
+    ])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": []})
+    assert r.status_code == 422, f"Expected 422 for empty line_entity_ids, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_rejects_empty_line_entity_ids(client, session, auth, _setup_ids):
+    """revert-lines with empty line_entity_ids must return 422 for non-inbound docs."""
+    sku = f"EMPTY-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 50.0, "entity_id": eid},
+    ])
+    # First fulfill
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid]})
+    # Now revert with empty list
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": []})
+    assert r.status_code == 422, f"Expected 422 for empty line_entity_ids, got {r.status_code}"

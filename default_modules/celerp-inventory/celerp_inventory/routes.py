@@ -1147,7 +1147,25 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     child_eids: list[str] = []
     child_qty_list: list[float] = []
     next_barcode_seq = await _next_seq(session, company_id)  # single DB scan; incremented in-memory per child
-    for child in children:
+
+    # Pre-compute proportional cost allocations using Decimal to avoid float rounding errors.
+    # Remainder (from rounding) is assigned to the last child so total is exactly conserved.
+    _child_cost_totals: list[float | None]
+    if parent_cost_total and parent_qty:
+        _D_parent = Decimal(str(parent_cost_total))
+        _D_parent_qty = Decimal(str(parent_qty))
+        _allocated: list[Decimal] = [
+            (_D_parent * Decimal(str(c.quantity)) / _D_parent_qty).quantize(Decimal("0.0000000001"))
+            for c in children
+        ]
+        _sum_allocated = sum(_allocated)
+        # Assign rounding remainder to last child
+        _allocated[-1] += _D_parent - _sum_allocated
+        _child_cost_totals = [float(v) for v in _allocated]
+    else:
+        _child_cost_totals = [None] * len(children)
+
+    for i, child in enumerate(children):
         child_eid = f"item:{uuid.uuid4()}"
         child_eids.append(child_eid)
         child_qty_list.append(child.quantity)
@@ -1212,16 +1230,15 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 idempotency_key=str(uuid.uuid4()),
                 metadata_={},
             )
-        # Assign proportional cost_total to child
-        if parent_cost_total and parent_qty:
-            child_cost_total = round(parent_cost_total * (child.quantity / parent_qty), 10)
+        # Assign proportional cost_total to child (pre-computed with Decimal; remainder in last child)
+        if _child_cost_totals[i] is not None:
             await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=child_eid,
                 entity_type="item",
                 event_type="item.pricing.set",
-                data={"price_type": "cost_total", "new_price": child_cost_total},
+                data={"price_type": "cost_total", "new_price": _child_cost_totals[i]},
                 actor_id=user.id,
                 location_id=None,
                 source="api",
@@ -1245,12 +1262,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         metadata_={},
     )
 
-    # Update parent cost_total (Q1=A: reduce by sum of child cost_totals)
+    # Update parent cost_total (reduce by sum of child cost_totals; pre-computed values guarantee conservation)
     if parent_cost_total and parent_qty:
-        total_child_cost = sum(
-            round(parent_cost_total * (c.quantity / parent_qty), 10) for c in children
-        )
-        parent_remaining_cost = round(parent_cost_total - total_child_cost, 10)
+        total_child_cost = sum(c for c in _child_cost_totals if c is not None)
+        parent_remaining_cost = max(0.0, round(parent_cost_total - total_child_cost, 10))
         await emit_event(
             session,
             company_id=company_id,
@@ -1353,6 +1368,12 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     if not payload.child_category.strip():
         raise HTTPException(status_code=422, detail="child_category cannot be empty")
 
+    # Validate child_sell_by against company unit map (consistent with split/patch flows)
+    _transform_units = await _get_company_units(session, company_id)
+    _transform_unit_map = {u["name"]: u for u in _transform_units}
+    if payload.child_sell_by not in _transform_unit_map:
+        raise HTTPException(status_code=422, detail=f"Unknown unit '{payload.child_sell_by}'")
+
     # Check child SKU uniqueness
     existing = (await session.execute(
         select(Projection).where(
@@ -1396,7 +1417,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
     if parent_location_id:
         child_data["location_id"] = parent_location_id
-    child_data["cost_total"] = payload.child_cost_total
+    # cost_total is set via item.pricing.set (consistent with split and post_item flows)
     child_data["barcode"] = str(await _next_seq(session, company_id)).zfill(6)
 
     # 1. Create child
@@ -1429,6 +1450,21 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             idempotency_key=str(uuid.uuid4()),
             metadata_={},
         )
+
+    # 2b. Set child cost via item.pricing.set (consistent with split/post_item flows)
+    await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=child_eid,
+        entity_type="item",
+        event_type="item.pricing.set",
+        data={"price_type": "cost_total", "new_price": payload.child_cost_total},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
 
     # 4. Mark parent archived (consumed by transform)
     await emit_event(
