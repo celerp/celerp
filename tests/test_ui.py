@@ -12438,10 +12438,13 @@ def test_split_js_weight_pieces_independent():
 # ---------------------------------------------------------------------------
 
 def test_split_qty_change_does_not_touch_weight_or_pieces():
-    """bulkSplitChildQtyChanged must NOT reference child_weight or child_pieces.
+    """bulkSplitChildQtyChanged must NOT reference child_weight.
 
-    These fields are completely independent. Coupling weight/pieces to qty was
-    the root cause of all split dependency bugs.
+    Weight is always independent of qty.
+
+    For sell_by=piece items, qty and pieces represent the same quantity and must
+    mirror each other (checked via data-sell-by on the form). The function is
+    allowed to reference child_pieces for that purpose, but must guard on sellBy.
     """
     from ui.routes.inventory import _BULK_SPLIT_JS
     start = _BULK_SPLIT_JS.index("function bulkSplitChildQtyChanged")
@@ -12449,12 +12452,14 @@ def test_split_qty_change_does_not_touch_weight_or_pieces():
     fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
     assert "child_weight" not in fn_body, (
         "bulkSplitChildQtyChanged must not reference child_weight - "
-        "weight is independent of qty"
+        "weight is always independent of qty"
     )
-    assert "child_pieces" not in fn_body, (
-        "bulkSplitChildQtyChanged must not reference child_pieces - "
-        "pieces is independent of qty"
-    )
+    # For piece-unit items qty===pieces, so mirroring is intentional and must be guarded.
+    if "child_pieces" in fn_body:
+        assert "sellBy" in fn_body or "sell_by" in fn_body, (
+            "bulkSplitChildQtyChanged references child_pieces without a sell_by guard - "
+            "pieces sync must only apply when sell_by=piece"
+        )
     assert "userEdited" not in fn_body, (
         "bulkSplitChildQtyChanged must not use userEdited guard - "
         "remove the auto-fill entirely"
