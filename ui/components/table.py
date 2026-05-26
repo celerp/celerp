@@ -760,10 +760,12 @@ def data_table(
     }});
   }}
 
-  // Apply visibility — re-query rows each call so HTMX-swapped rows are never missed
-  function applyVis() {{
-    var liveRows = Array.from(table.querySelectorAll('tbody tr.data-row'));
-    ths.forEach(function(th) {{
+  // Apply visibility — accept optional live table so post-swap calls use the new DOM node
+  function applyVis(liveTable) {{
+    liveTable = liveTable || table;
+    var liveRows = Array.from(liveTable.querySelectorAll('tbody tr.data-row'));
+    var liveThs = Array.from(liveTable.querySelectorAll('thead th[data-key]'));
+    liveThs.forEach(function(th) {{
       var key = th.dataset.key;
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
@@ -775,12 +777,20 @@ def data_table(
     localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
   }}
   applyVis();
-  // Re-apply after HTMX settles so rows added during the swap phase are also covered
-  document.body.addEventListener('htmx:afterSettle', function _visSettle(e) {{
-    if (e.detail && e.detail.target && e.detail.target.id === 'inventory-content') {{
-      applyVis();
-    }}
-  }});
+  // Re-apply after HTMX settles so rows added during the swap phase are also covered.
+  // Guard with a global flag so repeated IIFE executions (after HTMX swaps) don't
+  // accumulate duplicate listeners on document.body.
+  var _VIS_SETTLE_KEY = '__celerpVisSettle_{entity_type}';
+  if (!window[_VIS_SETTLE_KEY]) {{
+    window[_VIS_SETTLE_KEY] = true;
+    document.body.addEventListener('htmx:afterSettle', function(e) {{
+      if (e.detail && e.detail.target && e.detail.target.id === 'inventory-content') {{
+        // Re-query the live table after each settle - the old `table` ref may be detached
+        var liveTable = document.getElementById('data-table');
+        if (liveTable) applyVis(liveTable);
+      }}
+    }});
+  }}
 
   // Drag-to-resize column headers — persist widths to localStorage
   var WIDTH_KEY = 'celerp_col_widths_{entity_type}';

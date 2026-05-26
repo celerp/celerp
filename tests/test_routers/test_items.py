@@ -1099,22 +1099,32 @@ async def test_split_preview_clamps_qty(client):
 
 @pytest.mark.asyncio
 async def test_split_item_pieces_conservation(client):
-    """split must reject child_pieces >= parent_pieces."""
+    """split allows child_pieces == parent_pieces (full consumption) but rejects child_pieces > parent_pieces."""
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "PIECE-CONS-001", "name": "Multi-stone", "quantity": 10.0,
+        "sku": f"PIECE-CONS-{_ts}", "name": "Multi-stone", "quantity": 10.0,
         "sell_by": "carat", "attributes": {"pieces": 5},
     }, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
-    child_sku = "PIECE-CONS-CHILD-001"
-    r2 = await client.post("/items", json={"sku": child_sku, "name": "placeholder", "quantity": 0, "sell_by": "carat"}, headers=h)
-    # child_pieces == parent_pieces should be rejected
-    rs = await client.post(f"/items/{parent_id}/split", json={
-        "children": [{"sku": child_sku, "quantity": 3.0, "attributes": {"pieces": 5}}],
+    # child_pieces == parent_pieces should now succeed (full consumption - parent archived)
+    rs_eq = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"PIECE-CONS-CHILD-{_ts}", "quantity": 3.0, "attributes": {"pieces": 5}}],
     }, headers=h)
-    assert rs.status_code == 422, f"Expected 422 for child_pieces >= parent_pieces, got {rs.status_code}"
+    assert rs_eq.status_code == 200, f"Expected 200 for child_pieces == parent_pieces (full consumption), got {rs_eq.status_code}"
+    # child_pieces > parent_pieces should still be rejected
+    r3 = await client.post("/items", json={
+        "sku": f"PIECE-CONS-P2-{_ts}", "name": "Over-piece parent", "quantity": 5.0,
+        "sell_by": "carat", "attributes": {"pieces": 5},
+    }, headers=h)
+    parent_id2 = r3.json()["id"]
+    rs_over = await client.post(f"/items/{parent_id2}/split", json={
+        "children": [{"sku": f"PIECE-CONS-C2-{_ts}", "quantity": 3.0, "attributes": {"pieces": 6}}],
+    }, headers=h)
+    assert rs_over.status_code == 422, f"Expected 422 for child_pieces > parent_pieces, got {rs_over.status_code}"
 
 
 @pytest.mark.asyncio

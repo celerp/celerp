@@ -2782,6 +2782,20 @@ async def batch_import_lists(
 # ---------------------------------------------------------------------------
 # Fulfillment endpoints
 # ---------------------------------------------------------------------------
+def _validate_line_entity_ids_subset(line_entity_ids: list[str], doc_state: dict) -> None:
+    """Guard: every item entity_id must belong to this document's line_items."""
+    doc_eids: set[str] = {
+        li.get("entity_id") or li.get("item_id") or ""
+        for li in doc_state.get("line_items", [])
+    } - {""}
+    foreign = set(line_entity_ids) - doc_eids
+    if foreign:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Item IDs not linked to this document: {', '.join(sorted(foreign))}",
+        )
+
+
 @router.post("/{entity_id}/fulfill-lines")
 async def fulfill_lines(
     entity_id: str,
@@ -2791,7 +2805,7 @@ async def fulfill_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Fulfill specific line items by entity_id. Only valid for memo and consignment_in docs.
+    """Fulfill specific line items by entity_id. Valid for memo, invoice, and consignment_in docs.
 
     For consignment_in (inbound): line_entity_ids may be empty to fulfill the whole doc
     (no inventory deduction; just closes the doc). Consignment In line items don't carry
@@ -2825,6 +2839,8 @@ async def fulfill_lines(
         )
         await session.commit()
         return {"fulfillment_status": "fulfilled", "fulfilled": []}
+
+    _validate_line_entity_ids_subset(body.line_entity_ids, state)
 
     errors: list[str] = []
     to_fulfill: list[str] = []
@@ -2955,6 +2971,8 @@ async def revert_lines(
         await session.commit()
         return {"fulfillment_status": "unfulfilled", "reverted": []}
 
+    _validate_line_entity_ids_subset(body.line_entity_ids, state)
+
     errors: list[str] = []
     to_revert: list[str] = []
     for item_eid in body.line_entity_ids:
@@ -2965,7 +2983,7 @@ async def revert_lines(
         item_status = item_proj.state.get("status", "")
         if item_status not in ("memo_out", "sold"):
             errors.append(
-                f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'memo_out' to revert, is '{item_status}'"
+                f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'memo_out' or 'sold' to revert, is '{item_status}'"
             )
             continue
         to_revert.append(item_eid)

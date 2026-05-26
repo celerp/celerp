@@ -9,10 +9,12 @@ Verify the per-line fulfill/revert feature works correctly end-to-end and looks 
 ### Screens to verify
 1. **Memo Out document (finalized)** - shows per-line checkboxes + status column + bulk toolbar
 2. **Consignment In document (finalized)** - shows per-line checkboxes + status column + bulk toolbar
-3. **Fulfill flow** - select lines, click Fulfill, items update to memo_out/fulfilled status
-4. **Revert flow** - select lines, click Revert, items return to available
-5. **Memo→Invoice conversion** - only memo_out items convert; reverted items excluded
-6. **Other doc types (e.g. invoice)** - NO fulfill UI shown (regression check)
+3. **Invoice document (sent/final/paid)** - shows per-line checkboxes + status column + bulk toolbar
+4. **Fulfill flow** - select lines, click Fulfill, items update to memo_out/sold status
+5. **Revert flow** - select lines, click Revert, items return to available
+6. **Memo→Invoice conversion** - only memo_out items convert; reverted items excluded
+7. **Non-fulfillable doc types (e.g. bill, purchase_order, credit_note)** - NO fulfill UI shown (regression check)
+8. **Fulfillable docs in non-fulfillable status (e.g. invoice in draft/void)** - NO fulfill UI shown
 
 ### CSS/UX criteria to check per screen
 - [ ] Status badge is styled consistently (color-coded: available=grey, memo_out=orange, sold=green)

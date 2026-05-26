@@ -49,6 +49,13 @@ _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "me
 # Doc types that support per-line inventory item status display (fetch + render).
 # Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
 _FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "consignment_in", "invoice"})
+# Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
+# show the button on statuses the backend will reject.  Update when backend allowlist changes.
+_FULFILLABLE_STATUSES_UI: dict[str, frozenset[str]] = {
+    "memo":           frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
+    "invoice":        frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
+    "consignment_in": frozenset({"sent", "final", "received", "partially_received"}),
+}
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "invoice": "Invoices",
     "purchase_order": "Draft Bills & POs",
@@ -1584,13 +1591,17 @@ def setup_routes(app):
                     for li in doc.get("line_items", [])
                     if li.get("entity_id") or li.get("item_id")
                 ]
-                if _line_eids:
-                    # Fetch all statuses with a high limit; doc line counts are always small
-                    _all_items = await api.list_items(token, {"limit": 1000, "status": "all"})
-                    for _it in (_all_items.get("items", []) if isinstance(_all_items, dict) else []):
-                        _eid = _it.get("entity_id") or _it.get("id") or ""
-                        if _eid in set(_line_eids):
-                            item_status_map[_eid] = _it.get("status", "")
+                # Fetch each item individually - doc line counts are always small (10s),
+                # so per-item calls are cheaper and always correct vs. a limit=1000 page scan.
+                import asyncio as _asyncio
+                async def _fetch_status(eid: str) -> tuple[str, str]:
+                    try:
+                        item = await api.get_item(token, eid)
+                        return eid, item.get("status", "")
+                    except Exception:
+                        return eid, ""
+                results = await _asyncio.gather(*(_fetch_status(e) for e in _line_eids))
+                item_status_map = {eid: st for eid, st in results if st}
             except Exception:
                 pass
         return base_shell(
@@ -5407,7 +5418,11 @@ async function celerpCsvImport(input, entityId) {{
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
         # Fulfillable doc types: keep in sync with doc_constants.FULFILLABLE_STATUSES (different package).
-        _fin_show_fulfill = doc_type in _FULFILLABLE_DOC_TYPES and bool(line_items)
+        _fin_show_fulfill = (
+            doc_type in _FULFILLABLE_DOC_TYPES
+            and status in _FULFILLABLE_STATUSES_UI.get(doc_type, frozenset())
+            and bool(line_items)
+        )
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
         _show_item_status = doc_type in _FULFILLABLE_DOC_TYPES and bool(line_items)
 
