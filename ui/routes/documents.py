@@ -820,6 +820,7 @@ def setup_routes(app):
                 base_params={"q": q, "type": doc_type, "status": status, "contact_id": contact_id, "view": view, "page": str(page), "per_page": str(per_page)},
                 doc_type=doc_type if not is_drafts_view else doc_type,
                 lang=lang,
+                currency=currency,
             ),
             pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&sort={sort}&dir={sort_dir}".strip("&")),
             title=f"{page_title} - Celerp",
@@ -2813,6 +2814,7 @@ celerpUpdateBulkAlloc();
 
     @app.post("/docs/{entity_id}/fulfill-lines")
     async def doc_fulfill_lines(request: Request, entity_id: str):
+        import json as _json
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -2830,6 +2832,7 @@ celerpUpdateBulkAlloc();
 
     @app.post("/docs/{entity_id}/revert-lines")
     async def doc_revert_lines(request: Request, entity_id: str):
+        import json as _json
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
@@ -3470,6 +3473,7 @@ def _doc_table(
     base_params: dict[str, str] | None = None,
     doc_type: str = "",
     lang: str = "en",
+    currency: str | None = None,
 ) -> FT:
     # Per-doc-type empty-state labels: (no_docs_key, create_btn_key)
     _EMPTY_STATE_KEYS: dict[str, tuple[str, str]] = {
@@ -3536,9 +3540,9 @@ def _doc_table(
             Td(format_value(contact)),
             Td(format_value(issue_date, "date")),
             Td(format_value(due_date, "date")),
-            Td(format_value(total_amount, "money"), cls="cell--number"),
+            Td(format_value(total_amount, "money", currency), cls="cell--number"),
             Td(
-                format_value(outstanding_amount, "money"),
+                format_value(outstanding_amount, "money", currency),
                 cls=f"cell--number {'cell--alert' if outstanding > 0 and d.get('doc_type') == 'invoice' else ''}",
             ),
             Td(format_value(d.get("status"), "badge")),
