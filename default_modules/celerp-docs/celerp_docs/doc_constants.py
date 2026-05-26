@@ -2,9 +2,15 @@
 # SPDX-License-Identifier: BSL-1.1
 """Shared constants for the docs module."""
 
-# Statuses where the Fulfill button is hidden (denylist - all others show the button)
-# Revert Fulfillment has no status restriction - it shows whenever fulfillment_status == "fulfilled"
-UNFULFILLABLE_STATUSES: frozenset[str] = frozenset({"draft", "void"})
+# Per-doc-type allowlist: maps doc_type → set of statuses where fulfill-lines is permitted.
+# Only doc types listed here support the fulfill-lines / revert-lines endpoints.
+# Adding a new status requires an explicit decision per doc type (true-predicate design).
+# UI counterpart: ui/routes/documents.py _fin_show_fulfill — keep in sync manually (different package).
+FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
+    "memo":           frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
+    "invoice":        frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
+    "consignment_in": frozenset({"sent", "final", "received", "partially_received"}),
+}
 
 # Doc types where fulfillment means goods *arrive* (inbound flow).
 # For these, fulfilling a doc must NOT deduct inventory - items already exist

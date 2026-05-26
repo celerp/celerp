@@ -5388,9 +5388,10 @@ async function celerpCsvImport(input, entityId) {{
         # or when doc type supports per-line fulfill/revert
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
+        # Fulfillable doc types: keep in sync with doc_constants.FULFILLABLE_STATUSES (different package).
         _fin_show_fulfill = doc_type in ("memo", "consignment_in", "invoice") and bool(line_items)
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
-        _show_item_status = doc_type in ("memo", "consignment_in") and bool(line_items)  # status column only on memo/consignment_in
+        _show_item_status = doc_type in ("memo", "consignment_in", "invoice") and bool(line_items)
 
         _STATUS_BADGE: dict[str, tuple[str, str]] = {
             "available": ("In Stock",  "badge--available"),
@@ -5512,13 +5513,13 @@ async function celerpCsvImport(input, entityId) {{
     var checked=table?Array.from(table.querySelectorAll('.li-select:checked')).map(function(c){{return c.value;}}):[];
     if(!checked.length) return;
     if(!confirm('Fulfill '+checked.length+' selected item(s)?')) return;
-    fetch('/docs/'+docId+'/fulfill-lines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{line_entity_ids:checked}})}}).then(function(r){{return r.json();}}).then(function(){{window.location.reload();}});
+    fetch('/docs/'+docId+'/fulfill-lines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{line_entity_ids:checked}})}}).then(function(r){{return r.ok?r.json():r.json().then(function(e){{throw new Error((e.detail&&(typeof e.detail==='string'?e.detail:JSON.stringify(e.detail)))||'Fulfill failed');}});}}).then(function(){{window.location.reload();}}).catch(function(err){{alert(err.message);}});
   }};
   window.liBulkRevertConfirmed=function(docId){{
     var checked=table?Array.from(table.querySelectorAll('.li-select:checked')).map(function(c){{return c.value;}}):[];
     if(!checked.length) return;
     if(!confirm('Revert fulfillment for '+checked.length+' selected item(s)?')) return;
-    fetch('/docs/'+docId+'/revert-lines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{line_entity_ids:checked}})}}).then(function(r){{return r.json();}}).then(function(){{window.location.reload();}});
+    fetch('/docs/'+docId+'/revert-lines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{line_entity_ids:checked}})}}).then(function(r){{return r.ok?r.json():r.json().then(function(e){{throw new Error((e.detail&&(typeof e.detail==='string'?e.detail:JSON.stringify(e.detail)))||'Revert failed');}});}}).then(function(){{window.location.reload();}}).catch(function(err){{alert(err.message);}});
   }};
 }})();
 """) if _fin_show_bulk else None,

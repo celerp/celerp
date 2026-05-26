@@ -31,7 +31,7 @@ from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import PickResult, compute_pick_plan
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, UNFULFILLABLE_STATUSES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -2797,15 +2797,15 @@ async def fulfill_lines(
     (no inventory deduction; just closes the doc). Consignment In line items don't carry
     per-item entity_ids - goods arrived at receive time.
     """
-    _ALLOWED = {"memo", "consignment_in"}
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     doc_type = state.get("doc_type", "")
 
-    if doc_type not in _ALLOWED:
-        raise HTTPException(status_code=422, detail=f"fulfill-lines is only valid for: {', '.join(sorted(_ALLOWED))}")
-    if state.get("status") in UNFULFILLABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Cannot fulfill a draft or voided document")
+    allowed_statuses = FULFILLABLE_STATUSES.get(doc_type)
+    if allowed_statuses is None:
+        raise HTTPException(status_code=422, detail=f"fulfill-lines is not supported for doc type: {doc_type}")
+    if state.get("status") not in allowed_statuses:
+        raise HTTPException(status_code=409, detail=f"Cannot fulfill a {doc_type} in status '{state.get('status')}'")
 
     # Consignment In: inbound doc, no per-item entity_ids - fulfill whole doc
     if doc_type in INBOUND_DOC_TYPES:
@@ -2932,14 +2932,13 @@ async def revert_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Revert fulfillment for specific line items. Only valid for memo and consignment_in."""
-    _ALLOWED = {"memo", "consignment_in"}
+    """Revert fulfillment for specific line items."""
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     doc_type = state.get("doc_type", "")
 
-    if doc_type not in _ALLOWED:
-        raise HTTPException(status_code=422, detail=f"revert-lines is only valid for: {', '.join(sorted(_ALLOWED))}")
+    if FULFILLABLE_STATUSES.get(doc_type) is None:
+        raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
 
     # Consignment In: inbound doc - just emit fulfillment_reversed on the doc
     if doc_type in INBOUND_DOC_TYPES:

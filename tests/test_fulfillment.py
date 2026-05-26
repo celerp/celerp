@@ -1064,3 +1064,36 @@ async def test_old_unfulfill_endpoint_removed(client, session, auth, _setup_ids)
     ])
     r = await client.post(f"/docs/{doc_id}/unfulfill", headers=auth["headers"])
     assert r.status_code in (404, 405), f"Expected 404/405, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_invoice_marks_items_sold(client, session, auth, _setup_ids):
+    """fulfill-lines on a finalized invoice marks items sold and doc partially/fully fulfilled."""
+    sku_a = f"INV-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"INV-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+    ])
+
+    # Partial fulfill: one item
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "partial"
+
+    item_a = (await client.get(f"/items/{eid_a}", headers=auth["headers"])).json()
+    assert item_a["status"] == "sold", f"Expected sold, got {item_a['status']}"
+
+    # Full fulfill: remaining item
+    r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid_b]})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["fulfillment_status"] == "fulfilled"
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") == "fulfilled"
