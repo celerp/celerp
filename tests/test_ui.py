@@ -12438,27 +12438,32 @@ def test_split_js_weight_pieces_independent():
 # ---------------------------------------------------------------------------
 
 def test_split_qty_change_does_not_touch_weight_or_pieces():
-    """bulkSplitChildQtyChanged must NOT reference child_weight.
-
-    Weight is always independent of qty.
+    """bulkSplitChildQtyChanged weight/pieces coupling rules.
 
     For sell_by=piece items, qty and pieces represent the same quantity and must
     mirror each other (checked via data-sell-by on the form). The function is
     allowed to reference child_pieces for that purpose, but must guard on sellBy.
+
+    For sell_by=weight-unit items, qty IS the weight and must mirror to child_weight.
+    This is also allowed but must be guarded on weightUnits check.
+
+    In both cases the mirroring must be conditional — never unconditional coupling.
     """
     from ui.routes.inventory import _BULK_SPLIT_JS
     start = _BULK_SPLIT_JS.index("function bulkSplitChildQtyChanged")
     end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
     fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
-    assert "child_weight" not in fn_body, (
-        "bulkSplitChildQtyChanged must not reference child_weight - "
-        "weight is always independent of qty"
-    )
     # For piece-unit items qty===pieces, so mirroring is intentional and must be guarded.
     if "child_pieces" in fn_body:
         assert "sellBy" in fn_body or "sell_by" in fn_body, (
             "bulkSplitChildQtyChanged references child_pieces without a sell_by guard - "
             "pieces sync must only apply when sell_by=piece"
+        )
+    # For weight-unit items qty===weight, so mirroring is intentional and must be guarded.
+    if "child_weight" in fn_body:
+        assert "weightUnits" in fn_body or "weight_units" in fn_body, (
+            "bulkSplitChildQtyChanged references child_weight without a weightUnits guard - "
+            "weight sync must only apply when sell_by is a weight unit"
         )
     assert "userEdited" not in fn_body, (
         "bulkSplitChildQtyChanged must not use userEdited guard - "

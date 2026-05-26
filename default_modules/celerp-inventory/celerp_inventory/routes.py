@@ -1002,6 +1002,10 @@ async def split_preview(
     decimals = unit_cfg.get("decimals", 0)
     sell_by_label = unit_cfg.get("label", parent_sell_by)
 
+    # For weight-unit items, qty IS the weight — mirror like pieces for piece-unit items.
+    if is_weight_unit(parent_sell_by, unit_map):
+        parent_weight = parent_qty
+
     parent_weight_unit = parent.state.get("weight_unit") or "gram"
     weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
     weight_decimals = weight_unit_cfg.get("decimals", 2)
@@ -1025,6 +1029,8 @@ async def split_preview(
                     pass
         child_sku = f"{prefix}{max_suffix + 1}"
 
+    weight_unit_names = [u["name"] for u in units if u.get("unit_type") == "weight"]
+
     result: dict = {
         "parent_sku": parent_sku,
         "parent_name": parent.state.get("name", parent_sku),
@@ -1037,6 +1043,7 @@ async def split_preview(
         "has_weight": parent_weight is not None,
         "has_pieces": parent_pieces is not None,
         "cannot_split": (decimals == 0 and parent_qty <= 1),
+        "weight_unit_names": weight_unit_names,
     }
 
     if parent_weight is not None:

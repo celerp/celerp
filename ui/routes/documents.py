@@ -5388,9 +5388,9 @@ async function celerpCsvImport(input, entityId) {{
         # or when doc type supports per-line fulfill/revert
         from celerp.modules.slots import get as _get_slot_labels_fin
         _fin_labels_active = any(a.get("_module") == "celerp-labels" for a in _get_slot_labels_fin("bulk_action"))
-        _fin_show_fulfill = doc_type in ("memo", "consignment_in") and bool(line_items)
+        _fin_show_fulfill = doc_type in ("memo", "consignment_in", "invoice") and bool(line_items)
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
-        _show_item_status = _fin_show_fulfill  # status column only on memo/consignment_in
+        _show_item_status = doc_type in ("memo", "consignment_in") and bool(line_items)  # status column only on memo/consignment_in
 
         _STATUS_BADGE: dict[str, tuple[str, str]] = {
             "available": ("In Stock",  "badge--available"),
