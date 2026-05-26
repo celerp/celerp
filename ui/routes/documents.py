@@ -2813,41 +2813,37 @@ celerpUpdateBulkAlloc();
 
     @app.post("/docs/{entity_id}/fulfill-lines")
     async def doc_fulfill_lines(request: Request, entity_id: str):
-        from starlette.responses import Response as _R, JSONResponse
+        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        line_entity_ids = list(form.getlist("selected"))
         try:
-            body = await request.json()
-        except Exception:
-            return JSONResponse({"detail": "Invalid JSON"}, status_code=400)
-        line_entity_ids = body.get("line_entity_ids", [])
-        try:
-            result = await api.fulfill_lines(token, entity_id, line_entity_ids)
+            await api.fulfill_lines(token, entity_id, line_entity_ids)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return JSONResponse({"detail": e.detail}, status_code=e.status)
-        return JSONResponse(result)
+            detail = e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
+            return Div(Span(detail, cls="flash flash--error"), id="action-error")
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/revert-lines")
     async def doc_revert_lines(request: Request, entity_id: str):
-        from starlette.responses import Response as _R, JSONResponse
+        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        line_entity_ids = list(form.getlist("selected"))
         try:
-            body = await request.json()
-        except Exception:
-            return JSONResponse({"detail": "Invalid JSON"}, status_code=400)
-        line_entity_ids = body.get("line_entity_ids", [])
-        try:
-            result = await api.unfulfill_lines(token, entity_id, line_entity_ids)
+            await api.unfulfill_lines(token, entity_id, line_entity_ids)
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return JSONResponse({"detail": e.detail}, status_code=e.status)
-        return JSONResponse(result)
+            detail = e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
+            return Div(Span(detail, cls="flash flash--error"), id="action-error")
+        return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/receive-return")
     async def doc_receive_return(request: Request, entity_id: str):
@@ -4028,21 +4024,25 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     ]
     if show_fulfill:
         children += [
-            Button(
-                "Fulfill Selected",
-                type="button",
+            Form(
+                Button("Fulfill Selected", type="submit", cls="btn btn--primary btn--sm"),
                 id="li-bulk-fulfill-btn",
-                cls="btn btn--primary btn--sm",
                 style="display:none",
-                onclick=f"liBulkFulfillConfirmed('{entity_id}')",
+                hx_post=f"/docs/{entity_id}/fulfill-lines",
+                hx_target="#action-error",
+                hx_swap="outerHTML",
+                hx_confirm="Fulfill selected item(s)?",
+                onsubmit="return submitLiBulkAction(this)",
             ),
-            Button(
-                "Revert Selected",
-                type="button",
+            Form(
+                Button("Revert Selected", type="submit", cls="btn btn--warning btn--sm"),
                 id="li-bulk-revert-btn",
-                cls="btn btn--warning btn--sm",
                 style="display:none",
-                onclick=f"liBulkRevertConfirmed('{entity_id}')",
+                hx_post=f"/docs/{entity_id}/revert-lines",
+                hx_target="#action-error",
+                hx_swap="outerHTML",
+                hx_confirm="Revert fulfillment for selected item(s)?",
+                onsubmit="return submitLiBulkAction(this)",
             ),
         ]
     return Div(
@@ -5512,17 +5512,13 @@ async function celerpCsvImport(input, entityId) {{
     document.body.appendChild(form);form.submit();setTimeout(function(){{form.remove();}},100);
   }};
   window.liActionChanged=function(action){{ window.liBulkActionSelected(action); }};
-  window.liBulkFulfillConfirmed=function(docId){{
-    var checked=table?Array.from(table.querySelectorAll('.li-select:checked')).map(function(c){{return c.value;}}):[];
-    if(!checked.length) return;
-    if(!confirm('Fulfill '+checked.length+' selected item(s)?')) return;
-    fetch('/docs/'+docId+'/fulfill-lines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{line_entity_ids:checked}})}}).then(function(r){{return r.ok?r.json():r.json().then(function(e){{throw new Error((e.detail&&(typeof e.detail==='string'?e.detail:JSON.stringify(e.detail)))||'Fulfill failed');}});}}).then(function(){{window.location.reload();}}).catch(function(err){{alert(err.message);}});
-  }};
-  window.liBulkRevertConfirmed=function(docId){{
-    var checked=table?Array.from(table.querySelectorAll('.li-select:checked')).map(function(c){{return c.value;}}):[];
-    if(!checked.length) return;
-    if(!confirm('Revert fulfillment for '+checked.length+' selected item(s)?')) return;
-    fetch('/docs/'+docId+'/revert-lines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{line_entity_ids:checked}})}}).then(function(r){{return r.ok?r.json():r.json().then(function(e){{throw new Error((e.detail&&(typeof e.detail==='string'?e.detail:JSON.stringify(e.detail)))||'Revert failed');}});}}).then(function(){{window.location.reload();}}).catch(function(err){{alert(err.message);}});
+  window.submitLiBulkAction=function(formEl){{
+    formEl.querySelectorAll('input[name="selected"]').forEach(function(el){{el.remove();}});
+    if(table) table.querySelectorAll('.li-select:checked').forEach(function(cb){{
+      var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=cb.value;
+      formEl.appendChild(inp);
+    }});
+    return true;
   }};
 }})();
 """) if _fin_show_bulk else None,
