@@ -31,27 +31,39 @@ _BULK_SPLIT_JS = """
 function splitRecalcMotherWeight(input) {
   var form = input.closest('form');
   if (!form) return;
-  // For weight-unit items weight and qty are the same — delegate to the bidirectional handler.
-  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) { bulkSplitChildWeightChanged(input); return; }
   var parentWeight = parseFloat(form.dataset.parentWeight || '0');
   var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
   var childVal = parseFloat(input.value) || 0;
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+  // For weight-unit items weight and qty are the same — also update mother qty display.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
+    var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
+    var mqd = form.querySelector('.mother-qty-display');
+    if (mqd) mqd.textContent = Math.max(0, parentQty - childVal).toFixed(unitDecimals);
+  }
 }
 function splitClampWeight(input) {
   var form = input.closest('form');
   if (!form) return;
-  // For weight-unit items weight and qty are the same — delegate to the bidirectional handler.
-  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) { bulkSplitChildWeightChanged(input); return; }
   var parentWeight = parseFloat(form.dataset.parentWeight || '0');
   var decimals = parseInt(form.dataset.weightDecimals || '2', 10);
   var childVal = Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
   input.value = childVal.toFixed(decimals);
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+  // For weight-unit items weight and qty are the same — sync qty input and mother qty display.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
+    var qtyInput = form.querySelector('[name="child_qty"]');
+    if (qtyInput) { qtyInput.value = childVal.toFixed(unitDecimals); }
+    var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
+    var mqd = form.querySelector('.mother-qty-display');
+    if (mqd) mqd.textContent = Math.max(0, parentQty - childVal).toFixed(unitDecimals);
+  }
 }
 function splitRecalcMotherPieces(input) {
   var form = input.closest('form');
