@@ -40,12 +40,12 @@ def upgrade() -> None:
     # Backfill from the minimum ledger_entry timestamp per entity
     op.execute(
         """
-        UPDATE projections p
+        UPDATE projections
         SET created_at = (
             SELECT MIN(le.created_at)
             FROM ledger_entries le
-            WHERE le.entity_id = p.entity_id
-              AND le.company_id = p.company_id
+            WHERE le.entity_id = projections.entity_id
+              AND le.company_id = projections.company_id
         )
         """
     )

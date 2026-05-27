@@ -70,14 +70,7 @@ def sync_db(tmp_path):
 
 def test_migration_adds_created_at_column(sync_db):
     """After upgrade, projections table must have a created_at column."""
-    from alembic.config import Config
-    from alembic.runtime.environment import EnvironmentContext
-    from alembic.script import ScriptDirectory
-    import celerp.migrations.versions.x7y8z9a0b1c2_add_projection_created_at as mig
-
     with sync_db.begin() as conn:
-        mig.upgrade.__globals__["op"].__class__  # ensure importable
-        # Apply upgrade directly via op bound to our test engine
         from alembic.operations import Operations
         from alembic.runtime.migration import MigrationContext
         ctx = MigrationContext.configure(conn)
@@ -85,7 +78,13 @@ def test_migration_adds_created_at_column(sync_db):
         op.add_column("projections", __import__("sqlalchemy").Column(
             "created_at", __import__("sqlalchemy").DateTime(timezone=True), nullable=True
         ))
-        conn.execute(text("UPDATE projections p SET created_at = NULL"))
+        conn.execute(text("""
+            UPDATE projections
+            SET created_at = (
+                SELECT MIN(le.created_at) FROM ledger_entries le
+                WHERE le.entity_id = projections.entity_id AND le.company_id = projections.company_id
+            )
+        """))
 
     inspector = inspect(sync_db)
     cols = {c["name"] for c in inspector.get_columns("projections")}
@@ -118,10 +117,10 @@ def test_migration_backfills_from_ledger_entries(sync_db):
         conn.execute(text("ALTER TABLE projections ADD COLUMN created_at TIMESTAMP"))
         # Backfill (simulating upgrade step 2)
         conn.execute(text("""
-            UPDATE projections p
+            UPDATE projections
             SET created_at = (
                 SELECT MIN(le.created_at) FROM ledger_entries le
-                WHERE le.entity_id = p.entity_id AND le.company_id = p.company_id
+                WHERE le.entity_id = projections.entity_id AND le.company_id = projections.company_id
             )
         """))
 
