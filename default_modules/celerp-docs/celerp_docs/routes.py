@@ -846,6 +846,22 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     # Auto-JE on finalize (invoices, direct bills, or convert to bill (POs))
     if doc_type == "invoice":
         await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
+        # Promote memo_out items to sold: memo→invoice conversion leaves items in memo_out.
+        # Finalizing the invoice is the point at which the sale is confirmed.
+        _cid = uuid.UUID(str(company_id))
+        for _li in _initial_doc_state.get("line_items", []):
+            _eid = _li.get("entity_id") or _li.get("item_id") or ""
+            if not _eid:
+                continue
+            _iproj = await session.get(Projection, {"company_id": company_id, "entity_id": _eid})
+            if _iproj and _iproj.state.get("status") == "memo_out":
+                await emit_event(
+                    session, company_id=_cid, entity_id=_eid, entity_type="item",
+                    event_type="item.status.set",
+                    data={"new_status": "sold", "source_doc_id": entity_id},
+                    actor_id=_user_id, location_id=None, source="invoice_finalize",
+                    idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
+                )
     elif doc_type in ("purchase_order", "bill"):
         # Bill conversion JE: debit expense/inventory accounts, credit AP (2110)
         # Covers both PO->bill conversion and directly-created bills finalized directly.

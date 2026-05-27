@@ -1125,3 +1125,46 @@ async def test_revert_lines_rejects_empty_line_entity_ids(client, session, auth,
     r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
                           json={"line_entity_ids": []})
     assert r.status_code == 422, f"Expected 422 for empty line_entity_ids, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_invoice_finalize_promotes_memo_out_items_to_sold(client, session, auth, _setup_ids):
+    """Finalizing an invoice converts memo_out line items to sold.
+
+    Flow: create memo → fulfill items (→ memo_out) → convert to invoice → finalize invoice
+    → assert items are sold, not memo_out.
+    """
+    sku_a = f"MEMO-SELL-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-SELL-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 150.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 250.0, "entity_id": eid_b},
+    ])
+
+    # Fulfill both items on the memo → they become memo_out
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a, eid_b]})
+    assert r.status_code == 200, r.text
+
+    item_a = (await client.get(f"/items/{eid_a}", headers=auth["headers"])).json()
+    item_b = (await client.get(f"/items/{eid_b}", headers=auth["headers"])).json()
+    assert item_a["status"] == "memo_out", f"Expected memo_out, got {item_a['status']}"
+    assert item_b["status"] == "memo_out", f"Expected memo_out, got {item_b['status']}"
+
+    # Convert memo to invoice
+    r = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    invoice_id = r.json()["target_doc_id"]
+
+    # Finalize the invoice → memo_out items must become sold
+    r = await client.post(f"/docs/{invoice_id}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+
+    item_a = (await client.get(f"/items/{eid_a}", headers=auth["headers"])).json()
+    item_b = (await client.get(f"/items/{eid_b}", headers=auth["headers"])).json()
+    assert item_a["status"] == "sold", f"Expected sold after invoice finalize, got {item_a['status']}"
+    assert item_b["status"] == "sold", f"Expected sold after invoice finalize, got {item_b['status']}"
