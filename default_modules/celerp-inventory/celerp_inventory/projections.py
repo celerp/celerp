@@ -150,6 +150,8 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         _INACTIVE_STATUSES = frozenset({"archived", "merged", "expired", "sold"})
         if new_status in _INACTIVE_STATUSES:
             current["is_available"] = False
+        else:
+            current["is_available"] = True
     elif event_type == "item.transferred":
         current["location_id"] = data["to_location_id"]
         if "updated_at" in data:
