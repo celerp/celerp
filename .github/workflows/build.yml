@@ -3,7 +3,7 @@ name: Build Binaries
 on:
   push:
     tags: ["v*"]
-    branches: ["develop"]
+    branches: ["develop", "feat/inventory-transform"]
   workflow_dispatch:
 
 permissions:
