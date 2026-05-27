@@ -14,14 +14,15 @@ _WEIGHT_UNIT_MAP: dict[str, str] = {
 
 _IMAGE_MIME_PREFIXES = ("image/",)
 
-# Statuses where an item is not available for operations (split, transform, etc.)
-# is_item_available() is the single source of truth — never store is_available in state.
-_INACTIVE_STATUSES: frozenset[str] = frozenset({"archived", "merged", "expired", "sold", "memo_out"})
+# Statuses where an item is available for operations (split, transform, etc.)
+# Allowlist by design: unknown/new statuses are unavailable until explicitly added here.
+# is_item_available() is the single source of truth — derive at read time, never store.
+_ACTIVE_STATUSES: frozenset[str] = frozenset({"available"})
 
 
 def is_item_available(state: dict) -> bool:
     """Derive availability from status. Single authoritative check — no stored flag."""
-    return str(state.get("status") or "").lower() not in _INACTIVE_STATUSES
+    return str(state.get("status") or "").lower() in _ACTIVE_STATUSES
 
 # Old attachment type → new document_tag mapping (for lazy migration)
 _ATTACHMENT_TYPE_TO_TAG: dict[str, str] = {

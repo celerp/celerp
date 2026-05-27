@@ -18,8 +18,8 @@ def test_item_all_events() -> None:
     state = apply_item_event(state, "item.pricing.set", {"price_type": "price", "new_price": 10})
     assert state["price"] == 10
 
-    state = apply_item_event(state, "item.status.set", {"new_status": "active"})
-    assert state["status"] == "active"
+    state = apply_item_event(state, "item.status.set", {"new_status": "available"})
+    assert state["status"] == "available"
 
     state = apply_item_event(state, "item.transferred", {"to_location_id": "loc:1"})
     assert state["location_id"] == "loc:1"

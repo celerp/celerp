@@ -53,7 +53,7 @@ async def test_items_happy_path(client):
     r = await client.post(f"/items/{id}/price", json={"price_type": "price", "new_price": 10}, headers=headers)
     assert r.status_code == 200
 
-    r = await client.post(f"/items/{id}/status", json={"new_status": "active"}, headers=headers)
+    r = await client.post(f"/items/{id}/status", json={"new_status": "available"}, headers=headers)
     assert r.status_code == 200
 
     r = await client.post(f"/items/{id}/reserve", json={"quantity": 1.5}, headers=headers)
