@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 from __future__ import annotations
+import uuid
 
 import pytest
 
@@ -1842,3 +1843,132 @@ async def test_patch_qty_syncs_pieces_for_pieces_sell_by(client):
     assert int(state.get("quantity", 0)) == 7
     pieces = (state.get("attributes") or {}).get("pieces") or state.get("pieces")
     assert int(pieces) == 7
+
+
+# ── Split / Transform inheritance tests ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_split_children_inherit_purchase_fields(client):
+    """Split children must inherit purchase_unit, purchase_conversion_factor, purchase_sku, purchase_name from parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-PURCH-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "gram",
+        "purchase_unit": "kg", "purchase_conversion_factor": 1000.0,
+        "purchase_sku": "V-SKU", "purchase_name": "Vendor Material",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    children = [{"sku": f"{sku}-A", "quantity": 5}, {"sku": f"{sku}-B", "quantity": 5}]
+    r2 = await client.post(f"/items/{parent_id}/split", json={"children": children}, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    for c in r2.json()["children"]:
+        child = (await client.get(f"/items/{c['id']}", headers=h)).json()
+        assert child.get("purchase_unit") == "kg"
+        assert child.get("purchase_conversion_factor") == pytest.approx(1000.0)
+        assert child.get("purchase_sku") == "V-SKU"
+        assert child.get("purchase_name") == "Vendor Material"
+
+
+@pytest.mark.asyncio
+async def test_split_children_inherit_inventory_type(client):
+    """Split children must inherit inventory_type from parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-INVT-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+        "inventory_type": "non_stocked",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{sku}-A", "quantity": 5}, {"sku": f"{sku}-B", "quantity": 5}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    for c in r2.json()["children"]:
+        child = (await client.get(f"/items/{c['id']}", headers=h)).json()
+        assert child.get("inventory_type") == "non_stocked"
+
+
+@pytest.mark.asyncio
+async def test_split_children_inherit_custom_attributes(client):
+    """Split children must inherit custom attributes (e.g. beauty_grade) from parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-ATTR-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "gram",
+        "attributes": {"beauty_grade": "A+", "cut": "oval"},
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{sku}-A", "quantity": 4}, {"sku": f"{sku}-B", "quantity": 6}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    for c in r2.json()["children"]:
+        child = (await client.get(f"/items/{c['id']}", headers=h)).json()
+        grade = child.get("beauty_grade") or (child.get("attributes") or {}).get("beauty_grade")
+        cut = child.get("cut") or (child.get("attributes") or {}).get("cut")
+        assert grade == "A+", f"beauty_grade not inherited: {grade!r}"
+        assert cut == "oval", f"cut not inherited: {cut!r}"
+
+
+@pytest.mark.asyncio
+async def test_split_children_start_available(client):
+    """Split children must always have status=available."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-STATUS-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{sku}-A", "quantity": 5}, {"sku": f"{sku}-B", "quantity": 5}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    for c in r2.json()["children"]:
+        child = (await client.get(f"/items/{c['id']}", headers=h)).json()
+        assert child.get("status") == "available"
+
+
+@pytest.mark.asyncio
+async def test_split_children_get_distinct_barcodes(client):
+    """Each split child must get a distinct barcode, different from the parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-BAR-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+    parent_barcode = (await client.get(f"/items/{parent_id}", headers=h)).json().get("barcode")
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{sku}-A", "quantity": 5}, {"sku": f"{sku}-B", "quantity": 5}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+    child_ids = [c["id"] for c in r2.json()["children"]]
+
+    barcodes = [(await client.get(f"/items/{cid}", headers=h)).json().get("barcode") for cid in child_ids]
+    assert all(b is not None for b in barcodes), "All children must have barcodes"
+    assert len(set(barcodes)) == len(barcodes), f"Child barcodes must be distinct: {barcodes}"
+    assert parent_barcode not in barcodes, f"Children must not inherit parent barcode: {parent_barcode}"

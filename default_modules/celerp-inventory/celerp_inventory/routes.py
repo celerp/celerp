@@ -59,6 +59,29 @@ def _read_pieces(state: dict) -> float | None:
     return float(raw) if raw is not None else None
 
 
+# Fields that must NOT be inherited from parent in split/transform (child gets fresh values).
+# Everything else in parent.state is inherited automatically (copy-all-then-override).
+_CHILD_RESET_FIELDS: frozenset[str] = frozenset({
+    # Identity — always overridden explicitly
+    "sku",
+    "barcode",      # recalculated: new entity needs a new unique barcode
+    # Quantity / cost — set by split math or pricing events
+    "quantity",
+    "weight",
+    "pieces",
+    "cost_total",
+    "cost_price",
+    # Status — children start as available regardless of parent's terminal status
+    "status",
+    # Timestamps — set fresh; P2 will move these to Projection columns
+    "created_at",
+    "updated_at",
+    # Relationship — set by split/transform logic
+    "parent_id",
+    "parent_sku",
+})
+
+
 def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields."""
     flat = dict(state)
@@ -1069,19 +1092,14 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 
     parent_qty = float(parent.state.get("quantity") or 0)
     parent_sell_by = parent.state.get("sell_by") or "piece"
-    parent_category = parent.state.get("category")
     parent_location_id = parent.state.get("location_id")
     parent_attrs = dict(parent.state.get("attributes") or {})
 
-    # Fields to preserve on children (everything except identity/qty/cost - cost split proportionally)
+    # Price fields to preserve on children via pricing events (cost is split proportionally)
     parent_prices = {k: parent.state[k] for k in parent.state if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"}
     parent_cost_total = float(parent.state.get("cost_total") or 0) or (
         float(parent.state.get("cost_price") or 0) * parent_qty
     )
-    parent_description = parent.state.get("description")
-    parent_status = parent.state.get("status")
-    parent_tax_codes = parent.state.get("tax_codes")
-    parent_expires_at = parent.state.get("expires_at")
 
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -1169,37 +1187,23 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         child_eid = f"item:{uuid.uuid4()}"
         child_eids.append(child_eid)
         child_qty_list.append(child.quantity)
-        merged_attrs = {**parent_attrs, **child.attributes}
         now_iso = datetime.now(timezone.utc).isoformat()
+        # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
         child_data: dict = {
+            k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS
+        }
+        child_data.update({
             "sku": child.sku,
             "name": parent.state.get("name", child.sku),
             "quantity": child.quantity,
-            "sell_by": parent_sell_by,
-            "allow_splitting": bool(parent.state.get("allow_splitting", True)),
-            "attributes": merged_attrs,
+            "status": "available",
+            "attributes": {**parent_attrs, **child.attributes},
+            "barcode": child.barcode if child.barcode is not None else str(next_barcode_seq).zfill(6),
             "created_at": now_iso,
             "updated_at": now_iso,
-        }
+        })
         if child.weight is not None:
             child_data["weight"] = child.weight
-        if parent_category:
-            child_data["category"] = parent_category
-        if parent_location_id:
-            child_data["location_id"] = parent_location_id
-        if parent_description:
-            child_data["description"] = parent_description
-        if parent_status:
-            child_data["status"] = parent_status
-        parent_weight_unit = parent.state.get("weight_unit")
-        if parent_weight_unit:
-            child_data["weight_unit"] = parent_weight_unit
-        if parent_tax_codes:
-            child_data["tax_codes"] = parent_tax_codes
-        if parent_expires_at:
-            child_data["expires_at"] = parent_expires_at
-        # Auto-assign barcode from shared sequence (or use caller-supplied override)
-        child_data["barcode"] = child.barcode if child.barcode is not None else str(next_barcode_seq).zfill(6)
         next_barcode_seq += 1
         await emit_event(
             session,
@@ -1397,28 +1401,29 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     child_eid = f"item:{uuid.uuid4()}"
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
+    # Also override sell_by and category — the purpose of a transform is to change these.
     child_data: dict = {
+        k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS
+    }
+    child_data.update({
         "sku": payload.child_sku,
         "name": parent.state.get("name", payload.child_sku),
         "quantity": payload.child_quantity,
         "sell_by": payload.child_sell_by,
         "category": payload.child_category,
-        "allow_splitting": True,
+        "status": "available",
+        "attributes": {**parent_attrs},
+        "barcode": str(await _next_seq(session, company_id)).zfill(6),
         "created_at": now_iso,
         "updated_at": now_iso,
-        "attributes": {**parent_attrs},
-    }
+    })
     if payload.child_weight is not None:
         child_data["weight"] = payload.child_weight
-    child_weight_unit = payload.child_weight_unit or parent.state.get("weight_unit")
-    if child_weight_unit:
-        child_data["weight_unit"] = child_weight_unit
+    if payload.child_weight_unit:
+        child_data["weight_unit"] = payload.child_weight_unit
     if payload.child_pieces is not None:
         child_data["attributes"] = {**child_data["attributes"], "pieces": payload.child_pieces}
-    if parent_location_id:
-        child_data["location_id"] = parent_location_id
-    # cost_total is set via item.pricing.set (consistent with split and post_item flows)
-    child_data["barcode"] = str(await _next_seq(session, company_id)).zfill(6)
 
     # 1. Create child
     await emit_event(
