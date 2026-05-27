@@ -352,7 +352,7 @@ async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _
     # Verify stock restored
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
     assert float(inv_row.state.get("quantity", 0)) == 10
-    assert inv_row.state.get("is_available") is True
+    assert inv_row.state.get("status") == "available"
 
     # Verify doc fulfillment cleared
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})

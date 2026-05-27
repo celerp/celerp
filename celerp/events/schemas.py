@@ -42,7 +42,6 @@ class ItemSnapshot(BaseModel):
     weight_unit: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
     entity_id: str | None = None
-    is_available: bool | None = None
     status: str | None = None
     reserved_quantity: float | None = None
     created_at: str | None = None   # ISO date or datetime from source system

@@ -89,7 +89,6 @@ class ProjectionEngine:
                     location_id=location_id,
                     created_at=now,
                     updated_at=now,
-                    is_available=next_state.get("is_available"),
                     is_on_memo=next_state.get("is_on_memo"),
                     is_on_marketplace=next_state.get("is_on_marketplace"),
                     is_in_production=next_state.get("is_in_production"),
@@ -103,7 +102,6 @@ class ProjectionEngine:
             projection.version = entry.id or projection.version
             projection.location_id = location_id
             projection.updated_at = now
-            projection.is_available = next_state.get("is_available")
             projection.is_on_memo = next_state.get("is_on_memo")
             projection.is_on_marketplace = next_state.get("is_on_marketplace")
             projection.is_in_production = next_state.get("is_in_production")

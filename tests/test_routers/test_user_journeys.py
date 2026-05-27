@@ -685,7 +685,7 @@ async def test_crud_item_merge(client):
     for eid in (eid_a, eid_b):
         r3 = await client.get(f"/items/{eid}", headers=h)
         assert r3.status_code == 200
-        assert r3.json()["is_available"] is False
+        assert r3.json()["status"] == "merged"
         assert r3.json()["quantity"] > 0  # original qty preserved for audit; merged status excludes from live counts
         assert r3.json()["status"] == "merged"
         assert r3.json()["merged_into"] == new_id
@@ -731,7 +731,6 @@ async def test_merge_active_count_drops_by_one(client):
     # Verify new item is available and visible.
     new_item = await client.get(f"/items/{new_id}", headers=h)
     assert new_item.json()["status"] == "available"
-    assert new_item.json()["is_available"] is True
     # Get count after merge.
     val_after = await client.get("/items/valuation", headers=h)
     assert val_after.status_code == 200

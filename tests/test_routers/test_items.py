@@ -422,7 +422,7 @@ async def test_split_single_child_keeps_parent_remainder(client):
     assert r.status_code == 200
     parent_data = r.json()
     assert float(parent_data["quantity"]) == 15.0
-    assert parent_data.get("is_available", True) is True
+    assert parent_data.get("status") == "available"
     # Parent retains 15/20 of the original cost: 200 * 15/20 = 150
     assert float(parent_data["cost_price"]) == pytest.approx(10.0)
     assert float(parent_data["cost_total"]) == pytest.approx(150.0, rel=1e-6)
@@ -465,7 +465,7 @@ async def test_split_creates_children(client):
     assert float(r.json()["quantity"]) == 10.0
 
     # Verify parent is still available
-    assert r.json().get("is_available", True) is True
+    assert r.json().get("status") == "available"
 
     # Verify children exist
     child_1_id = data["children"][0]["id"]

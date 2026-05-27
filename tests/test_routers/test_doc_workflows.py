@@ -1801,7 +1801,6 @@ async def test_memo_fulfill_sets_memo_out_status(client, session):
 
     item_state = (await client.get(f"/items/{item_id}", headers=h)).json()
     assert item_state["status"] == "memo_out", f"Expected memo_out, got {item_state['status']}"
-    assert item_state["is_available"] is False
 
     # Revert via per-line endpoint
     unfulfill_r = await client.post(f"/docs/{doc_id}/revert-lines", headers=h,
@@ -1810,4 +1809,3 @@ async def test_memo_fulfill_sets_memo_out_status(client, session):
 
     item_state2 = (await client.get(f"/items/{item_id}", headers=h)).json()
     assert item_state2["status"] == "available", f"Expected available, got {item_state2['status']}"
-    assert item_state2["is_available"] is True

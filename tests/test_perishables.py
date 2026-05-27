@@ -151,7 +151,7 @@ async def test_merge_same_expiry_succeeds_and_preserves_attrs(client: AsyncClien
 
 @pytest.mark.asyncio
 async def test_merge_deactivates_source_items(client: AsyncClient):
-    """Source items must be marked is_available=False after a merge; quantity preserved for audit."""
+    """Source items must be marked status=merged after a merge; quantity preserved for audit."""
     token = await _register(client, "merge_deactivate@test.com")
     id_src = await _create_item(client, token, "SRC-ITEM", "Source", qty=200,
                                  attrs={"expiry_date": "2026-06-15"})
@@ -168,7 +168,7 @@ async def test_merge_deactivates_source_items(client: AsyncClient):
     r2 = await client.get(f"/items/{id_src}", headers=_auth(token))
     assert r2.status_code == 200
     src_state = r2.json()
-    assert src_state.get("is_available") is False
+    assert src_state.get("status") == "merged"
     assert src_state.get("quantity") == 200  # preserved for audit; merged status excludes from live counts
     assert src_state.get("merged_into") == new_id
 

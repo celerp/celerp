@@ -22,6 +22,7 @@ from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit
+from celerp_inventory.projections import is_item_available
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1007,7 +1008,7 @@ async def split_preview(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if parent is None or not parent.state.get("is_available", True):
+    if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
     parent_qty = float(parent.state.get("quantity") or 0)
@@ -1084,7 +1085,7 @@ async def split_preview(
 async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if parent is None or not parent.state.get("is_available", True):
+    if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
     if not parent.state.get("allow_splitting", True):
@@ -1362,7 +1363,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent
     parent = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
-    if parent is None or not parent.state.get("is_available", True):
+    if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
     # Validate

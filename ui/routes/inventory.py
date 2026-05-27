@@ -2014,7 +2014,7 @@ function celerpPrintLabel(entityId, templateId) {
             except APIError as e:
                 return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         total_qty = sum(float(it.get("quantity", 0) or 0) for it in items)
-        _CORE_KEYS = _CORE_ITEM_COLS | {"id", "is_available", "is_expired", "children",
+        _CORE_KEYS = _CORE_ITEM_COLS | {"id", "is_expired", "children",
                                          "child_skus", "merged_into", "reserved_quantity",
                                          "tax_codes", "unit", "expires_at", "total_cost",
                                          "entity_id"}
