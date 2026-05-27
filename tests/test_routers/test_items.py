@@ -397,10 +397,15 @@ async def test_barcode_must_be_digits(client):
 
 @pytest.mark.asyncio
 async def test_split_single_child_keeps_parent_remainder(client):
-    """One split child is valid: parent keeps the remainder quantity."""
+    """One split child: parent keeps remainder qty and cost; child gets proportional cost.
+
+    Unit cost (cost_price) is invariant through split: child_cost_total = cost_price * child_qty.
+    Partial split must not bleed parent cost into the child.
+    """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "PARENT-ONE", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem"}, headers=h)
+    # qty=20, cost_price=10 => parent_cost_total=200
+    r = await client.post("/items", json={"sku": "PARENT-ONE", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem", "cost_price": 10.0}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -415,14 +420,22 @@ async def test_split_single_child_keeps_parent_remainder(client):
 
     r = await client.get(f"/items/{parent_id}", headers=h)
     assert r.status_code == 200
-    assert float(r.json()["quantity"]) == 15.0
-    assert r.json().get("is_available", True) is True
+    parent_data = r.json()
+    assert float(parent_data["quantity"]) == 15.0
+    assert parent_data.get("is_available", True) is True
+    # Parent retains 15/20 of the original cost: 200 * 15/20 = 150
+    assert float(parent_data["cost_price"]) == pytest.approx(10.0)
+    assert float(parent_data["cost_total"]) == pytest.approx(150.0, rel=1e-6)
 
     child_id = data["children"][0]["id"]
     r = await client.get(f"/items/{child_id}", headers=h)
     assert r.status_code == 200
-    assert r.json()["sku"] == "CHILD-ONE"
-    assert float(r.json()["quantity"]) == 5.0
+    child_data = r.json()
+    assert child_data["sku"] == "CHILD-ONE"
+    assert float(child_data["quantity"]) == 5.0
+    # Child gets 5/20 of the original cost: 200 * 5/20 = 50; cost_price unchanged at 10
+    assert float(child_data["cost_price"]) == pytest.approx(10.0)
+    assert float(child_data["cost_total"]) == pytest.approx(50.0, rel=1e-6)
 
 
 @pytest.mark.asyncio

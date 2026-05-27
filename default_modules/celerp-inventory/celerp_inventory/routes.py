@@ -1166,20 +1166,16 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     child_qty_list: list[float] = []
     next_barcode_seq = await _next_seq(session, company_id)  # single DB scan; incremented in-memory per child
 
-    # Pre-compute proportional cost allocations using Decimal to avoid float rounding errors.
-    # Remainder (from rounding) is assigned to the last child so total is exactly conserved.
+    # Pre-compute child cost_totals using unit cost invariant: cost_price is the same for
+    # parent and child, so child_cost_total = (parent_cost_total / parent_qty) * child_qty.
+    # This is correct for partial splits; no remainder redistribution needed.
     _child_cost_totals: list[float | None]
     if parent_cost_total and parent_qty:
-        _D_parent = Decimal(str(parent_cost_total))
-        _D_parent_qty = Decimal(str(parent_qty))
-        _allocated: list[Decimal] = [
-            (_D_parent * Decimal(str(c.quantity)) / _D_parent_qty).quantize(Decimal("0.0000000001"))
+        _D_unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
+        _child_cost_totals = [
+            float((_D_unit_cost * Decimal(str(c.quantity))).quantize(Decimal("0.0000000001")))
             for c in children
         ]
-        _sum_allocated = sum(_allocated)
-        # Assign rounding remainder to last child
-        _allocated[-1] += _D_parent - _sum_allocated
-        _child_cost_totals = [float(v) for v in _allocated]
     else:
         _child_cost_totals = [None] * len(children)
 
