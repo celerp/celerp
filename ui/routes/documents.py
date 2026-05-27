@@ -5431,7 +5431,7 @@ async function celerpCsvImport(input, entityId) {{
         # Outbound/bilateral docs (memo, invoice) use per-line bulk toolbar.
         _fin_show_fulfill = _fulfillable_status and doc_type not in _INBOUND_DOC_TYPES_UI
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
-        _show_item_status = doc_type in _FULFILLABLE_DOC_TYPES and bool(line_items)
+        _show_item_status = doc_type in _FULFILLABLE_DOC_TYPES and doc_type not in _INBOUND_DOC_TYPES_UI and bool(line_items)
 
         # Inbound: single whole-doc Fulfill / Revert buttons in the top action bar.
         if _fin_show_inbound_fulfill and _is_manager:

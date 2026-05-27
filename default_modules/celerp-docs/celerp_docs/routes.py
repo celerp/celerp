@@ -1791,7 +1791,10 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
             )
 
         filtered_state = {**state, "line_items": qualifying_line_items}
-        new_data = {k: v for k, v in filtered_state.items() if k not in {"status", "entity_type"}}
+        # Strip monetary totals: invoice may have fewer items than memo, so memo totals are stale.
+        # The invoice will recompute totals from its own line items.
+        _MEMO_TOTAL_FIELDS = frozenset({"total", "outstanding", "tax_total", "discount_total", "subtotal", "amount_due"})
+        new_data = {k: v for k, v in filtered_state.items() if k not in {"status", "entity_type"} | _MEMO_TOTAL_FIELDS}
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
@@ -2823,6 +2826,8 @@ async def fulfill_lines(
 
     # Consignment In: inbound doc, no per-item entity_ids - fulfill whole doc
     if doc_type in INBOUND_DOC_TYPES:
+        if state.get("fulfillment_status") == "fulfilled":
+            return {"fulfillment_status": "fulfilled", "fulfilled": []}
         now = datetime.now(UTC).isoformat()
         cid = uuid.UUID(str(company_id))
         uid = user.id
@@ -2964,6 +2969,8 @@ async def revert_lines(
 
     # Consignment In: inbound doc - just emit fulfillment_reversed on the doc
     if doc_type in INBOUND_DOC_TYPES:
+        if state.get("fulfillment_status") not in ("fulfilled", "partial"):
+            raise HTTPException(status_code=409, detail="Cannot revert: doc is not fulfilled or partially fulfilled")
         now = datetime.now(UTC).isoformat()
         cid = uuid.UUID(str(company_id))
         uid = user.id

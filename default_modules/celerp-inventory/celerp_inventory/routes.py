@@ -622,7 +622,7 @@ async def _next_seq(session: AsyncSession, company_id: uuid.UUID) -> int:
 async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_id), user=Depends(get_current_user), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
     # Guard: operator/viewer cannot set cost fields on creation (manager+ required)
     if (payload.cost_price is not None or payload.cost_total is not None) and ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
-        raise HTTPException(status_code=403, detail=f"Role '{role}' cannot set cost_price")
+        raise HTTPException(status_code=403, detail=f"Role '{role}' cannot set cost fields")
 
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
@@ -1032,7 +1032,9 @@ async def split_preview(
     if is_weight_unit(parent_sell_by, unit_map):
         parent_weight = parent_qty
 
-    parent_weight_unit = parent.state.get("weight_unit") or "gram"
+    # When sell_by is itself a weight unit, weight_unit may be unset on the item.
+    # Default to the sell_by unit so the UI labels weights correctly.
+    parent_weight_unit = parent.state.get("weight_unit") or (parent_sell_by if is_weight_unit(parent_sell_by, unit_map) else "gram")
     weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
     weight_decimals = weight_unit_cfg.get("decimals", 2)
 

@@ -144,7 +144,12 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         else:
             current[pt] = price
     elif event_type == "item.status.set":
-        current["status"] = data["new_status"]
+        new_status = data["new_status"]
+        current["status"] = new_status
+        # Inactive statuses must also flip is_available so availability guards work correctly.
+        _INACTIVE_STATUSES = frozenset({"archived", "merged", "expired", "sold"})
+        if new_status in _INACTIVE_STATUSES:
+            current["is_available"] = False
     elif event_type == "item.transferred":
         current["location_id"] = data["to_location_id"]
         if "updated_at" in data:
