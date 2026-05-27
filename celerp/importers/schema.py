@@ -127,8 +127,6 @@ class CIFItem(BaseModel):
     barcode: str | None = None
     source_ref: str | None = None             # original ref number
     location_name: str | None = None          # resolved to location_id at import time
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)  # industry-specific fields
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -165,7 +163,6 @@ class CIFDocument(BaseModel):
     amount_paid: Decimal
     amount_outstanding: Decimal
     payment_due_date: date | None = None
-    created_at: datetime | None = None
     line_items: list[CIFLineItem] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

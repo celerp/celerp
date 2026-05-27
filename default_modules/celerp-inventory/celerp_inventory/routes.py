@@ -82,7 +82,7 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
 })
 
 
-def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None) -> dict:
+def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields."""
     flat = dict(state)
     flat["id"] = entity_id
@@ -94,6 +94,9 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
         flat["location_id"] = location_id
     if location_name:
         flat["location_name"] = location_name
+    # created_at is authoritative from Projection column (set on INSERT by engine, never forgeable).
+    if created_at is not None:
+        flat["created_at"] = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
     qty = float(flat.get("quantity") or 0)
     if flat.get("cost_total") is not None:
         flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
@@ -259,7 +262,8 @@ async def list_items(
     result = [
         _flatten_item(r.state, r.entity_id,
                       location_id=str(r.location_id) if r.location_id else None,
-                      location_name=loc_map.get(str(r.location_id)) if r.location_id else None)
+                      location_name=loc_map.get(str(r.location_id)) if r.location_id else None,
+                      created_at=r.created_at)
         for r in rows
     ]
 
@@ -575,7 +579,8 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
         loc_name = loc.name if loc else None
     flat = _flatten_item(row.state, row.entity_id,
                          location_id=str(row.location_id) if row.location_id else None,
-                         location_name=loc_name)
+                         location_name=loc_name,
+                         created_at=row.created_at)
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     filtered = _apply_field_visibility([flat], role, field_schema)
     return filtered[0]
@@ -686,11 +691,6 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     # Ensure status is set (not part of ItemCreate model but required for projections)
     data.setdefault("status", "available")
-
-    # Ensure timestamps are always set on creation
-    now_iso = datetime.now(timezone.utc).isoformat()
-    data.setdefault("created_at", now_iso)
-    data.setdefault("updated_at", now_iso)
 
     # Strip price fields from create event data - they go via pricing events.
     # Any key ending in _price is treated as a pricing field. cost_total is also a pricing field.
@@ -1183,7 +1183,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         child_eid = f"item:{uuid.uuid4()}"
         child_eids.append(child_eid)
         child_qty_list.append(child.quantity)
-        now_iso = datetime.now(timezone.utc).isoformat()
         # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
         child_data: dict = {
             k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS
@@ -1195,8 +1194,6 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             "status": "available",
             "attributes": {**parent_attrs, **child.attributes},
             "barcode": child.barcode if child.barcode is not None else str(next_barcode_seq).zfill(6),
-            "created_at": now_iso,
-            "updated_at": now_iso,
         })
         if child.weight is not None:
             child_data["weight"] = child.weight
@@ -1395,7 +1392,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     parent_location_id = parent.state.get("location_id")
 
     child_eid = f"item:{uuid.uuid4()}"
-    now_iso = datetime.now(timezone.utc).isoformat()
 
     # Copy-all-then-override: inherit every parent field; reset only identity/qty/cost/status.
     # Also override sell_by and category — the purpose of a transform is to change these.
@@ -1411,8 +1407,6 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         "status": "available",
         "attributes": {**parent_attrs},
         "barcode": str(await _next_seq(session, company_id)).zfill(6),
-        "created_at": now_iso,
-        "updated_at": now_iso,
     })
     if payload.child_weight is not None:
         child_data["weight"] = payload.child_weight
@@ -1623,7 +1617,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
     # Build item.created data from target projection.
     target_state = target_proj.state
     new_entity_id = f"item:{uuid.uuid4()}"
-    now_iso = datetime.now(timezone.utc).isoformat()
     create_data: dict = {
         "sku": str(target_state.get("sku") or ""),
         "name": resulting_name,
@@ -1632,8 +1625,6 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         "status": "available",
         "allow_splitting": bool(target_state.get("allow_splitting", True)),
         "attributes": resolved_attrs,
-        "created_at": now_iso,
-        "updated_at": now_iso,
     }
     for field in ("category", "location_id", "barcode", "description", "unit", "tax_codes"):
         val = target_state.get(field)
@@ -1913,13 +1904,9 @@ async def batch_import_items(
         # Strip system-managed and document-lifecycle fields — never user-settable via import.
         # status: all imported items must start as available; other statuses require linked docs.
         rec.data.pop("status", None)
-        # created_at/updated_at: strip user values and backfill with current UTC time.
-        # (batch_import bypasses post_item so we set them here rather than relying on setdefault.)
-        _now_iso = datetime.now(timezone.utc).isoformat()
+        # Strip any client-supplied timestamps: created_at is set by ProjectionEngine on INSERT.
         rec.data.pop("created_at", None)
         rec.data.pop("updated_at", None)
-        rec.data["created_at"] = _now_iso
-        rec.data["updated_at"] = _now_iso
 
         # Validate sell_by against company units before attempting any DB work.
         sell_by = str(rec.data.get("sell_by") or "").strip()
@@ -2170,7 +2157,7 @@ async def export_items_csv(
 ) -> StreamingResponse:
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
-    items = [_flatten_item(r.state, r.entity_id) for r in rows]
+    items = [_flatten_item(r.state, r.entity_id, created_at=r.created_at) for r in rows]
     if q:
         ql = q.lower()
         def _csv_matches(it: dict) -> bool:

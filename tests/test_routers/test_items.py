@@ -1985,3 +1985,58 @@ async def test_split_children_get_distinct_barcodes(client):
     assert all(b is not None for b in barcodes), "All children must have barcodes"
     assert len(set(barcodes)) == len(barcodes), f"Child barcodes must be distinct: {barcodes}"
     assert parent_barcode not in barcodes, f"Children must not inherit parent barcode: {parent_barcode}"
+
+
+@pytest.mark.asyncio
+async def test_created_at_set_by_engine_not_client(client):
+    """POST /items with a client-supplied created_at must be ignored.
+
+    Projection.created_at is set by ProjectionEngine on INSERT.
+    The API response must contain a valid created_at that is NOT the forged value.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"CA-{uuid.uuid4().hex[:6]}",
+        "name": "Timestamp Guard",
+        "quantity": 1,
+        "sell_by": "piece",
+        "created_at": "2000-01-01T00:00:00",  # must be ignored
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    data = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert data.get("created_at") is not None, "created_at must be set in API response"
+    assert not data["created_at"].startswith("2000"), (
+        f"Client-forged created_at must not be stored; got {data['created_at']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_created_at_immutable_after_patch(client):
+    """PATCH /items/{id} must not change created_at; updated_at must advance."""
+    from datetime import datetime
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"CA-IMM-{uuid.uuid4().hex[:6]}",
+        "name": "Immutable TS",
+        "quantity": 1,
+        "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    before = (await client.get(f"/items/{item_id}", headers=h)).json()
+    created_before = before.get("created_at")
+    updated_before = before.get("updated_at")
+    assert created_before is not None
+
+    # Patch the item name
+    pr = await client.patch(f"/items/{item_id}", json={"name": "Renamed"}, headers=h)
+    assert pr.status_code == 200, pr.text
+
+    after = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert after.get("created_at") == created_before, "created_at must not change after patch"
+    assert after.get("updated_at") != updated_before, "updated_at must advance after patch"

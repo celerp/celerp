@@ -87,6 +87,7 @@ class ProjectionEngine:
                     state=next_state,
                     version=entry.id or 0,
                     location_id=location_id,
+                    created_at=now,
                     updated_at=now,
                     is_available=next_state.get("is_available"),
                     is_on_memo=next_state.get("is_on_memo"),

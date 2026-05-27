@@ -233,13 +233,11 @@ async def auth(session, _setup_ids):
     }
 
 
-async def _create_item(client, auth, sku, qty, cost_price=0, created_at=None, expires_at=None, sell_by="piece"):
+async def _create_item(client, auth, sku, qty, cost_price=0, expires_at=None, sell_by="piece"):
     """Helper: create inventory item via API."""
     data = {"sku": sku, "name": sku, "quantity": qty, "sell_by": sell_by}
     if cost_price:
         data["cost_total"] = cost_price * qty  # cost_total is now the primitive
-    if created_at:
-        data["created_at"] = created_at
     if expires_at:
         data["expires_at"] = expires_at
     r = await client.post("/items", headers=auth["headers"], json=data)
@@ -286,7 +284,7 @@ async def test_fulfill_creates_events_and_updates_projections(client, session, a
         "entity_id": item_id,
         "sku": inv_row.state["sku"],
         "quantity": float(inv_row.state["quantity"]),
-        "created_at": inv_row.state.get("created_at", ""),
+        "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
         "expires_at": inv_row.state.get("expires_at"),
         "cost_total": float(inv_row.state.get("cost_total", 0)),
     }]

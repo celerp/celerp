@@ -11169,41 +11169,44 @@ class TestInventoryUXFixes:
     # ── Fix 4: Split/create timestamps ────────────────────────────────────
 
     def test_item_create_data_sets_timestamps(self):
-        """post_item must inject created_at/updated_at into the event data."""
-        import inspect
-        import sys
-        # Read the source of the inventory routes to verify the fix
+        """post_item must NOT inject created_at/updated_at into event data.
+        created_at is now authoritative from the Projection column (set by engine on INSERT).
+        """
         routes_path = (
             Path(__file__).parent.parent
             / "default_modules/celerp-inventory/celerp_inventory/routes.py"
         )
         with open(routes_path) as f:
             src = f.read()
-        # post_item must set created_at and updated_at
-        assert 'data.setdefault("created_at"' in src
-        assert 'data.setdefault("updated_at"' in src
+        # created_at must NOT be set in event data blob - it lives in Projection.created_at
+        assert 'data.setdefault("created_at"' not in src
+        assert 'data.setdefault("updated_at"' not in src
 
     def test_split_child_data_has_timestamps(self):
-        """split_item child_data must include created_at and updated_at."""
+        """split_item child_data must NOT include created_at/updated_at.
+        created_at is authoritative from the Projection column, not state blobs.
+        """
         routes_path = (
             Path(__file__).parent.parent
             / "default_modules/celerp-inventory/celerp_inventory/routes.py"
         )
         with open(routes_path) as f:
             src = f.read()
-        # Split handler must set timestamps in child_data
-        assert '"created_at": now_iso' in src
-        assert '"updated_at": now_iso' in src
+        # Timestamps must not be injected into split child state
+        assert '"created_at": now_iso' not in src
+        assert '"updated_at": now_iso' not in src
 
     def test_merge_create_data_has_timestamps(self):
-        """merge_items create_data must include created_at and updated_at."""
+        """merge_items create_data must NOT include created_at/updated_at.
+        created_at is authoritative from the Projection column, not state blobs.
+        """
         routes_path = (
             Path(__file__).parent.parent
             / "default_modules/celerp-inventory/celerp_inventory/routes.py"
         )
         with open(routes_path) as f:
             src = f.read()
-        assert '"created_at": now_iso' in src and '"updated_at": now_iso' in src
+        assert '"created_at": now_iso' not in src and '"updated_at": now_iso' not in src
 
     # ── Fix 5: Print Labels bulk action ───────────────────────────────────
 
