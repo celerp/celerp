@@ -2895,7 +2895,11 @@ async def fulfill_lines(
     for item_eid in to_fulfill:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         qty = float(item_proj.state.get("quantity", 0))
-        total_cogs += float(item_proj.state.get("cost_total") or 0)
+        cost_total = item_proj.state.get("cost_total")
+        if cost_total is not None:
+            total_cogs += float(cost_total)
+        else:
+            total_cogs += float(item_proj.state.get("cost_price") or 0) * float(item_proj.state.get("quantity") or 0)
         await emit_event(
             session,
             company_id=cid,

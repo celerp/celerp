@@ -4604,7 +4604,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 receive_as_cell = None
 
             cells = [
-                Td(Input(type="checkbox", cls="li-select", value=li_entity_id or ""), cls="col-checkbox li-checkbox-cell"),
+                Td(Input(type="checkbox", cls="li-select", value=li_entity_id) if li_entity_id else Td(), cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
                 Td(_desc_input(li.get("description", "") or li.get("name", "")), cls="col-desc"),
             ]
@@ -4676,7 +4676,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _ra_cell = None
 
             cells = [
-                Td(Input(type="checkbox", cls="li-select", value=""), cls="col-checkbox li-checkbox-cell"),
+                Td(cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(), cls="col-sku"), Td(_desc_input(), cls="col-desc"),
             ]
             if _cat_cell:
