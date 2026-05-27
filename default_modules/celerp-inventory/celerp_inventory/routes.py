@@ -830,8 +830,6 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if new_weight is not None and float(new_weight) < 0:
             raise HTTPException(status_code=422, detail="Weight cannot be negative")
 
-    # Always stamp updated_at so the projection reflects the mutation time.
-
     # sell_by sync: when sell_by changes unit type, sync quantity → weight or pieces so
     # the independent stored fields stay consistent with what the derived display showed.
     # Without this, switching piece→carat→edit qty→piece restores stale weight/pieces value.
@@ -1249,7 +1247,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             )
 
     # Reduce parent quantity
-    new_parent_qty = parent_qty - total_child_qty
+    new_parent_qty = round(parent_qty - total_child_qty, 10)
+    # Clamp sub-epsilon residuals from float subtraction to an exact zero.
+    if new_parent_qty < 0:
+        new_parent_qty = 0.0
     await emit_event(
         session,
         company_id=company_id,

@@ -14,8 +14,8 @@ is now authoritative from the Projection table, not from event data state blobs.
 
 Changes:
 1. Add created_at: TIMESTAMP WITH TIME ZONE, nullable (NULL = legacy row).
-2. Backfill: set created_at = MIN(ledger_entries.created_at) per entity_id+company_id.
-   LedgerEntry.created_at is already a DB-stamped column, so this is non-forgeable.
+2. Backfill: set created_at = MIN(ledger.ts) per entity_id+company_id.
+   LedgerEntry.ts is a DB-stamped column, so this is non-forgeable.
 3. Any row with no ledger entry (shouldn't happen) keeps created_at = NULL;
    ProjectionEngine sets created_at = now() on first INSERT for new entities.
 """

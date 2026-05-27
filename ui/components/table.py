@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import re
+
 from fasthtml.common import *
 from ui.i18n import t, get_lang
 
@@ -475,7 +477,8 @@ def display_cell(
     inner = _display_val(display_value, cell_type, currency)
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
     _safe_id = entity_id.replace(":", "-")
-    _cell_id = f"cell-{_safe_id}-{field}"
+    _safe_field = re.sub(r"[^A-Za-z0-9_-]", "_", field)
+    _cell_id = f"cell-{_safe_id}-{_safe_field}"
 
     if not editable:
         # Only render hyperlink when there's actual content (not empty/placeholder)

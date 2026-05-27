@@ -2891,9 +2891,11 @@ async def fulfill_lines(
     cid = uuid.UUID(str(company_id))
     uid = user.id
 
+    total_cogs = 0.0
     for item_eid in to_fulfill:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         qty = float(item_proj.state.get("quantity", 0))
+        total_cogs += float(item_proj.state.get("cost_total") or 0)
         await emit_event(
             session,
             company_id=cid,
@@ -2935,7 +2937,7 @@ async def fulfill_lines(
             "fulfilled_by": str(uid),
             "fulfilled_at": now,
             "strategy": "per_line",
-            "total_cogs": 0.0,
+            "total_cogs": total_cogs,
         }
     else:
         doc_fulfillment_status = "partial"
@@ -2961,6 +2963,13 @@ async def fulfill_lines(
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
+
+    # Create COGS JE only for invoices that reach fully-fulfilled status.
+    # Memos don't get a COGS JE here; that happens when the invoice is finalized.
+    if doc_type == "invoice" and doc_fulfillment_status == "fulfilled":
+        await auto_je.create_for_doc_fulfilled(
+            session, company_id=cid, user_id=uid, doc_id=entity_id, total_cogs=total_cogs
+        )
 
     await session.commit()
     return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
@@ -3107,6 +3116,13 @@ async def revert_lines(
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
+
+    # Void COGS JE for invoices when fulfillment is fully reversed.
+    # void_for_doc_fulfilled is a no-op if no JE exists (safe to call unconditionally).
+    if doc_type == "invoice" and doc_fulfillment_status == "unfulfilled":
+        await auto_je.void_for_doc_fulfilled(
+            session, company_id=cid, user_id=uid, doc_id=entity_id
+        )
 
     await session.commit()
     return {"fulfillment_status": doc_fulfillment_status, "reverted": to_revert}
