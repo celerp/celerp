@@ -82,7 +82,7 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
 })
 
 
-def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None) -> dict:
+def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields."""
     flat = dict(state)
     flat["id"] = entity_id
@@ -97,6 +97,8 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
     # created_at is authoritative from Projection column (set on INSERT by engine, never forgeable).
     if created_at is not None:
         flat["created_at"] = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at)
+    if updated_at is not None:
+        flat["updated_at"] = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
     qty = float(flat.get("quantity") or 0)
     if flat.get("cost_total") is not None:
         flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
@@ -263,7 +265,8 @@ async def list_items(
         _flatten_item(r.state, r.entity_id,
                       location_id=str(r.location_id) if r.location_id else None,
                       location_name=loc_map.get(str(r.location_id)) if r.location_id else None,
-                      created_at=r.created_at)
+                      created_at=r.created_at,
+                      updated_at=r.updated_at)
         for r in rows
     ]
 
@@ -580,7 +583,8 @@ async def get_item(entity_id: str, company_id=Depends(get_current_company_id), r
     flat = _flatten_item(row.state, row.entity_id,
                          location_id=str(row.location_id) if row.location_id else None,
                          location_name=loc_name,
-                         created_at=row.created_at)
+                         created_at=row.created_at,
+                         updated_at=row.updated_at)
     field_schema = await get_effective_field_schema(session, company_id, category=flat.get("category"))
     filtered = _apply_field_visibility([flat], role, field_schema)
     return filtered[0]
@@ -827,7 +831,6 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             raise HTTPException(status_code=422, detail="Weight cannot be negative")
 
     # Always stamp updated_at so the projection reflects the mutation time.
-    payload.fields_changed["updated_at"] = {"old": None, "new": datetime.now(timezone.utc).isoformat()}
 
     # sell_by sync: when sell_by changes unit type, sync quantity → weight or pieces so
     # the independent stored fields stay consistent with what the derived display showed.
@@ -914,7 +917,7 @@ async def bulk_transfer(payload: BulkTransferBody, company_id=Depends(get_curren
             entity_id=entity_id,
             entity_type="item",
             event_type="item.transferred",
-            data={"to_location_id": str(payload.to_location_id), "updated_at": datetime.now(timezone.utc).isoformat()},
+            data={"to_location_id": str(payload.to_location_id)},
             actor_id=user.id,
             location_id=payload.to_location_id,
             source="api",
@@ -987,7 +990,7 @@ async def transfer_item(entity_id: str, payload: TransferBody, company_id=Depend
         entity_id=entity_id,
         entity_type="item",
         event_type="item.transferred",
-        data={"to_location_id": str(payload.to_location_id), "updated_at": datetime.now(timezone.utc).isoformat()},
+        data={"to_location_id": str(payload.to_location_id)},
         actor_id=user.id,
         location_id=payload.to_location_id,
         source="api",
@@ -2157,7 +2160,7 @@ async def export_items_csv(
 ) -> StreamingResponse:
     stmt = select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
     rows = (await session.execute(stmt)).scalars().all()
-    items = [_flatten_item(r.state, r.entity_id, created_at=r.created_at) for r in rows]
+    items = [_flatten_item(r.state, r.entity_id, created_at=r.created_at, updated_at=r.updated_at) for r in rows]
     if q:
         ql = q.lower()
         def _csv_matches(it: dict) -> bool:
