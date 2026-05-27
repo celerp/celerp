@@ -42,7 +42,7 @@ def upgrade() -> None:
         """
         UPDATE projections
         SET created_at = (
-            SELECT MIN(le.created_at)
+            SELECT MIN(le.ts)
             FROM ledger le
             WHERE le.entity_id = projections.entity_id
               AND le.company_id = projections.company_id
