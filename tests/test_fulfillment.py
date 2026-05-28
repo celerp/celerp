@@ -402,45 +402,51 @@ async def test_void_does_not_change_fulfillment_status(client, session, auth, _s
 
 
 @pytest.mark.asyncio
-async def test_revert_to_draft_does_not_change_fulfillment_status(client, session, auth, _setup_ids):
-    """Reverting a fulfilled doc to draft must NOT change its fulfillment_status (independent lifecycles)."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
-
-    item_id = await _create_item(client, auth, "REVERT-A", 8, cost_price=4.0)
-    doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "REVERT-A", "quantity": 8, "unit_price": 12.0},
+async def test_revert_to_draft_blocked_when_fulfilled_items_exist(client, session, auth, _setup_ids):
+    """Reverting a fulfilled doc to draft must be blocked while any line items are fulfilled."""
+    sku = f"REVERT-BLOCK-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=4.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 12.0, "entity_id": item_id},
     ])
 
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": "REVERT-A", "quantity": 8,
-        "created_at": "", "expires_at": None, "cost_total": 32.0,
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-    )
-    await session.commit()
+    # Fulfill via API
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
 
-    # Revert to draft via API
+    # Revert to draft must be blocked while items are fulfilled
+    r = await client.post(f"/docs/{doc_id}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert "fulfilled" in r.text.lower()
+
+
+async def test_revert_to_draft_allowed_after_all_lines_reverted(client, session, auth, _setup_ids):
+    """Revert to draft must succeed once all fulfilled line items have been reverted."""
+    sku = f"REVERT-OK-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=4.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 12.0, "entity_id": item_id},
+    ])
+
+    # Fulfill via API
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+
+    # Revert fulfillment first
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+
+    # Now revert to draft must succeed
     r = await client.post(f"/docs/{doc_id}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
 
-    # fulfillment_status must be preserved
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") == "fulfilled", \
-        "Reverting to draft must NOT clear fulfillment_status"
-
-    # Stock must NOT be automatically restored
+    from celerp.models.projections import Projection
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) > 0, \
-        "Revert-to-draft must not auto-restore stock; use Revert Fulfillment for that"
-    assert inv_row.state.get("status") == "sold", \
-        "Revert-to-draft must not change item status back to available"
+    assert inv_row.state.get("status") == "available"
+
 
 
 @pytest.mark.asyncio
@@ -1168,3 +1174,57 @@ async def test_invoice_finalize_promotes_memo_out_items_to_sold(client, session,
     item_b = (await client.get(f"/items/{eid_b}", headers=auth["headers"])).json()
     assert item_a["status"] == "sold", f"Expected sold after invoice finalize, got {item_a['status']}"
     assert item_b["status"] == "sold", f"Expected sold after invoice finalize, got {item_b['status']}"
+
+
+@pytest.mark.asyncio
+async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids):
+    """Fix 3: PATCH doc with line_items.new that omits a fulfilled entity_id must be rejected.
+
+    Sets up the state via the service layer (bypassing Fix 1) to test the PATCH guard
+    independently: draft doc + item in sold state (simulates a forced/migrated state).
+    """
+    import uuid as _uuid
+    from celerp.events.engine import emit_event
+
+    sku = f"FIX3-GUARD-{_uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=10.0)
+
+    # Create a draft doc with explicit entity_id on the line item
+    total = 1 * 20.0
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "memo",
+        "ref_id": f"FIX3-{_uuid.uuid4().hex[:6]}",
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 20.0, "entity_id": item_id}],
+        "total": total,
+    })
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    # Doc is draft at this point
+
+    # Set item status to sold via service layer (bypassing HTTP guards)
+    await emit_event(
+        session,
+        company_id=_setup_ids["company_id"],
+        entity_id=item_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": "sold"},
+        actor_id=_setup_ids["user_id"],
+        location_id=None,
+        source="test",
+        idempotency_key=str(_uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+
+    # Try to PATCH the draft doc to remove the fulfilled line item → must be rejected
+    doc_state = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    remaining_lines = [
+        li for li in doc_state.get("line_items", [])
+        if (li.get("entity_id") or li.get("item_id")) != item_id
+    ]
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"new": remaining_lines}},
+    })
+    assert r.status_code == 409, r.text
+    assert "fulfilled" in r.text.lower()

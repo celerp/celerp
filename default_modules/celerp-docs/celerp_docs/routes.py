@@ -11,7 +11,7 @@ from datetime import UTC, datetime, date as _date
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select, func as _func
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +31,7 @@ from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import PickResult, compute_pick_plan
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -175,6 +175,12 @@ class DocBatchImportRequest(BaseModel):
 
 class FulfillLinesRequest(BaseModel):
     line_entity_ids: list[str]
+
+    @field_validator("line_entity_ids")
+    @classmethod
+    def strip_empty(cls, v: list[str]) -> list[str]:
+        """Drop empty strings — JS bulk selects may include value="" rows."""
+        return [eid for eid in v if eid]
 
 
 def _assert_date_order(patch: dict, current: dict | None = None) -> None:
@@ -714,7 +720,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
 
     # Validate patched line items when present
     new_line_items = (payload.fields_changed.get("line_items") or {}).get("new")
-    if new_line_items and isinstance(new_line_items, list):
+    if new_line_items is not None and isinstance(new_line_items, list):
         unit_map = await _get_unit_map(session, company_id)
         sell_by_map = await _get_item_sell_by_map(session, company_id)
         for li in new_line_items:
@@ -726,6 +732,26 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                 unit_map,
                 label=li.get("name") or sku or "Line item",
             )
+
+        # Fix 3: guard against deleting fulfilled line items via the patch endpoint.
+        # Compare the current doc's entity_ids against the incoming list; any entity_id
+        # that disappears must not be in a fulfilled state.
+        existing_eids = {
+            li.get("entity_id") or li.get("item_id") or ""
+            for li in (row.state.get("line_items") or [])
+        } - {""}
+        incoming_eids = {
+            li.get("entity_id") or li.get("item_id") or ""
+            for li in new_line_items
+        } - {""}
+        removed_eids = existing_eids - incoming_eids
+        for eid in removed_eids:
+            item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+            if item_proj and item_proj.state.get("status") in FULFILLED_ITEM_STATUSES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
+                )
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
@@ -910,6 +936,21 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
     if state.get("received_items"):
         raise HTTPException(status_code=409, detail="Cannot revert document with received items")
+
+    # Fix 1: block revert when any line item has been fulfilled.
+    # Fulfilled items are tracked in state["fulfilled_items"]; each entry with a non-null item_id
+    # corresponds to an inventory item that is now in a terminal fulfilled state.
+    # The user must revert fulfillment line-by-line first, then revert the document.
+    fulfilled_items = [
+        fi for fi in (state.get("fulfilled_items") or [])
+        if fi.get("item_id") is not None
+    ]
+    if fulfilled_items:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot revert to draft: line items have been fulfilled. "
+                   "Revert fulfillment on each fulfilled line first, then revert the document.",
+        )
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:
