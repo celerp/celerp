@@ -2040,3 +2040,40 @@ async def test_created_at_immutable_after_patch(client):
     after = (await client.get(f"/items/{item_id}", headers=h)).json()
     assert after.get("created_at") == created_before, "created_at must not change after patch"
     assert after.get("updated_at") != updated_before, "updated_at must advance after patch"
+
+
+@pytest.mark.asyncio
+async def test_split_child_top_level_pieces_field(client):
+    """SplitChild.pieces (top-level) must override parent pieces on children.
+
+    Regression test for batch-split bug: when sell_by is a weight unit (carat),
+    sending pieces as a top-level SplitChild field was silently dropped by Pydantic
+    because SplitChild had no pieces field, causing every child to inherit the
+    parent's pieces count unchanged.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Parent: sell_by=carat (weight unit), 70 carat, 100 pieces
+    r = await client.post("/items", json={
+        "sku": f"TLP-{_ts}", "name": "Batch Split Stone",
+        "quantity": 70.0, "sell_by": "carat", "attributes": {"pieces": 100},
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    # Split into 5 children using top-level pieces field (mirrors what batch-split UI sends)
+    children = [
+        {"sku": f"TLP-{_ts}-{i}", "quantity": 0.01, "pieces": 1}
+        for i in range(1, 6)
+    ]
+    rs = await client.post(f"/items/{parent_id}/split", json={"children": children}, headers=h)
+    assert rs.status_code == 200, f"Split failed: {rs.text}"
+
+    child_ids = [c["id"] for c in rs.json()["children"]]
+    for cid in child_ids:
+        child = (await client.get(f"/items/{cid}", headers=h)).json()
+        assert int(child.get("pieces", -1)) == 1, (
+            f"Child {cid} has pieces={child.get('pieces')} but expected 1 (not parent's 100)"
+        )

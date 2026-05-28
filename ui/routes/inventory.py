@@ -2894,14 +2894,14 @@ function celerpPrintLabel(entityId, templateId) {
                 raw_w = (comp_weights[idx] or "").strip()
                 if raw_w:
                     try:
-                        child["weight"] = float(raw_w)
+                        _apply_complement(child, sell_by, float(raw_w), _default_umap)
                     except (ValueError, TypeError):
                         pass
             elif is_weight_unit(sell_by, _default_umap) and idx < len(comp_pieces_l):
                 raw_p = (comp_pieces_l[idx] or "").strip()
                 if raw_p:
                     try:
-                        child["pieces"] = int(round(float(raw_p)))
+                        _apply_complement(child, sell_by, float(raw_p), _default_umap)
                     except (ValueError, TypeError):
                         pass
             children.append(child)
@@ -2918,6 +2918,17 @@ function celerpPrintLabel(entityId, templateId) {
         skus_param = ",".join(_quote(s) for s in [orig_sku] + child_skus)
         redirect = f"/inventory?skus={skus_param}&status=all" if orig_sku else "/inventory"
         return Response("", status_code=204, headers={"HX-Redirect": redirect})
+
+    def _apply_complement(child: dict, sell_by: str, complement: float, unit_map: dict) -> None:
+        """Attach the complement field to a split child dict based on the item's sell_by unit.
+
+        weight-unit items carry pieces as the complement; piece-unit items carry weight.
+        Mutates child in place.
+        """
+        if is_weight_unit(sell_by, unit_map):
+            child["pieces"] = int(round(complement))
+        elif is_pieces_unit(sell_by, unit_map):
+            child["weight"] = complement
 
     @app.post("/api/items/{entity_id}/batch-split")
     async def item_batch_split(request: Request, entity_id: str):
@@ -2969,10 +2980,7 @@ function celerpPrintLabel(entityId, templateId) {
             used_skus.add(child_sku)
             child: dict = {"sku": child_sku, "quantity": batch_qty}
             if complement is not None:
-                if is_weight_unit(sell_by, _default_umap):
-                    child["pieces"] = int(round(complement))
-                elif is_pieces_unit(sell_by, _default_umap):
-                    child["weight"] = complement
+                _apply_complement(child, sell_by, complement, _default_umap)
             children.append(child)
         try:
             await api.split_item(token, entity_id, children)

@@ -171,6 +171,7 @@ class SplitChild(BaseModel):
     sku: str
     quantity: float
     weight: float | None = None
+    pieces: int | None = None   # complement for weight-unit items (independent of weight)
     barcode: str | None = None  # auto-assigned from shared sequence if omitted
     attributes: dict = Field(default_factory=dict)
 
@@ -1133,6 +1134,11 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             status_code=422,
             detail=f"Child quantities ({total_child_qty}) exceed parent quantity ({parent_qty})",
         )
+
+    # Normalise: top-level pieces field → attributes so all downstream reads are uniform
+    for child in children:
+        if child.pieces is not None:
+            child.attributes = {**child.attributes, "pieces": child.pieces}
 
     # Pieces conservation: if parent has pieces, validate and compute mother
     _pieces_float = _read_pieces(parent.state)
