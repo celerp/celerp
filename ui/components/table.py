@@ -770,6 +770,10 @@ def data_table(
   // Apply visibility — accept optional live table so post-swap calls use the new DOM node
   function applyVis(liveTable) {{
     liveTable = liveTable || table;
+    // Re-read prefs from localStorage so post-swap calls reflect changes made in
+    // the column-manager dropdown (which writes to the same PAGE_KEY but doesn't
+    // share the in-memory `prefs` variable from this IIFE closure).
+    try {{ prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null') || prefs; }} catch(e) {{}}
     var liveRows = Array.from(liveTable.querySelectorAll('tbody tr.data-row'));
     var liveThs = Array.from(liveTable.querySelectorAll('thead th[data-key]'));
     liveThs.forEach(function(th) {{
