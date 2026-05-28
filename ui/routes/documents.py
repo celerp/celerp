@@ -4604,7 +4604,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 receive_as_cell = None
 
             cells = [
-                Td(Input(type="checkbox", cls="li-select", value=li_entity_id) if li_entity_id else Td(), cls="col-checkbox li-checkbox-cell"),
+                Td(Input(type="checkbox", cls="li-select", value=li_entity_id), cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
                 Td(_desc_input(li.get("description", "") or li.get("name", "")), cls="col-desc"),
             ]
@@ -4676,7 +4676,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _ra_cell = None
 
             cells = [
-                Td(cls="col-checkbox li-checkbox-cell"),
+                Td(Input(type="checkbox", cls="li-select", value=""), cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(), cls="col-sku"), Td(_desc_input(), cls="col-desc"),
             ]
             if _cat_cell:
@@ -5400,7 +5400,9 @@ async function celerpCsvImport(input, entityId) {{
       if(!id){{var skuEl=row?row.querySelector('[data-name="sku"]'):null;var sku=skuEl?skuEl.value.trim():'';if(sku)id='sku:'+sku;}}
       if(id) ids.push(id);
     }});
-    if(!ids.length){{alert('The selected rows have no linked inventory items. Only items picked from the product catalog can be label-printed.');return;}}
+    var ctx=document.getElementById('li-bulk-context');
+    if(!ids.length){{if(ctx)ctx.innerHTML='<span class="flash flash--warning">No inventory items selected. Labels can only be printed for items linked to inventory records.</span>';return;}}
+    if(ctx)ctx.innerHTML='';
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
@@ -5471,17 +5473,19 @@ async function celerpCsvImport(input, entityId) {{
             discount_pct = float(li.get("discount_pct") or 0)
             discounted = qty * price * (1 - discount_pct / 100) if discount_pct else qty * price
             line_total = float(li.get("line_total", 0) or 0) or discounted
+            li_eid = li.get("entity_id") or li.get("item_id") or ""
             cells = []
             if _fin_show_bulk:
-                li_eid = li.get("entity_id") or li.get("item_id") or ""
                 li_sku = li.get("sku") or ""
+                # Enabled for rows with an entity_id (user may fulfill or revert);
+                # disabled for rows without one (no inventory action possible on finalized doc).
                 cells.append(Td(
-                    Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku),
+                    Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku,
+                          disabled=not li_eid),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
             if _show_item_status:
-                li_eid = li.get("entity_id") or li.get("item_id") or ""
                 status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                 if status_val and status_val in _STATUS_BADGE:
                     label, badge_cls = _STATUS_BADGE[status_val]
@@ -5563,7 +5567,9 @@ async function celerpCsvImport(input, entityId) {{
       if(!id){{var sku=cb.dataset.sku||'';if(sku)id='sku:'+sku;}}
       if(id) ids.push(id);
     }});
-    if(!ids.length){{alert('The selected rows have no linked inventory items. Only items picked from the product catalog can be label-printed.');return;}}
+    var ctx=document.getElementById('li-bulk-context');
+    if(!ids.length){{if(ctx)ctx.innerHTML='<span class="flash flash--warning">No inventory items selected. Labels can only be printed for items linked to inventory records.</span>';return;}}
+    if(ctx)ctx.innerHTML='';
     var form=document.createElement('form');
     form.method='POST';form.action='/labels/print-bulk';form.target='_blank';
     ids.forEach(function(id){{
