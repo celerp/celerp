@@ -185,7 +185,32 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("received_item_ids", [])
         current["received_item_ids"].extend(data.get("created_item_ids", []))
 
+        # Write entity_id back onto each line item so per-line fulfillment UI can key off it.
+        # Two cases:
+        #   1. Existing item (item_id on received_item): item_id is directly available.
+        #   2. Newly created item (no item_id on received_item): ID is in created_item_ids,
+        #      positionally aligned with the subset of received_items where receive_as=stock and item_id absent.
         line_items = current.get("line_items", [])
+        created_ids = list(data.get("created_item_ids", []))
+        created_id_iter = iter(created_ids)
+        for recv in received:
+            assigned_id = recv.get("item_id")
+            if not assigned_id:
+                # New item: consume next created_id if this was a stock receive
+                if (recv.get("receive_as", "stock") or "stock") == "stock":
+                    assigned_id = next(created_id_iter, None)
+            if not assigned_id:
+                continue
+            idx = int(recv.get("po_line_index", -1))
+            if 0 <= idx < len(line_items):
+                line_items[idx].setdefault("entity_id", assigned_id)
+            else:
+                sku = (recv.get("sku") or "").strip()
+                if sku:
+                    for li in line_items:
+                        if str(li.get("sku") or "").strip() == sku and not li.get("entity_id"):
+                            li["entity_id"] = assigned_id
+                            break
         all_received = True
         any_received = False
         for idx, line in enumerate(line_items):
@@ -230,6 +255,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["received_items"] = []
         current["received_item_ids"] = []
         current["status"] = "final"
+        # Clear entity_id from line items so per-line status column resets to "Not Received".
+        for li in current.get("line_items", []):
+            li.pop("entity_id", None)
     elif event_type == "doc.shared_import":
         # Inbound doc received via p2p share / bundle upload.
         # Carries the sender's full doc state; status forced to "received".

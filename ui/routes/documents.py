@@ -48,16 +48,19 @@ _PER_PAGE_OPTIONS = [25, 50, 100, 250]
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
 # Doc types that support per-line inventory item status display (fetch + render).
 # Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
-_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "consignment_in", "invoice"})
-# Inbound doc types: fulfilled at the whole-doc level (no per-item entity_ids on line items).
+_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "consignment_in", "invoice", "bill"})
+# Inbound doc types formerly used a whole-doc Fulfill button. That button has been removed;
+# all fulfillable doc types now use the per-line bulk toolbar. This set is kept for reference
+# but is intentionally empty - do NOT restore the old whole-doc button pattern.
 # Keep in sync with doc_constants.INBOUND_DOC_TYPES (different package).
-_INBOUND_DOC_TYPES_UI: frozenset[str] = frozenset({"consignment_in"})
+_INBOUND_DOC_TYPES_UI: frozenset[str] = frozenset()
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
 # show the button on statuses the backend will reject.  Update when backend allowlist changes.
 _FULFILLABLE_STATUSES_UI: dict[str, frozenset[str]] = {
     "memo":           frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
     "invoice":        frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
     "consignment_in": frozenset({"sent", "final", "received", "partially_received"}),
+    "bill":           frozenset({"received", "partially_received", "awaiting_payment", "final", "paid", "partial"}),
 }
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "invoice": "Invoices",
@@ -5428,43 +5431,19 @@ async function celerpCsvImport(input, entityId) {{
             and status in _FULFILLABLE_STATUSES_UI.get(doc_type, frozenset())
             and bool(line_items)
         )
-        # Inbound docs (consignment_in) use whole-doc fulfill - no per-line selection.
-        _fin_show_inbound_fulfill = _fulfillable_status and doc_type in _INBOUND_DOC_TYPES_UI
-        # Outbound/bilateral docs (memo, invoice) use per-line bulk toolbar.
-        _fin_show_fulfill = _fulfillable_status and doc_type not in _INBOUND_DOC_TYPES_UI
+        # All fulfillable doc types (inbound and outbound) use the per-line bulk toolbar.
+        # _INBOUND_DOC_TYPES_UI is intentionally empty; the old whole-doc button has been removed.
+        _fin_show_fulfill = _fulfillable_status
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
-        _show_item_status = doc_type in _FULFILLABLE_DOC_TYPES and doc_type not in _INBOUND_DOC_TYPES_UI and bool(line_items)
-
-        # Inbound: single whole-doc Fulfill / Revert buttons in the top action bar.
-        if _fin_show_inbound_fulfill and _is_manager:
-            _inbound_fs = doc.get("fulfillment_status") or ""
-            if _inbound_fs != "fulfilled":
-                action_btns_left.append(
-                    Button(
-                        "Fulfill",
-                        hx_post=f"/docs/{entity_id}/fulfill-lines",
-                        hx_swap="none",
-                        hx_confirm="Mark this consignment as fulfilled?",
-                        cls="btn btn--primary",
-                    )
-                )
-            else:
-                action_btns_left.append(
-                    Button(
-                        "Revert Fulfillment",
-                        hx_post=f"/docs/{entity_id}/revert-lines",
-                        hx_swap="none",
-                        hx_confirm="Revert fulfillment for this consignment?",
-                        cls="btn btn--warning",
-                    )
-                )
+        _show_item_status = doc_type in _FULFILLABLE_DOC_TYPES and bool(line_items)
 
         _STATUS_BADGE: dict[str, tuple[str, str]] = {
-            "available": ("In Stock",  "badge--available"),
-            "memo_out":  ("On Memo",   "badge--memo_out"),
-            "sold":      ("Sold",      "badge--sold"),
-            "archived":  ("Archived",  "badge--inactive"),
-            "expired":   ("Expired",   "badge--expired"),
+            "available":     ("In Stock",     "badge--available"),
+            "memo_out":      ("On Memo",      "badge--memo_out"),
+            "sold":          ("Sold",         "badge--sold"),
+            "archived":      ("Archived",     "badge--inactive"),
+            "expired":       ("Expired",      "badge--expired"),
+            "not_received":  ("Not Received", "badge--not_received"),
         }
 
         def _li_row(li: dict) -> FT:
@@ -5486,12 +5465,20 @@ async function celerpCsvImport(input, entityId) {{
                     cls="col-checkbox li-checkbox-cell",
                 ))
             if _show_item_status:
-                status_val = item_status_map.get(li_eid, "") if item_status_map else ""
-                if status_val and status_val in _STATUS_BADGE:
-                    label, badge_cls = _STATUS_BADGE[status_val]
-                    cells.append(Td(Span(label, cls=f"badge {badge_cls}"), cls="col-item-status"))
+                # Inbound docs (bill, consignment_in): derive status from line item data when no entity_id.
+                # Expense lines get no badge. Pre-receive stock lines show "Not Received".
+                # Post-receive stock lines: fetch real item status from item_status_map.
+                if _is_vendor_doc and li.get("receive_as") == "expense":
+                    cells.append(Td("", cls="col-item-status"))
+                elif _is_vendor_doc and not li_eid:
+                    cells.append(Td(Span("Not Received", cls="badge badge--not_received"), cls="col-item-status"))
                 else:
-                    cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
+                    status_val = item_status_map.get(li_eid, "") if item_status_map else ""
+                    if status_val and status_val in _STATUS_BADGE:
+                        label, badge_cls = _STATUS_BADGE[status_val]
+                        cells.append(Td(Span(label, cls=f"badge {badge_cls}"), cls="col-item-status"))
+                    else:
+                        cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
             cells += [
                 Td(format_value(li.get("description") or li.get("name"))),
                 Td(format_value(li.get("sku") or None)),

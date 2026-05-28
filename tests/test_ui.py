@@ -13146,3 +13146,121 @@ class TestItemRowColumnParity:
         assert unit_td.get("hx-swap-oob") == "true", "cost_price td must have hx-swap-oob=true"
         assert unit_td.get("id") == "cell-item-1-cost_price", \
             f"cost_price td must have id=cell-item-1-cost_price, got {unit_td.get('id')}"
+
+
+# ---------------------------------------------------------------------------
+# Inbound per-line status column: Bill & Consignment In
+# ---------------------------------------------------------------------------
+
+class TestInboundPerLineStatus:
+    """UI rendering tests for per-line status column on inbound docs (bill, consignment_in)."""
+
+    def _make_bill_finalized(self, line_items=None):
+        return {
+            "entity_id": "doc:bill-pls-1",
+            "doc_type": "bill",
+            "status": "awaiting_payment",
+            "ref_id": "BILL-PLS-001",
+            "currency": "USD",
+            "subtotal": 100,
+            "tax": 0,
+            "total": 100,
+            "line_items": line_items or [],
+        }
+
+    def test_bill_finalized_no_receive_shows_not_received_badge(self):
+        """Stock line without entity_id on a finalized bill must show 'Not Received' badge."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "badge--not_received" in html
+        assert "Not Received" in html
+
+    def test_bill_received_shows_in_stock_badge(self):
+        """Stock line with entity_id and item status 'available' must show 'In Stock' badge."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
+             "receive_as": "stock", "entity_id": "item:received-1"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={"item:received-1": "available"}))
+        assert "badge--available" in html
+        assert "In Stock" in html
+        assert "Not Received" not in html
+
+    def test_bill_expense_line_shows_no_status_badge(self):
+        """Expense line must not show any status badge."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "SVC-1", "name": "Service", "quantity": 1, "unit_price": 20, "line_total": 20, "receive_as": "expense"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "badge--not_received" not in html
+        assert "Not Received" not in html
+        assert "badge--available" not in html
+
+    def test_bill_checkbox_disabled_without_entity_id(self):
+        """Stock line without entity_id must have disabled checkbox."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        # The li-select checkbox for this line must be disabled (no entity_id)
+        assert 'disabled' in html
+
+    def test_bill_checkbox_enabled_with_entity_id(self):
+        """Stock line with entity_id must have an enabled checkbox in a fulfillable status."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
+             "receive_as": "stock", "entity_id": "item:enabled-1"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={"item:enabled-1": "available"}))
+        assert 'value="item:enabled-1"' in html
+        # The checkbox for this entity_id must NOT be disabled
+        import re as _re
+        # Find the checkbox input with this value; it must not have disabled attribute right after
+        pattern = r'<input[^>]*value="item:enabled-1"[^>]*>'
+        match = _re.search(pattern, html)
+        assert match, "Checkbox for entity_id must exist in HTML"
+        assert "disabled" not in match.group(0), "Checkbox with entity_id must not be disabled"
+
+    def test_bill_no_old_whole_doc_fulfill_button(self):
+        """The old whole-doc single Fulfill button must not appear on bills (replaced by bulk toolbar)."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 1, "unit_price": 100, "line_total": 100,
+             "receive_as": "stock", "entity_id": "item:x"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={"item:x": "available"}))
+        # The old button had hx-confirm="Mark this consignment as fulfilled?" — must be gone
+        assert "Mark this consignment as fulfilled?" not in html
+
+    def test_consignment_in_not_received_badge_shown(self):
+        """consignment_in stock line without entity_id must also show 'Not Received'."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {
+            "entity_id": "doc:cin-pls-1",
+            "doc_type": "consignment_in",
+            "status": "received",
+            "ref_id": "CIN-001",
+            "currency": "USD",
+            "subtotal": 80,
+            "tax": 0,
+            "total": 80,
+            "line_items": [
+                {"sku": "GEM-1", "name": "Gem", "quantity": 1, "unit_price": 80, "line_total": 80},
+            ],
+        }
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "badge--not_received" in html or "Not Received" in html

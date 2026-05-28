@@ -384,6 +384,7 @@ a:hover { text-decoration: underline; }
 }
 .badge--active, .badge--available { background: rgba(34,197,94,0.15); color: var(--c-green); border: 1px solid rgba(34,197,94,0.3); }
 .badge--inactive, .badge--sold, .badge--expired { background: rgba(139,148,172,0.15); color: var(--c-text2); border: 1px solid rgba(139,148,172,0.3); }
+.badge--not_received { background: rgba(139,148,172,0.10); color: var(--c-text2); border: 1px solid rgba(139,148,172,0.25); font-style: italic; }
 .badge--draft { background: rgba(148,163,184,0.15); color: var(--c-draft); border: 1px solid rgba(148,163,184,0.3); }
 /* Document payment status badges */
 .badge--paid { background: var(--c-green); color: #fff; border: 1px solid var(--c-green-dark); }
