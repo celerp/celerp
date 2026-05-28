@@ -477,7 +477,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
             actor_id=user_id,
             location_id=None,
             source="auto_je",
-            idempotency_key=je_idempotency_key(doc_id, f"{cycle_tag}-void", "void"),
+            idempotency_key=str(uuid.uuid4()),
             metadata_={"trigger": "doc.fulfillment_reversed", "doc_id": doc_id},
         )
 
