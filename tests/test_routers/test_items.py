@@ -2077,3 +2077,84 @@ async def test_split_child_top_level_pieces_field(client):
         assert int(child.get("pieces", -1)) == 1, (
             f"Child {cid} has pieces={child.get('pieces')} but expected 1 (not parent's 100)"
         )
+
+
+@pytest.mark.asyncio
+async def test_sell_by_change_piece_to_weight_pulls_weight_into_qty(client):
+    """Switching sell_by from piece to carat: quantity must become stored weight, weight unchanged.
+
+    Regression: old code set weight = qty (backwards direction), so the real
+    weight was overwritten by the piece count.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"SBP2C-{_ts}", "name": "Stone", "quantity": 100.0,
+        "sell_by": "piece", "weight": 50.0,
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    pr = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"sell_by": {"old": "piece", "new": "carat"}},
+    }, headers=h)
+    assert pr.status_code == 200, pr.text
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert float(item["quantity"]) == 50.0, f"qty should be 50 (weight), got {item['quantity']}"
+    assert float(item["weight"]) == 50.0, f"weight must stay 50, got {item['weight']}"
+
+
+@pytest.mark.asyncio
+async def test_sell_by_change_weight_to_piece_pulls_pieces_into_qty(client):
+    """Switching sell_by from carat to piece: quantity must become stored pieces, pieces unchanged.
+
+    Regression: old code set pieces = qty (backwards direction), so the real
+    piece count was overwritten by the carat quantity.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"SBC2P-{_ts}", "name": "Parcel", "quantity": 50.0,
+        "sell_by": "carat", "attributes": {"pieces": 100},
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    pr = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"sell_by": {"old": "carat", "new": "piece"}},
+    }, headers=h)
+    assert pr.status_code == 200, pr.text
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert int(item["quantity"]) == 100, f"qty should be 100 (pieces), got {item['quantity']}"
+    assert int(item.get("pieces", -1)) == 100, f"pieces must stay 100, got {item.get('pieces')}"
+
+
+@pytest.mark.asyncio
+async def test_sell_by_change_piece_to_weight_no_weight_gives_none_qty(client):
+    """Switching sell_by from piece to carat when weight is unset: quantity must become None."""
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"SBPN-{_ts}", "name": "Unweighed Stone", "quantity": 5.0,
+        "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    pr = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"sell_by": {"old": "piece", "new": "carat"}},
+    }, headers=h)
+    assert pr.status_code == 200, pr.text
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item.get("quantity") is None or item.get("quantity") == 0, (
+        f"qty should be None/0 when weight was unset, got {item.get('quantity')}"
+    )

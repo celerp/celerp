@@ -832,9 +832,10 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         if new_weight is not None and float(new_weight) < 0:
             raise HTTPException(status_code=422, detail="Weight cannot be negative")
 
-    # sell_by sync: when sell_by changes unit type, sync quantity → weight or pieces so
-    # the independent stored fields stay consistent with what the derived display showed.
-    # Without this, switching piece→carat→edit qty→piece restores stale weight/pieces value.
+    # sell_by sync: when sell_by changes unit type, pull the companion field into quantity.
+    # quantity always means "how many sell_by units" — so switching piece→carat should set
+    # quantity = stored weight (the existing carat value), not carry over the piece count.
+    # weight and pieces are independent fields and must never be overwritten here.
     if "sell_by" in changed_keys:
         new_sell_by = (payload.fields_changed["sell_by"] or {}).get("new")
         if new_sell_by:
@@ -842,13 +843,14 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
             if _sync_row:
                 _sync_units = await _get_company_units(session, company_id)
                 _sync_unit_map = {u["name"]: u for u in _sync_units}
-                qty = _sync_row.state.get("quantity")
-                if qty is not None:
-                    if is_weight_unit(new_sell_by, _sync_unit_map):
-                        payload.fields_changed["weight"] = {"old": _sync_row.state.get("weight"), "new": float(qty)}
-                        payload.fields_changed["weight_unit"] = {"old": _sync_row.state.get("weight_unit"), "new": new_sell_by}
-                    elif is_pieces_unit(new_sell_by, _sync_unit_map):
-                        payload.fields_changed["pieces"] = {"old": (_sync_row.state.get("attributes") or {}).get("pieces"), "new": int(round(float(qty)))}
+                old_qty = _sync_row.state.get("quantity")
+                if is_weight_unit(new_sell_by, _sync_unit_map):
+                    new_qty = _sync_row.state.get("weight")   # may be None — quantity is unknown until user sets it
+                    payload.fields_changed["quantity"] = {"old": old_qty, "new": new_qty}
+                elif is_pieces_unit(new_sell_by, _sync_unit_map):
+                    raw_pieces = (_sync_row.state.get("attributes") or {}).get("pieces")
+                    new_qty = int(raw_pieces) if raw_pieces is not None else None
+                    payload.fields_changed["quantity"] = {"old": old_qty, "new": new_qty}
 
     entry = await emit_event(
         session,
