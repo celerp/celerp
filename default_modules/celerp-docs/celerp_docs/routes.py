@@ -3013,7 +3013,8 @@ async def fulfill_lines(
     # Memos don't get a COGS JE here; that happens when the invoice is finalized.
     if doc_type == "invoice" and doc_fulfillment_status == "fulfilled":
         await auto_je.create_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=entity_id, total_cogs=total_cogs
+            session, company_id=cid, user_id=uid, doc_id=entity_id, total_cogs=total_cogs,
+            cycle=state.get("revert_count", 0),
         )
 
     await session.commit()
@@ -3166,7 +3167,8 @@ async def revert_lines(
     # void_for_doc_fulfilled is a no-op if no JE exists (safe to call unconditionally).
     if doc_type == "invoice" and doc_fulfillment_status == "unfulfilled":
         await auto_je.void_for_doc_fulfilled(
-            session, company_id=cid, user_id=uid, doc_id=entity_id
+            session, company_id=cid, user_id=uid, doc_id=entity_id,
+            cycle=state.get("revert_count", 0),
         )
 
     await session.commit()

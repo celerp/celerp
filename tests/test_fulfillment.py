@@ -1228,3 +1228,52 @@ async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth
     })
     assert r.status_code == 409, r.text
     assert "fulfilled" in r.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
+    """Fulfill → revert-lines → re-fulfill must succeed (no idempotency key collision on COGS JE)."""
+    # Create invoice with one inventory item
+    item_r = await client.post("/items", headers=auth["headers"], json={
+        "sku": "REFULFILL-001", "name": "Re-fulfill test item", "quantity": 1,
+        "cost_price": 100.0, "unit_price": 200.0, "sell_by": "piece",
+    })
+    assert item_r.status_code == 200, item_r.text
+    item_id = item_r.json()["id"]
+
+    inv_r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "currency": "USD",
+        "line_items": [{"sku": "REFULFILL-001", "quantity": 1, "unit_price": 200.0, "entity_id": item_id}],
+    })
+    assert inv_r.status_code == 200, inv_r.text
+    doc_id = inv_r.json()["id"]
+
+    # Finalize
+    fin_r = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
+    assert fin_r.status_code == 200, fin_r.text
+
+    # First fulfill
+    r1 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id]})
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["fulfillment_status"] == "fulfilled"
+
+    item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item_state["status"] == "sold", f"Expected sold after first fulfill, got {item_state['status']}"
+
+    # Revert lines
+    rv_r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                              json={"line_entity_ids": [item_id]})
+    assert rv_r.status_code == 200, rv_r.text
+
+    item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item_state["status"] == "available", f"Expected available after revert, got {item_state['status']}"
+
+    # Re-fulfill — must succeed without idempotency key collision
+    r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id]})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["fulfillment_status"] == "fulfilled"
+
+    item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item_state["status"] == "sold", f"Expected sold after re-fulfill, got {item_state['status']}"
