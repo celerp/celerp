@@ -306,6 +306,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["fulfilled_at"] = data.get("fulfilled_at") or ""
         current["fulfilled_by"] = data["fulfilled_by"]
     elif event_type == "doc.fulfillment_reversed":
+        current["fulfill_cycle"] = int(current.get("fulfill_cycle", 0)) + 1
         current.pop("fulfillment_status", None)
         current.pop("fulfilled_items", None)
         current.pop("fulfilled_at", None)

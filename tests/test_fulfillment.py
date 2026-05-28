@@ -1277,3 +1277,50 @@ async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
 
     item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item_state["status"] == "sold", f"Expected sold after re-fulfill, got {item_state['status']}"
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_deduplicates_duplicate_ids(client, auth, _setup_ids):
+    """Submitting the same entity_id twice in one fulfill-lines call must only fulfill it once.
+
+    Regression: strip_empty did not de-duplicate, so a duplicate ID would emit
+    item.fulfilled twice for the same item, corrupting quantity_fulfilled and COGS.
+    """
+    item_id = await _create_item(client, auth, "DEDUP-FL-001", 5, cost_price=10)
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "DEDUP-FL-001", "entity_id": item_id, "quantity": 5, "unit_price": 20}],
+    )
+
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id, item_id, item_id]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Must appear exactly once in the fulfilled list despite 3 submissions
+    assert body["fulfilled"].count(item_id) == 1, f"Expected 1 occurrence, got: {body['fulfilled']}"
+    assert body["fulfillment_status"] == "fulfilled"
+
+    item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item["status"] == "sold"
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_deduplicates_duplicate_ids(client, auth, _setup_ids):
+    """Submitting the same entity_id twice in one revert-lines call must only revert it once."""
+    item_id = await _create_item(client, auth, "DEDUP-RL-001", 5, cost_price=10)
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "DEDUP-RL-001", "entity_id": item_id, "quantity": 5, "unit_price": 20}],
+    )
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+
+    rv = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id, item_id]})
+    assert rv.status_code == 200, rv.text
+    body = rv.json()
+    assert body["reverted"].count(item_id) == 1, f"Expected 1 occurrence, got: {body['reverted']}"
+
+    item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item["status"] == "available"

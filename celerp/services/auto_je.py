@@ -439,16 +439,16 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
     if total_cogs <= 0:
         return
     cycle_tag = f"fulfill-{cycle}" if cycle else "fulfill"
-    # Use uuid4 for idempotency keys: COGS JEs are per-request, not cross-request idempotent.
-    # A deterministic key caused a silent rollback on re-fulfill after revert-lines (the old key
-    # still exists in the ledger, IntegrityError rolls back the whole transaction).
+    # Use cycle-scoped deterministic idempotency keys so retries are safe (same key → no-op)
+    # while re-fulfill after revert produces a distinct JE (different cycle → different keys).
+    # The original uuid4 approach was an overcorrection that broke retry idempotency.
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
         je_id=f"je:auto:{doc_id}:{cycle_tag}",
-        idem_create=str(uuid.uuid4()),
-        idem_posted=str(uuid.uuid4()),
+        idem_create=f"je:auto:{doc_id}:{cycle_tag}:create",
+        idem_posted=f"je:auto:{doc_id}:{cycle_tag}:posted",
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
@@ -477,7 +477,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
             actor_id=user_id,
             location_id=None,
             source="auto_je",
-            idempotency_key=str(uuid.uuid4()),
+            idempotency_key=f"je:auto:{doc_id}:{cycle_tag}:void",
             metadata_={"trigger": "doc.fulfillment_reversed", "doc_id": doc_id},
         )
 

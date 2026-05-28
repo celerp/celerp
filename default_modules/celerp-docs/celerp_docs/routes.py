@@ -179,8 +179,8 @@ class FulfillLinesRequest(BaseModel):
     @field_validator("line_entity_ids")
     @classmethod
     def strip_empty(cls, v: list[str]) -> list[str]:
-        """Drop empty strings — JS bulk selects may include value="" rows."""
-        return [eid for eid in v if eid]
+        """Drop empty strings and de-duplicate — JS bulk selects may include value="" rows."""
+        return list(dict.fromkeys(eid for eid in v if eid))
 
 
 def _assert_date_order(patch: dict, current: dict | None = None) -> None:
@@ -2909,6 +2909,7 @@ async def fulfill_lines(
 
     errors: list[str] = []
     to_fulfill: list[str] = []
+    fetched: dict[str, Projection] = {}
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         if item_proj is None:
@@ -2920,6 +2921,7 @@ async def fulfill_lines(
                 f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', is '{item_status}'"
             )
             continue
+        fetched[item_eid] = item_proj
         to_fulfill.append(item_eid)
 
     if errors and not to_fulfill:
@@ -2934,7 +2936,7 @@ async def fulfill_lines(
 
     total_cogs = 0.0
     for item_eid in to_fulfill:
-        item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
+        item_proj = fetched[item_eid]
         qty = float(item_proj.state.get("quantity", 0))
         cost_total = item_proj.state.get("cost_total")
         if cost_total is not None:
@@ -3014,7 +3016,7 @@ async def fulfill_lines(
     if doc_type == "invoice" and doc_fulfillment_status == "fulfilled":
         await auto_je.create_for_doc_fulfilled(
             session, company_id=cid, user_id=uid, doc_id=entity_id, total_cogs=total_cogs,
-            cycle=state.get("revert_count", 0),
+            cycle=state.get("fulfill_cycle", 0),
         )
 
     await session.commit()
@@ -3062,6 +3064,7 @@ async def revert_lines(
 
     errors: list[str] = []
     to_revert: list[str] = []
+    fetched: dict[str, Projection] = {}
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         if item_proj is None:
@@ -3073,6 +3076,7 @@ async def revert_lines(
                 f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'memo_out' or 'sold' to revert, is '{item_status}'"
             )
             continue
+        fetched[item_eid] = item_proj
         to_revert.append(item_eid)
 
     if errors and not to_revert:
@@ -3086,7 +3090,7 @@ async def revert_lines(
     uid = user.id
 
     for item_eid in to_revert:
-        item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
+        item_proj = fetched[item_eid]
         qty = float(item_proj.state.get("quantity", 0))
         await emit_event(
             session,
@@ -3168,7 +3172,7 @@ async def revert_lines(
     if doc_type == "invoice" and doc_fulfillment_status == "unfulfilled":
         await auto_je.void_for_doc_fulfilled(
             session, company_id=cid, user_id=uid, doc_id=entity_id,
-            cycle=state.get("revert_count", 0),
+            cycle=state.get("fulfill_cycle", 0),
         )
 
     await session.commit()
