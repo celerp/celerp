@@ -2063,3 +2063,32 @@ async def test_consignment_in_fulfill_lines_after_receive(client, session):
     fulfill_r = await client.post(f"/docs/{cin_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
     assert fulfill_r.status_code == 200
     assert fulfill_r.json().get("fulfillment_status") == "fulfilled"
+
+
+@pytest.mark.asyncio
+async def test_bill_revert_to_draft_from_fulfilled(client, session):
+    """A fulfilled bill can be reverted to draft (clears fulfillment_status)."""
+    token = await _register(client)
+    bill_id, location_id = await _create_and_finalize_bill(client, token, sku="BILL-REVERT-DRAFT")
+
+    await client.post(
+        f"/docs/{bill_id}/receive",
+        headers=_h(token),
+        json={
+            "location_id": location_id,
+            "received_items": [
+                {"po_line_index": 0, "sku": "BILL-REVERT-DRAFT", "name": "Widget", "quantity_received": 2, "receive_as": "stock"},
+            ],
+        },
+    )
+    await client.post(f"/docs/{bill_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
+
+    doc = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
+    assert doc.get("fulfillment_status") == "fulfilled"
+
+    r = await client.post(f"/docs/{bill_id}/revert-to-draft", headers=_h(token), json={"reason": "test revert"})
+    assert r.status_code == 200, r.text
+
+    doc_after = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
+    assert doc_after.get("status") == "draft"
+    assert not doc_after.get("fulfillment_status"), "fulfillment_status must be cleared after revert-to-draft"

@@ -10,7 +10,7 @@ FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
     "memo":           frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
     "invoice":        frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
     "consignment_in": frozenset({"sent", "final", "received", "partially_received"}),
-    "bill":           frozenset({"received", "partially_received", "awaiting_payment", "final", "paid", "partial"}),
+    "bill":           frozenset({"received", "partially_received", "awaiting_payment", "final", "paid", "partial", "fulfilled"}),
 }
 
 # Item statuses that indicate a line item has been fulfilled.

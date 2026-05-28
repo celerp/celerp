@@ -60,7 +60,7 @@ _FULFILLABLE_STATUSES_UI: dict[str, frozenset[str]] = {
     "memo":           frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
     "invoice":        frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
     "consignment_in": frozenset({"sent", "final", "received", "partially_received"}),
-    "bill":           frozenset({"received", "partially_received", "awaiting_payment", "final", "paid", "partial"}),
+    "bill":           frozenset({"received", "partially_received", "awaiting_payment", "final", "paid", "partial", "fulfilled"}),
 }
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "invoice": "Invoices",
@@ -235,52 +235,10 @@ def _render_receive_return_section(doc: dict):
 
 
 def _render_receive_goods_section(doc: dict) -> FT:
-    """Receive Goods button for bills - one-click, full quantity, no partial control."""
-    from celerp.modules.loader import loaded_modules
-    if not any(m["name"] == "celerp-inventory" for m in loaded_modules()):
-        return ""
-    if doc.get("doc_type") != "bill":
-        return ""
-    if doc.get("status") in ("draft", "void"):
-        return ""
-
-    entity_id = doc.get("entity_id") or doc.get("id") or ""
-    cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
-
-    if doc.get("received_item_ids"):
-        return Div(
-            Button(t("btn.revert_goods_received"),
-                hx_delete=f"/docs/{entity_id}/receive-goods",
-                hx_confirm="Revert goods received? This will archive all created inventory items and reverse the accounting entry.",
-                hx_target=f"#{cid_safe}",
-                hx_swap="outerHTML",
-                cls="btn btn--danger btn--sm",
-            ),
-            id=cid_safe,
-        )
-
-    if doc.get("received_items"):
-        return Div(Span(t("doc.goods_received"), cls="badge badge--green"), id=cid_safe)
-
-    line_items = doc.get("line_items") or []
-    if not line_items:
-        return ""
-
-    stock_count = sum(1 for li in line_items if li.get("receive_as", "stock") == "stock")
-    btn_label = f"Receive Goods ({stock_count} items)" if any("receive_as" in li for li in line_items) else "Receive Goods"
-
-    return Div(
-        Button(
-            btn_label,
-            hx_post=f"/docs/{entity_id}/receive-goods",
-            hx_confirm="Receive all goods into stock? This will create inventory items for all line items at full quantity.",
-            hx_target=f"#{cid_safe}",
-            hx_swap="outerHTML",
-            cls="btn btn--primary btn--sm",
-            title="Receive all goods on this bill into inventory at full quantity.",
-        ),
-        id=cid_safe,
-    )
+    """Receive Goods button - only for bill doc type (legacy path; bills now use per-line fulfill)."""
+    # Bills now use the per-line fulfill mechanism (Fulfill Selected in bulk toolbar).
+    # This function is intentionally disabled to avoid two competing receive flows.
+    return ""
 
 
 def _doc_section_url(doc_type: str) -> str:
@@ -4017,7 +3975,7 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
-    show_fulfill=True: add Fulfill Selected / Revert Selected buttons.
+    show_fulfill=True: add Fulfill Selected / Revert Selected as dropdown options.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -4032,11 +3990,18 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         ]
         if labels_action:
             options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
+        if show_fulfill:
+            options.append(Option("Fulfill Selected", value="li-fulfill"))
+            options.append(Option("Revert Selected", value="li-revert"))
     else:
         options = [
             Option(t("doc.action"), value="", disabled=True, selected=True),
-            Option(t("doc.print_labels"), value="mod:labels_print-bulk"),
         ]
+        if labels_action:
+            options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
+        if show_fulfill:
+            options.append(Option("Fulfill Selected", value="li-fulfill"))
+            options.append(Option("Revert Selected", value="li-revert"))
     children = [
         Span(t("doc.0_rows_selected"), id="li-bulk-count", cls="bulk-count"),
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
@@ -4220,10 +4185,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="void-section",
             )
         )
-    # "Revert to Draft" button - only from final/sent with no payments and no received items
+    # "Revert to Draft" button - only from final/sent (and "fulfilled" for inbound docs) with no payments and no received items
     amount_paid_for_revert = float(doc.get("amount_paid") or 0)
     has_received_items = bool(doc.get("received_items"))
-    if status in ("final", "sent") and amount_paid_for_revert == 0 and not has_received_items and _is_manager and not suppress_doc_actions:
+    _is_inbound_doc = doc_type in ("bill", "consignment_in")
+    _revertable_statuses = (
+        {"final", "sent", "awaiting_payment", "received", "partially_received", "fulfilled"}
+        if _is_inbound_doc
+        else {"final", "sent"}
+    )
+    if status in _revertable_statuses and amount_paid_for_revert == 0 and not (has_received_items and not _is_inbound_doc) and _is_manager and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
@@ -5456,21 +5427,23 @@ async function celerpCsvImport(input, entityId) {{
             cells = []
             if _fin_show_bulk:
                 li_sku = li.get("sku") or ""
-                # Enabled for rows with an entity_id (user may fulfill or revert);
-                # disabled for rows without one (no inventory action possible on finalized doc).
+                # For inbound docs, enable all rows - fulfill_lines ignores entity_ids for inbound.
+                # For outbound docs, disable rows without entity_id (no inventory action possible).
+                _cb_disabled = not li_eid and not _is_vendor_doc
                 cells.append(Td(
                     Input(type="checkbox", cls="li-select", value=li_eid, data_sku=li_sku,
-                          disabled=not li_eid),
+                          disabled=_cb_disabled),
                     Input(type="hidden", value=li_eid, data_name="entity_id"),
                     cls="col-checkbox li-checkbox-cell",
                 ))
             if _show_item_status:
-                # Inbound docs (bill, consignment_in): derive status from line item data when no entity_id.
-                # Expense lines get no badge. Pre-receive stock lines show "Not Received".
-                # Post-receive stock lines: fetch real item status from item_status_map.
+                # Inbound docs (bill, consignment_in): ALL stock lines show "Not Received" before
+                # the doc is fulfilled. After fulfillment, show real item status from item_status_map.
+                # Expense lines always get no badge.
+                _doc_fulfilled = doc.get("fulfillment_status") == "fulfilled"
                 if _is_vendor_doc and li.get("receive_as") == "expense":
                     cells.append(Td("", cls="col-item-status"))
-                elif _is_vendor_doc and not li_eid:
+                elif _is_vendor_doc and not _doc_fulfilled:
                     cells.append(Td(Span("Not Received", cls="badge badge--not_received"), cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
@@ -5484,8 +5457,8 @@ async function celerpCsvImport(input, entityId) {{
                 Td(format_value(li.get("sku") or None)),
             ]
             if _is_vendor_doc:
-                cells.append(Td(format_value(li.get("category") or None)))
-                cells.append(Td(format_value(li.get("receive_as", "stock").capitalize())))
+                cells.append(Td(format_value(li.get("category") or None), cls="col-category"))
+                cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
             cells.extend([
                 Td(format_value(li.get("quantity"))),
                 Td(format_value(li.get("unit") or None)),
@@ -5503,8 +5476,8 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th("Status", cls="col-item-status"))
         _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
         if _is_vendor_doc:
-            _thead_base += [Th(t("th.category")), Th(t("th.type"))]
-        _thead_base += [Th(t("th.qty")), Th(t("th.unit")), Th(t("th.unit_price")), Th(t("th.disc")), Th(t("th.tax")), Th(t("th.total"), cls="cell--number col-total")]
+            _thead_base += [Th(t("th.category"), cls="col-category"), Th(t("th.type"), cls="col-type")]
+        _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax"), Th(t("th.total"), cls="cell--number col-total")]
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
@@ -5523,15 +5496,11 @@ async function celerpCsvImport(input, entityId) {{
   var countEl=document.getElementById('li-bulk-count');
   var sel=document.getElementById('li-bulk-select');
   function _n(){{return table?table.querySelectorAll('.li-select:checked').length:0;}}
-  var fulfillBtn=document.getElementById('li-bulk-fulfill-btn');
-  var revertBtn=document.getElementById('li-bulk-revert-btn');
   function _update(){{
     var n=_n();
     if(countEl) countEl.textContent=n+' row'+(n===1?'':'s')+' selected';
     if(toolbar) toolbar.style.display=n>0?'flex':'none';
-    if(sel&&n===0) sel.value='';
-    if(fulfillBtn) fulfillBtn.style.display=n>0?'':'none';
-    if(revertBtn) revertBtn.style.display=n>0?'':'none';
+    if(sel&&n===0) {{ sel.value=''; _hideBtns(); }}
   }}
   if(table) table.addEventListener('change',function(e){{
     if(e.target&&e.target.classList.contains('li-select')) _update();
@@ -5542,8 +5511,19 @@ async function celerpCsvImport(input, entityId) {{
     _update();
   }});
   var labelsBtn=document.getElementById('li-bulk-labels-btn');
+  var fulfillBtn=document.getElementById('li-bulk-fulfill-btn');
+  var revertBtn=document.getElementById('li-bulk-revert-btn');
+  function _hideBtns(){{
+    if(labelsBtn) labelsBtn.style.display='none';
+    if(fulfillBtn) fulfillBtn.style.display='none';
+    if(revertBtn) revertBtn.style.display='none';
+  }}
   window.liBulkActionSelected=function(action){{
-    if(labelsBtn) labelsBtn.style.display=action&&action.startsWith('mod:')?'':'none';
+    _hideBtns();
+    if(!action) return;
+    if(action.startsWith('mod:')){{ if(labelsBtn) labelsBtn.style.display=''; }}
+    else if(action==='li-fulfill'){{ if(fulfillBtn) fulfillBtn.style.display=''; }}
+    else if(action==='li-revert'){{ if(revertBtn) revertBtn.style.display=''; }}
   }};
   window.liBulkLabelsConfirmed=function(){{
     var ids=[];

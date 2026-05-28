@@ -929,12 +929,23 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     previous_status = state.get("status")
-    _REVERTABLE = {"final", "sent", "awaiting_payment"}
+    # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
+    _doc_type = state.get("doc_type", "")
+    _is_inbound = _doc_type in INBOUND_DOC_TYPES
+    _REVERTABLE = (
+        {"final", "sent", "awaiting_payment", "received", "partially_received", "fulfilled"}
+        if _is_inbound
+        else {"final", "sent", "awaiting_payment"}
+    )
     if previous_status not in _REVERTABLE:
         raise HTTPException(status_code=409, detail="Can only revert documents in 'final', 'sent', or 'awaiting_payment' status")
     if float(state.get("amount_paid", 0) or 0) != 0:
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
-    if state.get("received_items"):
+    # For inbound docs, received_items just means goods were logged — revert is still allowed
+    # (doc_projections clears received_items on doc.receive_undone if needed, but revert-to-draft
+    # should handle the whole flow in one step by emitting doc.reverted_to_draft which clears
+    # received_items in the projection handler below).
+    if not _is_inbound and state.get("received_items"):
         raise HTTPException(status_code=409, detail="Cannot revert document with received items")
 
     # Fix 1: block revert when any line item has been fulfilled.

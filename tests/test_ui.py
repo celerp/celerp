@@ -11618,7 +11618,7 @@ class TestVendorDocCategoryColumn:
         assert ">Category<" not in html
 
     def test_revert_goods_received_has_no_goods_received_badge(self):
-        """When received_item_ids is set, the render must show only the Revert button - no badge text."""
+        """_render_receive_goods_section is disabled - bills use per-line fulfill now."""
         from ui.routes.documents import _render_receive_goods_section
         from fasthtml.common import to_xml
         doc = self._make_bill(
@@ -11626,15 +11626,12 @@ class TestVendorDocCategoryColumn:
             received_item_ids=["item:abc"],
             received_items=[{"sku": "W-A", "name": "Widget A", "quantity_received": 2}],
         )
-        with patch("celerp.modules.loader.loaded_modules", return_value=[{"name": "celerp-inventory"}]):
-            html = to_xml(_render_receive_goods_section(doc))
-        assert "Revert Goods Received" in html
-        # Badge text must be absent in the revert state
-        assert html.count("Goods Received") == 1  # only button text, not badge+button
-        assert "badge--green" not in html
+        html = to_xml(_render_receive_goods_section(doc))
+        # Section is disabled; bills use per-line fulfill via bulk toolbar
+        assert html == ""
 
     def test_receive_goods_section_shows_badge_when_no_item_ids(self):
-        """When received_items exist but received_item_ids is empty, show badge only (legacy state)."""
+        """_render_receive_goods_section is disabled - bills use per-line fulfill now."""
         from ui.routes.documents import _render_receive_goods_section
         from fasthtml.common import to_xml
         doc = self._make_bill(
@@ -11642,10 +11639,8 @@ class TestVendorDocCategoryColumn:
             received_item_ids=None,
             received_items=[{"sku": "W-A"}],
         )
-        with patch("celerp.modules.loader.loaded_modules", return_value=[{"name": "celerp-inventory"}]):
-            html = to_xml(_render_receive_goods_section(doc))
-        assert "badge--green" in html
-        assert "Revert" not in html
+        html = to_xml(_render_receive_goods_section(doc))
+        assert html == ""
 
     def test_catalog_lookup_returns_category(self):
         """Catalog lookup must return category field for autofill."""
@@ -13180,13 +13175,15 @@ class TestInboundPerLineStatus:
         assert "Not Received" in html
 
     def test_bill_received_shows_in_stock_badge(self):
-        """Stock line with entity_id and item status 'available' must show 'In Stock' badge."""
+        """Stock line with entity_id on a FULFILLED bill must show real item status ('In Stock')."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._make_bill_finalized(line_items=[
             {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
              "receive_as": "stock", "entity_id": "item:received-1"},
         ])
+        # Mark the doc as fulfilled so per-line status is resolved from item_status_map
+        doc["fulfillment_status"] = "fulfilled"
         html = to_xml(_doc_detail(doc, item_status_map={"item:received-1": "available"}))
         assert "badge--available" in html
         assert "In Stock" in html
@@ -13204,16 +13201,16 @@ class TestInboundPerLineStatus:
         assert "Not Received" not in html
         assert "badge--available" not in html
 
-    def test_bill_checkbox_disabled_without_entity_id(self):
-        """Stock line without entity_id must have disabled checkbox."""
+    def test_bill_checkbox_enabled_without_entity_id(self):
+        """Inbound doc rows are always checkable even without entity_id (fulfill_lines ignores entity_ids for inbound)."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._make_bill_finalized(line_items=[
             {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"},
         ])
         html = to_xml(_doc_detail(doc, item_status_map={}))
-        # The li-select checkbox for this line must be disabled (no entity_id)
-        assert 'disabled' in html
+        # For inbound docs, all checkboxes are enabled (fulfill_lines ignores entity_ids for inbound)
+        assert 'li-select' in html
 
     def test_bill_checkbox_enabled_with_entity_id(self):
         """Stock line with entity_id must have an enabled checkbox in a fulfillable status."""
