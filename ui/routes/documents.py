@@ -5093,7 +5093,7 @@ function _celerpTaxCode(row) {{
     return sel.value.split('|')[0];
 }}
 function _celerpEditTaxLabel(key, rate, labelEl) {{
-    const currentText = labelEl.textContent.replace(/:$/, '').replace(/\s*\(\d+(\.\d+)?%\)$/, '');
+    const currentText = labelEl.textContent.replace(/:$/, '').replace(/\\s*\\(\\d+(\\.\\d+)?%\\)$/, '');
     const input = document.createElement('input');
     input.type = 'text';
     input.value = currentText;
