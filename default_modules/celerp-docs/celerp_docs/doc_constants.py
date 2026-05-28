@@ -12,6 +12,10 @@ FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
     "consignment_in": frozenset({"sent", "final", "received", "partially_received"}),
 }
 
+# Item statuses that indicate a line item has been fulfilled.
+# Used by revert-to-draft guard (Fix 1) and line-delete guard (Fix 3).
+FULFILLED_ITEM_STATUSES: frozenset[str] = frozenset({"sold", "memo_out"})
+
 # Doc types where fulfillment means goods *arrive* (inbound flow).
 # For these, fulfilling a doc must NOT deduct inventory - items already exist
 # with correct quantity from the receive step. Fulfillment just marks the doc complete.
