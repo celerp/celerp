@@ -255,6 +255,7 @@ async def create_for_bill_conversion(
     doc_id: str,
     doc: dict,
     base_currency: str = "USD",
+    revert_count: int = 0,
 ) -> None:
     """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
 
@@ -308,8 +309,8 @@ async def create_for_bill_conversion(
         company_id=company_id,
         user_id=user_id,
         je_id=f"je:auto:{doc_id}:bill",
-        idem_create=je_idempotency_key(doc_id, "po.converted_to_bill", "c"),
-        idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill", "p"),
+        idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
         ts=doc.get("issue_date") or doc.get("finalized_at") or __import__("datetime").date.today().isoformat(),
         entries=entries,

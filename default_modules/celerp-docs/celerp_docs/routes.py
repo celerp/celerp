@@ -891,7 +891,9 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     elif doc_type in ("purchase_order", "bill"):
         # Bill conversion JE: debit expense/inventory accounts, credit AP (2110)
         # Covers both PO->bill conversion and directly-created bills finalized directly.
-        await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
+        # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
+        _revert_count = int(_initial_doc_state.get("revert_count", 0))
+        await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
     # Fire doc_finalize_hook for modules (e.g. warehousing) to react — before commit.
     await fire_lifecycle(
         "doc_finalize_hook",

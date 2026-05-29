@@ -3972,10 +3972,11 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
-    show_fulfill=True: add Fulfill Selected / Revert Selected as dropdown options.
+    show_fulfill=True: add Fulfill/Revert Selected as dropdown options.
+    is_inbound=True: rename actions to "Receive Goods" / "Return Goods".
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -3983,6 +3984,8 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         (a for a in get_slot("bulk_action") if a.get("_module") == "celerp-labels"),
         None,
     )
+    _fulfill_label = "Receive Goods" if is_inbound else "Fulfill Selected"
+    _revert_label = "Return Goods" if is_inbound else "Revert Selected"
     if not labels_only:
         options = [
             Option(t("doc.action"), value="", disabled=True, selected=True),
@@ -3991,8 +3994,8 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         if labels_action:
             options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
         if show_fulfill:
-            options.append(Option("Fulfill Selected", value="li-fulfill"))
-            options.append(Option("Revert Selected", value="li-revert"))
+            options.append(Option(_fulfill_label, value="li-fulfill"))
+            options.append(Option(_revert_label, value="li-revert"))
     else:
         options = [
             Option(t("doc.action"), value="", disabled=True, selected=True),
@@ -4000,8 +4003,8 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         if labels_action:
             options.append(Option(t("doc.print_labels"), value="mod:labels_print-bulk"))
         if show_fulfill:
-            options.append(Option("Fulfill Selected", value="li-fulfill"))
-            options.append(Option("Revert Selected", value="li-revert"))
+            options.append(Option(_fulfill_label, value="li-fulfill"))
+            options.append(Option(_revert_label, value="li-revert"))
     children = [
         Span(t("doc.0_rows_selected"), id="li-bulk-count", cls="bulk-count"),
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
@@ -4022,23 +4025,23 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     if show_fulfill:
         children += [
             Form(
-                Button("Fulfill Selected", type="submit", cls="btn btn--primary btn--sm"),
+                Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
                 id="li-bulk-fulfill-btn",
                 style="display:none",
                 hx_post=f"/docs/{entity_id}/fulfill-lines",
                 hx_target="#action-error",
                 hx_swap="outerHTML",
-                hx_confirm="Fulfill selected item(s)?",
+                hx_confirm=f"{_fulfill_label}?",
                 onsubmit="return submitLiBulkAction(this)",
             ),
             Form(
-                Button("Revert Selected", type="submit", cls="btn btn--warning btn--sm"),
+                Button(_revert_label, type="submit", cls="btn btn--warning btn--sm"),
                 id="li-bulk-revert-btn",
                 style="display:none",
                 hx_post=f"/docs/{entity_id}/revert-lines",
                 hx_target="#action-error",
                 hx_swap="outerHTML",
-                hx_confirm="Revert fulfillment for selected item(s)?",
+                hx_confirm=f"{_revert_label}?",
                 onsubmit="return submitLiBulkAction(this)",
             ),
         ]
@@ -5437,19 +5440,25 @@ async function celerpCsvImport(input, entityId) {{
                     cls="col-checkbox li-checkbox-cell",
                 ))
             if _show_item_status:
-                # Inbound docs (bill, consignment_in): ALL stock lines show "Not Received" before
-                # the doc is fulfilled. After fulfillment, show real item status from item_status_map.
-                # Expense lines always get no badge.
-                _doc_fulfilled = doc.get("fulfillment_status") == "fulfilled"
+                # Inbound docs (bill, consignment_in): show real status once received.
+                # "received"/"partially_received" = items exist in inventory → show real status.
+                # "fulfilled" = doc fully processed → show real status.
+                # All other statuses (final, awaiting_payment, etc.) = not yet received → "Not Received".
+                _doc_has_received = status in ("received", "partially_received") or doc.get("fulfillment_status") == "fulfilled"
                 if _is_vendor_doc and li.get("receive_as") == "expense":
                     cells.append(Td("", cls="col-item-status"))
-                elif _is_vendor_doc and not _doc_fulfilled:
+                elif _is_vendor_doc and not _doc_has_received:
                     cells.append(Td(Span("Not Received", cls="badge badge--not_received"), cls="col-item-status"))
                 else:
                     status_val = item_status_map.get(li_eid, "") if item_status_map else ""
                     if status_val and status_val in _STATUS_BADGE:
                         label, badge_cls = _STATUS_BADGE[status_val]
-                        cells.append(Td(Span(label, cls=f"badge {badge_cls}"), cls="col-item-status"))
+                        # Link to inventory item if entity_id is available
+                        badge_el = (
+                            A(Span(label, cls=f"badge {badge_cls} badge--link"), href=f"/inventory/{li_eid}", title="View in catalog")
+                            if li_eid else Span(label, cls=f"badge {badge_cls}")
+                        )
+                        cells.append(Td(badge_el, cls="col-item-status"))
                     else:
                         cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
             cells += [
@@ -5481,7 +5490,7 @@ async function celerpCsvImport(input, entityId) {{
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
-            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill) if _fin_show_bulk else None,
+            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, is_inbound=_is_vendor_doc) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li) for li in line_items] if line_items else [

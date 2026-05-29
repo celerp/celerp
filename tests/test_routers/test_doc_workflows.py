@@ -2092,3 +2092,29 @@ async def test_bill_revert_to_draft_from_fulfilled(client, session):
     doc_after = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
     assert doc_after.get("status") == "draft"
     assert not doc_after.get("fulfillment_status"), "fulfillment_status must be cleared after revert-to-draft"
+
+
+@pytest.mark.asyncio
+async def test_bill_revert_to_draft_from_final_then_re_finalize(client, session):
+    """A finalized (but not received) direct bill can be reverted to draft and re-finalized."""
+    token = await _register(client)
+    bill_id, _ = await _create_and_finalize_bill(client, token, sku="BILL-CYCLE-SKU")
+
+    # Bill is now status=final, doc_type=bill
+    doc = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
+    assert doc.get("status") == "final"
+
+    # Revert to draft
+    r = await client.post(f"/docs/{bill_id}/revert-to-draft", headers=_h(token), json={"reason": "test"})
+    assert r.status_code == 200, r.text
+
+    doc2 = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
+    assert doc2.get("status") == "draft"
+    assert doc2.get("doc_type") == "bill"
+
+    # Re-finalize
+    r2 = await client.post(f"/docs/{bill_id}/finalize", headers=_h(token))
+    assert r2.status_code == 200, r2.text
+
+    doc3 = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
+    assert doc3.get("status") == "final"

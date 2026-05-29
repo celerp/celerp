@@ -13175,15 +13175,15 @@ class TestInboundPerLineStatus:
         assert "Not Received" in html
 
     def test_bill_received_shows_in_stock_badge(self):
-        """Stock line with entity_id on a FULFILLED bill must show real item status ('In Stock')."""
+        """Stock line with entity_id on a received bill must show real item status ('In Stock')."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._make_bill_finalized(line_items=[
             {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
              "receive_as": "stock", "entity_id": "item:received-1"},
         ])
-        # Mark the doc as fulfilled so per-line status is resolved from item_status_map
-        doc["fulfillment_status"] = "fulfilled"
+        # Use "received" status - items are in inventory at this point
+        doc["status"] = "received"
         html = to_xml(_doc_detail(doc, item_status_map={"item:received-1": "available"}))
         assert "badge--available" in html
         assert "In Stock" in html
@@ -13243,13 +13243,13 @@ class TestInboundPerLineStatus:
         assert "Mark this consignment as fulfilled?" not in html
 
     def test_consignment_in_not_received_badge_shown(self):
-        """consignment_in stock line without entity_id must also show 'Not Received'."""
+        """consignment_in in pre-receive status must show 'Not Received' for stock lines."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = {
             "entity_id": "doc:cin-pls-1",
             "doc_type": "consignment_in",
-            "status": "received",
+            "status": "final",  # not yet received
             "ref_id": "CIN-001",
             "currency": "USD",
             "subtotal": 80,
