@@ -196,19 +196,22 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["received_item_ids"].extend(data.get("created_item_ids", []))
 
         # Write entity_id back onto each line item so per-line fulfillment UI can key off it.
-        # Two cases:
-        #   1. Existing item (item_id on received_item): item_id is directly available.
-        #   2. Newly created item (no item_id on received_item): ID is in created_item_ids,
-        #      positionally aligned with the subset of received_items where receive_as=stock and item_id absent.
+        # For inbound docs (bill, consignment_in), item_id in the payload is the catalog template -
+        # the actual new parcel id is always in created_item_ids. Always consume from created_item_ids.
+        # For outbound docs (purchase_order), item_id IS the entity that was adjusted.
         line_items = current.get("line_items", [])
         created_ids = list(data.get("created_item_ids", []))
         created_id_iter = iter(created_ids)
+        _is_inbound_doc = current.get("doc_type") in ("bill", "consignment_in")
         for recv in received:
-            assigned_id = recv.get("item_id")
-            if not assigned_id:
-                # New item: consume next created_id if this was a stock receive
-                if (recv.get("receive_as", "stock") or "stock") == "stock":
-                    assigned_id = next(created_id_iter, None)
+            if _is_inbound_doc:
+                # Always consume from created_item_ids for inbound docs
+                assigned_id = next(created_id_iter, None) if (recv.get("receive_as", "stock") or "stock") == "stock" else None
+            else:
+                assigned_id = recv.get("item_id")
+                if not assigned_id:
+                    if (recv.get("receive_as", "stock") or "stock") == "stock":
+                        assigned_id = next(created_id_iter, None)
             if not assigned_id:
                 continue
             idx = int(recv.get("po_line_index", -1))

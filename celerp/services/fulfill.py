@@ -23,9 +23,10 @@ from celerp.services.pick import PickResult
 _SERVICE_SELL_BY = {"service", "hour"}
 
 # Doc types where fulfillment is inbound (goods arriving, not leaving).
-# Inventory must NOT be deducted for these - items already carry correct quantity
-# from the receive step. Fulfillment merely closes the doc.
-_INBOUND_DOC_TYPES = frozenset({"consignment_in"})
+# Inventory must NOT be deducted for these - parcels were already created at receive time.
+# bill: vendor invoice; parcels created when goods received, fulfillment closes the doc.
+# consignment_in: goods not owned; COGS when vendor bill settled.
+_INBOUND_DOC_TYPES = frozenset({"bill", "consignment_in"})
 
 # Doc types where COGS must NOT be recognized at fulfillment time.
 # consignment_in: goods not owned; COGS when vendor bill settled.

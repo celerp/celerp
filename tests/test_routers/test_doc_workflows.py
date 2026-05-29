@@ -2118,3 +2118,159 @@ async def test_bill_revert_to_draft_from_final_then_re_finalize(client, session)
 
     doc3 = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
     assert doc3.get("status") == "final"
+
+
+@pytest.mark.asyncio
+async def test_bill_receive_known_sku_creates_new_parcel_not_adjust(client, session):
+    """Receiving a bill line with a known catalog item_id must create a NEW parcel,
+    not adjust the existing item's quantity. The catalog template is untouched."""
+    token = await _register(client)
+
+    # Create a catalog template item for the known SKU
+    template_r = await client.post(
+        "/items", headers=_h(token),
+        json={"sku": "KNOWN-SKU-001", "name": "Known Widget", "quantity": 5, "sell_by": "piece"},
+    )
+    assert template_r.status_code == 200
+    template_id = template_r.json()["id"]
+
+    location_id = await _create_location(client, token)
+    bill_r = await client.post(
+        "/docs", headers=_h(token),
+        json={
+            "doc_type": "bill",
+            "contact_id": "contact:vendor1",
+            "line_items": [
+                {"sku": "KNOWN-SKU-001", "name": "Known Widget", "quantity": 3,
+                 "unit_price": 10, "line_total": 30, "receive_as": "stock"},
+            ],
+            "subtotal": 30, "tax": 0, "total": 30,
+        },
+    )
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=_h(token))
+
+    rec_r = await client.post(
+        f"/docs/{bill_id}/receive", headers=_h(token),
+        json={
+            "location_id": location_id,
+            "received_items": [
+                {"po_line_index": 0, "item_id": template_id, "sku": "KNOWN-SKU-001",
+                 "name": "Known Widget", "quantity_received": 3, "receive_as": "stock"},
+            ],
+        },
+    )
+    assert rec_r.status_code == 200
+
+    # Template item quantity must NOT have changed
+    tmpl = (await client.get(f"/items/{template_id}", headers=_h(token))).json()
+    assert tmpl["quantity"] == 5, "Template item must not be modified on inbound receive"
+
+    # A new parcel must exist with the received quantity
+    items = (await client.get("/items", headers=_h(token))).json()["items"]
+    same_sku = [i for i in items if i.get("sku") == "KNOWN-SKU-001"]
+    assert len(same_sku) == 2, f"Expected 2 items with KNOWN-SKU-001 (template + parcel), got {len(same_sku)}"
+    new_parcel = next(i for i in same_sku if i["id"] != template_id)
+    assert new_parcel["quantity"] == 3, "New parcel must have received quantity"
+
+    # Bill line must have entity_id pointing to the new parcel
+    doc_state = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
+    line_eid = doc_state["line_items"][0].get("entity_id")
+    assert line_eid and line_eid != template_id, "Line entity_id must point to new parcel, not template"
+
+
+@pytest.mark.asyncio
+async def test_consignment_in_receive_known_sku_creates_new_parcel(client, session):
+    """consignment_in with a known catalog item_id must also create a new parcel."""
+    token = await _register(client)
+
+    template_r = await client.post(
+        "/items", headers=_h(token),
+        json={"sku": "CONS-SKU-001", "name": "Consigned Widget", "quantity": 4, "sell_by": "piece"},
+    )
+    template_id = template_r.json()["id"]
+
+    location_id = await _create_location(client, token)
+    doc_r = await client.post(
+        "/docs", headers=_h(token),
+        json={
+            "doc_type": "consignment_in",
+            "contact_id": "contact:vendor1",
+            "line_items": [
+                {"sku": "CONS-SKU-001", "name": "Consigned Widget", "quantity": 2,
+                 "unit_price": 5, "line_total": 10, "receive_as": "stock"},
+            ],
+            "subtotal": 10, "tax": 0, "total": 10,
+        },
+    )
+    doc_id = doc_r.json()["id"]
+    await client.post(f"/docs/{doc_id}/finalize", headers=_h(token))
+
+    rec_r = await client.post(
+        f"/docs/{doc_id}/receive", headers=_h(token),
+        json={
+            "location_id": location_id,
+            "received_items": [
+                {"po_line_index": 0, "item_id": template_id, "sku": "CONS-SKU-001",
+                 "name": "Consigned Widget", "quantity_received": 2, "receive_as": "stock"},
+            ],
+        },
+    )
+    assert rec_r.status_code == 200
+
+    # Template unchanged
+    tmpl = (await client.get(f"/items/{template_id}", headers=_h(token))).json()
+    assert tmpl["quantity"] == 4, "Consignment template must not be modified"
+
+    items = (await client.get("/items", headers=_h(token))).json()["items"]
+    same_sku = [i for i in items if i.get("sku") == "CONS-SKU-001"]
+    assert len(same_sku) == 2, f"Expected template + parcel, got {len(same_sku)}"
+
+
+@pytest.mark.asyncio
+async def test_po_receive_known_item_still_adjusts_qty(client, session):
+    """PO receive with item_id must still adjust the existing item's quantity (unchanged behavior).
+    Note: PO is received before finalize (finalize converts PO → bill).
+    """
+    token = await _register(client)
+
+    existing_r = await client.post(
+        "/items", headers=_h(token),
+        json={"sku": "PO-EXIST-001", "name": "PO Existing", "quantity": 10, "sell_by": "piece"},
+    )
+    item_id = existing_r.json()["id"]
+
+    po_r = await client.post(
+        "/docs", headers=_h(token),
+        json={
+            "doc_type": "purchase_order",
+            "contact_id": "contact:vendor1",
+            "line_items": [
+                {"sku": "PO-EXIST-001", "name": "PO Existing", "quantity": 5,
+                 "unit_price": 10, "line_total": 50},
+            ],
+            "subtotal": 50, "tax": 0, "total": 50,
+        },
+    )
+    po_id = po_r.json()["id"]
+    # Receive BEFORE finalize - finalize converts PO to bill (inbound doc type).
+    # purchase_order doc_type = outbound-style: adjusts qty on existing item.
+    rec_r = await client.post(
+        f"/docs/{po_id}/receive", headers=_h(token),
+        json={
+            "location_id": "loc:1",
+            "received_items": [
+                {"po_line_index": 0, "item_id": item_id, "quantity_received": 5, "receive_as": "stock"},
+            ],
+        },
+    )
+    assert rec_r.status_code == 200
+
+    # PO: existing item quantity must have increased
+    item = (await client.get(f"/items/{item_id}", headers=_h(token))).json()
+    assert item["quantity"] == 15, "PO receive must adjust existing item quantity"
+
+    # No new parcel created
+    items = (await client.get("/items", headers=_h(token))).json()["items"]
+    same_sku = [i for i in items if i.get("sku") == "PO-EXIST-001"]
+    assert len(same_sku) == 1, "PO receive must not create a new parcel"

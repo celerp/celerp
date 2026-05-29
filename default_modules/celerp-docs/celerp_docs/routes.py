@@ -1594,6 +1594,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         location_uuid = None
 
     is_consignment = doc_type == "consignment_in"
+    # Inbound docs always create new parcels - never adjust an existing item's qty.
+    # bill and consignment_in are both inbound: goods arrive and become new catalog entries.
+    # purchase_order is outbound-style: it adjusts qty on the canonical item record.
+    is_inbound = doc_type in ("bill", "consignment_in")
     created_item_ids: list[str] = []
 
     # Build sell_by lookup: item projections are authoritative; doc line items as fallback
@@ -1633,7 +1637,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
 
     for it in payload.received_items:
-        if it.item_id:
+        if it.item_id and not is_inbound:
+            # PO (outbound-style): adjust quantity on the canonical catalog item.
             item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
             if item is None:
                 raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
@@ -1642,23 +1647,35 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
             await emit_event(
                 session, company_id=company_id, entity_id=it.item_id, entity_type="item", event_type="item.quantity.adjusted",
-                data={"new_qty": new_qty, **({"consignment_flag": "in"} if is_consignment else {})},
+                data={"new_qty": new_qty},
                 actor_id=user.id, location_id=None, source="api",
                 idempotency_key=str(uuid.uuid4()), metadata_={"source_doc": entity_id},
             )
         else:
+            # Inbound doc (bill, consignment_in): always create a new parcel.
+            # If item_id is set it refers to a catalog template - use it for attribute inheritance only.
             if it.receive_as != "stock":
                 continue
             if not it.sku or not it.name:
                 raise HTTPException(status_code=422, detail="sku and name required when creating received item")
 
+            # Template: prefer existing item by item_id, fall back to SKU match.
+            template_state: dict = {}
+            if it.item_id:
+                tmpl_row = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
+                if tmpl_row:
+                    template_state = tmpl_row.state
+            if not template_state:
+                template_state = next(
+                    (r.state for r in all_item_rows
+                     if str(r.state.get("sku") or "").strip() == it.sku.strip()),
+                    {},
+                )
+            # sku_ref is an alias kept for clarity below
+            sku_ref: dict = template_state
+
             # Copy attributes from an existing item with same SKU (best-effort enrichment)
             # Reuse all_item_rows already fetched above - no extra DB query needed
-            sku_ref: dict = next(
-                (r.state for r in all_item_rows
-                 if str(r.state.get("sku") or "").strip() == it.sku.strip()),
-                {},
-            )
 
             # Bill line item: explicit user-set fields take highest priority over sku_ref
             doc_line: dict = next(
