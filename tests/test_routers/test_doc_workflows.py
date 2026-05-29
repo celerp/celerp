@@ -2274,3 +2274,42 @@ async def test_po_receive_known_item_still_adjusts_qty(client, session):
     items = (await client.get("/items", headers=_h(token))).json()["items"]
     same_sku = [i for i in items if i.get("sku") == "PO-EXIST-001"]
     assert len(same_sku) == 1, "PO receive must not create a new parcel"
+
+
+@pytest.mark.asyncio
+async def test_bill_receive_no_sku_item_auto_generates_sku(client, session):
+    """Receiving a bill line for a custom item with no SKU must auto-generate a SKU from name."""
+    token = await _register(client)
+    location_id = await _create_location(client, token)
+
+    bill_r = await client.post(
+        "/docs", headers=_h(token),
+        json={
+            "doc_type": "bill",
+            "contact_id": "contact:vendor1",
+            "line_items": [
+                {"name": "Custom Widget", "quantity": 5, "unit_price": 10,
+                 "line_total": 50, "receive_as": "stock"},
+            ],
+            "subtotal": 50, "tax": 0, "total": 50,
+        },
+    )
+    bill_id = bill_r.json()["id"]
+    await client.post(f"/docs/{bill_id}/finalize", headers=_h(token))
+
+    rec_r = await client.post(
+        f"/docs/{bill_id}/receive", headers=_h(token),
+        json={
+            "location_id": location_id,
+            "received_items": [
+                {"po_line_index": 0, "name": "Custom Widget", "quantity_received": 5, "receive_as": "stock"},
+            ],
+        },
+    )
+    assert rec_r.status_code == 200, rec_r.text
+
+    items = (await client.get("/items", headers=_h(token))).json()["items"]
+    new_items = [i for i in items if i.get("name") == "Custom Widget"]
+    assert len(new_items) == 1, "A new catalog entry must be created for the custom item"
+    assert new_items[0]["quantity"] == 5
+    assert new_items[0].get("sku"), "SKU must be auto-generated from item name"

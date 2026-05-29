@@ -1656,8 +1656,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             # If item_id is set it refers to a catalog template - use it for attribute inheritance only.
             if it.receive_as != "stock":
                 continue
-            if not it.sku or not it.name:
-                raise HTTPException(status_code=422, detail="sku and name required when creating received item")
+            if not it.name:
+                raise HTTPException(status_code=422, detail="name is required when creating received item")
+            # Auto-generate SKU from name if not provided (e.g. custom ad-hoc items)
+            _sku = it.sku or it.name.strip().upper().replace(" ", "-")[:40]
 
             # Template: prefer existing item by item_id, fall back to SKU match.
             template_state: dict = {}
@@ -1668,19 +1670,16 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             if not template_state:
                 template_state = next(
                     (r.state for r in all_item_rows
-                     if str(r.state.get("sku") or "").strip() == it.sku.strip()),
+                     if str(r.state.get("sku") or "").strip() == _sku.strip()),
                     {},
                 )
             # sku_ref is an alias kept for clarity below
             sku_ref: dict = template_state
 
-            # Copy attributes from an existing item with same SKU (best-effort enrichment)
-            # Reuse all_item_rows already fetched above - no extra DB query needed
-
             # Bill line item: explicit user-set fields take highest priority over sku_ref
             doc_line: dict = next(
                 (li for li in row.state.get("line_items", [])
-                 if str(li.get("sku") or "").strip() == it.sku.strip()),
+                 if str(li.get("sku") or "").strip() == _sku.strip()),
                 {},
             )
 
@@ -1704,11 +1703,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 if _v:
                     item_data[_f] = _v
             # Resolve conversion factor: doc line overrides sku_ref
-            sku_key = it.sku.strip() if it.sku else ""
-            conversion = doc_line_conversion.get(sku_key) or sku_conversion_map.get(sku_key) or 1
+            conversion = doc_line_conversion.get(_sku.strip()) or sku_conversion_map.get(_sku.strip()) or 1
             # Payload values always take precedence for the fields below
             item_data.update({
-                "sku": it.sku,
+                "sku": _sku,
                 "name": it.name,
                 "quantity": float(it.quantity_received) * conversion,
                 "location_id": payload.location_id,
