@@ -1536,7 +1536,7 @@ def setup_routes(app):
         back_url = _doc_section_url(doc_type)
         # Bulk-fetch inventory statuses for fulfillable doc types to show status column
         item_status_map: dict[str, str] = {}
-        if doc_type in _FULFILLABLE_DOC_TYPES and status not in ("draft",):
+        if (doc_type in _FULFILLABLE_DOC_TYPES or doc_type in ("bill", "consignment_in")) and status not in ("draft",):
             try:
                 _line_eids = [
                     li.get("entity_id") or li.get("item_id") or ""
@@ -3801,11 +3801,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
                                 Select(*_methods, name="method", cls="form-input"), cls="form-group"),
                             Div(Label(t("label.bank_account"), cls="form-label"),
                                 Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
-                            Div(Label(t("label.conversion_rate"), cls="form-label"),
+                            Div(Label(t("label.conversion_rate"), cls="form-label", title="Rate at which refund was issued (1.0 if no conversion). FX gain/loss entries require the Multi-Currency Module."),
                                 Input(type="number", name="conversion_rate", value="1.0000",
                                       step="0.0001", min="0.0001", cls="form-input"),
-                                P(t("doc.rate_at_which_refund_was_issued_10_if_no_conversio"),
-                                  cls="form-hint"),
                                 cls="form-group"),
                             Div(Label(t("label.reference"), cls="form-label"),
                                 Input(type="text", name="reference", cls="form-input"), cls="form-group"),
@@ -3859,11 +3857,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
                             Select(*_methods, name="method", cls="form-input"), cls="form-group"),
                         Div(Label(t("label.bank_account"), cls="form-label"),
                             Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
-                        Div(Label(t("label.conversion_rate"), cls="form-label"),
+                        Div(Label(t("label.conversion_rate"), cls="form-label", title="Rate at which payment was received (1.0 if no conversion). FX gain/loss entries require the Multi-Currency Module."),
                             Input(type="number", name="conversion_rate", value="1.0000",
                                   step="0.0001", min="0.0001", cls="form-input"),
-                            P(t("doc.rate_at_which_payment_was_received_10_if_no_conver"),
-                              cls="form-hint"),
                             cls="form-group"),
                         Div(Label(t("label.reference"), cls="form-label"),
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),
@@ -3994,8 +3990,11 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
             children += [
                 Form(
                     *line_inputs,
-                    loc_el,
-                    Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
+                    Div(
+                        loc_el,
+                        Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
+                        cls="inline-form-row",
+                    ),
                     id="li-bulk-fulfill-btn",
                     style="display:none",
                     hx_post=f"/docs/{entity_id}/receive",
@@ -4189,7 +4188,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         else {"final", "sent"}
     )
     if status in _revertable_statuses and amount_paid_for_revert == 0 and not (has_received_items and not _is_inbound_doc) and _is_manager and not suppress_doc_actions:
-        action_btns_right.append(
+        action_btns_right.insert(0,
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
                 Form(
@@ -5191,7 +5190,7 @@ function _celerpCollectLines() {{
         const entityId = row.querySelector('[data-name="entity_id"]')?.value || null;
         const taxLabel = row.querySelector('[data-name="tax_label"]')?.value || '';
         const categoryEl = row.querySelector('[data-name="category"]');
-        const category = categoryEl ? (categoryEl.value || categoryEl.textContent || '').trim() || null : null;
+        const category = categoryEl ? (categoryEl.tagName === 'SELECT' ? (categoryEl.value || null) : (categoryEl.value || categoryEl.textContent || '').trim() || null) : null;
         const receiveAsEl = row.querySelector('[data-name="receive_as"]');
         const receiveAs = receiveAsEl ? (receiveAsEl.value || receiveAsEl.textContent || '').trim().toLowerCase() || null : null;
         const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;

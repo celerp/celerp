@@ -1632,6 +1632,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .void-inline > summary { list-style: none; cursor: pointer; }
 .void-inline > summary::-webkit-details-marker { display: none; }
 .inline-form--compact { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-top: 0.25rem; padding: 0.5rem; background: var(--c-bg-alt, #f8f9fa); border-radius: var(--radius); border: 1px solid var(--c-border); }
+.inline-form-row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 .inline-form--compact .form-input--sm { max-width: 160px; }
 
 /* ── Bulk payment panel ───────────────────────────────────────────────────── */
