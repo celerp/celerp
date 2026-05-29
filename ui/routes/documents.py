@@ -48,19 +48,14 @@ _PER_PAGE_OPTIONS = [25, 50, 100, 250]
 _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "memo", "consignment_in", "list"]
 # Doc types that support per-line inventory item status display (fetch + render).
 # Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
-_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "consignment_in", "invoice", "bill"})
-# Inbound doc types formerly used a whole-doc Fulfill button. That button has been removed;
-# all fulfillable doc types now use the per-line bulk toolbar. This set is kept for reference
-# but is intentionally empty - do NOT restore the old whole-doc button pattern.
-# Keep in sync with doc_constants.INBOUND_DOC_TYPES (different package).
-_INBOUND_DOC_TYPES_UI: frozenset[str] = frozenset()
+# Inbound doc types (bill, consignment_in) show item status but use /receive not fulfill-lines.
+_FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "invoice"})
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
 # show the button on statuses the backend will reject.  Update when backend allowlist changes.
+# Inbound doc types (bill, consignment_in) are excluded - they use POST /receive.
 _FULFILLABLE_STATUSES_UI: dict[str, frozenset[str]] = {
-    "memo":           frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
-    "invoice":        frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
-    "consignment_in": frozenset({"sent", "final", "received", "partially_received"}),
-    "bill":           frozenset({"received", "partially_received", "awaiting_payment", "final", "paid", "partial", "fulfilled"}),
+    "memo":    frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
+    "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
 }
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "invoice": "Invoices",
@@ -232,13 +227,6 @@ def _render_receive_return_section(doc: dict):
     if fs == "partial":
         return Span(t("doc.partially_fulfilled"), cls="badge badge--amber")
     return None
-
-
-def _render_receive_goods_section(doc: dict) -> FT:
-    """Receive Goods button - only for bill doc type (legacy path; bills now use per-line fulfill)."""
-    # Bills now use the per-line fulfill mechanism (Fulfill Selected in bulk toolbar).
-    # This function is intentionally disabled to avoid two competing receive flows.
-    return ""
 
 
 def _doc_section_url(doc_type: str) -> str:
@@ -2893,44 +2881,6 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
         return _render_receive_return_section(doc)
 
-    @app.post("/docs/{entity_id}/receive-goods")
-    async def doc_receive_goods(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            from starlette.responses import Response as _R
-            return _R("", status_code=401)
-        cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
-        try:
-            doc = await api.get_doc(token, entity_id)
-            line_items = doc.get("line_items") or []
-            await api.receive_goods(token, entity_id, line_items)
-            doc = await api.get_doc(token, entity_id)
-        except APIError as e:
-            if e.status == 401:
-                from starlette.responses import Response as _R2
-                return _R2("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
-        return _render_receive_goods_section(doc)
-
-    @app.delete("/docs/{entity_id}/receive-goods")
-    async def doc_undo_receive_goods(request: Request, entity_id: str):
-        from starlette.responses import Response as _R
-        token = _token(request)
-        if not token:
-            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-        cid_safe = f"receive-goods-{entity_id}".replace(":", "-")
-        try:
-            await api.undo_receive_goods(token, entity_id)
-        except APIError as e:
-            if e.status == 401:
-                return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return _action_error(str(e.detail))
-        try:
-            doc = await api.get_doc(token, entity_id)
-        except Exception:
-            return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
-        return _render_receive_goods_section(doc)
-
     # ── Doc file management (upload / delete / tag / description / download) ──
 
     @app.post("/docs/{entity_id}/files")
@@ -3973,11 +3923,11 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
     show_fulfill=True: add Fulfill/Revert Selected as dropdown options.
-    is_inbound=True: rename actions to "Receive Goods" / "Return Goods".
+    is_inbound=True: show Receive Goods / Return Goods targeting POST/DELETE /receive.
     Two-stage: select action → confirm button appears. Print Labels only shown when
     celerp-labels is installed (slot-driven, DRY)."""
     from celerp.modules.slots import get as get_slot
@@ -4024,28 +3974,68 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         Div(id="li-bulk-context"),
     ]
     if show_fulfill:
-        children += [
-            Form(
-                Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
-                id="li-bulk-fulfill-btn",
-                style="display:none",
-                hx_post=f"/docs/{entity_id}/fulfill-lines",
-                hx_target="#action-error",
-                hx_swap="outerHTML",
-                hx_confirm=f"{_fulfill_label}?",
-                onsubmit="return submitLiBulkAction(this)",
-            ),
-            Form(
-                Button(_revert_label, type="submit", cls="btn btn--warning btn--sm"),
-                id="li-bulk-revert-btn",
-                style="display:none",
-                hx_post=f"/docs/{entity_id}/revert-lines",
-                hx_target="#action-error",
-                hx_swap="outerHTML",
-                hx_confirm=f"{_revert_label}?",
-                onsubmit="return submitLiBulkAction(this)",
-            ),
-        ]
+        if is_inbound:
+            # Build hidden line-item inputs for POST /receive from the doc's line items.
+            line_inputs = []
+            for i, li in enumerate(inbound_line_items or []):
+                line_inputs += [
+                    Input(type="hidden", name=f"item_id_{i}", value=li.get("entity_id") or li.get("item_id") or ""),
+                    Input(type="hidden", name=f"sku_{i}", value=li.get("sku") or ""),
+                    Input(type="hidden", name=f"name_{i}", value=li.get("description") or li.get("name") or li.get("sku") or ""),
+                    Input(type="hidden", name=f"receive_as_{i}", value=li.get("receive_as") or "stock"),
+                    Input(type="hidden", name=f"qty_{i}", value=str(float(li.get("quantity") or 0))),
+                ]
+            loc_opts = [Option(loc.get("name", ""), value=loc.get("name", "")) for loc in (locations or [])]
+            loc_el = (
+                Select(*loc_opts, name="location_name", cls="form-input form-input--sm", id="li-bulk-location")
+                if loc_opts else
+                Input(type="text", name="location_name", placeholder="Location (optional)", cls="form-input form-input--sm", id="li-bulk-location")
+            )
+            children += [
+                Form(
+                    *line_inputs,
+                    loc_el,
+                    Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
+                    id="li-bulk-fulfill-btn",
+                    style="display:none",
+                    hx_post=f"/docs/{entity_id}/receive",
+                    hx_target="#action-error",
+                    hx_swap="outerHTML",
+                    onsubmit="return true",
+                ),
+                Form(
+                    Button(_revert_label, type="submit", cls="btn btn--warning btn--sm"),
+                    id="li-bulk-revert-btn",
+                    style="display:none",
+                    hx_delete=f"/docs/{entity_id}/receive",
+                    hx_target="#action-error",
+                    hx_swap="outerHTML",
+                    hx_confirm=f"{_revert_label}?",
+                ),
+            ]
+        else:
+            children += [
+                Form(
+                    Button(_fulfill_label, type="submit", cls="btn btn--primary btn--sm"),
+                    id="li-bulk-fulfill-btn",
+                    style="display:none",
+                    hx_post=f"/docs/{entity_id}/fulfill-lines",
+                    hx_target="#action-error",
+                    hx_swap="outerHTML",
+                    hx_confirm=f"{_fulfill_label}?",
+                    onsubmit="return submitLiBulkAction(this)",
+                ),
+                Form(
+                    Button(_revert_label, type="submit", cls="btn btn--warning btn--sm"),
+                    id="li-bulk-revert-btn",
+                    style="display:none",
+                    hx_post=f"/docs/{entity_id}/revert-lines",
+                    hx_target="#action-error",
+                    hx_swap="outerHTML",
+                    hx_confirm=f"{_revert_label}?",
+                    onsubmit="return submitLiBulkAction(this)",
+                ),
+            ]
     return Div(
         *children,
         id="li-bulk-toolbar",
@@ -4360,7 +4350,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     # --- Inventory section action buttons (rendered above line items, not in the top bar) ---
     _receive_return_el = _render_receive_return_section(doc)
-    _receive_goods_el = _render_receive_goods_section(doc)
 
     # --- Slot: doc_detail_badges (module-contributed status badges) ---
     _slot_badges = []
@@ -4379,58 +4368,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     _slot_badges.append(_el)
             except Exception:
                 pass
-
-    # --- PO/bill/consignment_in receive (per-line form) ---
-    po_receive_section = ""
-    if doc_type in ("purchase_order", "bill", "consignment_in") and status in ("awaiting_payment", "finalized", "sent", "final", "partially_received"):
-        po_items = doc.get("line_items", [])
-        if po_items:
-            receive_rows = []
-            for i, li in enumerate(po_items):
-                qty_ordered = float(li.get("quantity", 0) or 0)
-                qty_received = float(li.get("quantity_received", 0) or 0)
-                qty_remaining = max(0, qty_ordered - qty_received)
-                desc = str(li.get("description", "") or li.get("sku", "") or f"Item {i + 1}")
-                # item_id: use catalog entity_id (bills store it as entity_id, POs as item_id)
-                _item_id = li.get("entity_id") or li.get("item_id") or ""
-                _sku = li.get("sku") or ""
-                _name = li.get("description") or li.get("name") or li.get("sku") or ""
-                _receive_as = li.get("receive_as") or "stock"
-                receive_rows.append(Tr(
-                    Td(desc),
-                    Td(str(qty_ordered)),
-                    Td(str(qty_received)),
-                    Td(
-                        Input(type="hidden", name=f"item_id_{i}", value=_item_id),
-                        Input(type="hidden", name=f"sku_{i}", value=_sku),
-                        Input(type="hidden", name=f"name_{i}", value=_name),
-                        Input(type="hidden", name=f"receive_as_{i}", value=_receive_as),
-                        Input(type="number", name=f"qty_{i}", value=str(qty_remaining),
-                              step="any", min="0", max=str(qty_remaining),
-                              cls="form-input form-input--sm"),
-                    ) if qty_remaining > 0 else Td(Span(t("doc.fully_received"), cls="badge badge--green")),
-                ))
-            loc_opts = [Option(loc.get("name", ""), value=loc.get("name", "")) for loc in (locations or [])]
-            po_receive_section = Details(
-                Summary(t("doc.receive_goods"), cls="btn btn--secondary"),
-                Form(
-                    Table(
-                        Thead(Tr(Th(t("th.item")), Th(t("th.ordered")), Th(t("doc.received")), Th(t("th.qty_to_receive")))),
-                        Tbody(*receive_rows),
-                        cls="data-table data-table--compact",
-                    ),
-                    Div(Label(t("th.location"), cls="form-label"),
-                        Select(*loc_opts, name="location_name", cls="form-input") if loc_opts else
-                        Input(type="text", name="location_name", placeholder="Location", cls="form-input"),
-                        cls="form-group"),
-                    Div(Label(t("th.notes"), cls="form-label"),
-                        Textarea("", name="notes", rows="2", cls="form-input"), cls="form-group"),
-                    Span("", id="receive-action-error"),
-                    Button(t("btn.record_receipt"), type="submit", cls="btn btn--primary"),
-                    hx_post=f"/docs/{entity_id}/receive", hx_swap="none", cls="form-card",
-                ),
-                cls="receive-section",
-            )
 
     # --- Price list bar (positioned in line items section) ---
     _pl_names = [pl.get("name", "") for pl in (price_lists or []) if pl.get("name")]
@@ -5414,11 +5351,18 @@ async function celerpCsvImport(input, entityId) {{
             and status in _FULFILLABLE_STATUSES_UI.get(doc_type, frozenset())
             and bool(line_items)
         )
-        # All fulfillable doc types (inbound and outbound) use the per-line bulk toolbar.
-        # _INBOUND_DOC_TYPES_UI is intentionally empty; the old whole-doc button has been removed.
-        _fin_show_fulfill = _fulfillable_status
+        # Inbound docs (bill, consignment_in) show Receive Goods / Return Goods in toolbar.
+        # They do NOT use fulfill-lines; the toolbar posts to /receive instead.
+        _inbound_doc_statuses = frozenset({"final", "sent", "awaiting_payment", "received", "partially_received"})
+        _inbound_receivable = (
+            _is_vendor_doc
+            and doc_type in ("bill", "consignment_in")
+            and status in _inbound_doc_statuses
+            and bool(line_items)
+        )
+        _fin_show_fulfill = _fulfillable_status or _inbound_receivable
         _fin_show_bulk = (_fin_labels_active or _fin_show_fulfill) and bool(line_items)
-        _show_item_status = doc_type in _FULFILLABLE_DOC_TYPES and bool(line_items)
+        _show_item_status = (doc_type in _FULFILLABLE_DOC_TYPES or _inbound_receivable) and bool(line_items)
 
         _STATUS_BADGE: dict[str, tuple[str, str]] = {
             "available":     ("In Stock",     "badge--available"),
@@ -5499,7 +5443,7 @@ async function celerpCsvImport(input, entityId) {{
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
-            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, is_inbound=_is_vendor_doc) if _fin_show_bulk else None,
+            _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
                 Tbody(*([_li_row(li) for li in line_items] if line_items else [
@@ -5706,7 +5650,6 @@ async function celerpCsvImport(input, entityId) {{
             ),
             cls="doc-actions",
         ) if (action_btns_left or action_btns_right or action_btns_print) else "",
-        po_receive_section,
         # Metadata bar: Doc ID | Reference | Issue date | Due date
         # For subscription templates: show Frequency + Next Issue Date instead of Issue/Due date
         Div(
@@ -5750,9 +5693,9 @@ async function celerpCsvImport(input, entityId) {{
         ),
         # Inventory action button - appears just above the line items section, aligned right
         Div(
-            _receive_return_el or _receive_goods_el or "",
+            _receive_return_el or "",
             cls="doc-inventory-action",
-        ) if (_receive_return_el or _receive_goods_el) else "",
+        ) if _receive_return_el else "",
         # Line items + price list bar
         Div(
             lines_section,

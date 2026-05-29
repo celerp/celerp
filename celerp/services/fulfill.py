@@ -22,16 +22,11 @@ from celerp.services.pick import PickResult
 
 _SERVICE_SELL_BY = {"service", "hour"}
 
-# Doc types where fulfillment is inbound (goods arriving, not leaving).
-# Inventory must NOT be deducted for these - parcels were already created at receive time.
-# bill: vendor invoice; parcels created when goods received, fulfillment closes the doc.
-# consignment_in: goods not owned; COGS when vendor bill settled.
-_INBOUND_DOC_TYPES = frozenset({"bill", "consignment_in"})
-
 # Doc types where COGS must NOT be recognized at fulfillment time.
 # consignment_in: goods not owned; COGS when vendor bill settled.
 # memo: goods still nominally owned; COGS recognized when invoice is issued.
-_NO_COGS_DOC_TYPES = _INBOUND_DOC_TYPES | frozenset({"memo"})
+# bill: inbound; parcels created at receive time, fulfill-lines is blocked for these.
+_NO_COGS_DOC_TYPES = frozenset({"bill", "consignment_in", "memo"})
 
 
 def _to_uuid(val) -> _uuid.UUID:
@@ -51,10 +46,6 @@ async def execute_fulfill(
 ) -> dict[str, Any]:
     """Execute fulfillment: emit item events, doc event, and COGS JE.
 
-    For inbound doc types (e.g. consignment_in) inventory is NOT deducted -
-    items already carry correct quantity from the receive step; fulfillment
-    only marks the doc complete.
-
     Returns: {fulfillment_status, fulfilled_items, total_cogs}
     """
     now = datetime.now(UTC).isoformat()
@@ -63,134 +54,121 @@ async def execute_fulfill(
     cid = _to_uuid(company_id)
     uid = _to_uuid(user_id)
 
-    if doc_type in _INBOUND_DOC_TYPES:
-        # Inbound fulfillment: no inventory deduction. Record all line items as
-        # confirmed so the doc has a complete fulfilled_items list.
-        for line in doc_state.get("line_items", []):
+    for pick in pick_result.picks:
+        if pick.action == "full":
+            await emit_event(
+                session,
+                company_id=cid,
+                entity_id=pick.item_id,
+                entity_type="item",
+                event_type="item.fulfilled",
+                data={
+                    "source_doc_id": doc_entity_id,
+                    "quantity_fulfilled": pick.pick_qty,
+                    "fulfilled_by": str(uid),
+                    "doc_type": doc_type,
+                },
+                actor_id=uid,
+                location_id=None,
+                source="fulfillment",
+                idempotency_key=str(_uuid.uuid4()),
+                metadata_={"doc_id": doc_entity_id},
+            )
+            fulfilled_items.append({
+                "item_id": pick.item_id,
+                "sku": pick.sku,
+                "quantity": pick.pick_qty,
+                "action": "full",
+                "fulfilled_at": now,
+            })
+        elif pick.action == "split":
+            child_eid = f"item:{_uuid.uuid4()}"
+            await emit_event(
+                session,
+                company_id=cid,
+                entity_id=child_eid,
+                entity_type="item",
+                event_type="item.created",
+                data={
+                    "sku": pick.split_sku,
+                    "name": pick.sku,
+                    "quantity": pick.pick_qty,
+                },
+                actor_id=uid,
+                location_id=None,
+                source="fulfillment",
+                idempotency_key=str(_uuid.uuid4()),
+                metadata_={"parent_id": pick.item_id, "split_for_fulfillment": True},
+            )
+            # Reduce parent quantity
+            parent = await session.get(Projection, {"company_id": cid, "entity_id": pick.item_id})
+            parent_qty = float(parent.state.get("quantity", 0)) if parent else 0
+            new_parent_qty = max(0.0, parent_qty - pick.pick_qty)
+            await emit_event(
+                session,
+                company_id=cid,
+                entity_id=pick.item_id,
+                entity_type="item",
+                event_type="item.quantity.adjusted",
+                data={"new_qty": new_parent_qty},
+                actor_id=uid,
+                location_id=None,
+                source="fulfillment",
+                idempotency_key=str(_uuid.uuid4()),
+                metadata_={"split_for_fulfillment": True},
+            )
+            # Fulfill the child
+            await emit_event(
+                session,
+                company_id=cid,
+                entity_id=child_eid,
+                entity_type="item",
+                event_type="item.fulfilled",
+                data={
+                    "source_doc_id": doc_entity_id,
+                    "quantity_fulfilled": pick.pick_qty,
+                    "fulfilled_by": str(uid),
+                    "doc_type": doc_type,
+                },
+                actor_id=uid,
+                location_id=None,
+                source="fulfillment",
+                idempotency_key=str(_uuid.uuid4()),
+                metadata_={"doc_id": doc_entity_id},
+            )
+            fulfilled_items.append({
+                "item_id": child_eid,
+                "sku": pick.split_sku,
+                "quantity": pick.pick_qty,
+                "action": "split",
+                "split_from": pick.item_id,
+                "fulfilled_at": now,
+            })
+
+        total_cogs += pick.pick_qty * pick.cost_price
+
+    # Service items: auto-mark fulfilled (no physical pick).
+    # A line item is a service if its sell_by is a service unit OR the referenced item
+    # has inventory_type == "service".
+    for line in doc_state.get("line_items", []):
+        sell_by = line.get("sell_by") or ""
+        item_id = line.get("item_id")
+        is_service_type = False
+        if item_id:
+            item_proj = await session.get(Projection, {"company_id": cid, "entity_id": item_id})
+            if item_proj and (item_proj.state.get("inventory_type") or "stocked") == "service":
+                is_service_type = True
+        if sell_by in _SERVICE_SELL_BY or is_service_type:
             fulfilled_items.append({
                 "item_id": None,
                 "sku": line.get("sku", ""),
                 "quantity": float(line.get("quantity", 0)),
-                "action": "inbound",
+                "action": "service",
                 "fulfilled_at": now,
             })
-    else:
-        for pick in pick_result.picks:
-            if pick.action == "full":
-                await emit_event(
-                    session,
-                    company_id=cid,
-                    entity_id=pick.item_id,
-                    entity_type="item",
-                    event_type="item.fulfilled",
-                    data={
-                        "source_doc_id": doc_entity_id,
-                        "quantity_fulfilled": pick.pick_qty,
-                        "fulfilled_by": str(uid),
-                        "doc_type": doc_type,
-                    },
-                    actor_id=uid,
-                    location_id=None,
-                    source="fulfillment",
-                    idempotency_key=str(_uuid.uuid4()),
-                    metadata_={"doc_id": doc_entity_id},
-                )
-                fulfilled_items.append({
-                    "item_id": pick.item_id,
-                    "sku": pick.sku,
-                    "quantity": pick.pick_qty,
-                    "action": "full",
-                    "fulfilled_at": now,
-                })
-            elif pick.action == "split":
-                child_eid = f"item:{_uuid.uuid4()}"
-                await emit_event(
-                    session,
-                    company_id=cid,
-                    entity_id=child_eid,
-                    entity_type="item",
-                    event_type="item.created",
-                    data={
-                        "sku": pick.split_sku,
-                        "name": pick.sku,
-                        "quantity": pick.pick_qty,
-                    },
-                    actor_id=uid,
-                    location_id=None,
-                    source="fulfillment",
-                    idempotency_key=str(_uuid.uuid4()),
-                    metadata_={"parent_id": pick.item_id, "split_for_fulfillment": True},
-                )
-                # Reduce parent quantity
-                parent = await session.get(Projection, {"company_id": cid, "entity_id": pick.item_id})
-                parent_qty = float(parent.state.get("quantity", 0)) if parent else 0
-                new_parent_qty = max(0.0, parent_qty - pick.pick_qty)
-                await emit_event(
-                    session,
-                    company_id=cid,
-                    entity_id=pick.item_id,
-                    entity_type="item",
-                    event_type="item.quantity.adjusted",
-                    data={"new_qty": new_parent_qty},
-                    actor_id=uid,
-                    location_id=None,
-                    source="fulfillment",
-                    idempotency_key=str(_uuid.uuid4()),
-                    metadata_={"split_for_fulfillment": True},
-                )
-                # Fulfill the child
-                await emit_event(
-                    session,
-                    company_id=cid,
-                    entity_id=child_eid,
-                    entity_type="item",
-                    event_type="item.fulfilled",
-                    data={
-                        "source_doc_id": doc_entity_id,
-                        "quantity_fulfilled": pick.pick_qty,
-                        "fulfilled_by": str(uid),
-                        "doc_type": doc_type,
-                    },
-                    actor_id=uid,
-                    location_id=None,
-                    source="fulfillment",
-                    idempotency_key=str(_uuid.uuid4()),
-                    metadata_={"doc_id": doc_entity_id},
-                )
-                fulfilled_items.append({
-                    "item_id": child_eid,
-                    "sku": pick.split_sku,
-                    "quantity": pick.pick_qty,
-                    "action": "split",
-                    "split_from": pick.item_id,
-                    "fulfilled_at": now,
-                })
 
-            total_cogs += pick.pick_qty * pick.cost_price
-
-        # Service items: auto-mark fulfilled (no physical pick).
-        # A line item is a service if its sell_by is a service unit OR the referenced item
-        # has inventory_type == "service".
-        for line in doc_state.get("line_items", []):
-            sell_by = line.get("sell_by") or ""
-            item_id = line.get("item_id")
-            is_service_type = False
-            if item_id:
-                item_proj = await session.get(Projection, {"company_id": cid, "entity_id": item_id})
-                if item_proj and (item_proj.state.get("inventory_type") or "stocked") == "service":
-                    is_service_type = True
-            if sell_by in _SERVICE_SELL_BY or is_service_type:
-                fulfilled_items.append({
-                    "item_id": None,
-                    "sku": line.get("sku", ""),
-                    "quantity": float(line.get("quantity", 0)),
-                    "action": "service",
-                    "fulfilled_at": now,
-                })
-
-    # Determine fulfillment status
-    # Inbound docs are always fully fulfilled (no pick plan to check).
-    if not (doc_type in _INBOUND_DOC_TYPES) and pick_result.unfulfilled:
+    # Determine fulfillment status based on pick plan.
+    if pick_result.unfulfilled:
         fulfillment_status = "partial"
         await emit_event(
             session,

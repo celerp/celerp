@@ -3544,21 +3544,6 @@ class TestSprint5POReceive:
     """T2: PO Receive flow."""
 
     @pytest.mark.asyncio
-    async def test_po_detail_shows_receive_section(self, ui_client):
-        """PO detail page shows Receive Goods section."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PO_DOC)):
-            r = await ui_client.get("/docs/doc:PO-2026-0001", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Receive Goods" in r.content
-
-    @pytest.mark.asyncio
-    async def test_po_receive_has_location_input(self, ui_client):
-        """PO receive section has location input."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PO_DOC)):
-            r = await ui_client.get("/docs/doc:PO-2026-0001", cookies=_authed())
-        assert b"location_name" in r.content or b"location_id" in r.content
-
-    @pytest.mark.asyncio
     async def test_po_receive_route_calls_api(self, ui_client):
         """POST /docs/{id}/receive calls api.receive_po."""
         with patch("ui.api_client.receive_po", new=AsyncMock(return_value={"event_id": "ev1"})):
@@ -3569,13 +3554,6 @@ class TestSprint5POReceive:
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
-
-    @pytest.mark.asyncio
-    async def test_po_receive_has_record_receipt_button(self, ui_client):
-        """PO receive section has Record Receipt button."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PO_DOC)):
-            r = await ui_client.get("/docs/doc:PO-2026-0001", cookies=_authed())
-        assert b"Record Receipt" in r.content
 
     @pytest.mark.asyncio
     async def test_invoice_no_receive_section(self, ui_client):
@@ -11617,31 +11595,6 @@ class TestVendorDocCategoryColumn:
         html = to_xml(_doc_detail(doc, item_categories=["Electronics"]))
         assert ">Category<" not in html
 
-    def test_revert_goods_received_has_no_goods_received_badge(self):
-        """_render_receive_goods_section is disabled - bills use per-line fulfill now."""
-        from ui.routes.documents import _render_receive_goods_section
-        from fasthtml.common import to_xml
-        doc = self._make_bill(
-            status="final",
-            received_item_ids=["item:abc"],
-            received_items=[{"sku": "W-A", "name": "Widget A", "quantity_received": 2}],
-        )
-        html = to_xml(_render_receive_goods_section(doc))
-        # Section is disabled; bills use per-line fulfill via bulk toolbar
-        assert html == ""
-
-    def test_receive_goods_section_shows_badge_when_no_item_ids(self):
-        """_render_receive_goods_section is disabled - bills use per-line fulfill now."""
-        from ui.routes.documents import _render_receive_goods_section
-        from fasthtml.common import to_xml
-        doc = self._make_bill(
-            status="final",
-            received_item_ids=None,
-            received_items=[{"sku": "W-A"}],
-        )
-        html = to_xml(_render_receive_goods_section(doc))
-        assert html == ""
-
     def test_catalog_lookup_returns_category(self):
         """Catalog lookup must return category field for autofill."""
         from ui.routes.documents import _doc_detail
@@ -13202,14 +13155,13 @@ class TestInboundPerLineStatus:
         assert "badge--available" not in html
 
     def test_bill_checkbox_enabled_without_entity_id(self):
-        """Inbound doc rows are always checkable even without entity_id (fulfill_lines ignores entity_ids for inbound)."""
+        """Inbound doc rows are always checkable (Receive Goods toolbar operates on whole doc)."""
         from ui.routes.documents import _doc_detail
         from fasthtml.common import to_xml
         doc = self._make_bill_finalized(line_items=[
             {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"},
         ])
         html = to_xml(_doc_detail(doc, item_status_map={}))
-        # For inbound docs, all checkboxes are enabled (fulfill_lines ignores entity_ids for inbound)
         assert 'li-select' in html
 
     def test_bill_checkbox_enabled_with_entity_id(self):
@@ -13261,3 +13213,49 @@ class TestInboundPerLineStatus:
         }
         html = to_xml(_doc_detail(doc, item_status_map={}))
         assert "badge--not_received" in html or "Not Received" in html
+
+
+class TestInboundReceiveToolbar:
+    """Toolbar 'Receive Goods' for inbound docs posts to /receive with location dropdown."""
+
+    def _make_bill_final(self):
+        return {
+            "entity_id": "doc:bill-toolbar-1",
+            "doc_type": "bill",
+            "status": "final",
+            "ref_id": "BILL-TOOL-001",
+            "currency": "USD",
+            "subtotal": 100,
+            "tax": 0,
+            "total": 100,
+            "line_items": [
+                {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"},
+            ],
+        }
+
+    def test_bill_bulk_toolbar_posts_to_receive(self):
+        """Inbound doc bulk toolbar 'Receive Goods' form must post to /receive, not /fulfill-lines."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_final()
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "/receive" in html, "Toolbar must target /receive for inbound docs"
+        assert "fulfill-lines" not in html, "Toolbar must not target fulfill-lines for inbound docs"
+
+    def test_bill_bulk_toolbar_has_location_input(self):
+        """Inbound doc toolbar must include a location selector."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_final()
+        locations = [{"name": "Warehouse A"}, {"name": "Store B"}]
+        html = to_xml(_doc_detail(doc, locations=locations, item_status_map={}))
+        assert "location_name" in html, "Toolbar form must include location_name field"
+
+    def test_collapsible_receive_form_absent_on_bill(self):
+        """The old collapsible 'Record Receipt' form must not appear on bill detail."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_final()
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "receive-section" not in html, "Old collapsible receive form must be removed"
+        assert "Record Receipt" not in html, "Old Record Receipt button must be removed"

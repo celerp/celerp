@@ -2893,11 +2893,9 @@ async def fulfill_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Fulfill specific line items by entity_id. Valid for memo, invoice, and consignment_in docs.
+    """Fulfill specific line items by entity_id. Valid for memo and invoice docs only.
 
-    For consignment_in (inbound): line_entity_ids may be empty to fulfill the whole doc
-    (no inventory deduction; just closes the doc). Consignment In line items don't carry
-    per-item entity_ids - goods arrived at receive time.
+    Inbound doc types (bill, consignment_in) must use POST /receive instead.
     """
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
@@ -2909,31 +2907,10 @@ async def fulfill_lines(
     if state.get("status") not in allowed_statuses:
         raise HTTPException(status_code=409, detail=f"Cannot fulfill a {doc_type} in status '{state.get('status')}'")
 
-    # Consignment In: inbound doc, no per-item entity_ids - fulfill whole doc
-    if doc_type in INBOUND_DOC_TYPES:
-        if state.get("fulfillment_status") == "fulfilled":
-            return {"fulfillment_status": "fulfilled", "fulfilled": []}
-        now = datetime.now(UTC).isoformat()
-        cid = uuid.UUID(str(company_id))
-        uid = user.id
-        fulfilled_items = [
-            {"item_id": None, "sku": li.get("sku", ""), "quantity": float(li.get("quantity", 0)), "action": "inbound", "fulfilled_at": now}
-            for li in state.get("line_items", [])
-        ]
-        await emit_event(
-            session, company_id=cid, entity_id=entity_id, entity_type="doc",
-            event_type="doc.fulfilled",
-            data={"fulfilled_items": fulfilled_items, "fulfilled_by": str(uid), "fulfilled_at": now, "strategy": "inbound", "total_cogs": 0.0},
-            actor_id=uid, location_id=None, source="fulfillment",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-        await session.commit()
-        return {"fulfillment_status": "fulfilled", "fulfilled": []}
-
     _validate_line_entity_ids_subset(body.line_entity_ids, state)
 
     if not body.line_entity_ids:
-        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty for non-inbound docs")
+        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
     errors: list[str] = []
     to_fulfill: list[str] = []
@@ -3060,7 +3037,10 @@ async def revert_lines(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Revert fulfillment for specific line items."""
+    """Revert fulfillment for specific line items. Valid for memo and invoice docs only.
+
+    Inbound doc types (bill, consignment_in) must use DELETE /receive instead.
+    """
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     doc_type = state.get("doc_type", "")
@@ -3068,27 +3048,10 @@ async def revert_lines(
     if FULFILLABLE_STATUSES.get(doc_type) is None:
         raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
 
-    # Consignment In: inbound doc - just emit fulfillment_reversed on the doc
-    if doc_type in INBOUND_DOC_TYPES:
-        if state.get("fulfillment_status") not in ("fulfilled", "partial"):
-            raise HTTPException(status_code=409, detail="Cannot revert: doc is not fulfilled or partially fulfilled")
-        now = datetime.now(UTC).isoformat()
-        cid = uuid.UUID(str(company_id))
-        uid = user.id
-        await emit_event(
-            session, company_id=cid, entity_id=entity_id, entity_type="doc",
-            event_type="doc.fulfillment_reversed",
-            data={"reversed_items": [], "reversed_by": str(uid), "reason": "per_line_revert"},
-            actor_id=uid, location_id=None, source="fulfillment",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
-        await session.commit()
-        return {"fulfillment_status": "unfulfilled", "reverted": []}
-
     _validate_line_entity_ids_subset(body.line_entity_ids, state)
 
     if not body.line_entity_ids:
-        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty for non-inbound docs")
+        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
     errors: list[str] = []
     to_revert: list[str] = []

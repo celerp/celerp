@@ -1925,74 +1925,12 @@ async def test_bill_undo_receive_clears_entity_id(client, session):
 
 
 @pytest.mark.asyncio
-async def test_bill_fulfill_lines_after_receive_sets_fulfillment_status(client, session):
-    """fulfill-lines on a received bill closes the doc (inbound branch: no per-item events)."""
-    token = await _register(client)
-    bill_id, location_id = await _create_and_finalize_bill(client, token, sku="BILL-FULFILL")
-
-    await client.post(
-        f"/docs/{bill_id}/receive",
-        headers=_h(token),
-        json={
-            "location_id": location_id,
-            "received_items": [
-                {"po_line_index": 0, "sku": "BILL-FULFILL", "name": "Widget", "quantity_received": 2, "receive_as": "stock"},
-            ],
-        },
-    )
-
-    fulfill_r = await client.post(f"/docs/{bill_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
-    assert fulfill_r.status_code == 200
-    assert fulfill_r.json().get("fulfillment_status") == "fulfilled"
-
-    doc_state = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
-    assert doc_state.get("fulfillment_status") == "fulfilled"
-
-
-@pytest.mark.asyncio
-async def test_bill_revert_lines_clears_fulfillment_status(client, session):
-    """revert-lines on a fulfilled bill clears fulfillment_status."""
-    token = await _register(client)
-    bill_id, location_id = await _create_and_finalize_bill(client, token, sku="BILL-REVERT")
-
-    await client.post(
-        f"/docs/{bill_id}/receive",
-        headers=_h(token),
-        json={
-            "location_id": location_id,
-            "received_items": [
-                {"po_line_index": 0, "sku": "BILL-REVERT", "name": "Widget", "quantity_received": 2, "receive_as": "stock"},
-            ],
-        },
-    )
-    await client.post(f"/docs/{bill_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
-
-    revert_r = await client.post(f"/docs/{bill_id}/revert-lines", headers=_h(token), json={"line_entity_ids": []})
-    assert revert_r.status_code == 200
-
-    doc_state = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
-    assert not doc_state.get("fulfillment_status"), "fulfillment_status must be cleared after revert-lines"
-
-
-@pytest.mark.asyncio
 async def test_bill_fulfill_lines_rejected_before_receive(client, session):
-    """fulfill-lines on a bill that hasn't been received yet must be rejected (status 'final' not in FULFILLABLE_STATUSES['bill'])."""
+    """fulfill-lines is never supported for bill (inbound doc). Must always return 422."""
     token = await _register(client)
     bill_id, _ = await _create_and_finalize_bill(client, token, sku="BILL-REJECT")
-
-    # Bill is finalized but not yet received; status = "final"
-    # "final" is in FULFILLABLE_STATUSES["bill"], so this should actually be allowed.
-    # The real guard is: if never received, fulfillment_status is already cleared — but
-    # the endpoint allows it. Test the status guard instead: use a draft bill.
-    bill_r = await client.post(
-        "/docs",
-        headers=_h(token),
-        json={"doc_type": "bill", "contact_id": "c:1", "line_items": [], "subtotal": 0, "tax": 0, "total": 0},
-    )
-    draft_bill_id = bill_r.json()["id"]
-
-    r = await client.post(f"/docs/{draft_bill_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
-    assert r.status_code in (409, 422), f"Draft bill must not be fulfillable, got {r.status_code}"
+    r = await client.post(f"/docs/{bill_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
+    assert r.status_code == 422, f"fulfill-lines on bill must always be rejected, got {r.status_code}"
 
 
 @pytest.mark.asyncio
@@ -2034,8 +1972,8 @@ async def test_consignment_in_receive_writes_entity_id_to_line_items(client, ses
 
 
 @pytest.mark.asyncio
-async def test_consignment_in_fulfill_lines_after_receive(client, session):
-    """Regression: consignment_in fulfill-lines still works correctly after adding bill to INBOUND_DOC_TYPES."""
+async def test_consignment_in_fulfill_lines_rejected(client, session):
+    """consignment_in must always return 422 for fulfill-lines (inbound doc - use /receive instead)."""
     token = await _register(client)
     location_id = await _create_location(client, token)
 
@@ -2060,38 +1998,8 @@ async def test_consignment_in_fulfill_lines_after_receive(client, session):
         },
     )
 
-    fulfill_r = await client.post(f"/docs/{cin_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
-    assert fulfill_r.status_code == 200
-    assert fulfill_r.json().get("fulfillment_status") == "fulfilled"
-
-
-@pytest.mark.asyncio
-async def test_bill_revert_to_draft_from_fulfilled(client, session):
-    """A fulfilled bill can be reverted to draft (clears fulfillment_status)."""
-    token = await _register(client)
-    bill_id, location_id = await _create_and_finalize_bill(client, token, sku="BILL-REVERT-DRAFT")
-
-    await client.post(
-        f"/docs/{bill_id}/receive",
-        headers=_h(token),
-        json={
-            "location_id": location_id,
-            "received_items": [
-                {"po_line_index": 0, "sku": "BILL-REVERT-DRAFT", "name": "Widget", "quantity_received": 2, "receive_as": "stock"},
-            ],
-        },
-    )
-    await client.post(f"/docs/{bill_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
-
-    doc = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
-    assert doc.get("fulfillment_status") == "fulfilled"
-
-    r = await client.post(f"/docs/{bill_id}/revert-to-draft", headers=_h(token), json={"reason": "test revert"})
-    assert r.status_code == 200, r.text
-
-    doc_after = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
-    assert doc_after.get("status") == "draft"
-    assert not doc_after.get("fulfillment_status"), "fulfillment_status must be cleared after revert-to-draft"
+    r = await client.post(f"/docs/{cin_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
+    assert r.status_code == 422, f"fulfill-lines on consignment_in must be rejected, got {r.status_code}"
 
 
 @pytest.mark.asyncio
@@ -2313,3 +2221,76 @@ async def test_bill_receive_no_sku_item_auto_generates_sku(client, session):
     assert len(new_items) == 1, "A new catalog entry must be created for the custom item"
     assert new_items[0]["quantity"] == 5
     assert new_items[0].get("sku"), "SKU must be auto-generated from item name"
+
+
+# ---------------------------------------------------------------------------
+# New tests: inbound doc rejection of fulfill-lines/revert-lines (both types)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_bill_fulfill_lines_always_rejected(client, session):
+    """fulfill-lines must return 422 for bill at any status."""
+    token = await _register(client)
+    bill_id, location_id = await _create_and_finalize_bill(client, token, sku="BILL-FL-REJECT")
+
+    # After finalize (status=final) - must reject
+    r = await client.post(f"/docs/{bill_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
+    assert r.status_code == 422, f"fulfill-lines on finalized bill must be rejected, got {r.status_code}"
+
+    # After receive (status=received) - must still reject
+    await client.post(f"/docs/{bill_id}/receive", headers=_h(token), json={
+        "location_id": location_id,
+        "received_items": [{"po_line_index": 0, "sku": "BILL-FL-REJECT", "name": "Widget", "quantity_received": 1, "receive_as": "stock"}],
+    })
+    r2 = await client.post(f"/docs/{bill_id}/fulfill-lines", headers=_h(token), json={"line_entity_ids": []})
+    assert r2.status_code == 422, f"fulfill-lines on received bill must be rejected, got {r2.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_bill_revert_lines_always_rejected(client, session):
+    """revert-lines must return 422 for bill at any status."""
+    token = await _register(client)
+    bill_id, _ = await _create_and_finalize_bill(client, token, sku="BILL-RL-REJECT")
+    r = await client.post(f"/docs/{bill_id}/revert-lines", headers=_h(token), json={"line_entity_ids": []})
+    assert r.status_code == 422, f"revert-lines on bill must be rejected, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_consignment_in_revert_lines_always_rejected(client, session):
+    """revert-lines must return 422 for consignment_in at any status."""
+    token = await _register(client)
+    cin_r = await client.post(
+        "/docs",
+        headers=_h(token),
+        json={
+            "doc_type": "consignment_in",
+            "contact_id": "contact:supplier3",
+            "line_items": [{"sku": "CIN-RL-REJ", "name": "Gem", "quantity": 1, "unit_price": 50, "line_total": 50}],
+            "subtotal": 50, "tax": 0, "total": 50,
+        },
+    )
+    cin_id = cin_r.json()["id"]
+    await client.post(f"/docs/{cin_id}/finalize", headers=_h(token))
+    r = await client.post(f"/docs/{cin_id}/revert-lines", headers=_h(token), json={"line_entity_ids": []})
+    assert r.status_code == 422, f"revert-lines on consignment_in must be rejected, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_bill_receive_with_location_sets_location_on_parcel(client, session):
+    """POST /receive with location_id creates parcel with that location."""
+    token = await _register(client)
+    bill_id, location_id = await _create_and_finalize_bill(client, token, sku="BILL-LOC-TEST")
+
+    rec_r = await client.post(f"/docs/{bill_id}/receive", headers=_h(token), json={
+        "location_id": location_id,
+        "received_items": [{"po_line_index": 0, "sku": "BILL-LOC-TEST", "name": "Widget", "quantity_received": 3, "receive_as": "stock"}],
+    })
+    assert rec_r.status_code == 200, rec_r.text
+
+    bill_state = (await client.get(f"/docs/{bill_id}", headers=_h(token))).json()
+    created_ids = bill_state.get("received_item_ids", [])
+    assert created_ids, "Parcel must be created"
+
+    parcel = (await client.get(f"/items/{created_ids[0]}", headers=_h(token))).json()
+    assert parcel.get("location_id") == location_id or parcel.get("location_name"), \
+        f"Parcel must have location set, got: {parcel}"
