@@ -2340,8 +2340,9 @@ def setup_routes(app):
                     qty = float(str(form.get(f"qty_{idx}", "0")))
                 except ValueError:
                     qty = 0.0
+                receive_as = str(form.get(f"receive_as_{idx}", "stock")).strip() or "stock"
                 if qty > 0:
-                    item = {"po_line_index": idx, "quantity_received": qty}
+                    item = {"po_line_index": idx, "quantity_received": qty, "receive_as": receive_as}
                     if item_id:
                         item["item_id"] = item_id
                     if sku:
@@ -4379,9 +4380,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             except Exception:
                 pass
 
-    # --- PO/consignment_in receive (per-line form); bills use _receive_goods_el above ---
+    # --- PO/bill/consignment_in receive (per-line form) ---
     po_receive_section = ""
-    if doc_type in ("purchase_order", "consignment_in") and status in ("awaiting_payment", "finalized", "sent", "final", "partially_received"):
+    if doc_type in ("purchase_order", "bill", "consignment_in") and status in ("awaiting_payment", "finalized", "sent", "final", "partially_received"):
         po_items = doc.get("line_items", [])
         if po_items:
             receive_rows = []
@@ -4390,12 +4391,20 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 qty_received = float(li.get("quantity_received", 0) or 0)
                 qty_remaining = max(0, qty_ordered - qty_received)
                 desc = str(li.get("description", "") or li.get("sku", "") or f"Item {i + 1}")
+                # item_id: use catalog entity_id (bills store it as entity_id, POs as item_id)
+                _item_id = li.get("entity_id") or li.get("item_id") or ""
+                _sku = li.get("sku") or ""
+                _name = li.get("description") or li.get("name") or li.get("sku") or ""
+                _receive_as = li.get("receive_as") or "stock"
                 receive_rows.append(Tr(
                     Td(desc),
                     Td(str(qty_ordered)),
                     Td(str(qty_received)),
                     Td(
-                        Input(type="hidden", name=f"item_id_{i}", value=li.get("item_id", "") or ""),
+                        Input(type="hidden", name=f"item_id_{i}", value=_item_id),
+                        Input(type="hidden", name=f"sku_{i}", value=_sku),
+                        Input(type="hidden", name=f"name_{i}", value=_name),
+                        Input(type="hidden", name=f"receive_as_{i}", value=_receive_as),
                         Input(type="number", name=f"qty_{i}", value=str(qty_remaining),
                               step="any", min="0", max=str(qty_remaining),
                               cls="form-input form-input--sm"),
