@@ -46,6 +46,34 @@ _LOCALES = _available_locales()
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 _CLIENT_JS = """
+function celerpToast(message, type) {
+  var container = document.getElementById('toast-container');
+  if (!container) { alert(message); return; }
+  var toast = document.createElement('div');
+  toast.className = 'toast toast--' + (type || 'error');
+  toast.textContent = message;
+  var close = document.createElement('button');
+  close.className = 'toast__close';
+  close.textContent = '×';
+  close.onclick = function() { _dismissToast(toast); };
+  toast.appendChild(close);
+  container.appendChild(toast);
+  requestAnimationFrame(function() { toast.classList.add('toast--visible'); });
+  setTimeout(function() { _dismissToast(toast); }, 6000);
+}
+function _dismissToast(toast) {
+  toast.classList.remove('toast--visible');
+  setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
+}
+document.addEventListener('htmx:afterRequest', function(e) {
+  var hdr = e.detail.xhr && e.detail.xhr.getResponseHeader('HX-Trigger');
+  if (!hdr) return;
+  try {
+    var obj = JSON.parse(hdr);
+    if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error');
+  } catch(ex) {}
+});
+
 function showGlobalUiError(message) {
   var box = document.getElementById('global-ui-error');
   if (!box) {
@@ -338,6 +366,8 @@ _GLOBAL_UI_ERROR_HTML = Div(
     cls="flash flash--error",
     style="display:none;margin:12px 0;",
 )
+
+_TOAST_CONTAINER_HTML = Div(id="toast-container", cls="toast-container")
 
 _NOTIFICATION_JS = """
 window.toggleNotifPanel = function() {
@@ -691,6 +721,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
                     _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
                     _GLOBAL_UI_ERROR_HTML,
+                    _TOAST_CONTAINER_HTML,
                     Main(*content, id="main-content", cls="main-content"),
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",

@@ -144,13 +144,16 @@ def _render_fulfillment_badge(doc: dict):
 
 
 def _action_error(msg: str, target_id: str = "action-error"):
-    """OOB-swap error into the specified target id; HX-Reswap:none preserves the triggering element."""
+    """Fire a toast popup for action errors. target_id kept for compat but no longer used for inline swap."""
+    import json as _json
     from starlette.responses import HTMLResponse as _HR
-    from fasthtml.common import to_xml as _to_xml
-    fragment = Div(Span(msg, cls="flash flash--error"), id=target_id, hx_swap_oob="true")
     return _HR(
-        _to_xml(fragment),
-        headers={"HX-Reswap": "none"},
+        "",
+        status_code=200,
+        headers={
+            "HX-Reswap": "none",
+            "HX-Trigger": _json.dumps({"celerpToast": {"message": msg, "type": "error"}}),
+        },
     )
 
 
@@ -2248,10 +2251,7 @@ def setup_routes(app):
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             # Return error inline
-            return Div(
-                Span(str(e.detail), cls="flash flash--error"),
-                hx_swap_oob="true", id="action-error",
-            )
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T4: Record payment
@@ -2285,10 +2285,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(
-                Span(str(e.detail), cls="flash flash--error"),
-                id="payment-error",
-            )
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # T1: Convert quotation to invoice
@@ -2304,7 +2301,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="action-error")
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{target_id}"})
 
     # T2: Receive PO goods
@@ -2372,7 +2369,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="refund-error")
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     # ---- Payment management routes ----
@@ -2391,7 +2388,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="payment-error")
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/apply-credit")
@@ -2409,7 +2406,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Span(str(e.detail), cls="flash flash--error")
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/refund-credit")
@@ -2429,7 +2426,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="payment-error")
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/bulk-payment")
@@ -2450,7 +2447,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="bulk-payment-error")
+            return _action_error(str(e.detail))
         # Refresh the page
         doc_type = str(form.get("doc_type", "invoice")).strip()
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})
@@ -2549,7 +2546,6 @@ def setup_routes(app):
                         Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                     cls="form-row",
                 ),
-                Span("", id="bulk-payment-error"),
                 Div(
                     Button(t("btn.save_payment"), type="submit", cls="btn btn--primary"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
@@ -2781,7 +2777,7 @@ celerpUpdateBulkAlloc();
                 cls="share-result",
             )
         except APIError as e:
-            return Span(str(e.detail), cls="flash flash--error")
+            return _action_error(str(e.detail))
 
     # -----------------------------------------------------------------------
     # Fulfillment toggle routes
@@ -2802,7 +2798,7 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             detail = e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
-            return Div(Span(detail, cls="flash flash--error"), id="action-error")
+            return _action_error(detail)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/revert-lines")
@@ -2820,7 +2816,7 @@ celerpUpdateBulkAlloc();
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             detail = e.detail if isinstance(e.detail, str) else _json.dumps(e.detail)
-            return Div(Span(detail, cls="flash flash--error"), id="action-error")
+            return _action_error(detail)
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
     @app.post("/docs/{entity_id}/receive-return")
@@ -2849,7 +2845,7 @@ celerpUpdateBulkAlloc();
                 continue
             items.append({"sku": row.get("sku", ""), "quantity": qty})
         if not items:
-            return Div(Span(t("doc.no_valid_quantities_entered"), cls="flash flash--error"), id=cid_safe)
+            return _action_error(t("doc.no_valid_quantities_entered"))
         try:
             await api.receive_return(token, entity_id, items)
         except APIError as e:
@@ -3399,7 +3395,7 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             if e.status == 401:
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
-            return Div(Span(str(e.detail), cls="flash flash--error"), hx_swap_oob="true", id="action-error")
+            return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
 
 
@@ -3778,11 +3774,9 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
                                 Input(type="date", name="date", value=today, cls="form-input"), cls="form-group"),
                             cls="form-row",
                         ),
-                        Span("", id="payment-error"),
                         Button(t("btn.apply"), type="submit", cls="btn btn--primary btn--sm"),
                         hx_post=f"/docs/{entity_id}/apply-credit",
-                        hx_target="#payment-error",
-                        hx_swap="innerHTML",
+                        hx_swap="none",
                         cls="form-card",
                     ),
                     cls="payment-form-section",
@@ -3809,7 +3803,6 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
                                 Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                             cls="form-row",
                         ),
-                        Span("", id="payment-error"),
                         Button(t("btn.refund"), type="submit", cls="btn btn--secondary btn--sm"),
                         hx_post=f"/docs/{entity_id}/refund-credit", hx_swap="none", cls="form-card",
                     ),
@@ -3865,7 +3858,6 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
                             Input(type="text", name="reference", cls="form-input"), cls="form-group"),
                         cls="form-row",
                     ),
-                    Span("", id="payment-error"),
                     Button(t("btn.save_payment"), type="submit", cls="btn btn--primary btn--sm"),
                     hx_post=f"/docs/{entity_id}/payment", hx_swap="none", cls="form-card",
                 ),
@@ -4330,7 +4322,6 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                        onclick="document.getElementById('csv-import-input').click()"),
             )
     action_btns_print.append(Span("", id="share-result"))
-    action_btns_print.append(Span("", id="action-error"))
 
     # --- Slot: doc_detail_actions (module-contributed action buttons - go left) ---
     from celerp.modules.slots import get as _get_slot

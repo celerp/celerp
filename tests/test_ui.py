@@ -11764,8 +11764,8 @@ class TestApplyCreditErrorSurfacing:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"flash--error" in r.content
-        assert b"Amount exceeds" in r.content
+        assert "celerpToast" in r.headers.get("hx-trigger", "")
+        assert "Amount exceeds" in r.headers.get("hx-trigger", "")
         # Must NOT be a redirect
         assert "HX-Redirect" not in r.headers
 
