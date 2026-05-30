@@ -5849,7 +5849,7 @@ async function celerpCsvImport(input, entityId) {{
         # Line items + price list bar
         Div(
             lines_section,
-            cls="doc-section",
+            cls="doc-section doc-section--lines",
         ),
         # Totals + optional quotation valid-until
         Div(

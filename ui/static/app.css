@@ -1326,7 +1326,10 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
 /* Section cards */
 .doc-section { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
-.doc-section:has(.data-table .catalog-ac-list) { overflow: visible; }
+.doc-section:has(.data-table .catalog-ac-list),
+.doc-section:has(.data-table .combobox-list.open) { overflow: visible; }
+/* Line items section always allows dropdowns to overflow */
+.doc-section--lines { overflow: visible; }
 .doc-section .section-header { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--c-bg3); border-bottom: 1px solid var(--c-border); }
 .doc-section .section-icon { font-size: 14px; }
 .doc-section .section-title { font-size: 13px; font-weight: 600; color: var(--c-text); margin: 0; text-transform: none; letter-spacing: 0; }
