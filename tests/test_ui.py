@@ -10461,11 +10461,11 @@ class TestProFormaLabel:
         assert "Pro Forma (3)" in html
 
     def test_drafts_tab_label_for_other_types(self):
-        """Drafts tab shows 'Drafts' for non-invoice doc types."""
+        """Drafts tab is suppressed for purchase_order (POs are always drafts; tab is cruft)."""
         from ui.routes.documents import _drafts_tab
         from fasthtml.common import to_xml
         html = to_xml(_drafts_tab(3, False, "purchase_order"))
-        assert "Drafts (3)" in html
+        assert "Drafts (3)" not in html
 
 
 class TestFieldSchemaBarcode:

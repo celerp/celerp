@@ -3573,7 +3573,7 @@ def _doc_table(
             Div(id="bulk-payment-panel"),
             Input(type="hidden", id="doc-bulk-ids", value=""),
         ]
-        bulk_bar = Div(*_bulk_children, cls="bulk-toolbar", id="doc-bulk-bar", style="display:none")
+        bulk_bar = Div(*_bulk_children, cls="bulk-toolbar", id="doc-bulk-bar")
 
     bulk_js = ""
     if show_checkboxes:
@@ -3597,7 +3597,7 @@ def _doc_table(
         if (countEl) countEl.textContent = n + ' selected';
         var ids = sel.map(cb => cb.value).join(',');
         if (idsInput) idsInput.value = ids;
-        if (bar) bar.style.display = n > 0 ? '' : 'none';
+        if (bar) bar.style.display = n > 0 ? 'flex' : 'none';
         if (sel_input) {{ sel_input.value = ''; }}
         if (delBtn) delBtn.style.display = 'none';
         if (payBtn) payBtn.style.display = 'none';
@@ -6137,7 +6137,8 @@ def _summary_bar(summary: dict, doc_type: str = "", currency: str | None = None,
 
 def _drafts_tab(draft_count: int, is_active: bool, doc_type: str = "", status: str = "", lang: str = "en") -> FT:
     """Drafts pill - visible when drafts exist, active when in drafts view."""
-    if status == "draft":
+    # POs are always drafts; the tab is meaningless there.
+    if status == "draft" or doc_type == "purchase_order":
         return Span()
     type_param = f"&type={doc_type}" if doc_type else ""
     href = f"/docs?view=drafts{type_param}"
