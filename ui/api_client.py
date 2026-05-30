@@ -714,6 +714,12 @@ async def delete_doc(token: str, entity_id: str) -> dict:
         return _raise(await c.delete(f"/docs/{entity_id}")).json()
 
 
+async def delete_bulk_drafts(token: str, doc_ids: list[str]) -> dict:
+    async with _api_client(token) as c:
+        ids_param = ",".join(doc_ids)
+        return _raise(await c.delete(f"/docs/bulk-draft?doc_ids={ids_param}")).json()
+
+
 async def record_payment(token: str, entity_id: str, data: dict) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/docs/{entity_id}/payment", json=data)).json()
