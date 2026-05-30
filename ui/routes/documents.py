@@ -1580,7 +1580,7 @@ celerpUpdateBulkAlloc();
             except Exception:
                 item_categories = []
             try:
-                chart_accounts = (await api.get_chart(token)).get("accounts", [])
+                chart_accounts = (await api.get_chart(token)).get("items", [])
             except Exception:
                 chart_accounts = []
             company_locations = []
