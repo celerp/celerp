@@ -5974,7 +5974,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
 
         _AWAITING_STATUSES_BILL = "final,sent,awaiting_payment,partial"
         cards = [
-            {"label": t("status.draft", lang),           "count": draft_cnt,       "total": None, "status": "draft",        "color": "gray",   "_url": "/docs?type=purchase_order&status=draft",          "_active_key": "draft"},
+            {"label": t("status.draft", lang),           "count": draft_cnt,       "total": None, "status": "draft",        "color": "gray",   "_url": f"{base_url}&status=draft",                        "_active_key": "draft"},
             {"label": t("status.all_issued", lang),      "count": all_issued_cnt,  "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
             {"label": "Not Stocked Goods",               "count": not_stocked_cnt, "total": None, "status": "not_stocked",  "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
             {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}","_active_key": "awaiting_payment"},
