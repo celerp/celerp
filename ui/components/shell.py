@@ -186,12 +186,28 @@ function initCombobox(wrap) {
   var opts = Array.from(list.querySelectorAll('.combobox-option'));
   var allowCustom = wrap.dataset.allowCustom === 'true';
 
+  // Move list to body so it escapes overflow:hidden/auto ancestors, position via fixed
+  if (list.parentElement !== document.body) {
+    document.body.appendChild(list);
+    list.style.position = 'fixed';
+    list.style.zIndex = '9999';
+    list.style.width = '';
+  }
+  function positionList() {
+    var r = input.getBoundingClientRect();
+    list.style.top = (r.bottom + 2) + 'px';
+    list.style.left = r.left + 'px';
+    list.style.width = r.width + 'px';
+  }
+
   input.addEventListener('focus', function() {
     filterOpts('');
+    positionList();
     list.classList.add('open');
   });
   input.addEventListener('input', function() {
     filterOpts(input.value);
+    positionList();
     list.classList.add('open');
     if (hidden) hidden.value = allowCustom ? input.value : '';
   });

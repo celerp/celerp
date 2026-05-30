@@ -659,9 +659,8 @@ a:hover { text-decoration: underline; }
 }
 .combobox-input:focus { outline: none; border-color: var(--c-accent); }
 .combobox-list {
-  position: absolute;
-  top: 100%; left: 0; right: 0;
-  z-index: 70;
+  position: fixed;
+  z-index: 9999;
   background: var(--c-bg2);
   border: 1px solid var(--c-border);
   border-radius: var(--radius);
