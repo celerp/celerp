@@ -5976,6 +5976,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
     if doc_type == "bill":
+        draft_cnt       = _cbs.get("draft", 0)
         all_issued_cnt  = _sm.get("all_issued_count", 0)
         not_stocked_cnt = _sm.get("not_stocked_count", 0)
         awaiting        = _sm.get("awaiting_payment_count", 0)
@@ -5983,7 +5984,9 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
         paid_cnt        = _cbs.get("paid", 0)
         void_cnt        = _cbs.get("void", 0)
 
-        if all_issued:
+        if active_status == "draft":
+            _active_key = "draft"
+        elif all_issued:
             _active_key = "all_issued"
         elif not_stocked:
             _active_key = "not_stocked"
@@ -5994,12 +5997,13 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
 
         _AWAITING_STATUSES_BILL = "final,sent,awaiting_payment,partial"
         cards = [
-            {"label": t("status.all_issued", lang),   "count": all_issued_cnt,  "total": None, "status": "all_issued",  "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
-            {"label": "Not Stocked Goods",            "count": not_stocked_cnt, "total": None, "status": "not_stocked", "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
-            {"label": t("status.awaiting_payment", lang), "count": awaiting,    "total": None, "status": "awaiting_payment", "color": "yellow", "_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}", "_active_key": "awaiting_payment"},
-            {"label": t("status.overdue", lang),      "count": overdue,         "total": None, "status": "overdue",     "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
-            {"label": t("label.paid", lang),          "count": paid_cnt,        "total": None, "status": "paid",        "color": "green"},
-            {"label": t("btn.void", lang),            "count": void_cnt,        "total": None, "status": "void",        "color": "gray"},
+            {"label": t("status.draft", lang),           "count": draft_cnt,       "total": None, "status": "draft",        "color": "gray",   "_url": "/docs?type=purchase_order",                       "_active_key": "draft"},
+            {"label": t("status.all_issued", lang),      "count": all_issued_cnt,  "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
+            {"label": "Not Stocked Goods",               "count": not_stocked_cnt, "total": None, "status": "not_stocked",  "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
+            {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}","_active_key": "awaiting_payment"},
+            {"label": t("status.overdue", lang),         "count": overdue,         "total": None, "status": "overdue",      "color": "red",    "_url": f"{base_url}&overdue_only=1",                      "_active_key": "overdue"},
+            {"label": t("label.paid", lang),             "count": paid_cnt,        "total": None, "status": "paid",         "color": "green"},
+            {"label": t("btn.void", lang),               "count": void_cnt,        "total": None, "status": "void",         "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
 
