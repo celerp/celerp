@@ -2294,3 +2294,52 @@ async def test_bill_receive_with_location_sets_location_on_parcel(client, sessio
     parcel = (await client.get(f"/items/{created_ids[0]}", headers=_h(token))).json()
     assert parcel.get("location_id") == location_id or parcel.get("location_name"), \
         f"Parcel must have location set, got: {parcel}"
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_drafts_route_not_caught_by_entity_id(client, session):
+    """DELETE /docs/bulk-draft must NOT be captured by DELETE /docs/{entity_id}.
+    This is a route-order regression test - bulk-draft must be registered before /{entity_id}."""
+    token = await _register(client)
+
+    # Create two drafts
+    r1 = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "status": "draft", "line_items": [], "subtotal": 0, "tax": 0, "total": 0})
+    r2 = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "status": "draft", "line_items": [], "subtotal": 0, "tax": 0, "total": 0})
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    id1, id2 = r1.json()["id"], r2.json()["id"]
+
+    # Bulk delete both - if route order is wrong this returns 404
+    r = await client.delete(f"/docs/bulk-draft?doc_ids={id1},{id2}", headers=_h(token))
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
+    body = r.json()
+    assert body["count"] == 2
+    assert id1 in body["deleted"]
+    assert id2 in body["deleted"]
+
+    # Verify docs are gone
+    assert (await client.get(f"/docs/{id1}", headers=_h(token))).status_code == 404
+    assert (await client.get(f"/docs/{id2}", headers=_h(token))).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_drafts_skips_non_drafts(client, session):
+    """bulk-draft delete silently skips finalized docs - only drafts deleted."""
+    token = await _register(client)
+    draft_r = await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "status": "draft", "line_items": [], "subtotal": 0, "tax": 0, "total": 0})
+    assert draft_r.status_code == 200
+    draft_id = draft_r.json()["id"]
+
+    r = await client.delete(f"/docs/bulk-draft?doc_ids={draft_id},nonexistent-id", headers=_h(token))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    assert draft_id in body["deleted"]
+
+
+@pytest.mark.asyncio
+async def test_bulk_delete_drafts_empty_ids_returns_422(client, session):
+    """bulk-draft with no ids returns 422."""
+    token = await _register(client)
+    r = await client.delete("/docs/bulk-draft?doc_ids=", headers=_h(token))
+    assert r.status_code == 422
