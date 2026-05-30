@@ -1505,6 +1505,31 @@ class BulkPaymentBody(BaseModel):
     idempotency_key: str | None = None
 
 
+@router.delete("/bulk-draft")
+async def bulk_delete_drafts(
+    doc_ids: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete multiple draft documents in one request. Non-draft docs are skipped (not an error)."""
+    ids = [x.strip() for x in doc_ids.split(",") if x.strip()]
+    if not ids:
+        raise HTTPException(status_code=422, detail="No document IDs specified")
+    from celerp.models.ledger import LedgerEntry
+    import sqlalchemy as _sa
+    deleted = []
+    for eid in ids:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+        if row is None or row.state.get("status") != "draft":
+            continue
+        await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == eid))
+        await session.execute(_sa.delete(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == eid))
+        deleted.append(eid)
+    await session.commit()
+    return {"deleted": deleted, "count": len(deleted)}
+
+
 @router.post("/bulk-payment")
 async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.doc_ids:

@@ -2402,6 +2402,19 @@ def setup_routes(app):
             return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{entity_id}"})
 
+    @app.delete("/docs/bulk-draft")
+    async def bulk_delete_drafts_route(request: Request):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401)
+        doc_ids = request.query_params.get("doc_ids", "")
+        try:
+            await api.delete(token, f"/docs/bulk-draft?doc_ids={doc_ids}")
+        except APIError as e:
+            return _action_error(str(e.detail))
+        return _R("", status_code=204)
+
     @app.post("/docs/bulk-payment")
     async def bulk_payment_route(request: Request):
         from starlette.responses import Response as _R
@@ -3463,8 +3476,8 @@ def _doc_table(
             id="doc-table",
         )
 
-    # Checkboxes for invoice/bill types (not lists, not quotations, not memos)
-    show_checkboxes = doc_type in ("invoice", "bill")
+    # Checkboxes: invoice/bill for bulk payment; any doc type in draft view for bulk delete
+    show_checkboxes = doc_type in ("invoice", "bill") or is_drafts_view
 
     sort_keys = {
         "number": lambda d: str(d.get("doc_number") or d.get("ref") or ""),
@@ -3525,18 +3538,28 @@ def _doc_table(
 
     checkbox_th = [Th(Input(type="checkbox", id="doc-select-all", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
 
-    # Bulk payment action bar (hidden by default, shown when checkboxes selected)
+    # Bulk action bar (hidden by default, shown when checkboxes selected)
     bulk_bar = ""
     if show_checkboxes:
-        bulk_bar = Div(
-            Span(t("doc.0_selected"), id="doc-bulk-count", cls="bulk-count"),
-            Button(t("btn.record_payment"), type="button", id="doc-bulk-pay-btn", cls="btn btn--primary btn--sm",
-                   style="display:none;",
-                   hx_get="/docs/bulk-payment-panel", hx_target="#bulk-payment-panel", hx_swap="innerHTML",
-                   hx_include="this"),
-            Div(id="bulk-payment-panel"),
-            cls="bulk-action-bar", id="doc-bulk-bar",
-        )
+        _bulk_children = [Span(t("doc.0_selected"), id="doc-bulk-count", cls="bulk-count")]
+        if is_drafts_view:
+            _bulk_children.append(
+                Button("Delete Selected", type="button", id="doc-bulk-delete-btn", cls="btn btn--danger btn--sm",
+                       style="display:none;",
+                       hx_delete="/docs/bulk-draft", hx_swap="none",
+                       hx_confirm="Delete selected drafts? This cannot be undone.",
+                       hx_include="#doc-bulk-delete-ids"),
+            )
+            _bulk_children.append(Input(type="hidden", id="doc-bulk-delete-ids", name="doc_ids", value=""))
+        if doc_type in ("invoice", "bill") and not is_drafts_view:
+            _bulk_children.extend([
+                Button(t("btn.record_payment"), type="button", id="doc-bulk-pay-btn", cls="btn btn--primary btn--sm",
+                       style="display:none;",
+                       hx_get="/docs/bulk-payment-panel", hx_target="#bulk-payment-panel", hx_swap="innerHTML",
+                       hx_include="this"),
+                Div(id="bulk-payment-panel"),
+            ])
+        bulk_bar = Div(*_bulk_children, cls="bulk-action-bar", id="doc-bulk-bar")
 
     bulk_js = ""
     if show_checkboxes:
@@ -3547,6 +3570,8 @@ def _doc_table(
     var selectAll = document.getElementById('doc-select-all');
     var countEl = document.getElementById('doc-bulk-count');
     var payBtn = document.getElementById('doc-bulk-pay-btn');
+    var delBtn = document.getElementById('doc-bulk-delete-btn');
+    var delIds = document.getElementById('doc-bulk-delete-ids');
     function getSelected() {{
         return Array.from(table.querySelectorAll('.doc-row-select:checked'));
     }}
@@ -3554,10 +3579,15 @@ def _doc_table(
         var sel = getSelected();
         var n = sel.length;
         if (countEl) countEl.textContent = n + ' selected';
+        var ids = sel.map(cb => cb.value).join(',');
+        if (delBtn) {{
+            delBtn.style.display = n > 0 ? '' : 'none';
+        }}
+        if (delIds) {{
+            delIds.value = ids;
+        }}
         if (payBtn) {{
             payBtn.style.display = n > 0 ? '' : 'none';
-            // Build doc_ids param for HTMX request
-            var ids = sel.map(cb => cb.value).join(',');
             payBtn.setAttribute('hx-vals', JSON.stringify({{doc_ids: ids}}));
             htmx.process(payBtn);
         }}
@@ -3570,6 +3600,12 @@ def _doc_table(
     }}
     table.addEventListener('change', function(e) {{
         if (e.target && e.target.classList.contains('doc-row-select')) updateBar();
+    }});
+    // After bulk delete: reload the page to reflect removed rows
+    table.addEventListener('htmx:afterRequest', function(e) {{
+        if (e.detail.elt && e.detail.elt.id === 'doc-bulk-delete-btn' && e.detail.successful) {{
+            window.location.reload();
+        }}
     }});
 }})();
 """)
