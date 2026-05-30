@@ -4880,7 +4880,10 @@ function _celerpDocTypeParam() {{
                     const d = {{...data, sku: data.sku || code}};
                     celerpFillRow(row, d);
                 }}
-                document.getElementById('{line_body_id}').appendChild(tpl);
+                const tbody2 = document.getElementById('{line_body_id}');
+                tbody2.appendChild(tpl);
+                const newRow2 = tbody2.lastElementChild;
+                if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
                 celerpUpdateTotals();
                 celerpAutoSave();
                 scanStatus.textContent = '✓ ' + (data.sku || code);
@@ -5202,7 +5205,11 @@ function celerpAddLine() {{
             celerpTaxChange(taxSel);
         }}
     }}
-    document.getElementById('{line_body_id}').appendChild(tpl);
+    const tbody = document.getElementById('{line_body_id}');
+    tbody.appendChild(tpl);
+    // Re-init comboboxes in the newly-added row (cloneNode bypasses htmx:afterSettle)
+    const newRow = tbody.lastElementChild;
+    if (newRow) newRow.querySelectorAll('.combobox-wrap').forEach(initCombobox);
     celerpUpdateTotals();
 }}
 function celerpUpdateTotals() {{
