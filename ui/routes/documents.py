@@ -4187,7 +4187,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _is_inbound_doc
         else {"final", "sent"}
     )
-    if status in _revertable_statuses and amount_paid_for_revert == 0 and not (has_received_items and not _is_inbound_doc) and _is_manager and not suppress_doc_actions:
+    if status in _revertable_statuses and amount_paid_for_revert == 0 and not has_received_items and _is_manager and not suppress_doc_actions:
         action_btns_right.insert(0,
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
