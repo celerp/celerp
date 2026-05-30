@@ -1364,6 +1364,127 @@ def setup_routes(app):
         """Legacy PDF route - redirect to new print view."""
         return RedirectResponse(f"/docs/{entity_id}/print", status_code=302)
 
+    @app.get("/docs/bulk-payment-panel")
+    async def bulk_payment_panel(request: Request):
+        """HTMX endpoint: render inline bulk payment panel for selected docs."""
+        token = _token(request)
+        if not token:
+            return Div(P(t("error.unauthorized")), id="bulk-payment-panel")
+        doc_ids_raw = request.query_params.get("doc_ids", "")
+        doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
+        if not doc_ids:
+            return Div(P(t("doc.no_documents_selected")), id="bulk-payment-panel")
+
+        docs = []
+        for did in doc_ids:
+            try:
+                docs.append(await api.get_doc(token, did))
+            except APIError:
+                pass
+        if not docs:
+            return Div(P(t("doc.could_not_load_selected_documents")), id="bulk-payment-panel")
+
+        # Validate same contact
+        contact_ids = set(d.get("contact_id") or "" for d in docs)
+        contact_ids.discard("")
+        if len(contact_ids) > 1:
+            return Div(
+                P(t("doc._all_selected_documents_must_be_from_the_same_cont"), cls="flash flash--error"),
+                id="bulk-payment-panel",
+            )
+
+        # Fetch bank accounts for dropdown
+        bank_accounts = []
+        try:
+            bank_accounts = (await api.get_bank_accounts(token)).get("items", [])
+        except Exception:
+            pass
+
+        contact_name = docs[0].get("contact_name") or ""
+        doc_type = docs[0].get("doc_type") or "invoice"
+        currency = docs[0].get("currency") or "USD"
+
+        # Filter to payable docs and sort by due date
+        payable = [d for d in docs if d.get("status") not in ("draft", "void", "paid") and float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0) > 0]
+        payable.sort(key=lambda d: d.get("due_date") or d.get("issue_date") or "")
+        skipped = len(docs) - len(payable)
+        total_outstanding = sum(float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0) for d in payable)
+
+        alloc_rows = []
+        for d in payable:
+            eid = d.get("entity_id") or d.get("id", "")
+            doc_num = d.get("doc_number") or d.get("ref_id") or eid
+            due = d.get("due_date") or "--"
+            outstanding = float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0)
+            alloc_rows.append(Tr(
+                Td(doc_num),
+                Td(str(due)[:10]),
+                Td(fmt_money(outstanding, currency), cls="cell--number"),
+                Td(Span("--", cls="alloc-amount"), cls="cell--number"),
+                data_outstanding=str(outstanding),
+                data_doc_id=eid,
+            ))
+
+        from datetime import date as _d
+        today = _d.today().isoformat()
+        _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
+                    Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
+        _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
+        hidden_ids = [Input(type="hidden", name="doc_ids", value=(d.get("entity_id") or d.get("id", ""))) for d in payable]
+
+        panel = Div(
+            H3(f"Bulk Payment — {contact_name} ({len(payable)} document{'s' if len(payable) != 1 else ''})", cls="section-title"),
+            P(f"{skipped} document(s) skipped (already paid or draft).", cls="text-muted") if skipped else "",
+            P(f"Total Outstanding: {fmt_money(total_outstanding, currency)}", cls="total-label--final"),
+            Table(
+                Thead(Tr(Th(t("th.document")), Th(t("th.due_date")), Th(t("th.outstanding")), Th(t("th.allocation")))),
+                Tbody(*alloc_rows),
+                cls="data-table data-table--compact", id="bulk-alloc-table",
+            ),
+            Form(
+                *hidden_ids,
+                Input(type="hidden", name="doc_type", value=doc_type),
+                Div(
+                    Div(Label(t("label.amount"), cls="form-label"),
+                        Input(type="number", name="amount", value=f"{total_outstanding:.2f}", step="0.01",
+                              min="0", cls="form-input", id="bulk-pay-amount",
+                              oninput="celerpUpdateBulkAlloc()"), cls="form-group"),
+                    Div(Label(t("th.date"), cls="form-label"),
+                        Input(type="date", name="payment_date", value=today, cls="form-input"), cls="form-group"),
+                    Div(Label(t("label.method"), cls="form-label"),
+                        Select(*_methods, name="method", cls="form-input"), cls="form-group"),
+                    Div(Label(t("label.bank_account"), cls="form-label"),
+                        Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
+                    Div(Label(t("label.reference"), cls="form-label"),
+                        Input(type="text", name="reference", cls="form-input"), cls="form-group"),
+                    cls="form-row",
+                ),
+                Div(
+                    Button(t("btn.save_payment"), type="submit", cls="btn btn--primary"),
+                    Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
+                           onclick="document.getElementById('bulk-payment-panel').innerHTML=''"),
+                    cls="form-actions",
+                ),
+                hx_post="/docs/bulk-payment", hx_swap="none", cls="form-card",
+            ),
+            Script(f"""
+function celerpUpdateBulkAlloc() {{
+    const amount = parseFloat(document.getElementById('bulk-pay-amount')?.value || 0);
+    let remaining = amount;
+    document.querySelectorAll('#bulk-alloc-table tbody tr').forEach(row => {{
+        const outstanding = parseFloat(row.dataset.outstanding || 0);
+        const alloc = Math.min(remaining, outstanding);
+        remaining = Math.max(0, remaining - alloc);
+        row.querySelector('.alloc-amount').textContent = alloc > 0 ? '{currency_symbol(currency)}' + alloc.toFixed(2) : '--';
+    }});
+}}
+celerpUpdateBulkAlloc();
+"""),
+            id="bulk-payment-panel",
+            cls="bulk-payment-panel",
+        )
+        return panel
+
     @app.get("/docs/{entity_id}")
     async def doc_detail(request: Request, entity_id: str):
         token = _token(request)
@@ -2450,126 +2571,6 @@ def setup_routes(app):
         doc_type = str(form.get("doc_type", "invoice")).strip()
         return _R("", status_code=204, headers={"HX-Redirect": f"/docs?type={doc_type}"})
 
-    @app.get("/docs/bulk-payment-panel")
-    async def bulk_payment_panel(request: Request):
-        """HTMX endpoint: render inline bulk payment panel for selected docs."""
-        token = _token(request)
-        if not token:
-            return Div(P(t("error.unauthorized")), id="bulk-payment-panel")
-        doc_ids_raw = request.query_params.get("doc_ids", "")
-        doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
-        if not doc_ids:
-            return Div(P(t("doc.no_documents_selected")), id="bulk-payment-panel")
-
-        docs = []
-        for did in doc_ids:
-            try:
-                docs.append(await api.get_doc(token, did))
-            except APIError:
-                pass
-        if not docs:
-            return Div(P(t("doc.could_not_load_selected_documents")), id="bulk-payment-panel")
-
-        # Validate same contact
-        contact_ids = set(d.get("contact_id") or "" for d in docs)
-        contact_ids.discard("")
-        if len(contact_ids) > 1:
-            return Div(
-                P(t("doc._all_selected_documents_must_be_from_the_same_cont"), cls="flash flash--error"),
-                id="bulk-payment-panel",
-            )
-
-        # Fetch bank accounts for dropdown
-        bank_accounts = []
-        try:
-            bank_accounts = (await api.get_bank_accounts(token)).get("items", [])
-        except Exception:
-            pass
-
-        contact_name = docs[0].get("contact_name") or ""
-        doc_type = docs[0].get("doc_type") or "invoice"
-        currency = docs[0].get("currency") or "USD"
-
-        # Filter to payable docs and sort by due date
-        payable = [d for d in docs if d.get("status") not in ("draft", "void", "paid") and float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0) > 0]
-        payable.sort(key=lambda d: d.get("due_date") or d.get("issue_date") or "")
-        skipped = len(docs) - len(payable)
-        total_outstanding = sum(float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0) for d in payable)
-
-        alloc_rows = []
-        for d in payable:
-            eid = d.get("entity_id") or d.get("id", "")
-            doc_num = d.get("doc_number") or d.get("ref_id") or eid
-            due = d.get("due_date") or "--"
-            outstanding = float(d.get("amount_outstanding") or d.get("outstanding_balance") or 0)
-            alloc_rows.append(Tr(
-                Td(doc_num),
-                Td(str(due)[:10]),
-                Td(fmt_money(outstanding, currency), cls="cell--number"),
-                Td(Span("--", cls="alloc-amount"), cls="cell--number"),
-                data_outstanding=str(outstanding),
-                data_doc_id=eid,
-            ))
-
-        from datetime import date as _d
-        today = _d.today().isoformat()
-        _methods = [Option(t("doc.cash"), value="cash"), Option(t("doc.bank_transfer"), value="transfer"),
-                    Option(t("doc.card"), value="card"), Option(t("doc.check"), value="check"), Option(t("doc.other"), value="other")]
-        _bank_opts = _bank_account_options(bank_accounts, default_code=bank_accounts[0].get("chart_account_code") if bank_accounts else None)
-
-        panel = Div(
-            H3(f"Bulk Payment — {contact_name} ({len(payable)} document{'s' if len(payable) != 1 else ''})", cls="section-title"),
-            P(f"{skipped} document(s) skipped (already paid or draft).", cls="text-muted") if skipped else "",
-            P(f"Total Outstanding: {fmt_money(total_outstanding, currency)}", cls="total-label--final"),
-            Table(
-                Thead(Tr(Th(t("th.document")), Th(t("th.due_date")), Th(t("th.outstanding")), Th(t("th.allocation")))),
-                Tbody(*alloc_rows),
-                cls="data-table data-table--compact", id="bulk-alloc-table",
-            ),
-            Form(
-                *hidden_ids,
-                Input(type="hidden", name="doc_type", value=doc_type),
-                Div(
-                    Div(Label(t("label.amount"), cls="form-label"),
-                        Input(type="number", name="amount", value=f"{total_outstanding:.2f}", step="0.01",
-                              min="0", cls="form-input", id="bulk-pay-amount",
-                              oninput="celerpUpdateBulkAlloc()"), cls="form-group"),
-                    Div(Label(t("th.date"), cls="form-label"),
-                        Input(type="date", name="payment_date", value=today, cls="form-input"), cls="form-group"),
-                    Div(Label(t("label.method"), cls="form-label"),
-                        Select(*_methods, name="method", cls="form-input"), cls="form-group"),
-                    Div(Label(t("label.bank_account"), cls="form-label"),
-                        Select(*_bank_opts, name="bank_account", cls="form-input"), cls="form-group"),
-                    Div(Label(t("label.reference"), cls="form-label"),
-                        Input(type="text", name="reference", cls="form-input"), cls="form-group"),
-                    cls="form-row",
-                ),
-                Div(
-                    Button(t("btn.save_payment"), type="submit", cls="btn btn--primary"),
-                    Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
-                           onclick="document.getElementById('bulk-payment-panel').innerHTML=''"),
-                    cls="form-actions",
-                ),
-                hx_post="/docs/bulk-payment", hx_swap="none", cls="form-card",
-            ),
-            Script(f"""
-function celerpUpdateBulkAlloc() {{
-    const amount = parseFloat(document.getElementById('bulk-pay-amount')?.value || 0);
-    let remaining = amount;
-    document.querySelectorAll('#bulk-alloc-table tbody tr').forEach(row => {{
-        const outstanding = parseFloat(row.dataset.outstanding || 0);
-        const alloc = Math.min(remaining, outstanding);
-        remaining = Math.max(0, remaining - alloc);
-        row.querySelector('.alloc-amount').textContent = alloc > 0 ? '{currency_symbol(currency)}' + alloc.toFixed(2) : '--';
-    }});
-}}
-celerpUpdateBulkAlloc();
-"""),
-            id="bulk-payment-panel",
-            cls="bulk-payment-panel",
-        )
-        return panel
-
     @app.get("/payments")
     async def payments_list_page(request: Request):
         token = _token(request)
@@ -3610,12 +3611,8 @@ def _doc_table(
         var ids = idsInput ? idsInput.value : '';
         if (!ids) return;
         if (!confirm("Delete selected drafts? This cannot be undone.")) return;
-        htmx.ajax('DELETE', '/docs/bulk-draft?doc_ids=' + encodeURIComponent(ids), {{
-            swap: 'none',
-            handler: function(elt, info) {{
-                if (info.successful) window.location.reload();
-            }}
-        }});
+        fetch('/docs/bulk-draft?doc_ids=' + encodeURIComponent(ids), {{method: 'DELETE'}})
+            .then(function(r) {{ if (r.ok) window.location.reload(); else r.text().then(function(t) {{ alert('Delete failed: ' + t); }}); }});
     }};
     window.docBulkPayConfirmed = function() {{
         var ids = idsInput ? idsInput.value : '';
