@@ -10503,9 +10503,9 @@ class TestFieldSchemaBarcode:
         assert "bill" in _DOC_TYPES
 
     def test_sidebar_label_updated(self):
-        """Sidebar label for POs is 'Draft Bills & POs'."""
+        """Sidebar label for POs is 'Purchase Orders'."""
         from ui.routes.documents import _DOC_TYPE_PAGE_LABELS
-        assert _DOC_TYPE_PAGE_LABELS["purchase_order"] == "Draft Bills & POs"
+        assert _DOC_TYPE_PAGE_LABELS["purchase_order"] == "Purchase Orders"
 
     def test_bill_conversion_projection(self):
         """doc.converted_to_bill sets status to awaiting_payment and updates doc_type."""

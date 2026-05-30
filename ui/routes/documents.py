@@ -59,7 +59,7 @@ _FULFILLABLE_STATUSES_UI: dict[str, frozenset[str]] = {
 }
 _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "invoice": "Invoices",
-    "purchase_order": "Draft Bills & POs",
+    "purchase_order": "Purchase Orders",
     "bill": "Vendor Bills",
     "receipt": "Receipts",
     "credit_note": "Credit Notes",
@@ -723,25 +723,13 @@ def setup_routes(app):
                 params["date_to"] = date_to
             docs_resp = None
             if is_drafts_view and doc_type == "purchase_order":
-                # PO drafts view: fetch both purchase_order and bill drafts combined.
-                import asyncio as _asyncio
-                bill_params = {**params, "doc_type": "bill"}
-                po_summary_params = {"doc_type": doc_type}
-                bill_summary_params = {"doc_type": "bill"}
-                po_resp, bill_resp, po_summary, bill_summary = await _asyncio.gather(
+                # PO drafts view: fetch purchase_order drafts only.
+                docs_resp, summary = await _asyncio.gather(
                     api.list_docs(token, params),
-                    api.list_docs(token, bill_params),
                     api.get_doc_summary(token, doc_type=doc_type),
-                    api.get_doc_summary(token, doc_type="bill"),
                 )
-                po_items = po_resp.get("items", []) if isinstance(po_resp, dict) else po_resp
-                bill_items = bill_resp.get("items", []) if isinstance(bill_resp, dict) else bill_resp
-                docs = po_items + bill_items
-                draft_count = (
-                    (po_summary.get("draft_count", 0) if isinstance(po_summary, dict) else 0)
-                    + (bill_summary.get("draft_count", 0) if isinstance(bill_summary, dict) else 0)
-                )
-                summary = po_summary  # use PO summary for cards
+                docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+                draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
             else:
                 import asyncio as _asyncio
                 docs_resp, summary = await _asyncio.gather(
@@ -5997,7 +5985,7 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
 
         _AWAITING_STATUSES_BILL = "final,sent,awaiting_payment,partial"
         cards = [
-            {"label": t("status.draft", lang),           "count": draft_cnt,       "total": None, "status": "draft",        "color": "gray",   "_url": "/docs?type=purchase_order",                       "_active_key": "draft"},
+            {"label": t("status.draft", lang),           "count": draft_cnt,       "total": None, "status": "draft",        "color": "gray",   "_url": "/docs?type=purchase_order&status=draft",          "_active_key": "draft"},
             {"label": t("status.all_issued", lang),      "count": all_issued_cnt,  "total": None, "status": "all_issued",   "color": "blue",   "_url": f"{base_url}&all_issued=1",                        "_active_key": "all_issued"},
             {"label": "Not Stocked Goods",               "count": not_stocked_cnt, "total": None, "status": "not_stocked",  "color": "orange", "_url": f"{base_url}&not_stocked=1",                       "_active_key": "not_stocked"},
             {"label": t("status.awaiting_payment", lang),"count": awaiting,        "total": None, "status": "awaiting_payment","color": "yellow","_url": f"{base_url}&status_in={_AWAITING_STATUSES_BILL}","_active_key": "awaiting_payment"},
