@@ -516,7 +516,7 @@ a:hover { text-decoration: underline; }
 .doc-lines th.col-tax,        .doc-lines td.col-tax        { width: 70px;  min-width: 70px;  max-width: 90px; }
 .doc-lines th.col-cat,        .doc-lines td.col-cat        { width: 70px;  min-width: 60px;  max-width: 90px; overflow: hidden; }
 .doc-lines th.col-type,       .doc-lines td.col-type       { width: 70px;  min-width: 60px;  max-width: 80px; }
-.doc-lines th.col-account,    .doc-lines td.col-account    { width: 80px;  min-width: 70px;  max-width: 100px; overflow: hidden; }
+.doc-lines th.col-account,    .doc-lines td.col-account    { width: 80px;  min-width: 70px;  max-width: 100px; overflow: visible; }
 .doc-lines td.col-total, .doc-lines th.col-total { width: 140px; min-width: 140px; max-width: 160px; overflow: visible; padding: 0; }
 .doc-lines th.col-category,   .doc-lines td.col-category   { width: 110px; min-width: 80px;  max-width: 120px; }
 .doc-lines th.col-type,       .doc-lines td.col-type       { width: 80px;  min-width: 70px;  max-width: 90px; }
@@ -652,8 +652,10 @@ a:hover { text-decoration: underline; }
 .combobox-wrap { position: relative; display: inline-block; width: 100%; }
 .combobox-input {
   background: var(--c-bg3); border: 1px solid var(--c-border); color: var(--c-text);
-  border-radius: var(--radius); padding: 8px 10px; font-size: 13px; width: 100%;
-  transition: border-color 0.1s;
+  border-radius: var(--radius); padding: 8px 26px 8px 10px; font-size: 13px; width: 100%;
+  transition: border-color 0.1s; cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%230ea57a'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 8px center;
 }
 .combobox-input:focus { outline: none; border-color: var(--c-accent); }
 .combobox-list {
@@ -1441,7 +1443,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* td overflow:hidden clips absolutely-positioned dropdowns; override for ac/combobox cells */
 .data-table td:has(.catalog-ac-wrap),
 .data-table td:has(.combobox-wrap) { overflow: visible; }
-.doc-lines td.col-account { overflow: visible; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
 .doc-lines th.col-total { text-align: center !important; }
