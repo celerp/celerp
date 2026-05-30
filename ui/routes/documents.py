@@ -2969,7 +2969,7 @@ celerpUpdateBulkAlloc();
             detail = detail_from_entry(data, raw_type) if isinstance(data, dict) else ""
             actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
             actor_display = actor if (actor and not _is_uuid(actor)) else EMPTY
-            return Tr(event_cell, Td(ts_display), Td(detail or EMPTY), Td(actor_display))
+            return Tr(event_cell, Td(ts_display), Td(actor_display), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
         prev_btn = (
             A("← Newer", href="#", cls="btn btn--ghost btn--xs",
@@ -2989,7 +2989,7 @@ celerpUpdateBulkAlloc();
             content = P("No activity recorded yet.", cls="empty-state-msg")
         else:
             content = Table(
-                Thead(Tr(Th("Event"), Th("When"), Th("Details"), Th("Who"))),
+                Thead(Tr(Th("Event"), Th("When"), Th("Who"), Th("Details"))),
                 Tbody(*rows),
                 cls="data-table",
             )
@@ -5464,8 +5464,8 @@ async function celerpCsvImport(input, entityId) {{
                     else:
                         cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
             cells += [
-                Td(format_value(li.get("description") or li.get("name"))),
                 Td(format_value(li.get("sku") or None)),
+                Td(format_value(li.get("description") or li.get("name"))),
             ]
             if _is_vendor_doc:
                 cells.append(Td(format_value(li.get("category") or None), cls="col-category"))
@@ -5485,7 +5485,7 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"))
         if _show_item_status:
             _thead_base.append(Th("Status", cls="col-item-status"))
-        _thead_base += [Th(t("th.description")), Th(t("th.skuitem"))]
+        _thead_base += [Th(t("th.skuitem")), Th(t("th.description"))]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.category"), cls="col-category"), Th(t("th.type"), cls="col-type")]
         _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax"), Th(t("th.total"), cls="cell--number col-total")]

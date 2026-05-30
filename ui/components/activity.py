@@ -385,7 +385,7 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
         user_cell = Td(actor if (actor and not _is_uuid(actor)) else EMPTY)
 
-        return Tr(event_cell, when_cell, detail_cell, user_cell)
+        return Tr(event_cell, when_cell, user_cell, detail_cell)
 
     display = ledger[:max_display] if max_display else ledger
     threshold = max_display or len(ledger)
@@ -400,7 +400,7 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),
         Table(
-            Thead(Tr(Th(t("th.event")), Th(t("th.when")), Th(t("th.details")), Th(t("th.user")))),
+            Thead(Tr(Th(t("th.event")), Th(t("th.when")), Th(t("th.user")), Th(t("th.details")))),
             Tbody(*[_row(e) for e in display]),
             cls="data-table",
         ),
