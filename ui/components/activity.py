@@ -113,22 +113,9 @@ def detail_from_entry(data: dict, event_type: str) -> str:
         return ""
     fields_changed = data.get("fields_changed", {})
     if fields_changed and isinstance(fields_changed, dict):
-        # Filter system-managed fields that are never meaningful to show
-        user_fields = {k: v for k, v in fields_changed.items()
-                       if k not in _SYSTEM_FIELDS and k not in {"attachments", "preview_image_id"}}
-        if user_fields:
-            parts = []
-            for k, change in list(user_fields.items())[:4]:
-                old = change.get("old") if isinstance(change, dict) else None
-                new = change.get("new") if isinstance(change, dict) else None
-                old_str = str(old) if old is not None else "none"
-                new_str = str(new) if new is not None else "none"
-                if new is not None:
-                    parts.append(f"{k}: {old_str} → {new_str}")
-                else:
-                    parts.append(k)
-            suffix = "…" if len(user_fields) > 4 else ""
-            return "Changed: " + ", ".join(parts) + suffix
+        summary = _fields_changed_summary(fields_changed)
+        if summary:
+            return summary
     if event_type in ("item.quantity.adjusted", "item.quantity_adjusted"):
         new_qty = data.get("new_qty") or data.get("quantity")
         if new_qty is not None:
@@ -265,25 +252,59 @@ def detail_from_entry(data: dict, event_type: str) -> str:
 
 
 def _fields_changed_summary(fields_changed: dict) -> str:
-    """Compact summary of field changes from a ledger data dict."""
+    """Compact summary of field changes from a ledger data dict.
+
+    Scalar changes: "field: old → new" (values capped at 40 chars).
+    Complex changes (list/dict): "Lines edited", "Contact updated", etc.
+    Unknown complex: "field updated".
+    """
     if not fields_changed or not isinstance(fields_changed, dict):
         return ""
     user_fields = {k: v for k, v in fields_changed.items()
                    if k not in _SYSTEM_FIELDS and k not in {"attachments", "preview_image_id"}}
-    if user_fields:
-        parts = []
-        for k, change in list(user_fields.items())[:4]:
-            old = change.get("old") if isinstance(change, dict) else None
-            new = change.get("new") if isinstance(change, dict) else None
-            old_str = str(old) if old is not None else "none"
-            new_str = str(new) if new is not None else "none"
-            if new is not None:
-                parts.append(f"{k}: {old_str} → {new_str}")
-            else:
-                parts.append(k)
-        suffix = "..." if len(user_fields) > 4 else ""
-        return "Changed: " + ", ".join(parts) + suffix
-    return ""
+    if not user_fields:
+        return ""
+
+    _COMPLEX_LABELS: dict[str, str] = {
+        "line_items": "Lines edited",
+        "received_items": "Received items updated",
+        "fulfilled_items": "Fulfilled items updated",
+        "taxes": "Taxes updated",
+        "addresses": "Address updated",
+        "payments": "Payments updated",
+        "tc_items": "T&C items updated",
+        "attributes": "Attributes updated",
+    }
+
+    scalar_parts: list[str] = []
+    complex_labels: list[str] = []
+
+    for k, change in user_fields.items():
+        if isinstance(change, dict):
+            old = change.get("old")
+            new = change.get("new")
+        else:
+            old, new = None, change
+
+        # If either value is a list or dict, treat as complex
+        if isinstance(old, (list, dict)) or isinstance(new, (list, dict)):
+            label = _COMPLEX_LABELS.get(k) or f"{k.replace('_', ' ').title()} updated"
+            if label not in complex_labels:
+                complex_labels.append(label)
+            continue
+
+        old_str = (str(old)[:40] + "…" if old is not None and len(str(old)) > 40 else str(old)) if old is not None else "none"
+        new_str = (str(new)[:40] + "…" if new is not None and len(str(new)) > 40 else str(new)) if new is not None else "none"
+        if new is not None:
+            scalar_parts.append(f"{k}: {old_str} → {new_str}")
+        else:
+            scalar_parts.append(k)
+
+    all_parts = scalar_parts + complex_labels
+    if not all_parts:
+        return ""
+    suffix = "…" if len(all_parts) > 4 else ""
+    return ", ".join(all_parts[:4]) + suffix
 
 
 def format_timestamp(ts: str) -> str:

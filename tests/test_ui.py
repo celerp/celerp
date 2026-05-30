@@ -789,7 +789,7 @@ class TestActivityFeed:
             "data": {"fields_changed": {"status": {"old": "active", "new": "reserved"}}},
         }]))
         assert "2026-03-20" in html
-        assert "Changed: status" in html
+        assert "status: active → reserved" in html
         assert "—" not in html.split("2026-03-20")[0]  # timestamp cell is not blank
 
     def test_ledger_table_empty(self):
@@ -10272,16 +10272,13 @@ class TestDocumentsOverhaul:
 
     @pytest.mark.asyncio
     async def test_doc_detail_shows_history_section(self, ui_client):
-        """Doc detail page includes a History section with ledger events."""
+        """Doc history HTMX endpoint returns ledger events paginated."""
         ledger_data = {"items": [
             {"event_type": "doc.created", "ts": "2026-03-20T10:00:00Z", "data": {}},
             {"event_type": "doc.finalized", "ts": "2026-03-21T14:30:00Z", "data": {}},
         ], "total": 2}
-        with (
-            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)),
-            patch("ui.api_client.list_ledger", new=AsyncMock(return_value=ledger_data)),
-        ):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        with patch("ui.api_client.list_ledger", new=AsyncMock(return_value=ledger_data)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1", cookies=_authed())
         content = r.content.decode()
         assert "History" in content
         assert "Document created" in content
@@ -10289,12 +10286,9 @@ class TestDocumentsOverhaul:
 
     @pytest.mark.asyncio
     async def test_doc_detail_empty_history(self, ui_client):
-        """Doc detail shows empty state when no ledger entries."""
-        with (
-            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)),
-            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        """Doc history endpoint shows empty state when no ledger entries."""
+        with patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1", cookies=_authed())
         assert b"No activity recorded yet." in r.content
 
     @pytest.mark.asyncio

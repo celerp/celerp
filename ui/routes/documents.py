@@ -1472,13 +1472,8 @@ def setup_routes(app):
                 item_categories = []
             company_locations = []
 
-        # Fetch document history (ledger entries)
+        # History loaded lazily via HTMX GET /docs/{entity_id}/history
         ledger: list[dict] = []
-        try:
-            ledger_resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": 50})
-            ledger = ledger_resp.get("items", []) if isinstance(ledger_resp, dict) else []
-        except Exception:
-            ledger = []
 
         doc_ref = doc.get("ref_id") or doc.get("doc_number") or doc.get("ref") or doc.get("external_id") or "Document"
         status = doc.get("status", "draft")
@@ -2943,6 +2938,68 @@ celerpUpdateBulkAlloc();
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
+
+    @app.get("/docs/{entity_id}/history")
+    async def doc_history_paginated(request: Request, entity_id: str):
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R("", status_code=401)
+        _PER_PAGE = 20
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+        except ValueError:
+            page = 1
+        offset = (page - 1) * _PER_PAGE
+        try:
+            resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": _PER_PAGE + 1, "offset": offset, "resolve": "true"})
+            items = resp.get("items", []) if isinstance(resp, dict) else []
+        except Exception:
+            items = []
+        has_next = len(items) > _PER_PAGE
+        entries = items[:_PER_PAGE]
+        from ui.components.activity import format_timestamp, detail_from_entry, _event_display, _is_uuid
+        EMPTY = "--"
+        def _row(e: dict):
+            display_text, url = _event_display(e)
+            event_cell = Td(A(display_text, href=url, cls="table-link") if url else display_text)
+            ts_display = format_timestamp(str(e.get("ts") or "")) or EMPTY
+            data = e.get("data") or {}
+            raw_type = str(e.get("event_type") or "")
+            detail = detail_from_entry(data, raw_type) if isinstance(data, dict) else ""
+            actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
+            actor_display = actor if (actor and not _is_uuid(actor)) else EMPTY
+            return Tr(event_cell, Td(ts_display), Td(detail or EMPTY), Td(actor_display))
+        rows = [_row(e) for e in entries]
+        prev_btn = (
+            A("← Newer", href="#", cls="btn btn--ghost btn--xs",
+              hx_get=f"/docs/{entity_id}/history?page={page-1}",
+              hx_target=f"#doc-history-{entity_id}", hx_swap="outerHTML")
+            if page > 1 else ""
+        )
+        next_btn = (
+            A("Older →", href="#", cls="btn btn--ghost btn--xs",
+              hx_get=f"/docs/{entity_id}/history?page={page+1}",
+              hx_target=f"#doc-history-{entity_id}", hx_swap="outerHTML")
+            if has_next else ""
+        )
+        page_info = Span(f"Page {page}", cls="text-muted") if (page > 1 or has_next) else ""
+        footer = Div(prev_btn, page_info, next_btn, cls="table-pagination") if (page > 1 or has_next) else ""
+        if not entries and page == 1:
+            content = P("No activity recorded yet.", cls="empty-state-msg")
+        else:
+            content = Table(
+                Thead(Tr(Th("Event"), Th("When"), Th("Details"), Th("Who"))),
+                Tbody(*rows),
+                cls="data-table",
+            )
+        return Div(
+            Div(Span("📜", cls="section-icon"), H3("History", cls="section-title"), cls="section-header"),
+            content,
+            footer,
+            id=f"doc-history-{entity_id}",
+            cls="doc-section",
+        )
 
     @app.get("/docs/{entity_id}/files/_section")
     async def doc_files_section(request: Request, entity_id: str):
@@ -5776,21 +5833,23 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-internal",
         ),
         # --- History / Activity section ---
-        _doc_history_section(ledger or []),
+        Div(id=f"doc-history-{entity_id}",
+            hx_get=f"/docs/{entity_id}/history?page=1",
+            hx_trigger="load",
+            hx_swap="outerHTML"),
         cls="doc-detail doc-detail--gc",
     )
 
 
-
 def _doc_history_section(ledger: list[dict]) -> FT:
-    """Render a timeline of ledger events for a document."""
+    """Render a timeline of ledger events for a document. Legacy: used by non-paginated callers."""
     return activity_table(
         ledger,
         title="History",
         section_cls="doc-section",
         icon="\U0001f4dc",
         empty_msg="No activity recorded yet.",
-        max_display=50,
+        max_display=20,
     )
 
 
