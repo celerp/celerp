@@ -1462,7 +1462,7 @@ def setup_routes(app):
                 Div(
                     Button(t("btn.save_payment"), type="submit", cls="btn btn--primary"),
                     Button(t("btn.cancel"), type="button", cls="btn btn--ghost",
-                           onclick="document.getElementById('bulk-payment-panel').innerHTML=''"),
+                           onclick="docBulkPayCancel()"),
                     cls="form-actions",
                 ),
                 hx_post="/docs/bulk-payment", hx_swap="none", cls="form-card",
@@ -1573,11 +1573,16 @@ celerpUpdateBulkAlloc();
             locations = []
 
         item_categories: list[str] = []
+        chart_accounts: list[dict] = []
         if doc_type in ("purchase_order", "bill", "consignment_in"):
             try:
                 item_categories = await api.list_item_categories(token)
             except Exception:
                 item_categories = []
+            try:
+                chart_accounts = (await api.get_chart(token)).get("accounts", [])
+            except Exception:
+                chart_accounts = []
             company_locations = []
 
         # History loaded lazily via HTMX GET /docs/{entity_id}/history
@@ -1665,7 +1670,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, chart_accounts=chart_accounts),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -3617,10 +3622,16 @@ def _doc_table(
     window.docBulkPayConfirmed = function() {{
         var ids = idsInput ? idsInput.value : '';
         if (!ids) return;
+        if (payBtn) payBtn.style.display = 'none';
         htmx.ajax('GET', '/docs/bulk-payment-panel?doc_ids=' + encodeURIComponent(ids), {{
             target: '#bulk-payment-panel',
             swap: 'innerHTML'
         }});
+    }};
+    window.docBulkPayCancel = function() {{
+        document.getElementById('bulk-payment-panel').innerHTML = '';
+        if (payBtn) payBtn.style.display = '';
+        if (sel_input) sel_input.value = '';
     }};
     if (selectAll) {{
         selectAll.addEventListener('change', function() {{
@@ -4132,7 +4143,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None, chart_accounts: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -4576,10 +4587,23 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             line_tot = discounted
             li_entity_id = li.get("entity_id") or li.get("item_id") or ""
             li_allow_splitting = "1" if li.get("allow_splitting") else ""
-            account_cell = Td(Input(type="text", value=li.get("account_code", "") or "",
-                         data_name="account_code", placeholder="e.g. 1130",
-                         cls="cell-input cell-input--xs",
-                         onblur="celerpAutoSave()"), cls="col-account") if doc_type in ("purchase_order", "bill") else None
+            account_cell = None
+            if doc_type in ("purchase_order", "bill"):
+                _acct_list = chart_accounts or []
+                _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in _acct_list if a.get("code")]
+                _receive_as = li.get("receive_as") or "stock"
+                _default_acct = li.get("account_code") or ("1130" if _receive_as == "stock" else "6950")
+                account_cell = Td(
+                    searchable_select(
+                        name="account_code",
+                        options=_acct_opts,
+                        value=_default_acct,
+                        placeholder="e.g. 1130",
+                        cls_extra="cell-input cell-input--xs",
+                        allow_custom=True,
+                    ),
+                    cls="col-account",
+                )
 
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
@@ -4608,7 +4632,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     Option(t("doc.expense"), value="expense", selected=(_ra_val == "expense")),
                     data_name="receive_as",
                     cls="cell-input cell-input--select cell-input--xs",
-                    onchange="celerpAutoSave()",
+                    onchange="celerpReceiveAsChanged(this); celerpAutoSave()",
                 ), cls="col-type")
             elif _show_receive_as:
                 receive_as_cell = Td(li.get("receive_as", "stock").capitalize(), cls="col-type")
@@ -4708,6 +4732,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
                 Td(_tax_select(), cls="col-tax"),
+            ])
+            if doc_type in ("purchase_order", "bill"):
+                _acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in (chart_accounts or []) if a.get("code")]
+                cells.append(Td(
+                    searchable_select(name="account_code", options=_acct_opts, value="1130",
+                                      placeholder="e.g. 1130", cls_extra="cell-input cell-input--xs", allow_custom=True),
+                    cls="col-account",
+                ))
+            cells.extend([
                 Td(Input(type="number", value="0", step="0.01",
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
@@ -5045,6 +5078,27 @@ function celerpAcKey(e, input) {{
         active.dispatchEvent(new MouseEvent('mousedown'));
     }} else if (e.key === 'Escape') {{
         list.style.display = 'none';
+    }}
+}}
+function celerpReceiveAsChanged(sel) {{
+    const row = sel.closest('tr');
+    if (!row) return;
+    const acctWrap = row.querySelector('.col-account .combobox-wrap');
+    if (!acctWrap) return;
+    const hiddenInput = acctWrap.querySelector('input[type="hidden"]');
+    const displayInput = acctWrap.querySelector('.combobox-input');
+    if (!hiddenInput) return;
+    // Only update if user hasn't already set a non-default value
+    const current = hiddenInput.value;
+    const defaultStock = '1130', defaultExpense = '6950';
+    if (current === '' || current === defaultStock || current === defaultExpense) {{
+        const newDefault = sel.value === 'expense' ? defaultExpense : defaultStock;
+        hiddenInput.value = newDefault;
+        if (displayInput) {{
+            // Update display: find matching option text or show code
+            const opt = acctWrap.querySelector(`.combobox-option[data-value="${{newDefault}}"]`);
+            displayInput.value = opt ? opt.textContent.trim() : newDefault;
+        }}
     }}
 }}
 function celerpLineTotalInput(input) {{
