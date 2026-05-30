@@ -507,13 +507,16 @@ a:hover { text-decoration: underline; }
 .doc-lines { margin-top: 12px; table-layout: auto; width: 100%; max-width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
 .doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 28px; min-width: 28px; max-width: 28px; padding-left: 0; padding-right: 0; text-align: center; overflow: visible; }
-.doc-lines th.col-sku,        .doc-lines td.col-sku        { width: 180px; min-width: 180px; max-width: 190px; }
-.doc-lines th.col-desc,       .doc-lines td.col-desc       { min-width: 180px; }
-.doc-lines th.col-qty,        .doc-lines td.col-qty        { width: 70px;  min-width: 70px;  max-width: 70px; }
-.doc-lines th.col-unit,       .doc-lines td.col-unit       { width: 50px;  min-width: 50px;  max-width: 50px; }
-.doc-lines th.col-unit-price, .doc-lines td.col-unit-price { width: 120px; min-width: 120px; max-width: 130px; }
-.doc-lines th.col-disc,       .doc-lines td.col-disc       { width: 60px;  min-width: 60px;  max-width: 60px; }
-.doc-lines th.col-tax,        .doc-lines td.col-tax        { width: 80px;  min-width: 80px;  max-width: 100px; }
+.doc-lines th.col-sku,        .doc-lines td.col-sku        { width: 160px; min-width: 140px; max-width: 180px; }
+.doc-lines th.col-desc,       .doc-lines td.col-desc       { min-width: 140px; }
+.doc-lines th.col-qty,        .doc-lines td.col-qty        { width: 60px;  min-width: 60px;  max-width: 70px; }
+.doc-lines th.col-unit,       .doc-lines td.col-unit       { width: 44px;  min-width: 44px;  max-width: 50px; }
+.doc-lines th.col-unit-price, .doc-lines td.col-unit-price { width: 100px; min-width: 90px;  max-width: 120px; }
+.doc-lines th.col-disc,       .doc-lines td.col-disc       { width: 50px;  min-width: 50px;  max-width: 60px; }
+.doc-lines th.col-tax,        .doc-lines td.col-tax        { width: 70px;  min-width: 70px;  max-width: 90px; }
+.doc-lines th.col-cat,        .doc-lines td.col-cat        { width: 70px;  min-width: 60px;  max-width: 90px; overflow: hidden; }
+.doc-lines th.col-type,       .doc-lines td.col-type       { width: 70px;  min-width: 60px;  max-width: 80px; }
+.doc-lines th.col-account,    .doc-lines td.col-account    { width: 80px;  min-width: 70px;  max-width: 100px; overflow: hidden; }
 .doc-lines td.col-total, .doc-lines th.col-total { width: 140px; min-width: 140px; max-width: 160px; overflow: visible; padding: 0; }
 .doc-lines th.col-category,   .doc-lines td.col-category   { width: 110px; min-width: 80px;  max-width: 120px; }
 .doc-lines th.col-type,       .doc-lines td.col-type       { width: 80px;  min-width: 70px;  max-width: 90px; }

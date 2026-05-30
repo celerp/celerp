@@ -4512,7 +4512,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             account_cell = Td(Input(type="text", value=li.get("account_code", "") or "",
                          data_name="account_code", placeholder="e.g. 1130",
                          cls="cell-input cell-input--xs",
-                         onblur="celerpAutoSave()")) if doc_type in ("purchase_order", "bill") else None
+                         onblur="celerpAutoSave()"), cls="col-account") if doc_type in ("purchase_order", "bill") else None
 
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
             _show_receive_as = doc_type in ("bill", "purchase_order", "consignment_in")
@@ -4528,9 +4528,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     data_name="category",
                     cls="cell-input cell-input--select cell-input--xs",
                     onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
-                ))
+                ), cls="col-cat")
             elif _show_category:
-                category_cell = Td(li.get("category") or "--")
+                category_cell = Td(li.get("category") or "--", cls="col-cat")
             else:
                 category_cell = None
 
@@ -4542,9 +4542,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     data_name="receive_as",
                     cls="cell-input cell-input--select cell-input--xs",
                     onchange="celerpAutoSave()",
-                ))
+                ), cls="col-type")
             elif _show_receive_as:
-                receive_as_cell = Td(li.get("receive_as", "stock").capitalize())
+                receive_as_cell = Td(li.get("receive_as", "stock").capitalize(), cls="col-type")
             else:
                 receive_as_cell = None
 
@@ -4605,7 +4605,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     data_name="category",
                     cls="cell-input cell-input--select cell-input--xs",
                     onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=category-library','_blank');this.value='';}else{celerpAutoSave();}",
-                ))
+                ), cls="col-cat")
             else:
                 _cat_cell = None
 
@@ -4616,7 +4616,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     data_name="receive_as",
                     cls="cell-input cell-input--select cell-input--xs",
                     onchange="celerpAutoSave()",
-                ))
+                ), cls="col-type")
             else:
                 _ra_cell = None
 
@@ -4660,11 +4660,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
         _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
-            _line_headers.append(Th(t("th.category")))
-            _line_headers.append(Th(t("th.type")))
+            _line_headers.append(Th(t("th.category"), cls="col-cat"))
+            _line_headers.append(Th(t("th.type"), cls="col-type"))
         _line_headers.extend([Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
-            _line_headers.append(Th(t("th.account")))
+            _line_headers.append(Th(t("th.account"), cls="col-account"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
 
         # CSV import hidden file input + JS handler
