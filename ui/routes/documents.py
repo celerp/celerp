@@ -4163,8 +4163,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Details(
                 Summary(t("btn.void"), cls="btn btn--danger"),
                 Form(
-                    Input(type="text", name="reason", placeholder="Void reason...", cls="form-input form-input--inline"),
-                    Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger"),
+                    Input(type="text", name="reason", placeholder="Void reason...", cls="form-input form-input--inline",
+                          onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    Button(t("btn.confirm_void"), type="submit", cls="btn btn--danger", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/void", hx_swap="none", cls="inline-form",
                 ),
                 cls="void-section",
@@ -4184,8 +4185,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
                 Form(
-                    Input(type="text", name="reason", placeholder="Reason (optional)...", cls="form-input form-input--inline"),
-                    Button(t("btn.confirm_revert"), type="submit", cls="btn btn--secondary"),
+                    Input(type="text", name="reason", placeholder="Reason (optional)...", cls="form-input form-input--inline",
+                          onkeydown="if(event.key==='Escape'){this.closest('details').removeAttribute('open');event.preventDefault();}"),
+                    Button(t("btn.confirm_revert"), type="submit", cls="btn btn--secondary", style="margin-top:0.5rem;"),
                     hx_post=f"{_base}/action/revert_to_draft", hx_swap="none", cls="inline-form",
                 ),
                 cls="void-section",
