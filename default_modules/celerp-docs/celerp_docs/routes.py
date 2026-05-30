@@ -367,7 +367,7 @@ async def list_docs(
         list_q = list_q.limit(limit)
 
     rows = (await session.execute(list_q)).scalars().all()
-    out = [r.state | {"id": r.entity_id} for r in rows]
+    out = [r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None} for r in rows]
     return {"items": out, "total": total}
 
 

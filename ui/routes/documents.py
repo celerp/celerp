@@ -768,9 +768,10 @@ def setup_routes(app):
                 sort=sort,
                 sort_dir=sort_dir,
                 base_params={"q": q, "type": doc_type, "status": status, "contact_id": contact_id, "view": view, "page": str(page), "per_page": str(per_page)},
-                doc_type=doc_type if not is_drafts_view else doc_type,
+                doc_type=doc_type,
                 lang=lang,
                 currency=currency,
+                is_drafts_view=is_drafts_view,
             ),
             pagination(page, total_count, per_page, "/docs", f"q={q}&type={doc_type}&status={status}&view={view}&sort={sort}&dir={sort_dir}".strip("&")),
             title=f"{page_title} - Celerp",
@@ -3441,6 +3442,7 @@ def _doc_table(
     doc_type: str = "",
     lang: str = "en",
     currency: str | None = None,
+    is_drafts_view: bool = False,
 ) -> FT:
     # Per-doc-type empty-state labels: (no_docs_key, create_btn_key)
     _EMPTY_STATE_KEYS: dict[str, tuple[str, str]] = {
@@ -3473,8 +3475,12 @@ def _doc_table(
         "total": lambda d: float(d.get("total_amount") if d.get("total_amount") is not None else (d.get("total") or 0) or 0),
         "outstanding": lambda d: float(d.get("outstanding_balance") if d.get("outstanding_balance") is not None else (d.get("amount_outstanding") or 0) or 0),
         "status": lambda d: str(d.get("status") or ""),
+        "updated": lambda d: str(d.get("_updated_at") or d.get("issue_date") or d.get("created_at") or ""),
     }
-    key_fn = sort_keys.get(sort, sort_keys["date"])
+    # Draft views default to sorting by last-updated desc unless caller overrides
+    if is_drafts_view and sort == "date":
+        sort = "updated"
+    key_fn = sort_keys.get(sort, sort_keys["updated" if is_drafts_view else "date"])
     docs = sorted(docs, key=key_fn, reverse=(sort_dir == "desc"))
 
     def _th(label: str, key: str) -> FT:
@@ -3506,7 +3512,7 @@ def _doc_table(
             Td(format_value(d.get("doc_type"), "badge")),
             Td(format_value(contact)),
             Td(format_value(issue_date, "date")),
-            Td(format_value(due_date, "date")),
+            *([Td(format_value(d.get("_updated_at"), "date"))] if is_drafts_view else [Td(format_value(due_date, "date"))]),
             Td(format_value(total_amount, "money", currency), cls="cell--number"),
             Td(
                 format_value(outstanding_amount, "money", currency),
@@ -3573,7 +3579,8 @@ def _doc_table(
         Table(
             Thead(Tr(
                 *checkbox_th,
-                _th("Number", "number"), _th("Type", "type"), _th("Contact", "contact"), _th("Date", "date"), _th("Due", "due"),
+                _th("Number", "number"), _th("Type", "type"), _th("Contact", "contact"), _th("Date", "date"),
+                _th("Last Updated", "updated") if is_drafts_view else _th("Due", "due"),
                 _th("Total", "total"), _th("Outstanding", "outstanding"), _th("Status", "status"),
             )),
             Tbody(*[_row(d) for d in docs]),
