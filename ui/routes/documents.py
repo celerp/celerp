@@ -721,24 +721,13 @@ def setup_routes(app):
                 params["date_from"] = date_from
             if date_to and not is_drafts_view:
                 params["date_to"] = date_to
-            docs_resp = None
-            if is_drafts_view and doc_type == "purchase_order":
-                # PO drafts view: fetch purchase_order drafts only.
-                docs_resp, summary = await _asyncio.gather(
-                    api.list_docs(token, params),
-                    api.get_doc_summary(token, doc_type=doc_type),
-                )
-                docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-                draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
-            else:
-                import asyncio as _asyncio
-                docs_resp, summary = await _asyncio.gather(
-                    api.list_docs(token, params),
-                    api.get_doc_summary(token, doc_type=doc_type),
-                )
-                docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-                # Draft count comes from summary - no extra round-trip needed.
-                draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
+            import asyncio as _asyncio
+            docs_resp, summary = await _asyncio.gather(
+                api.list_docs(token, params),
+                api.get_doc_summary(token, doc_type=doc_type),
+            )
+            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+            draft_count = summary.get("draft_count", 0) if isinstance(summary, dict) else 0
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
