@@ -864,6 +864,13 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
         event_type = "doc.converted_to_bill"
         await session.flush()
 
+    # Bills with only non-stock line items skip receiving and go straight to awaiting_payment.
+    if doc_type == "bill":
+        _line_items = _initial_doc_state.get("line_items") or []
+        _has_stock = any((li.get("receive_as") or "stock") == "stock" for li in _line_items)
+        if not _has_stock:
+            finalize_data["skip_receiving"] = True
+
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type=event_type,
         data=finalize_data,

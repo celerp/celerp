@@ -76,7 +76,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("sent_to"):
             current["sent_to"] = data["sent_to"]
     elif event_type == "doc.finalized":
-        current["status"] = "final"
+        # Bills with only non-stock items skip receiving and go straight to awaiting_payment.
+        current["status"] = "awaiting_payment" if data.get("skip_receiving") else "final"
         # Invoice finalize assigns real ref_id (INV-...) and preserves proforma ref
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]
