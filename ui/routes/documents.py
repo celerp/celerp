@@ -1975,6 +1975,8 @@ celerpUpdateBulkAlloc();
             # Auto-populate payment_terms and price_list from contact when contact_id changes
             if field == "contact_id" and value:
                 try:
+                    doc = await api.get_doc(token, entity_id)
+                    is_draft_doc = doc.get("status", "draft") == "draft"
                     contact = await api.get_contact(token, value)
                     # Store contact details for display on the doc
                     contact_name = contact.get("name") or contact.get("display_name")
@@ -2006,26 +2008,27 @@ celerpUpdateBulkAlloc();
                     contact_pt = contact.get("payment_terms")
                     if contact_pt:
                         patch["payment_terms"] = contact_pt
-                        # Also recalculate due_date if issue_date is set
-                        doc_pre = await api.get_doc(token, entity_id)
-                        terms_list = await api.get_payment_terms(token)
-                        new_due = _calculate_due_date(doc_pre.get("issue_date"), contact_pt, terms_list)
-                        if new_due:
-                            patch["due_date"] = new_due
-                    # Auto-populate price_list from contact (fallback to company default)
-                    contact_pl = contact.get("price_list")
-                    if contact_pl:
-                        patch["price_list"] = contact_pl
-                    else:
-                        try:
-                            default_pl = await api.get_default_price_list(token)
-                            patch["price_list"] = default_pl
-                        except Exception:
-                            pass
-                    # Propagate contact currency to draft doc (enables foreign-currency workflow)
-                    contact_currency = contact.get("currency")
-                    if contact_currency and doc.get("status", "draft") == "draft":
-                        patch["currency"] = contact_currency
+                        # Recalculate due_date only on draft docs (finalized due_date is locked)
+                        if is_draft_doc:
+                            terms_list = await api.get_payment_terms(token)
+                            new_due = _calculate_due_date(doc.get("issue_date"), contact_pt, terms_list)
+                            if new_due:
+                                patch["due_date"] = new_due
+                    if is_draft_doc:
+                        # Auto-populate price_list from contact (fallback to company default) - draft only
+                        contact_pl = contact.get("price_list")
+                        if contact_pl:
+                            patch["price_list"] = contact_pl
+                        else:
+                            try:
+                                default_pl = await api.get_default_price_list(token)
+                                patch["price_list"] = default_pl
+                            except Exception:
+                                pass
+                        # Propagate contact currency to draft doc only
+                        contact_currency = contact.get("currency")
+                        if contact_currency:
+                            patch["currency"] = contact_currency
                 except APIError:
                     pass  # contact fetch failure → skip auto-populate
             # Auto-calculate due_date when payment_terms changes

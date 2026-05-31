@@ -701,7 +701,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
         "shipping_attn", "contact_shipping_address", "ref_id",
         "line_items",  # partial: only description/account_code per line
         # Contact snapshot fields - stored on doc, no JE impact
-        "contact_id", "contact_company_name", "contact_billing_address",
+        "contact_id", "contact_name", "contact_company_name", "contact_billing_address",
         "contact_phone", "contact_email", "contact_tax_id", "payment_terms",
     }
     _LI_FINALIZED_EDITABLE = {"description", "account_code"}

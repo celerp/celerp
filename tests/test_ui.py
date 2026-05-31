@@ -8233,11 +8233,11 @@ class TestDocPaymentTermsAutoPopulate:
     async def test_contact_with_payment_terms_auto_populates(self, ui_client):
         """Selecting a contact with payment_terms patches doc with terms + computed due_date."""
         contact = {"entity_id": "ct:1", "name": "Alice", "payment_terms": "Net 30", "email": "alice@test.com", "phone": "555-1234"}
-        doc_pre = {**_DOC_DETAIL, "issue_date": "2026-01-01", "payment_terms": None, "due_date": None}
+        doc_pre = {**_DOC_DETAIL, "status": "draft", "issue_date": "2026-01-01", "payment_terms": None, "due_date": None}
         doc_post = {**doc_pre, "payment_terms": "Net 30", "due_date": "2026-01-31", "contact_id": "ct:1", "price_list": "Retail"}
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
-            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post, doc_post])),
+            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_pre, doc_post, doc_post])),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.patch_doc", new=AsyncMock()) as mock_patch,
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
