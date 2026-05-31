@@ -126,7 +126,8 @@ async def get_nonce(session: AsyncSession, user_id: str) -> str:
     so security is not weakened - the only window is TTL expiry, which is 10 s.
 
     Auto-creates a ``user_auth_state`` row with a fresh nonce on first call
-    (new user, first login).
+    (new user, first login).  Returns empty string if the user no longer exists
+    (e.g. after factory-reset) so callers treat it as an eviction (nonce mismatch).
     """
     cached = _nonce_cache_get(user_id)
     if cached is not None:
@@ -136,6 +137,13 @@ async def get_nonce(session: AsyncSession, user_id: str) -> str:
     if row is not None:
         _nonce_cache_set(user_id, row.nonce)
         return row.nonce
+    # Check the user exists before creating a new auth-state row.
+    # If the user was deleted (e.g. factory-reset), return "" so the caller
+    # detects a nonce mismatch and treats the session as evicted — no FK insert.
+    from celerp.models.company import User as _User
+    user_exists = await session.get(_User, uid)
+    if user_exists is None:
+        return ""
     nonce = str(_uuid_mod.uuid4())
     session.add(UserAuthState(user_id=uid, nonce=nonce))
     await session.commit()
