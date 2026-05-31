@@ -2137,15 +2137,19 @@ celerpUpdateBulkAlloc();
             except Exception:
                 accts = []
             acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in accts if a.get("code")]
-            input_el = searchable_select(
-                name="value",
-                options=acct_opts,
-                value=current,
-                placeholder="e.g. 1130",
-                cls_extra="cell-input cell-input--xs",
-                allow_custom=True,
-                hx_trigger="change",
-                **patch_attrs,
+            input_el = Div(
+                searchable_select(
+                    name="value",
+                    options=acct_opts,
+                    value=current,
+                    placeholder="e.g. 1130",
+                    cls_extra="cell-input",
+                    allow_custom=True,
+                    hx_trigger="change",
+                    **patch_attrs,
+                ),
+                onkeydown=esc_js,
+                style="width:100%",
             )
         else:
             input_el = Input(
