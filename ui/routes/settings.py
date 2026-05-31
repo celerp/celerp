@@ -519,7 +519,7 @@ def _factory_reset_card() -> FT:
                                id=btn_id,
                                cls="btn btn--danger",
                                disabled=True,
-                               hx_post="/system/factory-reset",
+                               hx_post="/settings/factory-reset",
                                hx_target="#reset-flash",
                                hx_swap="innerHTML",
                                onclick=success_js),
@@ -2364,6 +2364,29 @@ def setup_routes(app):
             pass
         locations = await _get_locations_list(token)
         return _company_addresses_section(locations)
+
+    @app.post("/settings/factory-reset")
+    async def factory_reset_ui(request: Request):
+        """Proxy factory-reset to the API. Owner only."""
+        import httpx
+        role = _get_role(request)
+        if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["owner"]:
+            return Div("Owner role required.", cls="flash flash--error")
+        from ui.config import API_BASE
+        token = _token(request)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        try:
+            async with httpx.AsyncClient(base_url=API_BASE, timeout=30.0) as c:
+                r = await c.post("/system/factory-reset", headers=headers)
+            if r.status_code != 200:
+                detail = r.json().get("detail", "Reset failed.") if r.headers.get("content-type", "").startswith("application/json") else "Reset failed."
+                return Div(detail, cls="flash flash--error")
+        except Exception as exc:
+            return Div(f"Error: {exc}", cls="flash flash--error")
+        from starlette.responses import Response as _Resp
+        resp = _Resp(status_code=200, content='{"ok":true}', media_type="application/json")
+        resp.delete_cookie("celerp_token")
+        return resp
 
     @app.delete("/settings/company/deactivate")
     async def deactivate_company_ui(request: Request):
