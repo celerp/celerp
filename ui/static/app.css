@@ -506,7 +506,7 @@ a:hover { text-decoration: underline; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .doc-lines { margin-top: 12px; }
 .data-table.doc-lines { table-layout: fixed; width: 100%; max-width: 100%; }
-.doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
+.doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
 .doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }
 .doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 100px; }
