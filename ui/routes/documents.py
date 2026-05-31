@@ -5605,11 +5605,11 @@ async function celerpCsvImport(input, entityId) {{
             if _is_vendor_doc:
                 cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
             cells.extend([
-                Td(format_value(li.get("quantity"))),
-                Td(format_value(li.get("unit") or None)),
-                Td(format_value(li.get("unit_price"), "money"), cls="cell--number"),
-                Td(f"{discount_pct:.1f}%" if discount_pct else "-"),
-                Td(format_value(li.get("tax_rate"))),
+                Td(format_value(li.get("quantity")), cls="col-qty"),
+                Td(format_value(li.get("unit") or None), cls="col-unit"),
+                Td(format_value(li.get("unit_price"), "money"), cls="cell--number col-unit-price"),
+                Td(f"{discount_pct:.1f}%" if discount_pct else "-", cls="col-disc"),
+                Td(format_value(li.get("tax_rate")), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
                 acct_code = li.get("account_code") or ""
