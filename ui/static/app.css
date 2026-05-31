@@ -2416,3 +2416,13 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .history-page-btns { display: flex; align-items: center; gap: 0.25rem; }
 .history-per-page { display: flex; align-items: center; gap: 0.4rem; }
 .btn--active { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }
+
+/* --- Danger Zone section (settings) --- */
+.danger-zone-section {
+  border-left: 3px solid var(--c-red);
+  padding-left: var(--sp-md);
+  margin-top: var(--sp-xl);
+  padding-top: var(--sp-sm);
+}
+.danger-zone__title { color: var(--c-red); margin-top: 0; margin-bottom: var(--sp-xs); }
+.danger-zone__desc { color: var(--c-text-muted); margin-bottom: var(--sp-sm); }

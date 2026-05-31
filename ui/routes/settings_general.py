@@ -60,6 +60,94 @@ def _general_tabs(active: str, lang: str = "en", is_admin: bool = True) -> FT:
     )
 
 
+def _danger_zone_section() -> FT:
+    """Owner-only danger zone with factory reset."""
+    modal_id = "factory-reset-modal"
+    step1_id = "factory-reset-step1"
+    step2_id = "factory-reset-step2"
+    input_id = "factory-reset-confirm-input"
+    btn_id = "factory-reset-confirm-btn"
+
+    to_step2_js = (
+        f"document.getElementById('{step1_id}').style.display='none';"
+        f"document.getElementById('{step2_id}').style.display='block';"
+        f"document.getElementById('{input_id}').focus();"
+    )
+    validate_js = (
+        f"document.getElementById('{btn_id}').disabled="
+        f"document.getElementById('{input_id}').value !== 'RESET';"
+    )
+    success_js = (
+        f"document.getElementById('{modal_id}').addEventListener('htmx:afterRequest', function(e){{"
+        f"if(e.detail.xhr.status===200){{window.location.href='/setup';}}"
+        f"}}, {{once:true}});"
+    )
+
+    return Div(
+        H3("Danger Zone", cls="danger-zone__title"),
+        P("Permanently delete all company data and return to the initial setup wizard. "
+          "Your installed modules and server settings will be preserved.", cls="danger-zone__desc"),
+        Button("Reset All Data",
+               type="button",
+               cls="btn btn--outline btn--danger",
+               onclick=f"document.getElementById('{modal_id}').showModal()"),
+        Div(id="reset-flash"),
+        Dialog(
+            Div(
+                Div(
+                    H3("Reset all data?", cls="modal-dialog__title"),
+                    P("This will permanently delete all business data — contacts, items, "
+                      "transactions, documents, and all other records. "
+                      "Your app settings and installed modules will be preserved. "
+                      "This cannot be undone."),
+                    Div(
+                        A("Download backup first",
+                          href="/backup/export",
+                          cls="btn btn--sm btn--ghost",
+                          onclick=to_step2_js + "return false;",
+                          download=True),
+                        Button("Skip — continue",
+                               type="button",
+                               cls="btn btn--sm",
+                               onclick=to_step2_js),
+                        cls="modal-dialog__actions",
+                    ),
+                    id=step1_id,
+                ),
+                Div(
+                    H3("Type RESET to confirm", cls="modal-dialog__title"),
+                    P("This action is irreversible. Type ", Strong("RESET"), " below to confirm."),
+                    Input(type="text", id=input_id, placeholder="RESET",
+                          autocomplete="off", cls="form-input",
+                          oninput=validate_js),
+                    Div(
+                        Button("Delete everything",
+                               type="submit",
+                               id=btn_id,
+                               cls="btn btn--danger",
+                               disabled=True,
+                               hx_post="/system/factory-reset",
+                               hx_target="#reset-flash",
+                               hx_swap="innerHTML",
+                               onclick=success_js),
+                        Button("Cancel",
+                               type="button",
+                               cls="btn btn--ghost",
+                               onclick=f"document.getElementById('{modal_id}').close()"),
+                        cls="modal-dialog__actions",
+                    ),
+                    id=step2_id,
+                    style="display:none",
+                ),
+                cls="modal-dialog__body",
+            ),
+            id=modal_id,
+            cls="modal-dialog",
+        ),
+        cls="danger-zone-section",
+    )
+
+
 def _section_breadcrumb(section: str) -> FT:
     return Div(
         A(t("nav.settings"), href="/settings/general", cls="breadcrumb-link"),
@@ -120,7 +208,8 @@ def setup_routes(app):
                     company_locations = []
 
             if tab == "company":
-                content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
+                company_content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
+                content = Div(company_content, _danger_zone_section()) if is_owner else company_content
             elif tab == "users":
                 content = _users_tab(users, lang=lang)
             elif tab == "modules":
@@ -139,6 +228,8 @@ def setup_routes(app):
                 except Exception:
                     company_locations = []
                 content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
+                if is_owner:
+                    content = Div(content, _danger_zone_section())
                 tab = "company"
 
         setup_done = request.query_params.get("setup") == "done"

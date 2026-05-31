@@ -13254,3 +13254,29 @@ class TestInboundReceiveToolbar:
         html = to_xml(_doc_detail(doc, item_status_map={}))
         assert "receive-section" not in html, "Old collapsible receive form must be removed"
         assert "Record Receipt" not in html, "Old Record Receipt button must be removed"
+
+
+# ── Factory Reset danger zone UI tests ───────────────────────────────────────
+
+class TestDangerZoneUI:
+    @pytest.mark.asyncio
+    async def test_danger_zone_visible_for_owner(self, ui_client):
+        """Owner visiting /settings/general?tab=company sees the Danger Zone."""
+        with patch("ui.api_client.get_company", new_callable=AsyncMock, return_value={"name": "Co", "slug": "co", "settings": {}}), \
+             patch("ui.api_client.get_users", new_callable=AsyncMock, return_value={"items": []}), \
+             patch("ui.api_client.get_modules", new_callable=AsyncMock, return_value=[]), \
+             patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
+            r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="owner"))
+        assert r.status_code == 200
+        assert "Reset All Data" in r.text
+
+    @pytest.mark.asyncio
+    async def test_danger_zone_hidden_for_admin(self, ui_client):
+        """Admin visiting /settings/general?tab=company does NOT see the Danger Zone."""
+        with patch("ui.api_client.get_company", new_callable=AsyncMock, return_value={"name": "Co", "slug": "co", "settings": {}}), \
+             patch("ui.api_client.get_users", new_callable=AsyncMock, return_value={"items": []}), \
+             patch("ui.api_client.get_modules", new_callable=AsyncMock, return_value=[]), \
+             patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
+            r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Reset All Data" not in r.text
