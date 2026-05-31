@@ -5828,9 +5828,9 @@ async function celerpCsvImport(input, entityId) {{
     )
 
     contact_label = {
-        "invoice": "Bill to", "purchase_order": "Supplier", "quotation": "Quote to",
+        "invoice": "Bill to", "purchase_order": "Vendor", "quotation": "Quote to",
         "memo": "Receiver", "credit_note": "Issued to", "receipt": "Customer",
-        "list": "Customer",
+        "list": "Customer", "bill": "Vendor", "consignment_in": "Vendor",
     }.get(doc_type, "Contact")
 
     # Build contact detail rows - hide payment terms/outstanding for lists
