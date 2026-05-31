@@ -4111,12 +4111,6 @@ def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_
 
     add_new_url = f"/contacts/{contact_id}" if contact_id else "/contacts"
 
-    if not contact_shipping_addresses:
-        # No shipping addresses on file - show plain cell + hint
-        cell = _doc_display_cell(doc_id, "contact_shipping_address", current_address or "--")
-        return Div(cell, A("+ Add shipping address", href=add_new_url, target="_blank",
-                           style="font-size:11px;margin-top:2px;display:block;"))
-
     options = [Option("-- select address --", value="", selected=(not current_address))]
     for a in contact_shipping_addresses:
         addr_text = _addr_text(a)
