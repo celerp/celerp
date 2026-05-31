@@ -5550,6 +5550,12 @@ async function celerpCsvImport(input, entityId) {{
             "expired":       ("Expired",      "badge--expired"),
             "not_received":  ("Not Received", "badge--not_received"),
         }
+        # Build account code -> "CODE – Name" lookup for finalized line display
+        _acct_map: dict[str, str] = {
+            a["code"]: f"{a['code']} \u2013 {a['name']}"
+            for a in (chart_accounts or [])
+            if a.get("code") and a.get("name")
+        }
 
         def _li_row(li: dict) -> FT:
             qty = float(li.get("quantity", 0) or 0)
@@ -5605,8 +5611,12 @@ async function celerpCsvImport(input, entityId) {{
                 Td(format_value(li.get("unit_price"), "money"), cls="cell--number"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "-"),
                 Td(format_value(li.get("tax_rate"))),
-                Td(format_value(line_total, "money"), cls="cell--number col-total"),
             ])
+            if doc_type in ("purchase_order", "bill"):
+                acct_code = li.get("account_code") or ""
+                acct_display = _acct_map.get(acct_code) or acct_code or None
+                cells.append(Td(format_value(acct_display), cls="col-account"))
+            cells.append(Td(format_value(line_total, "money"), cls="cell--number col-total"))
             return Tr(*cells)
 
         _thead_base = []
@@ -5617,7 +5627,10 @@ async function celerpCsvImport(input, entityId) {{
         _thead_base += [Th(t("th.skuitem")), Th(t("th.description"))]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.category"), cls="col-category"), Th(t("th.type"), cls="col-type")]
-        _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax"), Th(t("th.total"), cls="cell--number col-total")]
+        _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
+        if doc_type in ("purchase_order", "bill"):
+            _thead_base.append(Th(t("th.account"), cls="col-account"))
+        _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
