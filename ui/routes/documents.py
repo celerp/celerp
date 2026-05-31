@@ -2124,16 +2124,38 @@ celerpUpdateBulkAlloc();
         current = li.get(field) or ""
         restore_url = f"/docs/{entity_id}/line/{li_index}/field/{field}/display"
         cell_id = f"li-{li_index}-{field}"
-        return Div(
-            Input(type="text", name="value", value=current, cls="cell-input",
-                  hx_patch=f"/docs/{entity_id}/line/{li_index}/field/{field}",
-                  hx_target=f"#{cell_id}",
-                  hx_swap="outerHTML",
-                  hx_trigger="blur, keydown[key=='Enter']",
-                  onkeydown=f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',{{target:'#{cell_id}',swap:'outerHTML'}});}}",
-                  autofocus=True),
-            id=cell_id, cls="editable-cell editable-cell--editing",
+        patch_attrs = dict(
+            hx_patch=f"/docs/{entity_id}/line/{li_index}/field/{field}",
+            hx_target=f"#{cell_id}",
+            hx_swap="outerHTML",
         )
+        esc_js = f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',{{target:'#{cell_id}',swap:'outerHTML'}});}}"
+        if field == "account_code":
+            try:
+                acct_resp = await api.get_chart_accounts(token)
+                accts = acct_resp.get("items") or acct_resp if isinstance(acct_resp, list) else []
+            except Exception:
+                accts = []
+            acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in accts if a.get("code")]
+            input_el = searchable_select(
+                name="value",
+                options=acct_opts,
+                value=current,
+                placeholder="e.g. 1130",
+                cls_extra="cell-input cell-input--xs",
+                allow_custom=True,
+                hx_trigger="change",
+                **patch_attrs,
+            )
+        else:
+            input_el = Input(
+                type="text", name="value", value=current, cls="cell-input",
+                hx_trigger="blur, keydown[key=='Enter']",
+                onkeydown=esc_js,
+                autofocus=True,
+                **patch_attrs,
+            )
+        return Div(input_el, id=cell_id, cls="editable-cell editable-cell--editing")
 
     @app.get("/docs/{entity_id}/line/{li_index}/field/{field}/display")
     async def doc_li_field_display(request: Request, entity_id: str, li_index: str, field: str):
@@ -2168,7 +2190,16 @@ celerpUpdateBulkAlloc();
             await api.patch_doc(token, entity_id, {"line_items": line_items})
         except APIError as e:
             return _action_error(str(e.detail))
-        return _li_field_display_cell(entity_id, li_index, field, value)
+        display_value = value
+        if field == "account_code" and value:
+            try:
+                acct_resp = await api.get_chart_accounts(token)
+                accts = acct_resp.get("items") or acct_resp if isinstance(acct_resp, list) else []
+                acct_map = {a.get("code", ""): f"{a.get('code','')} – {a.get('name','')}" for a in accts if a.get("code")}
+                display_value = acct_map.get(value) or value
+            except Exception:
+                pass
+        return _li_field_display_cell(entity_id, li_index, field, display_value)
 
     @app.post("/docs/{entity_id}/field/{field}")
     async def doc_field_post(request: Request, entity_id: str, field: str):
