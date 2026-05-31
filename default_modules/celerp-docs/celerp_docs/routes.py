@@ -699,7 +699,9 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     _FINALIZED_EDITABLE_FIELDS = {
         "description", "customer_note", "internal_note",
         "shipping_attn", "contact_shipping_address", "ref_id",
+        "line_items",  # partial: only description/account_code per line
     }
+    _LI_FINALIZED_EDITABLE = {"description", "account_code"}
     _PROTECTED_FIELDS = {"status", "entity_type", "company_id"}
     protected_attempted = _PROTECTED_FIELDS & set(payload.fields_changed)
     if protected_attempted:
@@ -717,6 +719,22 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                 status_code=409,
                 detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
             )
+        # Guard: line_items patch on finalized doc may only touch _LI_FINALIZED_EDITABLE fields
+        if "line_items" in payload.fields_changed:
+            incoming_lis = (payload.fields_changed["line_items"].get("new") or [])
+            existing_lis = row.state.get("line_items") or []
+            existing_by_idx = {i: li for i, li in enumerate(existing_lis)}
+            for i, incoming in enumerate(incoming_lis):
+                original = existing_by_idx.get(i, {})
+                for k, v in incoming.items():
+                    if k in _LI_FINALIZED_EDITABLE:
+                        continue
+                    orig_v = original.get(k)
+                    if v != orig_v:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Field '{k}' in line item {i} cannot be changed on a finalized document.",
+                        )
     # Uniqueness check when ref_id is being changed
     new_ref = (payload.fields_changed.get("ref_id") or {}).get("new")
     if new_ref:

@@ -1373,7 +1373,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Editable cells (click-to-edit inline fields) */
 .editable-cell { display: inline-block; min-width: 60px; min-height: 20px; padding: 2px 6px; border-radius: 4px; cursor: pointer; color: var(--c-text); font-size: 13px; border: 1px solid transparent; transition: background 0.1s, border-color 0.1s; }
 .editable-cell:hover { background: var(--c-bg3); border-color: var(--c-border); }
-.editable-cell--editing { display: inline-block; }
+.editable-cell--editing { display: block; width: 100%; }
 .section-hint { font-size: 11px; color: var(--c-text2); margin: 0 0 6px; padding: 0 14px; }
 
 /* Internal section */
