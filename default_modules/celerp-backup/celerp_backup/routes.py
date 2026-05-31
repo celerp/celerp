@@ -236,11 +236,8 @@ async def import_backup_bootstrap(
     file: UploadFile = File(...),
     session: AsyncSession = Depends(get_session),
 ):
-    """Import a .celerp-backup file when no users exist (setup wizard restore).
-
-    Locked out once any user exists — cannot be exploited on a live system.
-    Uses the same run_import() as the authenticated /backup/import endpoint.
-    """
+    """Import a .celerp-backup file when no users exist (setup wizard restore)."""
+    from celerp.services.backup_import import run_import, validate_archive
     from sqlalchemy import select
     from celerp.models.company import User
 
