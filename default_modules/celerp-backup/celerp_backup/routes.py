@@ -241,12 +241,17 @@ async def import_backup_bootstrap(
     from sqlalchemy import select
     from celerp.models.company import User
 
-    existing = (await session.execute(select(User))).scalars().first()
+    existing = (await session.execute(select(User).limit(1))).first()
     if existing is not None:
         raise HTTPException(
             status_code=403,
             detail="System already bootstrapped. Log in and use Settings > Backup to restore.",
         )
+
+    # Close the session NOW so its connection is returned to the pool.
+    # run_import will call engine.dispose() to close all pool connections before
+    # pg_restore runs — keeping this session open would hold a lock and cause pg_restore to hang.
+    await session.close()
 
     tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
     tmp.write(await file.read())
