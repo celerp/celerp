@@ -666,7 +666,9 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius);
   box-shadow: 0 8px 24px rgba(26,29,46,0.1);
   max-height: 220px;
+  max-width: 400px;
   overflow-y: auto;
+  white-space: nowrap;
   margin-top: 2px;
   display: none;
 }

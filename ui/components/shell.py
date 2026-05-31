@@ -198,7 +198,8 @@ function initCombobox(wrap) {
     var r = input.getBoundingClientRect();
     list.style.top = (r.bottom + 2) + 'px';
     list.style.left = r.left + 'px';
-    list.style.width = r.width + 'px';
+    list.style.minWidth = r.width + 'px';
+    list.style.width = 'auto';
   }
 
   input.addEventListener('focus', function() {
