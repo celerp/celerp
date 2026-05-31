@@ -2086,7 +2086,7 @@ celerpUpdateBulkAlloc();
                     pass  # reprice failure is non-fatal
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _action_error(str(e.detail))
         # Contact, price_list, terms_template, or currency changes affect multiple sections - full page refresh
         if field in ("contact_id", "price_list", "terms_template"):
             from starlette.responses import Response as _R
@@ -2161,7 +2161,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_doc_note(token, entity_id, note_id, note)
             except APIError as e:
-                return P(str(e.detail), cls="cell-error")
+                return _action_error(str(e.detail))
         return await _doc_notes_section_response(token, entity_id, is_list=False)
 
     @app.delete("/docs/{entity_id}/notes/{note_id}")
@@ -2231,7 +2231,7 @@ celerpUpdateBulkAlloc();
             try:
                 await api.update_list_note(token, entity_id, note_id, note)
             except APIError as e:
-                return P(str(e.detail), cls="cell-error")
+                return _action_error(str(e.detail))
         return await _doc_notes_section_response(token, entity_id, is_list=True)
 
     @app.delete("/lists/{entity_id}/notes/{note_id}")
@@ -2959,7 +2959,7 @@ celerpUpdateBulkAlloc();
             await api.upload_doc_file(token, entity_id, content, filename, content_type, description, document_tag)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _action_error(str(e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.delete("/docs/{entity_id}/files/{file_id}")
@@ -2971,7 +2971,7 @@ celerpUpdateBulkAlloc();
             await api.delete_doc_file(token, entity_id, file_id)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _action_error(str(e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/tag")
@@ -2985,7 +2985,7 @@ celerpUpdateBulkAlloc();
             await api.tag_doc_file(token, entity_id, file_id, document_tag)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _action_error(str(e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.post("/docs/{entity_id}/files/{file_id}/description")
@@ -2999,7 +2999,7 @@ celerpUpdateBulkAlloc();
             await api.patch_doc_file_description(token, entity_id, file_id, description)
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _action_error(str(e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc))
 
     @app.get("/docs/{entity_id}/history")
@@ -3101,7 +3101,7 @@ celerpUpdateBulkAlloc();
         try:
             doc = await api.get_doc(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _action_error(str(e.detail))
         return _doc_files_section("doc", entity_id, _enrich_doc_files(doc),
             page=int(qp.get("page", "1") or "1"),
             sort_dir=qp.get("sort_dir", "desc"),
@@ -3120,7 +3120,7 @@ celerpUpdateBulkAlloc();
         try:
             r = await api.download_doc_file(token, entity_id, file_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _action_error(str(e.detail))
         return _R(content=r.content, status_code=r.status_code, headers=dict(r.headers))
 
     @app.get("/lists")
@@ -3480,7 +3480,7 @@ celerpUpdateBulkAlloc();
             await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
-            return P(str(e.detail), cls="cell-error")
+            return _action_error(str(e.detail))
         return _doc_display_cell(entity_id, field, lst.get(field), "list")
 
     @app.post("/lists/{entity_id}/lines")
