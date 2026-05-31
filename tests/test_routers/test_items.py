@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 
 from __future__ import annotations
+import uuid
 
 import pytest
 
@@ -52,7 +53,7 @@ async def test_items_happy_path(client):
     r = await client.post(f"/items/{id}/price", json={"price_type": "price", "new_price": 10}, headers=headers)
     assert r.status_code == 200
 
-    r = await client.post(f"/items/{id}/status", json={"new_status": "active"}, headers=headers)
+    r = await client.post(f"/items/{id}/status", json={"new_status": "available"}, headers=headers)
     assert r.status_code == 200
 
     r = await client.post(f"/items/{id}/reserve", json={"quantity": 1.5}, headers=headers)
@@ -396,10 +397,15 @@ async def test_barcode_must_be_digits(client):
 
 @pytest.mark.asyncio
 async def test_split_single_child_keeps_parent_remainder(client):
-    """One split child is valid: parent keeps the remainder quantity."""
+    """One split child: parent keeps remainder qty and cost; child gets proportional cost.
+
+    Unit cost (cost_price) is invariant through split: child_cost_total = cost_price * child_qty.
+    Partial split must not bleed parent cost into the child.
+    """
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
-    r = await client.post("/items", json={"sku": "PARENT-ONE", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem"}, headers=h)
+    # qty=20, cost_price=10 => parent_cost_total=200
+    r = await client.post("/items", json={"sku": "PARENT-ONE", "name": "Parcel", "quantity": 20, "sell_by": "piece", "category": "gem", "cost_price": 10.0}, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
 
@@ -414,14 +420,22 @@ async def test_split_single_child_keeps_parent_remainder(client):
 
     r = await client.get(f"/items/{parent_id}", headers=h)
     assert r.status_code == 200
-    assert float(r.json()["quantity"]) == 15.0
-    assert r.json().get("is_available", True) is True
+    parent_data = r.json()
+    assert float(parent_data["quantity"]) == 15.0
+    assert parent_data.get("status") == "available"
+    # Parent retains 15/20 of the original cost: 200 * 15/20 = 150
+    assert float(parent_data["cost_price"]) == pytest.approx(10.0)
+    assert float(parent_data["cost_total"]) == pytest.approx(150.0, rel=1e-6)
 
     child_id = data["children"][0]["id"]
     r = await client.get(f"/items/{child_id}", headers=h)
     assert r.status_code == 200
-    assert r.json()["sku"] == "CHILD-ONE"
-    assert float(r.json()["quantity"]) == 5.0
+    child_data = r.json()
+    assert child_data["sku"] == "CHILD-ONE"
+    assert float(child_data["quantity"]) == 5.0
+    # Child gets 5/20 of the original cost: 200 * 5/20 = 50; cost_price unchanged at 10
+    assert float(child_data["cost_price"]) == pytest.approx(10.0)
+    assert float(child_data["cost_total"]) == pytest.approx(50.0, rel=1e-6)
 
 
 @pytest.mark.asyncio
@@ -451,7 +465,7 @@ async def test_split_creates_children(client):
     assert float(r.json()["quantity"]) == 10.0
 
     # Verify parent is still available
-    assert r.json().get("is_available", True) is True
+    assert r.json().get("status") == "available"
 
     # Verify children exist
     child_1_id = data["children"][0]["id"]
@@ -1099,22 +1113,32 @@ async def test_split_preview_clamps_qty(client):
 
 @pytest.mark.asyncio
 async def test_split_item_pieces_conservation(client):
-    """split must reject child_pieces >= parent_pieces."""
+    """split allows child_pieces == parent_pieces (full consumption) but rejects child_pieces > parent_pieces."""
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
     token = await _token(client)
     h = {"Authorization": f"Bearer {token}"}
     r = await client.post("/items", json={
-        "sku": "PIECE-CONS-001", "name": "Multi-stone", "quantity": 10.0,
+        "sku": f"PIECE-CONS-{_ts}", "name": "Multi-stone", "quantity": 10.0,
         "sell_by": "carat", "attributes": {"pieces": 5},
     }, headers=h)
     assert r.status_code == 200
     parent_id = r.json()["id"]
-    child_sku = "PIECE-CONS-CHILD-001"
-    r2 = await client.post("/items", json={"sku": child_sku, "name": "placeholder", "quantity": 0, "sell_by": "carat"}, headers=h)
-    # child_pieces == parent_pieces should be rejected
-    rs = await client.post(f"/items/{parent_id}/split", json={
-        "children": [{"sku": child_sku, "quantity": 3.0, "attributes": {"pieces": 5}}],
+    # child_pieces == parent_pieces should now succeed (full consumption - parent archived)
+    rs_eq = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"PIECE-CONS-CHILD-{_ts}", "quantity": 3.0, "attributes": {"pieces": 5}}],
     }, headers=h)
-    assert rs.status_code == 422, f"Expected 422 for child_pieces >= parent_pieces, got {rs.status_code}"
+    assert rs_eq.status_code == 200, f"Expected 200 for child_pieces == parent_pieces (full consumption), got {rs_eq.status_code}"
+    # child_pieces > parent_pieces should still be rejected
+    r3 = await client.post("/items", json={
+        "sku": f"PIECE-CONS-P2-{_ts}", "name": "Over-piece parent", "quantity": 5.0,
+        "sell_by": "carat", "attributes": {"pieces": 5},
+    }, headers=h)
+    parent_id2 = r3.json()["id"]
+    rs_over = await client.post(f"/items/{parent_id2}/split", json={
+        "children": [{"sku": f"PIECE-CONS-C2-{_ts}", "quantity": 3.0, "attributes": {"pieces": 6}}],
+    }, headers=h)
+    assert rs_over.status_code == 422, f"Expected 422 for child_pieces > parent_pieces, got {rs_over.status_code}"
 
 
 @pytest.mark.asyncio
@@ -1832,3 +1856,305 @@ async def test_patch_qty_syncs_pieces_for_pieces_sell_by(client):
     assert int(state.get("quantity", 0)) == 7
     pieces = (state.get("attributes") or {}).get("pieces") or state.get("pieces")
     assert int(pieces) == 7
+
+
+# ── Split / Transform inheritance tests ───────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_split_children_inherit_purchase_fields(client):
+    """Split children must inherit purchase_unit, purchase_conversion_factor, purchase_sku, purchase_name from parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-PURCH-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "gram",
+        "purchase_unit": "kg", "purchase_conversion_factor": 1000.0,
+        "purchase_sku": "V-SKU", "purchase_name": "Vendor Material",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    children = [{"sku": f"{sku}-A", "quantity": 5}, {"sku": f"{sku}-B", "quantity": 5}]
+    r2 = await client.post(f"/items/{parent_id}/split", json={"children": children}, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    for c in r2.json()["children"]:
+        child = (await client.get(f"/items/{c['id']}", headers=h)).json()
+        assert child.get("purchase_unit") == "kg"
+        assert child.get("purchase_conversion_factor") == pytest.approx(1000.0)
+        assert child.get("purchase_sku") == "V-SKU"
+        assert child.get("purchase_name") == "Vendor Material"
+
+
+@pytest.mark.asyncio
+async def test_split_children_inherit_inventory_type(client):
+    """Split children must inherit inventory_type from parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-INVT-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+        "inventory_type": "non_stocked",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{sku}-A", "quantity": 5}, {"sku": f"{sku}-B", "quantity": 5}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    for c in r2.json()["children"]:
+        child = (await client.get(f"/items/{c['id']}", headers=h)).json()
+        assert child.get("inventory_type") == "non_stocked"
+
+
+@pytest.mark.asyncio
+async def test_split_children_inherit_custom_attributes(client):
+    """Split children must inherit custom attributes (e.g. beauty_grade) from parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-ATTR-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "gram",
+        "attributes": {"beauty_grade": "A+", "cut": "oval"},
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{sku}-A", "quantity": 4}, {"sku": f"{sku}-B", "quantity": 6}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    for c in r2.json()["children"]:
+        child = (await client.get(f"/items/{c['id']}", headers=h)).json()
+        grade = child.get("beauty_grade") or (child.get("attributes") or {}).get("beauty_grade")
+        cut = child.get("cut") or (child.get("attributes") or {}).get("cut")
+        assert grade == "A+", f"beauty_grade not inherited: {grade!r}"
+        assert cut == "oval", f"cut not inherited: {cut!r}"
+
+
+@pytest.mark.asyncio
+async def test_split_children_start_available(client):
+    """Split children must always have status=available."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-STATUS-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{sku}-A", "quantity": 5}, {"sku": f"{sku}-B", "quantity": 5}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    for c in r2.json()["children"]:
+        child = (await client.get(f"/items/{c['id']}", headers=h)).json()
+        assert child.get("status") == "available"
+
+
+@pytest.mark.asyncio
+async def test_split_children_get_distinct_barcodes(client):
+    """Each split child must get a distinct barcode, different from the parent."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    sku = f"SPL-BAR-{uuid.uuid4().hex[:6]}"
+    r = await client.post("/items", json={
+        "sku": sku, "name": "Parent", "quantity": 10, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+    parent_barcode = (await client.get(f"/items/{parent_id}", headers=h)).json().get("barcode")
+
+    r2 = await client.post(f"/items/{parent_id}/split", json={
+        "children": [{"sku": f"{sku}-A", "quantity": 5}, {"sku": f"{sku}-B", "quantity": 5}],
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+    child_ids = [c["id"] for c in r2.json()["children"]]
+
+    barcodes = [(await client.get(f"/items/{cid}", headers=h)).json().get("barcode") for cid in child_ids]
+    assert all(b is not None for b in barcodes), "All children must have barcodes"
+    assert len(set(barcodes)) == len(barcodes), f"Child barcodes must be distinct: {barcodes}"
+    assert parent_barcode not in barcodes, f"Children must not inherit parent barcode: {parent_barcode}"
+
+
+@pytest.mark.asyncio
+async def test_created_at_set_by_engine_not_client(client):
+    """POST /items with a client-supplied created_at must be ignored.
+
+    Projection.created_at is set by ProjectionEngine on INSERT.
+    The API response must contain a valid created_at that is NOT the forged value.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"CA-{uuid.uuid4().hex[:6]}",
+        "name": "Timestamp Guard",
+        "quantity": 1,
+        "sell_by": "piece",
+        "created_at": "2000-01-01T00:00:00",  # must be ignored
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    data = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert data.get("created_at") is not None, "created_at must be set in API response"
+    assert not data["created_at"].startswith("2000"), (
+        f"Client-forged created_at must not be stored; got {data['created_at']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_created_at_immutable_after_patch(client):
+    """PATCH /items/{id} must not change created_at; updated_at must advance."""
+    from datetime import datetime
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"CA-IMM-{uuid.uuid4().hex[:6]}",
+        "name": "Immutable TS",
+        "quantity": 1,
+        "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    before = (await client.get(f"/items/{item_id}", headers=h)).json()
+    created_before = before.get("created_at")
+    updated_before = before.get("updated_at")
+    assert created_before is not None
+
+    # Patch the item name
+    pr = await client.patch(f"/items/{item_id}", json={"name": "Renamed"}, headers=h)
+    assert pr.status_code == 200, pr.text
+
+    after = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert after.get("created_at") == created_before, "created_at must not change after patch"
+    assert after.get("updated_at") != updated_before, "updated_at must advance after patch"
+
+
+@pytest.mark.asyncio
+async def test_split_child_top_level_pieces_field(client):
+    """SplitChild.pieces (top-level) must override parent pieces on children.
+
+    Regression test for batch-split bug: when sell_by is a weight unit (carat),
+    sending pieces as a top-level SplitChild field was silently dropped by Pydantic
+    because SplitChild had no pieces field, causing every child to inherit the
+    parent's pieces count unchanged.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    # Parent: sell_by=carat (weight unit), 70 carat, 100 pieces
+    r = await client.post("/items", json={
+        "sku": f"TLP-{_ts}", "name": "Batch Split Stone",
+        "quantity": 70.0, "sell_by": "carat", "attributes": {"pieces": 100},
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    parent_id = r.json()["id"]
+
+    # Split into 5 children using top-level pieces field (mirrors what batch-split UI sends)
+    children = [
+        {"sku": f"TLP-{_ts}-{i}", "quantity": 0.01, "pieces": 1}
+        for i in range(1, 6)
+    ]
+    rs = await client.post(f"/items/{parent_id}/split", json={"children": children}, headers=h)
+    assert rs.status_code == 200, f"Split failed: {rs.text}"
+
+    child_ids = [c["id"] for c in rs.json()["children"]]
+    for cid in child_ids:
+        child = (await client.get(f"/items/{cid}", headers=h)).json()
+        assert int(child.get("pieces", -1)) == 1, (
+            f"Child {cid} has pieces={child.get('pieces')} but expected 1 (not parent's 100)"
+        )
+
+
+@pytest.mark.asyncio
+async def test_sell_by_change_piece_to_weight_pulls_weight_into_qty(client):
+    """Switching sell_by from piece to carat: quantity must become stored weight, weight unchanged.
+
+    Regression: old code set weight = qty (backwards direction), so the real
+    weight was overwritten by the piece count.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"SBP2C-{_ts}", "name": "Stone", "quantity": 100.0,
+        "sell_by": "piece", "weight": 50.0,
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    pr = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"sell_by": {"old": "piece", "new": "carat"}},
+    }, headers=h)
+    assert pr.status_code == 200, pr.text
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert float(item["quantity"]) == 50.0, f"qty should be 50 (weight), got {item['quantity']}"
+    assert float(item["weight"]) == 50.0, f"weight must stay 50, got {item['weight']}"
+
+
+@pytest.mark.asyncio
+async def test_sell_by_change_weight_to_piece_pulls_pieces_into_qty(client):
+    """Switching sell_by from carat to piece: quantity must become stored pieces, pieces unchanged.
+
+    Regression: old code set pieces = qty (backwards direction), so the real
+    piece count was overwritten by the carat quantity.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"SBC2P-{_ts}", "name": "Parcel", "quantity": 50.0,
+        "sell_by": "carat", "attributes": {"pieces": 100},
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    pr = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"sell_by": {"old": "carat", "new": "piece"}},
+    }, headers=h)
+    assert pr.status_code == 200, pr.text
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert int(item["quantity"]) == 100, f"qty should be 100 (pieces), got {item['quantity']}"
+    assert int(item.get("pieces", -1)) == 100, f"pieces must stay 100, got {item.get('pieces')}"
+
+
+@pytest.mark.asyncio
+async def test_sell_by_change_piece_to_weight_no_weight_gives_none_qty(client):
+    """Switching sell_by from piece to carat when weight is unset: quantity must become None."""
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={
+        "sku": f"SBPN-{_ts}", "name": "Unweighed Stone", "quantity": 5.0,
+        "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    pr = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"sell_by": {"old": "piece", "new": "carat"}},
+    }, headers=h)
+    assert pr.status_code == 200, pr.text
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item.get("quantity") is None or item.get("quantity") == 0, (
+        f"qty should be None/0 when weight was unset, got {item.get('quantity')}"
+    )

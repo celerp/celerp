@@ -2,14 +2,25 @@
 # SPDX-License-Identifier: BSL-1.1
 """Shared constants for the docs module."""
 
-# Statuses where the Fulfill button is hidden (denylist - all others show the button)
-# Revert Fulfillment has no status restriction - it shows whenever fulfillment_status == "fulfilled"
-UNFULFILLABLE_STATUSES: frozenset[str] = frozenset({"draft", "void"})
+# Per-doc-type allowlist: maps doc_type → set of statuses where fulfill-lines is permitted.
+# Only doc types listed here support the fulfill-lines / revert-lines endpoints.
+# Adding a new status requires an explicit decision per doc type (true-predicate design).
+# Inbound doc types (bill, consignment_in) are intentionally excluded: receiving goods
+# is handled by POST /receive (creates parcels). fulfill-lines is outbound-only.
+# UI counterpart: ui/routes/documents.py _fin_show_fulfill — keep in sync manually (different package).
+FULFILLABLE_STATUSES: dict[str, frozenset[str]] = {
+    "memo":    frozenset({"sent", "final", "partial", "received", "partially_received", "partial_returned"}),
+    "invoice": frozenset({"sent", "final", "partial", "paid", "awaiting_payment"}),
+}
 
-# Doc types where fulfillment means goods *arrive* (inbound flow).
-# For these, fulfilling a doc must NOT deduct inventory - items already exist
-# with correct quantity from the receive step. Fulfillment just marks the doc complete.
-INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in"})
+# Item statuses that indicate a line item has been fulfilled.
+# Used by revert-to-draft guard (Fix 1) and line-delete guard (Fix 3).
+FULFILLED_ITEM_STATUSES: frozenset[str] = frozenset({"sold", "memo_out"})
+
+# Doc types where goods are received via POST /receive (creates inventory parcels).
+# These docs must NOT use fulfill-lines / revert-lines — those endpoints are outbound-only.
+# Revert-to-draft for these types allows additional statuses (received, partially_received).
+INBOUND_DOC_TYPES: frozenset[str] = frozenset({"consignment_in", "bill"})
 
 # Doc types that are subscription templates (not fulfillable, not part of normal doc counters).
 # These are recurring template docs - they should never show a fulfill button.

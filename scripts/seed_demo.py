@@ -142,7 +142,7 @@ async def seed_items(client: httpx.AsyncClient, token: str) -> list[str]:
             "data": {
                 "sku": sku, "name": name, "category": category,
                 "quantity": qty, "cost_total": cost * qty, "retail_price": retail,
-                "wholesale_price": wholesale, "status": "active",
+                "wholesale_price": wholesale, "status": "available",
             },
             "source": "seed",
             "idempotency_key": f"seed:item:{sku}",

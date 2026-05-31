@@ -789,7 +789,7 @@ class TestActivityFeed:
             "data": {"fields_changed": {"status": {"old": "active", "new": "reserved"}}},
         }]))
         assert "2026-03-20" in html
-        assert "Changed: status" in html
+        assert "status: active → reserved" in html
         assert "—" not in html.split("2026-03-20")[0]  # timestamp cell is not blank
 
     def test_ledger_table_empty(self):
@@ -3544,21 +3544,6 @@ class TestSprint5POReceive:
     """T2: PO Receive flow."""
 
     @pytest.mark.asyncio
-    async def test_po_detail_shows_receive_section(self, ui_client):
-        """PO detail page shows Receive Goods section."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PO_DOC)):
-            r = await ui_client.get("/docs/doc:PO-2026-0001", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Receive Goods" in r.content
-
-    @pytest.mark.asyncio
-    async def test_po_receive_has_location_input(self, ui_client):
-        """PO receive section has location input."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PO_DOC)):
-            r = await ui_client.get("/docs/doc:PO-2026-0001", cookies=_authed())
-        assert b"location_name" in r.content or b"location_id" in r.content
-
-    @pytest.mark.asyncio
     async def test_po_receive_route_calls_api(self, ui_client):
         """POST /docs/{id}/receive calls api.receive_po."""
         with patch("ui.api_client.receive_po", new=AsyncMock(return_value={"event_id": "ev1"})):
@@ -3569,13 +3554,6 @@ class TestSprint5POReceive:
             )
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
-
-    @pytest.mark.asyncio
-    async def test_po_receive_has_record_receipt_button(self, ui_client):
-        """PO receive section has Record Receipt button."""
-        with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_PO_DOC)):
-            r = await ui_client.get("/docs/doc:PO-2026-0001", cookies=_authed())
-        assert b"Record Receipt" in r.content
 
     @pytest.mark.asyncio
     async def test_invoice_no_receive_section(self, ui_client):
@@ -8255,11 +8233,11 @@ class TestDocPaymentTermsAutoPopulate:
     async def test_contact_with_payment_terms_auto_populates(self, ui_client):
         """Selecting a contact with payment_terms patches doc with terms + computed due_date."""
         contact = {"entity_id": "ct:1", "name": "Alice", "payment_terms": "Net 30", "email": "alice@test.com", "phone": "555-1234"}
-        doc_pre = {**_DOC_DETAIL, "issue_date": "2026-01-01", "payment_terms": None, "due_date": None}
+        doc_pre = {**_DOC_DETAIL, "status": "draft", "issue_date": "2026-01-01", "payment_terms": None, "due_date": None}
         doc_post = {**doc_pre, "payment_terms": "Net 30", "due_date": "2026-01-31", "contact_id": "ct:1", "price_list": "Retail"}
         with (
             patch("ui.api_client.get_contact", new=AsyncMock(return_value=contact)),
-            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_post, doc_post])),
+            patch("ui.api_client.get_doc", new=AsyncMock(side_effect=[doc_pre, doc_pre, doc_post, doc_post])),
             patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
             patch("ui.api_client.patch_doc", new=AsyncMock()) as mock_patch,
             patch("ui.api_client.get_default_price_list", new=AsyncMock(return_value="Retail")),
@@ -8486,7 +8464,7 @@ class TestDocContactBoxLayout:
     @pytest.mark.asyncio
     async def test_doc_detail_ship_to_section_present(self, ui_client):
         """Doc detail page: Ship To section is rendered with address and attn fields."""
-        doc = {**_DOC_DETAIL, "contact_shipping_address": "123 Ship St", "shipping_attn": "Bob"}
+        doc = {**_DOC_DETAIL, "contact_id": "ct:1", "contact_shipping_address": "123 Ship St", "shipping_attn": "Bob"}
         with (
             patch("ui.api_client.get_doc", new=AsyncMock(return_value=doc)),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": _CONTACTS, "total": 1})),
@@ -8497,7 +8475,8 @@ class TestDocContactBoxLayout:
         assert r.status_code == 200
         html = r.content.decode()
         assert "Ship To" in html
-        assert 'hx-get="/docs/d:1/field/contact_shipping_address/edit"' in html
+        assert 'name="value"' in html  # ship-to dropdown select is rendered
+        assert 'hx-patch="/docs/d:1/field/contact_shipping_address"' in html
         assert 'hx-get="/docs/d:1/field/shipping_attn/edit"' in html
 
     @pytest.mark.asyncio
@@ -10294,16 +10273,13 @@ class TestDocumentsOverhaul:
 
     @pytest.mark.asyncio
     async def test_doc_detail_shows_history_section(self, ui_client):
-        """Doc detail page includes a History section with ledger events."""
+        """Doc history HTMX endpoint returns ledger events paginated."""
         ledger_data = {"items": [
             {"event_type": "doc.created", "ts": "2026-03-20T10:00:00Z", "data": {}},
             {"event_type": "doc.finalized", "ts": "2026-03-21T14:30:00Z", "data": {}},
         ], "total": 2}
-        with (
-            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)),
-            patch("ui.api_client.list_ledger", new=AsyncMock(return_value=ledger_data)),
-        ):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        with patch("ui.api_client.list_ledger", new=AsyncMock(return_value=ledger_data)):
+            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1", cookies=_authed())
         content = r.content.decode()
         assert "History" in content
         assert "Document created" in content
@@ -10311,12 +10287,9 @@ class TestDocumentsOverhaul:
 
     @pytest.mark.asyncio
     async def test_doc_detail_empty_history(self, ui_client):
-        """Doc detail shows empty state when no ledger entries."""
-        with (
-            patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)),
-            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
+        """Doc history endpoint shows empty state when no ledger entries."""
+        with patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": [], "total": 0})):
+            r = await ui_client.get("/docs/doc:INV-2026-0001/history?page=1", cookies=_authed())
         assert b"No activity recorded yet." in r.content
 
     @pytest.mark.asyncio
@@ -10489,11 +10462,11 @@ class TestProFormaLabel:
         assert "Pro Forma (3)" in html
 
     def test_drafts_tab_label_for_other_types(self):
-        """Drafts tab shows 'Drafts' for non-invoice doc types."""
+        """Drafts tab is suppressed for purchase_order (POs are always drafts; tab is cruft)."""
         from ui.routes.documents import _drafts_tab
         from fasthtml.common import to_xml
         html = to_xml(_drafts_tab(3, False, "purchase_order"))
-        assert "Drafts (3)" in html
+        assert "Drafts (3)" not in html
 
 
 class TestFieldSchemaBarcode:
@@ -10531,9 +10504,9 @@ class TestFieldSchemaBarcode:
         assert "bill" in _DOC_TYPES
 
     def test_sidebar_label_updated(self):
-        """Sidebar label for POs is 'Draft Bills & POs'."""
+        """Sidebar label for POs is 'Purchase Orders'."""
         from ui.routes.documents import _DOC_TYPE_PAGE_LABELS
-        assert _DOC_TYPE_PAGE_LABELS["purchase_order"] == "Draft Bills & POs"
+        assert _DOC_TYPE_PAGE_LABELS["purchase_order"] == "Purchase Orders"
 
     def test_bill_conversion_projection(self):
         """doc.converted_to_bill sets status to awaiting_payment and updates doc_type."""
@@ -11169,41 +11142,44 @@ class TestInventoryUXFixes:
     # ── Fix 4: Split/create timestamps ────────────────────────────────────
 
     def test_item_create_data_sets_timestamps(self):
-        """post_item must inject created_at/updated_at into the event data."""
-        import inspect
-        import sys
-        # Read the source of the inventory routes to verify the fix
+        """post_item must NOT inject created_at/updated_at into event data.
+        created_at is now authoritative from the Projection column (set by engine on INSERT).
+        """
         routes_path = (
             Path(__file__).parent.parent
             / "default_modules/celerp-inventory/celerp_inventory/routes.py"
         )
         with open(routes_path) as f:
             src = f.read()
-        # post_item must set created_at and updated_at
-        assert 'data.setdefault("created_at"' in src
-        assert 'data.setdefault("updated_at"' in src
+        # created_at must NOT be set in event data blob - it lives in Projection.created_at
+        assert 'data.setdefault("created_at"' not in src
+        assert 'data.setdefault("updated_at"' not in src
 
     def test_split_child_data_has_timestamps(self):
-        """split_item child_data must include created_at and updated_at."""
+        """split_item child_data must NOT include created_at/updated_at.
+        created_at is authoritative from the Projection column, not state blobs.
+        """
         routes_path = (
             Path(__file__).parent.parent
             / "default_modules/celerp-inventory/celerp_inventory/routes.py"
         )
         with open(routes_path) as f:
             src = f.read()
-        # Split handler must set timestamps in child_data
-        assert '"created_at": now_iso' in src
-        assert '"updated_at": now_iso' in src
+        # Timestamps must not be injected into split child state
+        assert '"created_at": now_iso' not in src
+        assert '"updated_at": now_iso' not in src
 
     def test_merge_create_data_has_timestamps(self):
-        """merge_items create_data must include created_at and updated_at."""
+        """merge_items create_data must NOT include created_at/updated_at.
+        created_at is authoritative from the Projection column, not state blobs.
+        """
         routes_path = (
             Path(__file__).parent.parent
             / "default_modules/celerp-inventory/celerp_inventory/routes.py"
         )
         with open(routes_path) as f:
             src = f.read()
-        assert '"created_at": now_iso' in src and '"updated_at": now_iso' in src
+        assert '"created_at": now_iso' not in src and '"updated_at": now_iso' not in src
 
     # ── Fix 5: Print Labels bulk action ───────────────────────────────────
 
@@ -11614,36 +11590,6 @@ class TestVendorDocCategoryColumn:
         html = to_xml(_doc_detail(doc, item_categories=["Electronics"]))
         assert ">Category<" not in html
 
-    def test_revert_goods_received_has_no_goods_received_badge(self):
-        """When received_item_ids is set, the render must show only the Revert button - no badge text."""
-        from ui.routes.documents import _render_receive_goods_section
-        from fasthtml.common import to_xml
-        doc = self._make_bill(
-            status="final",
-            received_item_ids=["item:abc"],
-            received_items=[{"sku": "W-A", "name": "Widget A", "quantity_received": 2}],
-        )
-        with patch("celerp.modules.loader.loaded_modules", return_value=[{"name": "celerp-inventory"}]):
-            html = to_xml(_render_receive_goods_section(doc))
-        assert "Revert Goods Received" in html
-        # Badge text must be absent in the revert state
-        assert html.count("Goods Received") == 1  # only button text, not badge+button
-        assert "badge--green" not in html
-
-    def test_receive_goods_section_shows_badge_when_no_item_ids(self):
-        """When received_items exist but received_item_ids is empty, show badge only (legacy state)."""
-        from ui.routes.documents import _render_receive_goods_section
-        from fasthtml.common import to_xml
-        doc = self._make_bill(
-            status="final",
-            received_item_ids=None,
-            received_items=[{"sku": "W-A"}],
-        )
-        with patch("celerp.modules.loader.loaded_modules", return_value=[{"name": "celerp-inventory"}]):
-            html = to_xml(_render_receive_goods_section(doc))
-        assert "badge--green" in html
-        assert "Revert" not in html
-
     def test_catalog_lookup_returns_category(self):
         """Catalog lookup must return category field for autofill."""
         from ui.routes.documents import _doc_detail
@@ -11813,8 +11759,8 @@ class TestApplyCreditErrorSurfacing:
                 cookies=_authed(),
             )
         assert r.status_code == 200
-        assert b"flash--error" in r.content
-        assert b"Amount exceeds" in r.content
+        assert "celerpToast" in r.headers.get("hx-trigger", "")
+        assert "Amount exceeds" in r.headers.get("hx-trigger", "")
         # Must NOT be a redirect
         assert "HX-Redirect" not in r.headers
 
@@ -12438,23 +12384,33 @@ def test_split_js_weight_pieces_independent():
 # ---------------------------------------------------------------------------
 
 def test_split_qty_change_does_not_touch_weight_or_pieces():
-    """bulkSplitChildQtyChanged must NOT reference child_weight or child_pieces.
+    """bulkSplitChildQtyChanged weight/pieces coupling rules.
 
-    These fields are completely independent. Coupling weight/pieces to qty was
-    the root cause of all split dependency bugs.
+    For sell_by=piece items, qty and pieces represent the same quantity and must
+    mirror each other (checked via data-sell-by on the form). The function is
+    allowed to reference child_pieces for that purpose, but must guard on sellBy.
+
+    For sell_by=weight-unit items, qty IS the weight and must mirror to child_weight.
+    This is also allowed but must be guarded on weightUnits check.
+
+    In both cases the mirroring must be conditional — never unconditional coupling.
     """
     from ui.routes.inventory import _BULK_SPLIT_JS
     start = _BULK_SPLIT_JS.index("function bulkSplitChildQtyChanged")
     end = _BULK_SPLIT_JS.find("\nfunction ", start + 1)
     fn_body = _BULK_SPLIT_JS[start:end if end != -1 else len(_BULK_SPLIT_JS)]
-    assert "child_weight" not in fn_body, (
-        "bulkSplitChildQtyChanged must not reference child_weight - "
-        "weight is independent of qty"
-    )
-    assert "child_pieces" not in fn_body, (
-        "bulkSplitChildQtyChanged must not reference child_pieces - "
-        "pieces is independent of qty"
-    )
+    # For piece-unit items qty===pieces, so mirroring is intentional and must be guarded.
+    if "child_pieces" in fn_body:
+        assert "sellBy" in fn_body or "sell_by" in fn_body, (
+            "bulkSplitChildQtyChanged references child_pieces without a sell_by guard - "
+            "pieces sync must only apply when sell_by=piece"
+        )
+    # For weight-unit items qty===weight, so mirroring is intentional and must be guarded.
+    if "child_weight" in fn_body:
+        assert "weightUnits" in fn_body or "weight_units" in fn_body, (
+            "bulkSplitChildQtyChanged references child_weight without a weightUnits guard - "
+            "weight sync must only apply when sell_by is a weight unit"
+        )
     assert "userEdited" not in fn_body, (
         "bulkSplitChildQtyChanged must not use userEdited guard - "
         "remove the auto-fill entirely"
@@ -13133,3 +13089,168 @@ class TestItemRowColumnParity:
         assert unit_td.get("hx-swap-oob") == "true", "cost_price td must have hx-swap-oob=true"
         assert unit_td.get("id") == "cell-item-1-cost_price", \
             f"cost_price td must have id=cell-item-1-cost_price, got {unit_td.get('id')}"
+
+
+# ---------------------------------------------------------------------------
+# Inbound per-line status column: Bill & Consignment In
+# ---------------------------------------------------------------------------
+
+class TestInboundPerLineStatus:
+    """UI rendering tests for per-line status column on inbound docs (bill, consignment_in)."""
+
+    def _make_bill_finalized(self, line_items=None):
+        return {
+            "entity_id": "doc:bill-pls-1",
+            "doc_type": "bill",
+            "status": "awaiting_payment",
+            "ref_id": "BILL-PLS-001",
+            "currency": "USD",
+            "subtotal": 100,
+            "tax": 0,
+            "total": 100,
+            "line_items": line_items or [],
+        }
+
+    def test_bill_finalized_no_receive_shows_not_received_badge(self):
+        """Stock line without entity_id on a finalized bill must show 'Not Received' badge."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "badge--not_received" in html
+        assert "Not Received" in html
+
+    def test_bill_received_shows_in_stock_badge(self):
+        """Stock line with entity_id on a received bill must show real item status ('In Stock')."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
+             "receive_as": "stock", "entity_id": "item:received-1"},
+        ])
+        # Use "received" status - items are in inventory at this point
+        doc["status"] = "received"
+        html = to_xml(_doc_detail(doc, item_status_map={"item:received-1": "available"}))
+        assert "badge--available" in html
+        assert "In Stock" in html
+        assert "Not Received" not in html
+
+    def test_bill_expense_line_shows_no_status_badge(self):
+        """Expense line must not show any status badge."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "SVC-1", "name": "Service", "quantity": 1, "unit_price": 20, "line_total": 20, "receive_as": "expense"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "badge--not_received" not in html
+        assert "Not Received" not in html
+        assert "badge--available" not in html
+
+    def test_bill_checkbox_enabled_without_entity_id(self):
+        """Inbound doc rows are always checkable (Receive Goods toolbar operates on whole doc)."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert 'li-select' in html
+
+    def test_bill_checkbox_enabled_with_entity_id(self):
+        """Stock line with entity_id must have an enabled checkbox in a fulfillable status."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100,
+             "receive_as": "stock", "entity_id": "item:enabled-1"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={"item:enabled-1": "available"}))
+        assert 'value="item:enabled-1"' in html
+        # The checkbox for this entity_id must NOT be disabled
+        import re as _re
+        # Find the checkbox input with this value; it must not have disabled attribute right after
+        pattern = r'<input[^>]*value="item:enabled-1"[^>]*>'
+        match = _re.search(pattern, html)
+        assert match, "Checkbox for entity_id must exist in HTML"
+        assert "disabled" not in match.group(0), "Checkbox with entity_id must not be disabled"
+
+    def test_bill_no_old_whole_doc_fulfill_button(self):
+        """The old whole-doc single Fulfill button must not appear on bills (replaced by bulk toolbar)."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_finalized(line_items=[
+            {"sku": "W-A", "name": "Widget A", "quantity": 1, "unit_price": 100, "line_total": 100,
+             "receive_as": "stock", "entity_id": "item:x"},
+        ])
+        html = to_xml(_doc_detail(doc, item_status_map={"item:x": "available"}))
+        # The old button had hx-confirm="Mark this consignment as fulfilled?" — must be gone
+        assert "Mark this consignment as fulfilled?" not in html
+
+    def test_consignment_in_not_received_badge_shown(self):
+        """consignment_in in pre-receive status must show 'Not Received' for stock lines."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = {
+            "entity_id": "doc:cin-pls-1",
+            "doc_type": "consignment_in",
+            "status": "final",  # not yet received
+            "ref_id": "CIN-001",
+            "currency": "USD",
+            "subtotal": 80,
+            "tax": 0,
+            "total": 80,
+            "line_items": [
+                {"sku": "GEM-1", "name": "Gem", "quantity": 1, "unit_price": 80, "line_total": 80},
+            ],
+        }
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "badge--not_received" in html or "Not Received" in html
+
+
+class TestInboundReceiveToolbar:
+    """Toolbar 'Receive Goods' for inbound docs posts to /receive with location dropdown."""
+
+    def _make_bill_final(self):
+        return {
+            "entity_id": "doc:bill-toolbar-1",
+            "doc_type": "bill",
+            "status": "final",
+            "ref_id": "BILL-TOOL-001",
+            "currency": "USD",
+            "subtotal": 100,
+            "tax": 0,
+            "total": 100,
+            "line_items": [
+                {"sku": "W-A", "name": "Widget A", "quantity": 2, "unit_price": 50, "line_total": 100, "receive_as": "stock"},
+            ],
+        }
+
+    def test_bill_bulk_toolbar_posts_to_receive(self):
+        """Inbound doc bulk toolbar 'Receive Goods' form must post to /receive, not /fulfill-lines."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_final()
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "/receive" in html, "Toolbar must target /receive for inbound docs"
+        assert "fulfill-lines" not in html, "Toolbar must not target fulfill-lines for inbound docs"
+
+    def test_bill_bulk_toolbar_has_location_input(self):
+        """Inbound doc toolbar must include a location selector."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_final()
+        locations = [{"name": "Warehouse A"}, {"name": "Store B"}]
+        html = to_xml(_doc_detail(doc, locations=locations, item_status_map={}))
+        assert "location_name" in html, "Toolbar form must include location_name field"
+
+    def test_collapsible_receive_form_absent_on_bill(self):
+        """The old collapsible 'Record Receipt' form must not appear on bill detail."""
+        from ui.routes.documents import _doc_detail
+        from fasthtml.common import to_xml
+        doc = self._make_bill_final()
+        html = to_xml(_doc_detail(doc, item_status_map={}))
+        assert "receive-section" not in html, "Old collapsible receive form must be removed"
+        assert "Record Receipt" not in html, "Old Record Receipt button must be removed"

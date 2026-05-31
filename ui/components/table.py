@@ -3,11 +3,17 @@
 
 from __future__ import annotations
 
+import re
+
 from fasthtml.common import *
 from ui.i18n import t, get_lang
 
 # Canonical empty-value placeholder (rule k)
 EMPTY = "--"
+
+# Statuses that dim a row to indicate it is not actively available for sale/use.
+# Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
+INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out"})
 
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
@@ -197,7 +203,7 @@ def searchable_select(
     return Div(
         Input(type="text", cls=f"combobox-input {cls_extra}".strip(),
               value=display_label, placeholder=placeholder, autocomplete="off"),
-        Input(type="hidden", name=name, value=value, **htmx_attrs),
+        Input(type="hidden", name=name, data_name=name, value=value, **htmx_attrs),
         Div(*opt_els, cls="combobox-list"),
         **wrap_attrs,
     )
@@ -471,7 +477,8 @@ def display_cell(
     inner = _display_val(display_value, cell_type, currency)
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
     _safe_id = entity_id.replace(":", "-")
-    _cell_id = f"cell-{_safe_id}-{field}"
+    _safe_field = re.sub(r"[^A-Za-z0-9_-]", "_", field)
+    _cell_id = f"cell-{_safe_id}-{_safe_field}"
 
     if not editable:
         # Only render hyperlink when there's actual content (not empty/placeholder)
@@ -490,12 +497,12 @@ def display_cell(
                 cls="cell-image-input",
                 hx_post=f"/api/items/{entity_id}/attachments",
                 hx_encoding="multipart/form-data",
-                hx_target=f"#img-cell-{entity_id}",
+                hx_target=f"#img-cell-{entity_id.replace(':', '-')}",
                 hx_swap="outerHTML",
                 style="display:none",
-                id=f"img-input-{entity_id}",
+                id=f"img-input-{entity_id.replace(':', '-')}",
             ),
-            id=f"img-cell-{entity_id}",
+            id=f"img-cell-{entity_id.replace(':', '-')}",
             cls="cell cell--image cell--droppable",
             data_entity_id=entity_id,
             data_col=field,
@@ -671,7 +678,7 @@ def data_table(
                      data_sell_by=row.get("sell_by", ""),
                ), cls="col-checkbox")] if show_checkboxes else []
         status_val = str(row.get("status", "") or "").lower()
-        row_cls = "data-row data-row--inactive" if status_val and status_val != "available" else "data-row"
+        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
         return Tr(
             *checkbox_td,
             *[
@@ -760,13 +767,20 @@ def data_table(
     }});
   }}
 
-  // Apply visibility — use data-col attribute so order-independent
-  function applyVis() {{
-    ths.forEach(function(th) {{
+  // Apply visibility — accept optional live table so post-swap calls use the new DOM node
+  function applyVis(liveTable) {{
+    liveTable = liveTable || table;
+    // Re-read prefs from localStorage so post-swap calls reflect changes made in
+    // the column-manager dropdown (which writes to the same PAGE_KEY but doesn't
+    // share the in-memory `prefs` variable from this IIFE closure).
+    try {{ prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null') || prefs; }} catch(e) {{}}
+    var liveRows = Array.from(liveTable.querySelectorAll('tbody tr.data-row'));
+    var liveThs = Array.from(liveTable.querySelectorAll('thead th[data-key]'));
+    liveThs.forEach(function(th) {{
       var key = th.dataset.key;
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
-      rows.forEach(function(tr) {{
+      liveRows.forEach(function(tr) {{
         var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
       }});
@@ -774,6 +788,20 @@ def data_table(
     localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
   }}
   applyVis();
+  // Re-apply after HTMX settles so rows added during the swap phase are also covered.
+  // Guard with a global flag so repeated IIFE executions (after HTMX swaps) don't
+  // accumulate duplicate listeners on document.body.
+  var _VIS_SETTLE_KEY = '__celerpVisSettle_{entity_type}';
+  if (!window[_VIS_SETTLE_KEY]) {{
+    window[_VIS_SETTLE_KEY] = true;
+    document.body.addEventListener('htmx:afterSettle', function(e) {{
+      if (e.detail && e.detail.target && e.detail.target.id === 'inventory-content') {{
+        // Re-query the live table after each settle - the old `table` ref may be detached
+        var liveTable = document.getElementById('data-table');
+        if (liveTable) applyVis(liveTable);
+      }}
+    }});
+  }}
 
   // Drag-to-resize column headers — persist widths to localStorage
   var WIDTH_KEY = 'celerp_col_widths_{entity_type}';

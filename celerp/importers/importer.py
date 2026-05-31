@@ -223,8 +223,6 @@ class BundleImporter:
                         "parent_external_id": item.parent_external_id,
                         "barcode": item.barcode,
                         "source_ref": item.source_ref,
-                        "created_at": item.created_at.isoformat() if item.created_at else None,
-                        "updated_at": item.updated_at.isoformat() if item.updated_at else None,
                         **item.metadata,
                     },
                     "source": source,
@@ -250,7 +248,6 @@ class BundleImporter:
                         "amount_paid": str(d.amount_paid),
                         "amount_outstanding": str(d.amount_outstanding),
                         "payment_due_date": d.payment_due_date.isoformat() if d.payment_due_date else None,
-                        "created_at": d.created_at.isoformat() if d.created_at else None,
                         "line_items": [
                             {
                                 "item_external_id": li.item_external_id,

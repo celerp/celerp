@@ -20,7 +20,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, INACTIVE_ITEM_STATUSES
 from ui.config import get_token as _token, API_BASE as _api_base
 from ui.i18n import t, get_lang
 from celerp.services.units import is_weight_unit, is_pieces_unit
@@ -36,6 +36,14 @@ function splitRecalcMotherWeight(input) {
   var childVal = parseFloat(input.value) || 0;
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+  // For weight-unit items weight and qty are the same — also update mother qty display.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
+    var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
+    var mqd = form.querySelector('.mother-qty-display');
+    if (mqd) mqd.textContent = Math.max(0, parentQty - childVal).toFixed(unitDecimals);
+  }
 }
 function splitClampWeight(input) {
   var form = input.closest('form');
@@ -46,10 +54,22 @@ function splitClampWeight(input) {
   input.value = childVal.toFixed(decimals);
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+  // For weight-unit items weight and qty are the same — sync qty input and mother qty display.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
+    var qtyInput = form.querySelector('[name="child_qty"]');
+    if (qtyInput) { qtyInput.value = childVal.toFixed(unitDecimals); }
+    var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
+    var mqd = form.querySelector('.mother-qty-display');
+    if (mqd) mqd.textContent = Math.max(0, parentQty - childVal).toFixed(unitDecimals);
+  }
 }
 function splitRecalcMotherPieces(input) {
   var form = input.closest('form');
   if (!form) return;
+  // For piece-unit items pieces and qty are the same — delegate to the bidirectional handler.
+  if (form.dataset.sellBy === 'piece') { bulkSplitChildPiecesChanged(input); return; }
   var parentPieces = parseFloat(form.dataset.parentPieces || '0');
   var childP = parseFloat(input.value) || 0;
   var mp = form.querySelector('.mother-pieces-display');
@@ -64,6 +84,15 @@ function splitClampPieces(input) {
   input.value = String(Math.round(childP));
   var mp = form.querySelector('.mother-pieces-display');
   if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
+  // Keep qty in sync for piece-unit items.
+  if (form.dataset.sellBy === 'piece') {
+    var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
+    var qtyInput = form.querySelector('[name="child_qty"]');
+    if (qtyInput) qtyInput.value = childP.toFixed(decimals);
+    var motherQtyDisplay = form.querySelector('.mother-qty-display');
+    var parentQty = parseFloat(form.dataset.parentQty || parentPieces);
+    if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childP).toFixed(decimals);
+  }
 }
 function bulkSplitAutoLoad() {
   var checked = document.querySelector('.row-select:checked');
@@ -84,6 +113,60 @@ function bulkSplitChildQtyChanged(input) {
   input.value = childQty.toFixed(decimals);
   var motherQtyDisplay = form.querySelector('.mother-qty-display');
   if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childQty).toFixed(decimals);
+  // For piece-unit items qty and pieces are the same — keep them in sync.
+  if (form.dataset.sellBy === 'piece') {
+    var piecesInput = form.querySelector('[name="child_pieces"]');
+    if (piecesInput) { piecesInput.value = Math.round(childQty); }
+    var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
+    var mp = form.querySelector('.mother-pieces-display');
+    if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childQty)));
+  }
+  // For weight-unit items qty IS the weight — mirror to weight field.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+    var weightInput = form.querySelector('[name="child_weight"]');
+    if (weightInput) { weightInput.value = childQty.toFixed(weightDecimals); }
+    var parentWeight = parseFloat(form.dataset.parentWeight || parentQty);
+    var mw = form.querySelector('.mother-weight-display');
+    if (mw) mw.textContent = Math.max(0, parentWeight - childQty).toFixed(weightDecimals);
+  }
+}
+function bulkSplitChildPiecesChanged(input) {
+  // Mirror pieces → qty for piece-unit items (they are the same value).
+  var form = input.closest('form');
+  if (!form || form.dataset.sellBy !== 'piece') return;
+  var parentQty = parseFloat(form.dataset.parentQty || '0');
+  var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
+  var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
+  var childPieces = Math.min(Math.max(0, Math.round(parseFloat(input.value) || 0)), Math.round(parentQty) - 1);
+  input.value = String(childPieces);
+  var qtyInput = form.querySelector('[name="child_qty"]');
+  if (qtyInput) { qtyInput.value = childPieces.toFixed(decimals); }
+  var motherQtyDisplay = form.querySelector('.mother-qty-display');
+  if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childPieces).toFixed(decimals);
+  var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
+  var mp = form.querySelector('.mother-pieces-display');
+  if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childPieces)));
+}
+function bulkSplitChildWeightChanged(input) {
+  // Mirror weight → qty for weight-unit items (they are the same value).
+  var form = input.closest('form');
+  if (!form) return;
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) === -1) return;
+  var parentWeight = parseFloat(form.dataset.parentWeight || '0');
+  var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+  var decimals = parseInt(form.dataset.unitDecimals || weightDecimals, 10);
+  var childWeight = Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
+  input.value = childWeight.toFixed(weightDecimals);
+  var qtyInput = form.querySelector('[name="child_qty"]');
+  if (qtyInput) { qtyInput.value = childWeight.toFixed(decimals); }
+  var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
+  var motherQtyDisplay = form.querySelector('.mother-qty-display');
+  if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childWeight).toFixed(decimals);
+  var mw = form.querySelector('.mother-weight-display');
+  if (mw) mw.textContent = Math.max(0, parentWeight - childWeight).toFixed(weightDecimals);
 }
 function bulkSplitSkuChanged(input) {
   // SKU is a free-text field; no server call needed.
@@ -1711,7 +1794,7 @@ function celerpPrintLabel(entityId, templateId) {
             cls="col-actions",
         )
         status_val = str(flat.get("status", "") or "").lower()
-        row_cls = "data-row data-row--inactive" if status_val and status_val != "available" else "data-row"
+        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
         return Tr(checkbox_td, *data_cells, action_td, id=f"row-{safe_id}", cls=row_cls)
 
     async def _paired_display(token: str, entity_id: str, field: str):
@@ -1931,7 +2014,7 @@ function celerpPrintLabel(entityId, templateId) {
             except APIError as e:
                 return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         total_qty = sum(float(it.get("quantity", 0) or 0) for it in items)
-        _CORE_KEYS = _CORE_ITEM_COLS | {"id", "is_available", "is_expired", "children",
+        _CORE_KEYS = _CORE_ITEM_COLS | {"id", "is_expired", "children",
                                          "child_skus", "merged_into", "reserved_quantity",
                                          "tax_codes", "unit", "expires_at", "total_cost",
                                          "entity_id"}
@@ -2107,6 +2190,8 @@ function celerpPrintLabel(entityId, templateId) {
             "data_weight_decimals": str(weight_decimals),
             "data_unit_decimals": str(decimals),
             "data_parent_qty": str(preview["parent_qty"]),
+            "data_sell_by": preview["sell_by"],
+            "data_weight_units": ",".join(preview.get("weight_unit_names", [])),
         }
         if show_weight:
             form_data["data_parent_weight"] = str(preview["parent_weight"])
@@ -2809,14 +2894,14 @@ function celerpPrintLabel(entityId, templateId) {
                 raw_w = (comp_weights[idx] or "").strip()
                 if raw_w:
                     try:
-                        child["weight"] = float(raw_w)
+                        _apply_complement(child, sell_by, float(raw_w), _default_umap)
                     except (ValueError, TypeError):
                         pass
             elif is_weight_unit(sell_by, _default_umap) and idx < len(comp_pieces_l):
                 raw_p = (comp_pieces_l[idx] or "").strip()
                 if raw_p:
                     try:
-                        child["pieces"] = int(round(float(raw_p)))
+                        _apply_complement(child, sell_by, float(raw_p), _default_umap)
                     except (ValueError, TypeError):
                         pass
             children.append(child)
@@ -2833,6 +2918,17 @@ function celerpPrintLabel(entityId, templateId) {
         skus_param = ",".join(_quote(s) for s in [orig_sku] + child_skus)
         redirect = f"/inventory?skus={skus_param}&status=all" if orig_sku else "/inventory"
         return Response("", status_code=204, headers={"HX-Redirect": redirect})
+
+    def _apply_complement(child: dict, sell_by: str, complement: float, unit_map: dict) -> None:
+        """Attach the complement field to a split child dict based on the item's sell_by unit.
+
+        weight-unit items carry pieces as the complement; piece-unit items carry weight.
+        Mutates child in place.
+        """
+        if is_weight_unit(sell_by, unit_map):
+            child["pieces"] = int(round(complement))
+        elif is_pieces_unit(sell_by, unit_map):
+            child["weight"] = complement
 
     @app.post("/api/items/{entity_id}/batch-split")
     async def item_batch_split(request: Request, entity_id: str):
@@ -2884,10 +2980,7 @@ function celerpPrintLabel(entityId, templateId) {
             used_skus.add(child_sku)
             child: dict = {"sku": child_sku, "quantity": batch_qty}
             if complement is not None:
-                if is_weight_unit(sell_by, _default_umap):
-                    child["pieces"] = int(round(complement))
-                elif is_pieces_unit(sell_by, _default_umap):
-                    child["weight"] = complement
+                _apply_complement(child, sell_by, complement, _default_umap)
             children.append(child)
         try:
             await api.split_item(token, entity_id, children)

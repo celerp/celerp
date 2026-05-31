@@ -549,78 +549,32 @@ class TestItemCreateModel:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestTimestampFields:
-    """created_at and updated_at are universal fields preserved through the full pipeline."""
+    """created_at/updated_at are system-managed Projection columns, not CIF fields.
 
-    def test_cif_item_has_updated_at_field(self) -> None:
-        assert "updated_at" in CIFItem.model_fields
+    CIFItem and CIFDocument intentionally omit these fields — Celerp stamps
+    created_at on INSERT via ProjectionEngine; external provenance timestamps
+    are discarded.
+    """
 
-    def test_cif_item_updated_at_none_by_default(self) -> None:
+    def test_cif_item_has_no_created_at_field(self) -> None:
+        assert "created_at" not in CIFItem.model_fields
+
+    def test_cif_item_has_no_updated_at_field(self) -> None:
+        assert "updated_at" not in CIFItem.model_fields
+
+    def test_cif_item_constructs_without_timestamps(self) -> None:
         item = CIFItem(external_id="i:1", name="Stone", status="available")
-        assert item.updated_at is None
-
-    def test_cif_item_updated_at_set(self) -> None:
-        from datetime import datetime, timezone
-        dt = datetime(2026, 2, 19, 15, 59, 22, tzinfo=timezone.utc)
-        item = CIFItem(
-            external_id="i:1",
-            name="Stone",
-            status="available",
-            created_at=datetime(2019, 11, 14, tzinfo=timezone.utc),
-            updated_at=dt,
-        )
-        assert item.updated_at == dt
-
-    def test_cif_item_timestamps_survive_roundtrip(self) -> None:
-        from datetime import datetime, timezone
-        item = CIFItem(
-            external_id="i:1",
-            name="Stone",
-            status="available",
-            created_at=datetime(2019, 11, 14, tzinfo=timezone.utc),
-            updated_at=datetime(2026, 2, 19, 15, 59, 22, tzinfo=timezone.utc),
-        )
-        raw = json.loads(item.model_dump_json())
-        restored = CIFItem.model_validate(raw)
-        assert restored.created_at == item.created_at
-        assert restored.updated_at == item.updated_at
+        assert not hasattr(item, "created_at")
+        assert not hasattr(item, "updated_at")
 
     def test_item_snapshot_schema_has_timestamp_fields(self) -> None:
+        # ItemSnapshot (event schema) retains these for event payloads
         from celerp.events.schemas import ItemSnapshot
         assert "created_at" in ItemSnapshot.model_fields
         assert "updated_at" in ItemSnapshot.model_fields
 
-    def test_importer_payload_includes_updated_at(self) -> None:
-        from unittest.mock import AsyncMock, patch
-        from datetime import datetime, timezone
-
-        manifest = CIFImportManifest(
-            source="test",
-            exported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            bundle=CIFImportBundle(items=[
-                CIFItem(
-                    external_id="i:1",
-                    name="Stone",
-                    status="available",
-                    created_at=datetime(2019, 11, 14, tzinfo=timezone.utc),
-                    updated_at=datetime(2026, 2, 19, 15, 59, 22, tzinfo=timezone.utc),
-                )
-            ]),
-        )
-        captured: list[dict] = []
-
-        async def _fake_post(client, endpoint, records):
-            captured.extend(records)
-            return {"created": len(records), "skipped": 0, "errors": []}
-
-        importer = BundleImporter(api_base="http://localhost", token="tok")
-        with patch.object(importer, "_post_batch", new=AsyncMock(side_effect=_fake_post)):
-            _run_coroutine(importer.run(manifest))
-
-        payload = next(p for p in captured if p.get("event_type") == "item.snapshot")
-        assert payload["data"]["updated_at"] == "2026-02-19T15:59:22+00:00"
-        assert payload["data"]["created_at"] == "2019-11-14T00:00:00+00:00"
-
-    def test_importer_payload_updated_at_none_when_absent(self) -> None:
+    def test_importer_payload_has_no_timestamps(self) -> None:
+        """Importer must not emit created_at/updated_at in item event data."""
         from unittest.mock import AsyncMock, patch
         from datetime import datetime, timezone
 
@@ -642,5 +596,5 @@ class TestTimestampFields:
             _run_coroutine(importer.run(manifest))
 
         payload = next(p for p in captured if p.get("event_type") == "item.snapshot")
-        assert payload["data"]["updated_at"] is None
-        assert payload["data"]["created_at"] is None
+        assert "created_at" not in payload["data"], "created_at must not be in importer payload"
+        assert "updated_at" not in payload["data"], "updated_at must not be in importer payload"

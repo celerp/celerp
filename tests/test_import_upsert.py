@@ -383,11 +383,11 @@ async def test_import_status_stripped_always_available(client, session):
 
 @pytest.mark.asyncio
 async def test_import_timestamps_stripped_system_generated(client, session):
-    """Batch import with user-supplied timestamps must store valid ISO timestamps.
+    """Batch import with user-supplied timestamps must be silently stripped.
 
-    The backend strips created_at/updated_at from rec.data; post_item backfills
-    them via setdefault(key, now_iso). Neither field should be empty or contain
-    the user-supplied garbage value.
+    created_at is authoritative from Projection.created_at (set by ProjectionEngine
+    on INSERT). updated_at is set by ProjectionEngine on every update.
+    Neither field must ever be accepted from client-supplied event data.
     """
     from celerp.models.projections import Projection
     from sqlalchemy import select as _select
@@ -400,7 +400,7 @@ async def test_import_timestamps_stripped_system_generated(client, session):
         "name": "Timestamp Test Item",
         "sku": f"TS-{uuid.uuid4().hex[:6]}",
         "sell_by": "piece",
-        "created_at": "BANGKOK",      # must be stripped
+        "created_at": "BANGKOK",      # must be stripped — Projection column wins
         "updated_at": "not-a-date",   # must be stripped
     })
     r = await client.post("/items/import/batch", headers=headers, json={"records": [record]})
@@ -415,13 +415,18 @@ async def test_import_timestamps_stripped_system_generated(client, session):
         )
     )).scalars().first()
     assert proj is not None
+
+    # State must not contain user-supplied garbage
     state = proj.state
-    for field in ("created_at", "updated_at"):
-        value = state.get(field)
-        assert value is not None, f"{field} must not be None"
-        assert value != "BANGKOK" and value != "not-a-date", f"{field} must not be user value"
-        # Must be a parseable ISO timestamp
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    assert state.get("created_at") is None, "created_at must not be stored in state"
+    assert state.get("updated_at") is None, "updated_at must not be stored in state"
+
+    # Projection column must be set to a valid datetime by the engine
+    assert proj.created_at is not None, "Projection.created_at must be set by engine"
+    assert proj.updated_at is not None, "Projection.updated_at must be set by engine"
+    # Both must be parseable datetimes (they're already datetime objects from SQLAlchemy)
+    datetime.fromisoformat(proj.created_at.isoformat())
+    datetime.fromisoformat(proj.updated_at.isoformat())
 
 
 @pytest.mark.asyncio

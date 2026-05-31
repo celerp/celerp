@@ -100,4 +100,4 @@ async def test_inventory_reserve_unreserve_transfer_and_status_changes(journey_a
     archive = await journey_api.post("/items/bulk/status", json={"entity_ids": [item_id], "status": "archived"})
     assert archive.status_code == 200, archive.text
     archived = await _get_item(journey_api, item_id)
-    assert archived.get("is_available") is False
+    assert archived.get("status") == "archived"

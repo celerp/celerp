@@ -46,6 +46,44 @@ _LOCALES = _available_locales()
 
 # Minimal client-side JS: Esc to cancel edit, row menu toggle, close menus on outside click, searchable combobox
 _CLIENT_JS = """
+function celerpToast(message, type) {
+  var container = document.getElementById('toast-container');
+  if (!container) { alert(message); return; }
+  var toast = document.createElement('div');
+  toast.className = 'toast toast--' + (type || 'error');
+  toast.textContent = message;
+  var close = document.createElement('button');
+  close.className = 'toast__close';
+  close.textContent = '×';
+  close.onclick = function() { _dismissToast(toast); };
+  toast.appendChild(close);
+  container.appendChild(toast);
+  requestAnimationFrame(function() { toast.classList.add('toast--visible'); });
+  setTimeout(function() { _dismissToast(toast); }, 6000);
+}
+function _dismissToast(toast) {
+  toast.classList.remove('toast--visible');
+  setTimeout(function() { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
+}
+document.addEventListener('htmx:afterRequest', function(e) {
+  var hdr = e.detail.xhr && e.detail.xhr.getResponseHeader('HX-Trigger');
+  if (!hdr) return;
+  try {
+    var obj = JSON.parse(hdr);
+    if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error');
+    if (obj.celerpRestoreCell) {
+      // Close any open editable cell: trigger ESC on focused element, then blur
+      var active = document.activeElement;
+      if (active && active !== document.body) {
+        active.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+        active.blur();
+      }
+      // Also close any open combobox lists
+      document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
+    }
+  } catch(ex) {}
+});
+
 function showGlobalUiError(message) {
   var box = document.getElementById('global-ui-error');
   if (!box) {
@@ -155,15 +193,33 @@ function initCombobox(wrap) {
   var list = wrap.querySelector('.combobox-list');
   var hidden = wrap.querySelector('input[type=hidden]');
   if (!input || !list) return;
+  // Guard: don't double-init
+  if (wrap._comboboxInit) return;
+  wrap._comboboxInit = true;
   var opts = Array.from(list.querySelectorAll('.combobox-option'));
   var allowCustom = wrap.dataset.allowCustom === 'true';
 
+  // position:fixed on the list so overflow:hidden/auto ancestors can't clip it.
+  // We set top/left/width inline on open so it tracks the input position.
+  list.style.position = 'fixed';
+  list.style.zIndex = '9999';
+
+  function positionList() {
+    var r = input.getBoundingClientRect();
+    list.style.top = (r.bottom + 2) + 'px';
+    list.style.left = r.left + 'px';
+    list.style.minWidth = r.width + 'px';
+    list.style.width = 'auto';
+  }
+
   input.addEventListener('focus', function() {
     filterOpts('');
+    positionList();
     list.classList.add('open');
   });
   input.addEventListener('input', function() {
     filterOpts(input.value);
+    positionList();
     list.classList.add('open');
     if (hidden) hidden.value = allowCustom ? input.value : '';
   });
@@ -241,7 +297,9 @@ function initCombobox(wrap) {
     }
   }
 }
-document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+});
 /* Re-init after HTMX swaps — search from document to handle outerHTML swaps */
 document.addEventListener('htmx:afterSettle', function(e) {
   var root = (e.detail.elt && e.detail.elt.isConnected) ? e.detail.elt : document;
@@ -263,7 +321,7 @@ document.addEventListener('htmx:sendError', function(e) {
 function initImageDropZones(root) {
   root.querySelectorAll('.cell--droppable').forEach(function(cell) {
     cell.addEventListener('click', function() {
-      var input = document.getElementById('img-input-' + cell.dataset.entityId);
+      var input = document.getElementById('img-input-' + cell.dataset.entityId.replace(/:/g, '-'));
       if (input) input.click();
     });
     ['dragover', 'dragenter'].forEach(function(ev) {
@@ -275,10 +333,11 @@ function initImageDropZones(root) {
         cell.classList.remove('cell--drag-over');
         if (ev === 'drop' && e.dataTransfer.files.length) {
           var entityId = cell.dataset.entityId;
+          var safeId = entityId.replace(/:/g, '-');
           var fd = new FormData();
           fd.append('file', e.dataTransfer.files[0]);
           htmx.ajax('POST', '/api/items/' + entityId + '/attachments', {
-            target: '#img-cell-' + entityId,
+            target: '#img-cell-' + safeId,
             swap: 'outerHTML',
             values: fd,
           });
@@ -338,6 +397,8 @@ _GLOBAL_UI_ERROR_HTML = Div(
     cls="flash flash--error",
     style="display:none;margin:12px 0;",
 )
+
+_TOAST_CONTAINER_HTML = Div(id="toast-container", cls="toast-container")
 
 _NOTIFICATION_JS = """
 window.toggleNotifPanel = function() {
@@ -691,6 +752,7 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
                     _topbar(companies or [], lang=lang, user_email=user_email, relay_info=relay_info),
                     _HEALTH_BANNER_HTML,
                     _GLOBAL_UI_ERROR_HTML,
+                    _TOAST_CONTAINER_HTML,
                     Main(*content, id="main-content", cls="main-content"),
                     Footer(
                         A(t("msg.powered_by", lang), href="https://www.celerp.com", target="_blank",
