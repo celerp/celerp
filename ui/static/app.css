@@ -504,11 +504,11 @@ a:hover { text-decoration: underline; }
 /* ─── Doc detail ──────────────────────────────────────────────────────── */
 .doc-meta { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
-.doc-lines { margin-top: 12px; table-layout: auto; width: 100%; max-width: 100%; }
+.doc-lines { margin-top: 12px; table-layout: fixed; width: 100%; max-width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
 .doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 28px; min-width: 28px; max-width: 28px; padding-left: 0; padding-right: 0; text-align: center; overflow: visible; }
-.doc-lines th.col-sku,        .doc-lines td.col-sku        { width: 100px; min-width: 80px;  max-width: 120px; }
-.doc-lines th.col-desc,       .doc-lines td.col-desc       { min-width: 240px; width: 320px; }
+.doc-lines th.col-sku,        .doc-lines td.col-sku        { width: 90px; }
+.doc-lines th.col-desc,       .doc-lines td.col-desc       { width: 280px; }
 .doc-lines th.col-qty,        .doc-lines td.col-qty        { width: 60px;  min-width: 60px;  max-width: 70px; }
 .doc-lines th.col-unit,       .doc-lines td.col-unit       { width: 44px;  min-width: 44px;  max-width: 50px; }
 .doc-lines th.col-unit-price, .doc-lines td.col-unit-price { width: 100px; min-width: 90px;  max-width: 120px; }
