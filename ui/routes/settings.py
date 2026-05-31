@@ -440,6 +440,7 @@ def _factory_reset_card() -> FT:
     step2_id = "factory-reset-step2"
     input_id = "factory-reset-confirm-input"
     btn_id   = "factory-reset-confirm-btn"
+    close_js = f"document.getElementById('{modal_id}').close()"
 
     to_step2_js = (
         f"document.getElementById('{step1_id}').style.display='none';"
@@ -466,13 +467,23 @@ def _factory_reset_card() -> FT:
                cls="btn btn--outline btn--danger",
                onclick=f"document.getElementById('{modal_id}').showModal()"),
         Dialog(
+            # Step 1: warning
             Div(
                 Div(
-                    H3("Reset all data?", cls="modal-dialog__title"),
+                    Div(
+                        Span("⚠", cls="reset-modal__icon"),
+                        H3("Reset all data?", cls="modal-dialog__title reset-modal__title--danger"),
+                        cls="reset-modal__title-row",
+                    ),
+                    Button("✕", type="button", cls="modal-dialog__close", aria_label="Close",
+                           onclick=close_js),
+                    cls="modal-dialog__header",
+                ),
+                Div(
                     P("This will permanently delete all business data — contacts, items, "
-                      "transactions, documents, and all other records. "
-                      "Your app settings and installed modules will be preserved. "
-                      "This cannot be undone."),
+                      "transactions, documents, and all other records."),
+                    P(Strong("Your app settings and installed modules will be preserved. "
+                             "This cannot be undone.")),
                     Div(
                         A("Download backup first",
                           href="/backup/export",
@@ -481,15 +492,24 @@ def _factory_reset_card() -> FT:
                           download=True),
                         Button("Skip — continue",
                                type="button",
-                               cls="btn btn--sm",
+                               cls="btn btn--sm btn--secondary",
                                onclick=to_step2_js),
                         cls="modal-dialog__actions",
                     ),
-                    id=step1_id,
+                    cls="reset-modal__body",
+                ),
+                id=step1_id,
+            ),
+            # Step 2: type-to-confirm
+            Div(
+                Div(
+                    H3("Confirm deletion", cls="modal-dialog__title reset-modal__title--danger"),
+                    Button("✕", type="button", cls="modal-dialog__close", aria_label="Close",
+                           onclick=close_js),
+                    cls="modal-dialog__header",
                 ),
                 Div(
-                    H3("Type RESET to confirm", cls="modal-dialog__title"),
-                    P("This action is irreversible. Type ", Strong("RESET"), " below to confirm."),
+                    P("Type ", Strong("RESET"), " to confirm. This cannot be undone."),
                     Input(type="text", id=input_id, placeholder="RESET",
                           autocomplete="off", cls="form-input",
                           oninput=validate_js),
@@ -506,13 +526,13 @@ def _factory_reset_card() -> FT:
                         Button("Cancel",
                                type="button",
                                cls="btn btn--ghost",
-                               onclick=f"document.getElementById('{modal_id}').close()"),
+                               onclick=close_js),
                         cls="modal-dialog__actions",
                     ),
-                    id=step2_id,
-                    style="display:none",
+                    cls="reset-modal__body",
                 ),
-                cls="modal-dialog__body",
+                id=step2_id,
+                style="display:none",
             ),
             id=modal_id,
             cls="modal-dialog",
