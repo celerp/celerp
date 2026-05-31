@@ -1892,6 +1892,20 @@ async def trigger_backup(token: str, backup_type: str = "database") -> None:
         _raise(await c.post("/backup/trigger", params={"type": backup_type}))
 
 
+async def export_system_snapshot(token: str) -> tuple[bytes, str, str]:
+    """GET /system/export — fetch portable company snapshot (.celerp ZIP) from the API process.
+
+    Returns (content_bytes, content_type, content_disposition).
+    """
+    async with _api_client(token) as c:
+        r = _raise(await c.get("/system/export"))
+        return (
+            r.content,
+            r.headers.get("content-type", "application/zip"),
+            r.headers.get("content-disposition", "attachment; filename=backup.celerp"),
+        )
+
+
 async def export_backup(token: str) -> tuple[bytes, str, str]:
     """GET /backup/export — fetch full local backup archive from the API process.
 

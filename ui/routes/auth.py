@@ -173,7 +173,7 @@ def setup_routes(app):
         form = await request.form()
         file = form.get("backup_file")
         if not file or not hasattr(file, "read"):
-            return auth_shell(_setup_import_form(error="Please select a .celerp-backup file."), title="Restore from backup - Celerp")
+            return auth_shell(_setup_import_form(error="Please select a .celerp file."), title="Restore from backup - Celerp")
         raw = await file.read()
         if not raw:
             return auth_shell(_setup_import_form(error="File is empty."), title="Restore from backup - Celerp")
@@ -531,15 +531,15 @@ def _setup_import_form(error: str | None = None) -> FT:
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
             H1("Restore from backup", cls="auth-title"),
-            P("Upload a .celerp-backup file to restore your data.", cls="auth-subtitle"),
+            P("Upload a .celerp file to restore your data.", cls="auth-subtitle"),
             cls="auth-header",
         ),
         Form(
             flash(error) if error else "",
             Div(
-                Label("Backup file (.celerp-backup)", For="backup_file", cls="form-label"),
+                Label("Backup file (.celerp)", For="backup_file", cls="form-label"),
                 Input(type="file", id="backup_file", name="backup_file",
-                      accept=".celerp-backup", required=True, cls="form-input"),
+                      accept=".celerp", required=True, cls="form-input"),
                 cls="form-group",
             ),
             Button("Restore backup", type="submit", cls="btn btn--primary btn--full"),
