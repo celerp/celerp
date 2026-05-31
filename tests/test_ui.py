@@ -2508,6 +2508,115 @@ class TestPhase2DeepPolish:
         assert b"paid" in r.content
 
 
+# ── T0: Module-aware sidebar filtering ───────────────────────────────────────
+
+class TestModuleAwareSidebar:
+    """Sidebar shows only modules listed in the JWT 'modules' claim."""
+
+    def _make_request(self, modules: list[str] | None):
+        """Build a minimal mock request with a JWT cookie embedding given modules."""
+        token = make_test_token(role="owner", modules=modules)
+
+        class _FakeUrl:
+            path = "/dashboard"
+            query = ""
+
+        class _FakeRequest:
+            cookies = {"celerp_token": token}
+            url = _FakeUrl()
+
+        return _FakeRequest()
+
+    def test_get_enabled_modules_returns_set(self):
+        """get_enabled_modules decodes the modules claim into a set."""
+        from ui.config import get_enabled_modules
+        req = self._make_request(["celerp-docs", "celerp-inventory"])
+        result = get_enabled_modules(req)
+        assert result == {"celerp-docs", "celerp-inventory"}
+
+    def test_get_enabled_modules_empty_list(self):
+        """Empty modules list returns empty set (triggers show-all fallback)."""
+        from ui.config import get_enabled_modules
+        req = self._make_request([])
+        assert get_enabled_modules(req) == set()
+
+    def test_get_enabled_modules_missing_claim(self):
+        """JWT without modules claim returns empty set (show-all fallback for old tokens)."""
+        from ui.config import get_enabled_modules
+        req = self._make_request(None)
+        assert get_enabled_modules(req) == set()
+
+    def test_jwt_modules_claim_embedded_by_create_access_token(self):
+        """create_access_token embeds modules list in the JWT payload."""
+        import base64, json
+        from celerp.services.auth import create_access_token
+        token, _ = create_access_token(
+            "user-1", "company-1", "owner", modules=["celerp-docs", "celerp-inventory"]
+        )
+        payload_b64 = token.split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
+        assert set(payload["modules"]) == {"celerp-docs", "celerp-inventory"}
+
+    def test_jwt_no_modules_defaults_to_empty_list(self):
+        """create_access_token with no modules arg embeds empty list."""
+        import base64, json
+        from celerp.services.auth import create_access_token
+        token, _ = create_access_token("user-1", "company-1", "owner")
+        payload_b64 = token.split(".")[1]
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=="))
+        assert payload["modules"] == []
+
+    def test_sidebar_hides_module_items_not_in_jwt(self):
+        """Nav items from modules not in the JWT modules claim are excluded from sidebar."""
+        from ui.components.shell import _sidebar
+        from celerp.modules import slots
+
+        slots.clear()
+        slots.register("nav", {"key": "docs-nav", "label": "Documents", "href": "/documents",
+                                "order": 10, "_module": "celerp-docs"})
+        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
+                                "order": 20, "_module": "celerp-inventory"})
+        try:
+            req = self._make_request(["celerp-docs"])  # only docs enabled
+            html = str(_sidebar("", request=req))
+            assert "Documents" in html
+            assert "Inventory" not in html
+        finally:
+            slots.clear()
+
+    def test_sidebar_shows_all_when_modules_empty(self):
+        """Empty modules set (no claim) shows all module nav items as safe fallback."""
+        from ui.components.shell import _sidebar
+        from celerp.modules import slots
+
+        slots.clear()
+        slots.register("nav", {"key": "docs-nav", "label": "Documents", "href": "/documents",
+                                "order": 10, "_module": "celerp-docs"})
+        slots.register("nav", {"key": "inv-nav", "label": "Inventory", "href": "/inventory",
+                                "order": 20, "_module": "celerp-inventory"})
+        try:
+            req = self._make_request(None)  # no modules claim → show all
+            html = str(_sidebar("", request=req))
+            assert "Documents" in html
+            assert "Inventory" in html
+        finally:
+            slots.clear()
+
+    def test_kernel_nav_always_visible(self):
+        """Kernel nav entries (no _module) always show regardless of modules claim."""
+        from ui.components.shell import _sidebar
+        from celerp.modules import slots
+
+        slots.clear()
+        try:
+            req = self._make_request(["celerp-docs"])  # only docs enabled
+            html = str(_sidebar("", request=req))
+            # Dashboard is a kernel entry - must always be present
+            assert "Dashboard" in html or "dashboard" in html.lower()
+        finally:
+            slots.clear()
+
+
 # ── T1: Collapsible sidebar ──────────────────────────────────────────────────
 
 class TestCollapsibleSidebar:
@@ -13254,3 +13363,29 @@ class TestInboundReceiveToolbar:
         html = to_xml(_doc_detail(doc, item_status_map={}))
         assert "receive-section" not in html, "Old collapsible receive form must be removed"
         assert "Record Receipt" not in html, "Old Record Receipt button must be removed"
+
+
+# ── Factory Reset danger zone UI tests ───────────────────────────────────────
+
+class TestDangerZoneUI:
+    @pytest.mark.asyncio
+    async def test_danger_zone_visible_for_owner(self, ui_client):
+        """Owner visiting /settings/general?tab=company sees the Danger Zone."""
+        with patch("ui.api_client.get_company", new_callable=AsyncMock, return_value={"name": "Co", "slug": "co", "settings": {}}), \
+             patch("ui.api_client.get_users", new_callable=AsyncMock, return_value={"items": []}), \
+             patch("ui.api_client.get_modules", new_callable=AsyncMock, return_value=[]), \
+             patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
+            r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="owner"))
+        assert r.status_code == 200
+        assert "Reset All Data" in r.text
+
+    @pytest.mark.asyncio
+    async def test_danger_zone_hidden_for_admin(self, ui_client):
+        """Admin visiting /settings/general?tab=company does NOT see the Danger Zone."""
+        with patch("ui.api_client.get_company", new_callable=AsyncMock, return_value={"name": "Co", "slug": "co", "settings": {}}), \
+             patch("ui.api_client.get_users", new_callable=AsyncMock, return_value={"items": []}), \
+             patch("ui.api_client.get_modules", new_callable=AsyncMock, return_value=[]), \
+             patch("ui.api_client.get_locations", new_callable=AsyncMock, return_value={"items": []}):
+            r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="admin"))
+        assert r.status_code == 200
+        assert "Reset All Data" not in r.text

@@ -60,6 +60,7 @@ def _general_tabs(active: str, lang: str = "en", is_admin: bool = True) -> FT:
     )
 
 
+
 def _section_breadcrumb(section: str) -> FT:
     return Div(
         A(t("nav.settings"), href="/settings/general", cls="breadcrumb-link"),
@@ -120,7 +121,8 @@ def setup_routes(app):
                     company_locations = []
 
             if tab == "company":
-                content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
+                company_content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
+                content = company_content
             elif tab == "users":
                 content = _users_tab(users, lang=lang)
             elif tab == "modules":
@@ -139,7 +141,8 @@ def setup_routes(app):
                 except Exception:
                     company_locations = []
                 content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
-                tab = "company"
+                if is_owner:
+                    tab = "company"
 
         setup_done = request.query_params.get("setup") == "done"
         setup_banner = Div(

@@ -1,0 +1,172 @@
+# Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
+"""Browser tests for doc-level bulk actions: bulk delete drafts, bulk payment.
+
+Covers:
+  - BULK-DOC-01: Draft docs list shows checkboxes; selecting rows shows bulk toolbar
+  - BULK-DOC-02: Select action from dropdown → confirm button appears
+  - BULK-DOC-03: Delete Selected → confirm dialog → docs removed from list
+  - BULK-DOC-04: Bulk toolbar hidden on non-draft invoice list (no drafts)
+  - BULK-DOC-05: Auto-redirect to drafts view when no finals exist
+"""
+from __future__ import annotations
+
+import pathlib
+import time
+
+import pytest
+
+pytestmark = pytest.mark.browser
+
+_SCREENSHOT_DIR = pathlib.Path("/mnt/storage/agent_storage/celerp/screenshots/bulk-doc-actions")
+
+
+def _save(page, name: str) -> None:
+    _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    page.screenshot(path=str(_SCREENSHOT_DIR / f"{name}.png"), full_page=True)
+
+
+def _no_crash(page, ctx: str = "") -> None:
+    body = page.locator("body").inner_text()
+    assert "Internal Server Error" not in body, f"{ctx}: server error"
+    assert "Traceback" not in body, f"{ctx}: traceback"
+
+
+def _create_draft(api, doc_type: str = "invoice") -> str:
+    r = api.post("/docs", json={"doc_type": doc_type, "status": "draft", "line_items": [], "subtotal": 0, "tax": 0, "total": 0})
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+def test_draft_list_has_checkboxes(page, ui_server, api):
+    """BULK-DOC-01: Draft invoice list renders checkboxes on each row."""
+    _create_draft(api, "invoice")
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+    _no_crash(page, "BULK-DOC-01")
+    _save(page, "01-draft-list")
+
+    # Row checkboxes and select-all must be present
+    assert page.locator("input.doc-row-select").count() > 0, "No doc-row-select checkboxes"
+    assert page.locator("#doc-select-all").count() > 0, "No #doc-select-all checkbox"
+    # Bulk toolbar exists but is hidden initially
+    assert page.locator("#doc-bulk-bar").count() > 0, "No #doc-bulk-bar element"
+
+
+def test_bulk_toolbar_shows_on_checkbox_select(page, ui_server, api):
+    """BULK-DOC-02: Selecting a checkbox shows bulk toolbar with action dropdown."""
+    _create_draft(api, "invoice")
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+
+    # Click first row checkbox
+    first_cb = page.locator("input.doc-row-select").first
+    first_cb.click()
+
+    # Toolbar must become visible
+    page.wait_for_selector("#doc-bulk-bar", state="visible", timeout=3000)
+    _save(page, "02-toolbar-visible")
+    _no_crash(page, "BULK-DOC-02")
+
+    # Dropdown must exist with a delete option
+    select = page.locator("#doc-bulk-select")
+    assert select.count() > 0, "No #doc-bulk-select dropdown"
+    delete_opt = select.locator("option[value='doc-delete']")
+    assert delete_opt.count() > 0, "No doc-delete option in dropdown"
+
+
+def test_bulk_delete_confirm_button_appears(page, ui_server, api):
+    """BULK-DOC-02b: Select delete action → Delete Selected confirm button appears."""
+    _create_draft(api, "invoice")
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+
+    page.locator("input.doc-row-select").first.click()
+    page.wait_for_selector("#doc-bulk-bar", state="visible", timeout=3000)
+
+    # Delete button hidden before action selected
+    del_btn = page.locator("#doc-bulk-delete-btn")
+    assert del_btn.is_hidden(), "Delete button should be hidden before action selected"
+
+    # Select delete action
+    page.locator("#doc-bulk-select").select_option("doc-delete")
+    page.wait_for_selector("#doc-bulk-delete-btn:not([style*='none'])", timeout=2000)
+    _save(page, "03-delete-button-visible")
+    _no_crash(page, "BULK-DOC-02b")
+    assert del_btn.is_visible(), "Delete button should appear after selecting delete action"
+
+
+def test_bulk_delete_removes_draft(page, ui_server, api):
+    """BULK-DOC-03: Full flow - select draft → choose delete → confirm → draft gone."""
+    # Create a draft specifically for deletion
+    doc_id = _create_draft(api, "invoice")
+
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+    _save(page, "04-before-delete")
+
+    # Find the checkbox for our specific draft
+    row_cb = page.locator(f"input.doc-row-select[value='{doc_id}']")
+    assert row_cb.count() > 0, f"No checkbox for doc {doc_id}"
+    row_cb.click()
+
+    page.wait_for_selector("#doc-bulk-bar", state="visible", timeout=3000)
+    page.locator("#doc-bulk-select").select_option("doc-delete")
+    page.wait_for_selector("#doc-bulk-delete-btn:not([style*='none'])", timeout=2000)
+
+    # Handle confirm dialog
+    page.once("dialog", lambda d: d.accept())
+    page.locator("#doc-bulk-delete-btn").click()
+
+    # Page reloads after delete
+    page.wait_for_load_state("networkidle", timeout=8000)
+    _save(page, "05-after-delete")
+    _no_crash(page, "BULK-DOC-03")
+
+    # Verify the doc is gone from API
+    r = api.get(f"/docs/{doc_id}")
+    assert r.status_code == 404, f"Doc should be deleted, got {r.status_code}"
+
+
+def test_select_all_then_delete(page, ui_server, api):
+    """BULK-DOC-03b: Select all → delete all → list reflects removal."""
+    # Seed two drafts
+    id1 = _create_draft(api, "invoice")
+    id2 = _create_draft(api, "invoice")
+
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+    initial_count = page.locator("input.doc-row-select").count()
+    assert initial_count >= 2, f"Expected at least 2 drafts, got {initial_count}"
+
+    # Select all
+    page.locator("#doc-select-all").click()
+    page.wait_for_selector("#doc-bulk-bar", state="visible", timeout=3000)
+
+    count_text = page.locator("#doc-bulk-count").inner_text()
+    assert str(initial_count) in count_text, f"Count text '{count_text}' should include {initial_count}"
+    _save(page, "06-select-all")
+
+    page.locator("#doc-bulk-select").select_option("doc-delete")
+    page.wait_for_selector("#doc-bulk-delete-btn:not([style*='none'])", timeout=2000)
+
+    page.once("dialog", lambda d: d.accept())
+    page.locator("#doc-bulk-delete-btn").click()
+
+    page.wait_for_load_state("networkidle", timeout=8000)
+    _save(page, "07-after-delete-all")
+    _no_crash(page, "BULK-DOC-03b")
+
+    # Both docs deleted
+    assert api.get(f"/docs/{id1}").status_code == 404
+    assert api.get(f"/docs/{id2}").status_code == 404
+
+
+def test_auto_redirect_drafts_when_no_finals(page, ui_server, api):
+    """BULK-DOC-05: Visiting /docs?type=invoice with no finals but with drafts auto-redirects to drafts view."""
+    # Ensure at least one draft exists
+    _create_draft(api, "invoice")
+
+    # Navigate to invoice list (no type=draft, no view=drafts)
+    page.goto(f"{ui_server}/docs?type=invoice", wait_until="networkidle")
+    _save(page, "08-auto-redirect-drafts")
+    _no_crash(page, "BULK-DOC-05")
+
+    # Should have been redirected to drafts view
+    assert "view=drafts" in page.url or "status=draft" in page.url, \
+        f"Expected redirect to drafts view, got: {page.url}"

@@ -262,20 +262,15 @@ async def test_restore_failure(auth_client, monkeypatch):
 # ── Router registration (regression: ImportError must not silence registration) ─
 
 def test_backup_routes_are_registered():
-    """Regression: /backup/* routes must be present on the app.
-
-    Previously a module-level try/except ImportError in main.py silently ate
-    the ModuleNotFoundError for celerp_backup (which is only importable after
-    the module loader patches sys.path during lifespan startup). This caused
-    all /backup/* requests to return 404 in production.
-    """
+    """Regression: /backup/* routes must be present on the app."""
     registered = {route.path for route in app.routes}
-    assert "/backup/trigger" in registered, "/backup/trigger not registered"
-    assert "/backup/list" in registered, "/backup/list not registered"
-    assert "/backup/restore/{backup_id}" in registered, "/backup/restore/{backup_id} not registered"
-    assert "/backup/export" in registered, "/backup/export not registered"
-    assert "/backup/export/{backup_id}" in registered, "/backup/export/{backup_id} not registered"
-    assert "/backup/import" in registered, "/backup/import not registered"
+    assert "/backup/trigger" in registered
+    assert "/backup/list" in registered
+    assert "/backup/restore/{backup_id}" in registered
+    assert "/backup/export" in registered
+    assert "/backup/export/{backup_id}" in registered
+    assert "/backup/import" in registered
+    assert "/backup/import-bootstrap" in registered
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -311,3 +306,44 @@ async def test_backup_status_enc_ok_false_when_no_key(auth_client, monkeypatch):
     r = await auth_client.get("/settings/backup-status")
     assert r.status_code == 200
     assert r.json()["enc_ok"] is False
+
+
+# ── POST /backup/import-bootstrap ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_import_bootstrap_blocked_when_users_exist(auth_client):
+    """import-bootstrap returns 403 when any user already exists (bootstrapped DB)."""
+    import io
+    import tarfile
+    import json as _json
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        meta = _json.dumps({
+            "celerp_version": "1.0.0", "pg_version": "16",
+            "created_at": "2026-01-01T00:00:00Z", "company_name": "Test",
+        }).encode()
+        info = tarfile.TarInfo("meta.json")
+        info.size = len(meta)
+        tar.addfile(info, io.BytesIO(meta))
+        dump = b"PGDMP dummy"
+        info2 = tarfile.TarInfo("database.dump")
+        info2.size = len(dump)
+        tar.addfile(info2, io.BytesIO(dump))
+    buf.seek(0)
+    r = await auth_client.post(
+        "/backup/import-bootstrap",
+        files={"file": ("test.celerp-backup", buf.read(), "application/octet-stream")},
+    )
+    assert r.status_code == 403
+    assert "already bootstrapped" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_import_bootstrap_rejects_bad_archive(auth_client):
+    """import-bootstrap with invalid bytes returns 400 or 403 (blocked or bad archive)."""
+    r = await auth_client.post(
+        "/backup/import-bootstrap",
+        files={"file": ("bad.celerp-backup", b"not a tar", "application/octet-stream")},
+    )
+    # 403 because DB is bootstrapped (users exist); proves route is registered and lockout works
+    assert r.status_code in (400, 403)

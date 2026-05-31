@@ -433,6 +433,114 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url, "get_default_price_list"))
 
 
+def _factory_reset_card() -> FT:
+    """Reset All Data card — lives inside the existing Danger Zone section."""
+    modal_id = "factory-reset-modal"
+    step1_id = "factory-reset-step1"
+    step2_id = "factory-reset-step2"
+    input_id = "factory-reset-confirm-input"
+    btn_id   = "factory-reset-confirm-btn"
+    close_js = f"document.getElementById('{modal_id}').close()"
+
+    to_step2_js = (
+        f"document.getElementById('{step1_id}').style.display='none';"
+        f"document.getElementById('{step2_id}').style.display='block';"
+        f"document.getElementById('{input_id}').focus();"
+    )
+    validate_js = (
+        f"document.getElementById('{btn_id}').disabled="
+        f"document.getElementById('{input_id}').value!=='RESET';"
+    )
+    success_js = (
+        f"document.getElementById('{modal_id}').addEventListener('htmx:afterRequest',function(e){{"
+        f"if(e.detail.xhr.status===200){{window.location.href='/setup';}}"
+        f"}},{{once:true}});"
+    )
+
+    return Div(
+        Div(id="reset-flash"),
+        P("Permanently delete all company data and return to the initial setup wizard. "
+          "Installed modules and server settings will be preserved.",
+          cls="settings-help-text"),
+        Button("Reset All Data",
+               type="button",
+               cls="btn btn--outline btn--danger",
+               onclick=f"document.getElementById('{modal_id}').showModal()"),
+        Dialog(
+            # Step 1: warning
+            Div(
+                Div(
+                    Div(
+                        Span("⚠", cls="reset-modal__icon"),
+                        H3("Reset all data?", cls="modal-dialog__title reset-modal__title--danger"),
+                        cls="reset-modal__title-row",
+                    ),
+                    Button("✕", type="button", cls="modal-dialog__close", aria_label="Close",
+                           onclick=close_js),
+                    cls="modal-dialog__header",
+                ),
+                Div(
+                    P("This will permanently delete all business data — contacts, items, "
+                      "transactions, documents, and all other records."),
+                    P(Strong("Your app settings and installed modules will be preserved. "
+                             "This cannot be undone.")),
+                    Div(
+                        A("Download backup first",
+                          href="/backup/export",
+                          cls="btn btn--sm btn--ghost",
+                          onclick=to_step2_js,
+                          download=True),
+                        Button("Skip — continue",
+                               type="button",
+                               cls="btn btn--sm btn--secondary",
+                               onclick=to_step2_js),
+                        cls="modal-dialog__actions",
+                    ),
+                    cls="reset-modal__body",
+                ),
+                id=step1_id,
+            ),
+            # Step 2: type-to-confirm
+            Div(
+                Div(
+                    H3("Confirm deletion", cls="modal-dialog__title reset-modal__title--danger"),
+                    Button("✕", type="button", cls="modal-dialog__close", aria_label="Close",
+                           onclick=close_js),
+                    cls="modal-dialog__header",
+                ),
+                Div(
+                    P("Type ", Strong("RESET"), " to confirm. This cannot be undone."),
+                    Input(type="text", id=input_id, placeholder="RESET",
+                          autocomplete="off", cls="form-input",
+                          oninput=validate_js),
+                    Div(
+                        Button("Delete everything",
+                               type="submit",
+                               id=btn_id,
+                               cls="btn btn--danger",
+                               disabled=True,
+                               hx_post="/settings/factory-reset",
+                               hx_target="#reset-flash",
+                               hx_swap="innerHTML",
+                               onclick=success_js),
+                        Button("Cancel",
+                               type="button",
+                               cls="btn btn--ghost",
+                               onclick=close_js),
+                        cls="modal-dialog__actions",
+                    ),
+                    cls="reset-modal__body",
+                ),
+                id=step2_id,
+                style="display:none",
+            ),
+            id=modal_id,
+            cls="modal-dialog",
+        ),
+        cls="settings-card settings-card--danger",
+    )
+
+
 def setup_routes(app):
 
     @app.get("/settings")
@@ -2257,6 +2365,33 @@ def setup_routes(app):
         locations = await _get_locations_list(token)
         return _company_addresses_section(locations)
 
+    @app.post("/settings/factory-reset")
+    async def factory_reset_ui(request: Request):
+        """Proxy factory-reset to the API. Owner only."""
+        import httpx
+        role = _get_role(request)
+        if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["owner"]:
+            return Div("Owner role required.", cls="flash flash--error")
+        from ui.config import API_BASE, COOKIE_NAME, REFRESH_COOKIE_NAME
+        token = _token(request)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        try:
+            async with httpx.AsyncClient(base_url=API_BASE, timeout=30.0) as c:
+                r = await c.post("/system/factory-reset", headers=headers)
+            if r.status_code != 200:
+                detail = r.json().get("detail", "Reset failed.") if r.headers.get("content-type", "").startswith("application/json") else "Reset failed."
+                return Div(detail, cls="flash flash--error")
+        except Exception as exc:
+            return Div(f"Error: {exc}", cls="flash flash--error")
+        from starlette.responses import Response as _Resp
+        from celerp.config import settings as _celerp_settings
+        _secure = getattr(_celerp_settings, "cookie_secure", False)
+        resp = _Resp(status_code=200, content='{"ok":true}', media_type="application/json")
+        resp.delete_cookie(COOKIE_NAME, httponly=True, samesite="lax", secure=_secure)
+        resp.delete_cookie(REFRESH_COOKIE_NAME, httponly=True, samesite="lax", secure=_secure)
+        resp.headers["HX-Redirect"] = "/setup"
+        return resp
+
     @app.delete("/settings/company/deactivate")
     async def deactivate_company_ui(request: Request):
         """Deactivate the current company and redirect to login. Owner only."""
@@ -3006,6 +3141,7 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en",
                     ),
                     cls="settings-card settings-card--danger",
                 ),
+                _factory_reset_card(),
                 *(
                     [
                         Div(

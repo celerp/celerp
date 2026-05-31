@@ -1007,12 +1007,25 @@ def _resolve_active_nav_key(active: str, all_items: list[dict], request=None) ->
 def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -> FT:
     """Build sidebar entirely from module nav slots + kernel entries."""
     from collections import defaultdict
+    from ui.config import get_enabled_modules
 
     user_level = ROLE_LEVELS.get(role, ROLE_LEVELS["owner"])
+    enabled_modules = get_enabled_modules(request) if request else set()
 
     def _allowed(item: dict) -> bool:
         min_role = item.get("min_role", "viewer")
         return user_level >= ROLE_LEVELS.get(min_role, 1)
+
+    def _module_enabled(item: dict) -> bool:
+        """Kernel entries (no _module key) always show. Module entries only show
+        if their module is in the company's enabled set, or if enabled set is empty
+        (old JWT without modules claim - show everything as safe fallback)."""
+        mod = item.get("_module")
+        if mod is None:
+            return True
+        if not enabled_modules:
+            return True
+        return mod in enabled_modules
 
     # Collect all nav items from loaded modules
     try:
@@ -1033,8 +1046,8 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
             seen_keys.add(k)
         all_items.append(item)
 
-    # Filter by role
-    all_items = [item for item in all_items if _allowed(item)]
+    # Filter by role and enabled modules
+    all_items = [item for item in all_items if _allowed(item) and _module_enabled(item)]
     active = _resolve_active_nav_key(active, all_items, request=request)
 
     # Separate top-level (group=None) from grouped items

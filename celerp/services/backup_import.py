@@ -65,14 +65,27 @@ def validate_archive(path: Path) -> ImportMeta:
     except Exception:
         current = "0.0.0"
 
-    backup_major = meta.celerp_version.split(".")[0] if meta.celerp_version != "unknown" else "0"
-    current_major = current.split(".")[0]
+    backup_ver = meta.celerp_version if meta.celerp_version != "unknown" else "0.0.0"
+    backup_parts = backup_ver.split(".")
+    current_parts = current.split(".")
 
-    if backup_major > current_major and backup_major != "unknown":
+    backup_major = backup_parts[0] if backup_parts else "0"
+    current_major = current_parts[0] if current_parts else "0"
+
+    if backup_major > current_major:
         raise ValueError(
             f"This backup is from a newer version ({meta.celerp_version}) "
             f"than the current installation ({current}). "
             "Update Celerp before importing."
+        )
+
+    backup_minor = int(backup_parts[1]) if len(backup_parts) > 1 else 0
+    current_minor = int(current_parts[1]) if len(current_parts) > 1 else 0
+    if backup_minor != current_minor:
+        log.warning(
+            "Backup version %s differs from current %s (minor version mismatch). "
+            "Schema migrations will run automatically after restore.",
+            meta.celerp_version, current,
         )
 
     return meta
@@ -104,10 +117,36 @@ async def run_import(path: Path):
                 return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
             dump_bytes = dump_file.read()
 
-            # Restore database
-            restore_database(dump_bytes, settings.database_url)
+        # Dispose connection pool BEFORE pg_restore so live connections don't
+        # hold locks that block pg_restore from dropping/recreating tables.
+        try:
+            from celerp.db import engine as _engine
+            await _engine.dispose()
+            log.info("Connection pool disposed before pg_restore")
+        except Exception as pool_exc:
+            log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
 
-            # Extract files (attachments, ai_uploads)
+        # Run pg_restore in a thread executor — it's a blocking subprocess call.
+        # Running it directly in an async function blocks the uvicorn event loop,
+        # which prevents the response from being sent back and causes HTTPX timeouts.
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, lambda: restore_database(dump_bytes, settings.database_url)
+        )
+
+        # Reconcile schema — run any missing migrations after pg_restore
+        try:
+            from alembic.config import Config as _AlembicConfig
+            from alembic import command as _alembic_cmd
+            _cfg = _AlembicConfig("alembic.ini")
+            await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
+            log.info("Alembic upgrade head completed after pg_restore")
+        except Exception as alembic_exc:
+            log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
+
+        # Extract files outside the tar context (already read dump above)
+        with tarfile.open(str(path), "r:gz") as tar:
             from celerp.config import settings as _settings
             _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/")
             for member in tar.getmembers():
@@ -131,6 +170,8 @@ async def run_import(path: Path):
         return BackupResult(ok=True, size_bytes=len(dump_bytes))
 
     except ValueError as exc:
+        log.error("Backup import validation error: %s", exc)
         return BackupResult(ok=False, size_bytes=0, error=str(exc))
     except Exception as exc:
-        return BackupResult(ok=False, size_bytes=0, error=str(exc))
+        log.exception("Backup import failed unexpectedly")
+        return BackupResult(ok=False, size_bytes=0, error=str(exc) or repr(exc))

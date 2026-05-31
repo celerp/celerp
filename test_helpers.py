@@ -29,13 +29,17 @@ def make_test_token(
     role: str = "owner",
     user_id: str = "00000000-0000-0000-0000-000000000001",
     company_id: str = "00000000-0000-0000-0000-000000000002",
+    modules: list[str] | None = None,
 ) -> str:
     """Create a minimal JWT cookie value with a decodable payload for UI role checks.
 
     NOT cryptographically signed - only used so that get_role() can decode
     the role claim from the base64 payload. Signature verification never runs in tests.
     """
-    payload = json.dumps({"sub": user_id, "company_id": company_id, "role": role, "exp": 9999999999})
+    payload_dict: dict = {"sub": user_id, "company_id": company_id, "role": role, "exp": 9999999999}
+    if modules is not None:
+        payload_dict["modules"] = modules
+    payload = json.dumps(payload_dict)
     payload_b64 = base64.urlsafe_b64encode(payload.encode()).rstrip(b"=").decode()
     return f"header.{payload_b64}.sig"
 
