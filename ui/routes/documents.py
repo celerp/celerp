@@ -546,6 +546,49 @@ def _doc_print_view(doc: dict) -> FT:
         totals_rows.append(Tr(Td("Tax", cls="label"), Td(_money(tax_total), cls="amount")))
     totals_rows.append(Tr(Td("Total", cls="label"), Td(_money(grand_total), cls="amount"), cls="grand"))
 
+    is_purchasing = doc_type in ("bill", "purchase_order", "consignment_in")
+
+    if is_purchasing:
+        # Vendor = the contact (supplier); Bill To = us (the company)
+        vendor_box = Div(
+            P("Vendor", cls="dp-party-label"),
+            P(contact_name, cls="dp-party-name") if contact_name else None,
+            Div(
+                P(contact_company) if contact_company and contact_company != contact_name else None,
+                P(contact_address) if contact_address else None,
+                P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
+                P(contact_email) if contact_email else None,
+                cls="dp-party-sub",
+            ),
+        ) if contact_name else None
+        bill_to_box = Div(
+            P("Bill To", cls="dp-party-label"),
+            P(company_name, cls="dp-party-name") if company_name else None,
+            Div(
+                P(company_address) if company_address else None,
+                P(f"Tax ID: {company_tax_id}") if company_tax_id else None,
+                P(company_email) if company_email else None,
+                cls="dp-party-sub",
+            ),
+        )
+        parties_section = Div(vendor_box, bill_to_box, cls="dp-parties")
+    else:
+        # Sales docs: Bill To = the contact (customer)
+        parties_section = Div(
+            Div(
+                P("Bill To", cls="dp-party-label"),
+                P(contact_name, cls="dp-party-name") if contact_name else None,
+                Div(
+                    P(contact_company) if contact_company and contact_company != contact_name else None,
+                    P(contact_address) if contact_address else None,
+                    P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
+                    P(contact_email) if contact_email else None,
+                    cls="dp-party-sub",
+                ),
+            ) if contact_name else None,
+            cls="dp-parties",
+        )
+
     return Html(
         Head(
             Meta(charset="utf-8"),
@@ -576,20 +619,7 @@ def _doc_print_view(doc: dict) -> FT:
                 ),
                 cls="dp-header",
             ),
-            Div(
-                Div(
-                    P("Bill To", cls="dp-party-label"),
-                    P(contact_name, cls="dp-party-name") if contact_name else None,
-                    Div(
-                        P(contact_company) if contact_company and contact_company != contact_name else None,
-                        P(contact_address) if contact_address else None,
-                        P(f"Tax ID: {contact_tax_id}") if contact_tax_id else None,
-                        P(contact_email) if contact_email else None,
-                        cls="dp-party-sub",
-                    ),
-                ) if contact_name else None,
-                cls="dp-parties",
-            ),
+            parties_section,
             Table(Thead(headers), Tbody(*rows), cls="dp-lines") if rows else P("No line items.", style="font-size:9pt;color:#888;margin-bottom:4mm;"),
             Div(Table(*totals_rows), cls="dp-totals"),
             Div(P("Notes", cls="dp-notes-label"), P(notes_text), cls="dp-notes") if notes_text else None,
