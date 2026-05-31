@@ -5603,7 +5603,6 @@ async function celerpCsvImport(input, entityId) {{
                 Td(format_value(li.get("description") or li.get("name"))),
             ]
             if _is_vendor_doc:
-                cells.append(Td(format_value(li.get("category") or None), cls="col-category"))
                 cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
             cells.extend([
                 Td(format_value(li.get("quantity"))),
@@ -5626,7 +5625,7 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th("Status", cls="col-item-status"))
         _thead_base += [Th(t("th.skuitem")), Th(t("th.description"))]
         if _is_vendor_doc:
-            _thead_base += [Th(t("th.category"), cls="col-category"), Th(t("th.type"), cls="col-type")]
+            _thead_base += [Th(t("th.type"), cls="col-type")]
         _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
         if doc_type in ("purchase_order", "bill"):
             _thead_base.append(Th(t("th.account"), cls="col-account"))

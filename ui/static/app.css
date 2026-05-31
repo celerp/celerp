@@ -508,7 +508,7 @@ a:hover { text-decoration: underline; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
 .doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 28px; min-width: 28px; max-width: 28px; padding-left: 0; padding-right: 0; text-align: center; overflow: visible; }
 .doc-lines th.col-sku,        .doc-lines td.col-sku        { width: 160px; min-width: 140px; max-width: 180px; }
-.doc-lines th.col-desc,       .doc-lines td.col-desc       { min-width: 140px; }
+.doc-lines th.col-desc,       .doc-lines td.col-desc       { min-width: 200px; }
 .doc-lines th.col-qty,        .doc-lines td.col-qty        { width: 60px;  min-width: 60px;  max-width: 70px; }
 .doc-lines th.col-unit,       .doc-lines td.col-unit       { width: 44px;  min-width: 44px;  max-width: 50px; }
 .doc-lines th.col-unit-price, .doc-lines td.col-unit-price { width: 100px; min-width: 90px;  max-width: 120px; }
