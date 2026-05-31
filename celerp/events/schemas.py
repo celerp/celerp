@@ -42,7 +42,6 @@ class ItemSnapshot(BaseModel):
     weight_unit: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
     entity_id: str | None = None
-    is_available: bool | None = None
     status: str | None = None
     reserved_quantity: float | None = None
     created_at: str | None = None   # ISO date or datetime from source system
@@ -93,6 +92,14 @@ class ItemSplit(BaseModel):
     child_ids: list[str]
     child_skus: list[str] = Field(default_factory=list)
     quantities: list[float]
+
+
+class ItemTransform(BaseModel):
+    child_id: str
+    child_sku: str
+    child_category: str
+    parent_cost_total: float
+    child_cost_total: float
 
 
 class ItemMerged(BaseModel):
@@ -766,6 +773,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
     "item.split": ItemSplit,
+    "item.transform": ItemTransform,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,
     "item.patched": ItemPatched,

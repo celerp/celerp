@@ -32,7 +32,7 @@ class TestPickAlgorithm:
             "quantity": qty,
             "created_at": created_at or "2026-01-01T00:00:00",
             "expires_at": expires_at,
-            "cost_price": cost_price,
+            "cost_total": cost_price * qty,  # cost_total is now the primitive
         }
 
     def test_fifo_single_item(self):
@@ -233,13 +233,11 @@ async def auth(session, _setup_ids):
     }
 
 
-async def _create_item(client, auth, sku, qty, cost_price=0, created_at=None, expires_at=None, sell_by="piece"):
+async def _create_item(client, auth, sku, qty, cost_price=0, expires_at=None, sell_by="piece"):
     """Helper: create inventory item via API."""
     data = {"sku": sku, "name": sku, "quantity": qty, "sell_by": sell_by}
     if cost_price:
-        data["cost_price"] = cost_price
-    if created_at:
-        data["created_at"] = created_at
+        data["cost_total"] = cost_price * qty  # cost_total is now the primitive
     if expires_at:
         data["expires_at"] = expires_at
     r = await client.post("/items", headers=auth["headers"], json=data)
@@ -286,9 +284,9 @@ async def test_fulfill_creates_events_and_updates_projections(client, session, a
         "entity_id": item_id,
         "sku": inv_row.state["sku"],
         "quantity": float(inv_row.state["quantity"]),
-        "created_at": inv_row.state.get("created_at", ""),
+        "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
         "expires_at": inv_row.state.get("expires_at"),
-        "cost_price": float(inv_row.state.get("cost_price", 0)),
+        "cost_total": float(inv_row.state.get("cost_total", 0)),
     }]
     pick_result = compute_pick_plan(doc_state.get("line_items", []), available_inv)
     result = await execute_fulfill(
@@ -323,7 +321,7 @@ async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
     available_inv = [{
         "entity_id": item_id, "sku": "RESTORE-A", "quantity": 10,
-        "created_at": "", "expires_at": None, "cost_price": 3.0,
+        "created_at": "", "expires_at": None, "cost_total": 30.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     await execute_fulfill(
@@ -354,7 +352,7 @@ async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _
     # Verify stock restored
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
     assert float(inv_row.state.get("quantity", 0)) == 10
-    assert inv_row.state.get("is_available") is True
+    assert inv_row.state.get("status") == "available"
 
     # Verify doc fulfillment cleared
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
@@ -376,7 +374,7 @@ async def test_void_does_not_change_fulfillment_status(client, session, auth, _s
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
     available_inv = [{
         "entity_id": item_id, "sku": "VOID-A", "quantity": 5,
-        "created_at": "", "expires_at": None, "cost_price": 10.0,
+        "created_at": "", "expires_at": None, "cost_total": 50.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     await execute_fulfill(
@@ -404,45 +402,51 @@ async def test_void_does_not_change_fulfillment_status(client, session, auth, _s
 
 
 @pytest.mark.asyncio
-async def test_revert_to_draft_does_not_change_fulfillment_status(client, session, auth, _setup_ids):
-    """Reverting a fulfilled doc to draft must NOT change its fulfillment_status (independent lifecycles)."""
-    from celerp.models.projections import Projection
-    from celerp.services.fulfill import execute_fulfill
-    from celerp.services.pick import compute_pick_plan
-
-    item_id = await _create_item(client, auth, "REVERT-A", 8, cost_price=4.0)
-    doc_id = await _create_and_finalize_invoice(client, auth, [
-        {"sku": "REVERT-A", "quantity": 8, "unit_price": 12.0},
+async def test_revert_to_draft_blocked_when_fulfilled_items_exist(client, session, auth, _setup_ids):
+    """Reverting a fulfilled doc to draft must be blocked while any line items are fulfilled."""
+    sku = f"REVERT-BLOCK-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=4.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 12.0, "entity_id": item_id},
     ])
 
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    available_inv = [{
-        "entity_id": item_id, "sku": "REVERT-A", "quantity": 8,
-        "created_at": "", "expires_at": None, "cost_price": 4.0,
-    }]
-    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
-    await execute_fulfill(
-        session, doc_entity_id=doc_id, doc_state=doc_row.state,
-        pick_result=pick_result, company_id=_setup_ids["company_id"],
-        user_id=str(_setup_ids["user_id"]),
-    )
-    await session.commit()
+    # Fulfill via API
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
 
-    # Revert to draft via API
+    # Revert to draft must be blocked while items are fulfilled
+    r = await client.post(f"/docs/{doc_id}/revert-to-draft", headers=auth["headers"], json={})
+    assert r.status_code == 409, r.text
+    assert "fulfilled" in r.text.lower()
+
+
+async def test_revert_to_draft_allowed_after_all_lines_reverted(client, session, auth, _setup_ids):
+    """Revert to draft must succeed once all fulfilled line items have been reverted."""
+    sku = f"REVERT-OK-{uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=4.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 12.0, "entity_id": item_id},
+    ])
+
+    # Fulfill via API
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+
+    # Revert fulfillment first
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+
+    # Now revert to draft must succeed
     r = await client.post(f"/docs/{doc_id}/revert-to-draft", headers=auth["headers"], json={})
     assert r.status_code == 200, r.text
 
-    # fulfillment_status must be preserved
-    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
-    assert doc_row.state.get("fulfillment_status") == "fulfilled", \
-        "Reverting to draft must NOT clear fulfillment_status"
-
-    # Stock must NOT be automatically restored
+    from celerp.models.projections import Projection
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
-    assert float(inv_row.state.get("quantity", 0)) > 0, \
-        "Revert-to-draft must not auto-restore stock; use Revert Fulfillment for that"
-    assert inv_row.state.get("status") == "sold", \
-        "Revert-to-draft must not change item status back to available"
+    assert inv_row.state.get("status") == "available"
+
 
 
 @pytest.mark.asyncio
@@ -460,7 +464,7 @@ async def test_unvoid_does_not_auto_refulfill(client, session, auth, _setup_ids)
     doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
     available_inv = [{
         "entity_id": item_id, "sku": "UNVOID-A", "quantity": 10,
-        "created_at": "", "expires_at": None, "cost_price": 2.0,
+        "created_at": "", "expires_at": None, "cost_total": 20.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     await execute_fulfill(
@@ -530,7 +534,7 @@ async def test_mixed_invoice_physical_and_service(client, session, auth, _setup_
     inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
     available_inv = [{
         "entity_id": item_id, "sku": "MIX-PHYS", "quantity": 5,
-        "created_at": "", "expires_at": None, "cost_price": 7.0,
+        "created_at": "", "expires_at": None, "cost_total": 35.0,
     }]
     pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
     result = await execute_fulfill(
@@ -567,7 +571,7 @@ class TestPickAllowSplitting:
     def test_no_split_when_allow_splitting_false(self):
         """Items with allow_splitting=False must not be split during picking; mark as unfulfilled if no full item available."""
         line_items = [{"sku": "NS-A", "quantity": 3}]
-        inventory = [{"entity_id": "e1", "sku": "NS-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 5.0, "allow_splitting": False}]
+        inventory = [{"entity_id": "e1", "sku": "NS-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 50.0, "allow_splitting": False}]
         result = compute_pick_plan(line_items, inventory)
         # The item has qty 10 > 3 needed; cannot split -> unfulfilled
         assert result.picks == []
@@ -577,7 +581,7 @@ class TestPickAllowSplitting:
     def test_full_pick_still_works_when_allow_splitting_false(self):
         """Full pick (no split needed) must still succeed when allow_splitting=False."""
         line_items = [{"sku": "NS-B", "quantity": 10}]
-        inventory = [{"entity_id": "e2", "sku": "NS-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 2.0, "allow_splitting": False}]
+        inventory = [{"entity_id": "e2", "sku": "NS-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 20.0, "allow_splitting": False}]
         result = compute_pick_plan(line_items, inventory)
         assert len(result.picks) == 1
         assert result.picks[0].action == "full"
@@ -586,7 +590,7 @@ class TestPickAllowSplitting:
     def test_split_when_allow_splitting_true(self):
         """Items with allow_splitting=True must be split as usual."""
         line_items = [{"sku": "SP-A", "quantity": 3}]
-        inventory = [{"entity_id": "e3", "sku": "SP-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 1.0, "allow_splitting": True}]
+        inventory = [{"entity_id": "e3", "sku": "SP-A", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 10.0, "allow_splitting": True}]
         result = compute_pick_plan(line_items, inventory)
         assert len(result.picks) == 1
         assert result.picks[0].action == "split"
@@ -595,7 +599,7 @@ class TestPickAllowSplitting:
     def test_split_when_allow_splitting_missing_defaults_to_allowed(self):
         """Items without allow_splitting key default to splittable (backward compat for existing data)."""
         line_items = [{"sku": "SP-B", "quantity": 3}]
-        inventory = [{"entity_id": "e4", "sku": "SP-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_price": 1.0}]
+        inventory = [{"entity_id": "e4", "sku": "SP-B", "quantity": 10, "created_at": "2026-01-01", "expires_at": None, "cost_total": 10.0}]
         result = compute_pick_plan(line_items, inventory)
         assert len(result.picks) == 1
         assert result.picks[0].action == "split"
@@ -621,91 +625,538 @@ async def _create_consignment_in(client, auth, line_items) -> str:
     return doc_id
 
 
+
+# ---------------------------------------------------------------------------
+# Helpers for memo tests
+# ---------------------------------------------------------------------------
+
+
+async def _create_memo(client, auth, line_items) -> str:
+    """Create a finalized memo document. line_items should include entity_id for linked items."""
+    total = sum(li.get("quantity", 0) * li.get("unit_price", 0) for li in line_items)
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "memo",
+        "ref_id": f"MEMO-{uuid.uuid4().hex[:6]}",
+        "line_items": line_items,
+        "total": total,
+    })
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    r2 = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
+    assert r2.status_code == 200, r2.text
+    return doc_id
+
+
+# ---------------------------------------------------------------------------
+# Update existing consignment_in tests to use /fulfill-lines
+# ---------------------------------------------------------------------------
+
+
+
+# ---------------------------------------------------------------------------
+# New tests: per-line fulfill/revert on memo
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.asyncio
-async def test_consignment_in_fulfill_does_not_deduct_inventory(client, session, auth, _setup_ids):
-    """Fulfilling a consignment_in must NOT decrease item quantities.
+async def test_fulfill_lines_marks_items_memo_out(client, session, auth, _setup_ids):
+    """fulfill-lines on a memo marks selected items memo_out and doc partially_fulfilled."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+    sku_c = f"MEMO-C-{uuid.uuid4().hex[:6]}"
 
-    Root-cause regression: the outbound item.fulfilled path set quantity=0 regardless
-    of doc type. consignment_in fulfillment is inbound - goods already arrived at
-    receive time. Fulfillment only closes the doc.
-    """
-    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
-    initial_qty = 10.0
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+    eid_c = await _create_item(client, auth, sku_c, 1, cost_price=300.0)
 
-    # Create inventory item (simulating goods received earlier)
-    item_id = await _create_item(client, auth, sku, initial_qty, cost_price=5.0)
-
-    # Create and finalize a consignment_in for the same SKU
-    doc_id = await _create_consignment_in(client, auth, [
-        {"sku": sku, "name": sku, "quantity": 10, "unit_price": 5.0},
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+        {"sku": sku_c, "name": sku_c, "quantity": 1, "unit_price": 300.0, "entity_id": eid_c},
     ])
 
-    # Fulfill the consignment_in
-    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a, eid_b]})
     assert r.status_code == 200, r.text
     result = r.json()
-    assert result["fulfillment_status"] == "fulfilled"
+    assert result["fulfillment_status"] == "partial"
+    assert set(result["fulfilled"]) == {eid_a, eid_b}
 
-    # Item quantity must be unchanged
-    r2 = await client.get(f"/items/{item_id}", headers=auth["headers"])
-    assert r2.status_code == 200, r2.text
-    item_state = r2.json()
-    assert float(item_state["quantity"]) == initial_qty, (
-        f"consignment_in fulfill must not deduct inventory: "
-        f"expected qty={initial_qty}, got {item_state['quantity']}"
-    )
+    # Items A and B are memo_out; C is still available
+    ra = await client.get(f"/items/{eid_a}", headers=auth["headers"])
+    assert ra.json()["status"] == "memo_out"
+    rb = await client.get(f"/items/{eid_b}", headers=auth["headers"])
+    assert rb.json()["status"] == "memo_out"
+    rc = await client.get(f"/items/{eid_c}", headers=auth["headers"])
+    assert rc.json()["status"] == "available"
 
-    # Doc must show fulfilled
-    r3 = await client.get(f"/docs/{doc_id}", headers=auth["headers"])
-    assert r3.json().get("fulfillment_status") == "fulfilled"
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") in ("partial", "partially_fulfilled")
 
 
 @pytest.mark.asyncio
-async def test_consignment_in_unfulfill_does_not_touch_inventory(client, session, auth, _setup_ids):
-    """Reversing fulfillment on a consignment_in must not alter item quantities."""
-    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
-    initial_qty = 8.0
+async def test_fulfill_lines_all_items_marks_doc_fulfilled(client, session, auth, _setup_ids):
+    """fulfill-lines on all items marks doc fulfilled."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
 
-    item_id = await _create_item(client, auth, sku, initial_qty, cost_price=3.0)
-    doc_id = await _create_consignment_in(client, auth, [
-        {"sku": sku, "name": sku, "quantity": 8, "unit_price": 3.0},
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=50.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=75.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 50.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 75.0, "entity_id": eid_b},
     ])
 
-    # Fulfill then unfulfill
-    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a, eid_b]})
     assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "fulfilled"
 
-    r2 = await client.post(f"/docs/{doc_id}/unfulfill", headers=auth["headers"])
-    assert r2.status_code == 200, r2.text
-
-    # Quantity still unchanged
-    r3 = await client.get(f"/items/{item_id}", headers=auth["headers"])
-    assert float(r3.json()["quantity"]) == initial_qty
-
-    # Doc fulfillment_status cleared
-    r4 = await client.get(f"/docs/{doc_id}", headers=auth["headers"])
-    assert r4.json().get("fulfillment_status") in (None, "", "unfulfilled", "partial")
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") == "fulfilled"
 
 
 @pytest.mark.asyncio
-async def test_consignment_in_fulfill_no_cogs_je(client, session, auth, _setup_ids):
-    """Fulfilling a consignment_in must produce no COGS journal entry (goods not owned)."""
-    sku = f"CONS-SKU-{uuid.uuid4().hex[:6]}"
-
-    await _create_item(client, auth, sku, 5, cost_price=10.0)
-    doc_id = await _create_consignment_in(client, auth, [
-        {"sku": sku, "name": sku, "quantity": 5, "unit_price": 10.0},
+async def test_fulfill_lines_rejects_already_memo_out(client, session, auth, _setup_ids):
+    """fulfill-lines rejects items that are already memo_out."""
+    sku = f"MEMO-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=50.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 50.0, "entity_id": eid},
     ])
 
-    # Record JE count before
+    # First fulfill
+    r1 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert r1.status_code == 200, r1.text
+
+    # Second fulfill on same item should 422
+    r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid]})
+    assert r2.status_code == 422, r2.text
+    body = r2.json()
+    assert "errors" in body or "detail" in body
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_no_cogs_je_on_memo(client, session, auth, _setup_ids):
+    """fulfill-lines on a memo must NOT create a COGS journal entry."""
+    sku = f"MEMO-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=500.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 500.0, "entity_id": eid},
+    ])
+
     r_before = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
     je_count_before = len(r_before.json().get("items", []))
 
-    await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid]})
+    assert r.status_code == 200, r.text
 
-    # JE count must not have increased (no COGS for consignment)
     r_after = await client.get("/ledger?entity_type=journal_entry", headers=auth["headers"])
     je_count_after = len(r_after.json().get("items", []))
     assert je_count_after == je_count_before, (
-        f"consignment_in fulfill must not create COGS JE: before={je_count_before}, after={je_count_after}"
+        f"memo fulfill-lines must not create COGS JE: before={je_count_before}, after={je_count_after}"
     )
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_marks_items_available(client, session, auth, _setup_ids):
+    """revert-lines restores memo_out items to available."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+    ])
+
+    # Fulfill both
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid_a, eid_b]})
+
+    # Revert only A
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "partial"
+
+    ra = await client.get(f"/items/{eid_a}", headers=auth["headers"])
+    assert ra.json()["status"] == "available"
+
+    rb = await client.get(f"/items/{eid_b}", headers=auth["headers"])
+    assert rb.json()["status"] == "memo_out"
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_rejects_available_item(client, session, auth, _setup_ids):
+    """revert-lines rejects items that are already available."""
+    sku = f"MEMO-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=50.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 50.0, "entity_id": eid},
+    ])
+
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid]})
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_all_items_clears_fulfillment(client, session, auth, _setup_ids):
+    """Reverting all fulfilled items sets doc fulfillment_status back to unfulfilled."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+    ])
+
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid_a, eid_b]})
+
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a, eid_b]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "unfulfilled"
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") in (None, "", "unfulfilled")
+
+
+@pytest.mark.asyncio
+async def test_memo_to_invoice_conversion_excludes_reverted_items(client, session, auth, _setup_ids):
+    """Memo→invoice conversion only carries memo_out items; reverted items are excluded."""
+    sku_a = f"MEMO-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-B-{uuid.uuid4().hex[:6]}"
+    sku_c = f"MEMO-C-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+    eid_c = await _create_item(client, auth, sku_c, 1, cost_price=300.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+        {"sku": sku_c, "name": sku_c, "quantity": 1, "unit_price": 300.0, "entity_id": eid_c},
+    ])
+
+    # Fulfill A and B; revert A → only B is memo_out
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid_a, eid_b]})
+    await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid_a]})
+
+    r = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    invoice_id = r.json()["target_doc_id"]
+
+    invoice = (await client.get(f"/docs/{invoice_id}", headers=auth["headers"])).json()
+    invoice_skus = [li.get("sku") for li in invoice.get("line_items", [])]
+    assert sku_b in invoice_skus, f"Expected {sku_b} in invoice; got {invoice_skus}"
+    assert sku_a not in invoice_skus, f"Reverted item {sku_a} must not be in invoice"
+    assert sku_c not in invoice_skus, f"Never-fulfilled item {sku_c} must not be in invoice"
+
+
+@pytest.mark.asyncio
+async def test_memo_to_invoice_fails_when_no_memo_out_items(client, session, auth, _setup_ids):
+    """Memo→invoice conversion 422s when no items are memo_out."""
+    sku = f"MEMO-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1, cost_price=100.0)
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 100.0, "entity_id": eid},
+    ])
+
+    # Don't fulfill - all items still available
+    r = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
+    assert r.status_code == 422, r.text
+    assert "memo_out" in r.text.lower() or "on memo" in r.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_old_fulfill_endpoint_removed(client, session, auth, _setup_ids):
+    """POST /docs/{id}/fulfill no longer exists."""
+    sku = f"TEST-{uuid.uuid4().hex[:6]}"
+    await _create_item(client, auth, sku, 1)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 10.0},
+    ])
+    r = await client.post(f"/docs/{doc_id}/fulfill", headers=auth["headers"])
+    assert r.status_code in (404, 405), f"Expected 404/405, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_old_unfulfill_endpoint_removed(client, session, auth, _setup_ids):
+    """POST /docs/{id}/unfulfill no longer exists."""
+    sku = f"TEST-{uuid.uuid4().hex[:6]}"
+    await _create_item(client, auth, sku, 1)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 10.0},
+    ])
+    r = await client.post(f"/docs/{doc_id}/unfulfill", headers=auth["headers"])
+    assert r.status_code in (404, 405), f"Expected 404/405, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_invoice_marks_items_sold(client, session, auth, _setup_ids):
+    """fulfill-lines on a finalized invoice marks items sold and doc partially/fully fulfilled."""
+    sku_a = f"INV-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"INV-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 100.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 200.0, "entity_id": eid_b},
+    ])
+
+    # Partial fulfill: one item
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a]})
+    assert r.status_code == 200, r.text
+    assert r.json()["fulfillment_status"] == "partial"
+
+    item_a = (await client.get(f"/items/{eid_a}", headers=auth["headers"])).json()
+    assert item_a["status"] == "sold", f"Expected sold, got {item_a['status']}"
+
+    # Full fulfill: remaining item
+    r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [eid_b]})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["fulfillment_status"] == "fulfilled"
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    assert doc.get("fulfillment_status") == "fulfilled"
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_rejects_empty_line_entity_ids(client, session, auth, _setup_ids):
+    """fulfill-lines with empty line_entity_ids must return 422 for non-inbound docs."""
+    sku = f"EMPTY-{uuid.uuid4().hex[:6]}"
+    await _create_item(client, auth, sku, 1)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 50.0},
+    ])
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": []})
+    assert r.status_code == 422, f"Expected 422 for empty line_entity_ids, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_rejects_empty_line_entity_ids(client, session, auth, _setup_ids):
+    """revert-lines with empty line_entity_ids must return 422 for non-inbound docs."""
+    sku = f"EMPTY-{uuid.uuid4().hex[:6]}"
+    eid = await _create_item(client, auth, sku, 1)
+    doc_id = await _create_and_finalize_invoice(client, auth, [
+        {"sku": sku, "name": sku, "quantity": 1, "unit_price": 50.0, "entity_id": eid},
+    ])
+    # First fulfill
+    await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                      json={"line_entity_ids": [eid]})
+    # Now revert with empty list
+    r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                          json={"line_entity_ids": []})
+    assert r.status_code == 422, f"Expected 422 for empty line_entity_ids, got {r.status_code}"
+
+
+@pytest.mark.asyncio
+async def test_invoice_finalize_promotes_memo_out_items_to_sold(client, session, auth, _setup_ids):
+    """Finalizing an invoice converts memo_out line items to sold.
+
+    Flow: create memo → fulfill items (→ memo_out) → convert to invoice → finalize invoice
+    → assert items are sold, not memo_out.
+    """
+    sku_a = f"MEMO-SELL-A-{uuid.uuid4().hex[:6]}"
+    sku_b = f"MEMO-SELL-B-{uuid.uuid4().hex[:6]}"
+
+    eid_a = await _create_item(client, auth, sku_a, 1, cost_price=100.0)
+    eid_b = await _create_item(client, auth, sku_b, 1, cost_price=200.0)
+
+    doc_id = await _create_memo(client, auth, [
+        {"sku": sku_a, "name": sku_a, "quantity": 1, "unit_price": 150.0, "entity_id": eid_a},
+        {"sku": sku_b, "name": sku_b, "quantity": 1, "unit_price": 250.0, "entity_id": eid_b},
+    ])
+
+    # Fulfill both items on the memo → they become memo_out
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [eid_a, eid_b]})
+    assert r.status_code == 200, r.text
+
+    item_a = (await client.get(f"/items/{eid_a}", headers=auth["headers"])).json()
+    item_b = (await client.get(f"/items/{eid_b}", headers=auth["headers"])).json()
+    assert item_a["status"] == "memo_out", f"Expected memo_out, got {item_a['status']}"
+    assert item_b["status"] == "memo_out", f"Expected memo_out, got {item_b['status']}"
+
+    # Convert memo to invoice
+    r = await client.post(f"/docs/{doc_id}/convert", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+    invoice_id = r.json()["target_doc_id"]
+
+    # Finalize the invoice → memo_out items must become sold
+    r = await client.post(f"/docs/{invoice_id}/finalize", headers=auth["headers"])
+    assert r.status_code == 200, r.text
+
+    item_a = (await client.get(f"/items/{eid_a}", headers=auth["headers"])).json()
+    item_b = (await client.get(f"/items/{eid_b}", headers=auth["headers"])).json()
+    assert item_a["status"] == "sold", f"Expected sold after invoice finalize, got {item_a['status']}"
+    assert item_b["status"] == "sold", f"Expected sold after invoice finalize, got {item_b['status']}"
+
+
+@pytest.mark.asyncio
+async def test_patch_doc_cannot_delete_fulfilled_line_item(client, session, auth, _setup_ids):
+    """Fix 3: PATCH doc with line_items.new that omits a fulfilled entity_id must be rejected.
+
+    Sets up the state via the service layer (bypassing Fix 1) to test the PATCH guard
+    independently: draft doc + item in sold state (simulates a forced/migrated state).
+    """
+    import uuid as _uuid
+    from celerp.events.engine import emit_event
+
+    sku = f"FIX3-GUARD-{_uuid.uuid4().hex[:6]}"
+    item_id = await _create_item(client, auth, sku, 1, cost_price=10.0)
+
+    # Create a draft doc with explicit entity_id on the line item
+    total = 1 * 20.0
+    r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "memo",
+        "ref_id": f"FIX3-{_uuid.uuid4().hex[:6]}",
+        "line_items": [{"sku": sku, "name": sku, "quantity": 1, "unit_price": 20.0, "entity_id": item_id}],
+        "total": total,
+    })
+    assert r.status_code == 200, r.text
+    doc_id = r.json()["id"]
+    # Doc is draft at this point
+
+    # Set item status to sold via service layer (bypassing HTTP guards)
+    await emit_event(
+        session,
+        company_id=_setup_ids["company_id"],
+        entity_id=item_id,
+        entity_type="item",
+        event_type="item.status.set",
+        data={"new_status": "sold"},
+        actor_id=_setup_ids["user_id"],
+        location_id=None,
+        source="test",
+        idempotency_key=str(_uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+
+    # Try to PATCH the draft doc to remove the fulfilled line item → must be rejected
+    doc_state = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    remaining_lines = [
+        li for li in doc_state.get("line_items", [])
+        if (li.get("entity_id") or li.get("item_id")) != item_id
+    ]
+    r = await client.patch(f"/docs/{doc_id}", headers=auth["headers"], json={
+        "fields_changed": {"line_items": {"new": remaining_lines}},
+    })
+    assert r.status_code == 409, r.text
+    assert "fulfilled" in r.text.lower()
+
+
+@pytest.mark.asyncio
+async def test_fulfill_re_fulfill_after_revert(client, auth, _setup_ids):
+    """Fulfill → revert-lines → re-fulfill must succeed (no idempotency key collision on COGS JE)."""
+    # Create invoice with one inventory item
+    item_r = await client.post("/items", headers=auth["headers"], json={
+        "sku": "REFULFILL-001", "name": "Re-fulfill test item", "quantity": 1,
+        "cost_price": 100.0, "unit_price": 200.0, "sell_by": "piece",
+    })
+    assert item_r.status_code == 200, item_r.text
+    item_id = item_r.json()["id"]
+
+    inv_r = await client.post("/docs", headers=auth["headers"], json={
+        "doc_type": "invoice", "currency": "USD",
+        "line_items": [{"sku": "REFULFILL-001", "quantity": 1, "unit_price": 200.0, "entity_id": item_id}],
+    })
+    assert inv_r.status_code == 200, inv_r.text
+    doc_id = inv_r.json()["id"]
+
+    # Finalize
+    fin_r = await client.post(f"/docs/{doc_id}/finalize", headers=auth["headers"])
+    assert fin_r.status_code == 200, fin_r.text
+
+    # First fulfill
+    r1 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id]})
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["fulfillment_status"] == "fulfilled"
+
+    item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item_state["status"] == "sold", f"Expected sold after first fulfill, got {item_state['status']}"
+
+    # Revert lines
+    rv_r = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                              json={"line_entity_ids": [item_id]})
+    assert rv_r.status_code == 200, rv_r.text
+
+    item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item_state["status"] == "available", f"Expected available after revert, got {item_state['status']}"
+
+    # Re-fulfill — must succeed without idempotency key collision
+    r2 = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id]})
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["fulfillment_status"] == "fulfilled"
+
+    item_state = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item_state["status"] == "sold", f"Expected sold after re-fulfill, got {item_state['status']}"
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_deduplicates_duplicate_ids(client, auth, _setup_ids):
+    """Submitting the same entity_id twice in one fulfill-lines call must only fulfill it once.
+
+    Regression: strip_empty did not de-duplicate, so a duplicate ID would emit
+    item.fulfilled twice for the same item, corrupting quantity_fulfilled and COGS.
+    """
+    item_id = await _create_item(client, auth, "DEDUP-FL-001", 5, cost_price=10)
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "DEDUP-FL-001", "entity_id": item_id, "quantity": 5, "unit_price": 20}],
+    )
+
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id, item_id, item_id]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # Must appear exactly once in the fulfilled list despite 3 submissions
+    assert body["fulfilled"].count(item_id) == 1, f"Expected 1 occurrence, got: {body['fulfilled']}"
+    assert body["fulfillment_status"] == "fulfilled"
+
+    item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item["status"] == "sold"
+
+
+@pytest.mark.asyncio
+async def test_revert_lines_deduplicates_duplicate_ids(client, auth, _setup_ids):
+    """Submitting the same entity_id twice in one revert-lines call must only revert it once."""
+    item_id = await _create_item(client, auth, "DEDUP-RL-001", 5, cost_price=10)
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "DEDUP-RL-001", "entity_id": item_id, "quantity": 5, "unit_price": 20}],
+    )
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+
+    rv = await client.post(f"/docs/{doc_id}/revert-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id, item_id]})
+    assert rv.status_code == 200, rv.text
+    body = rv.json()
+    assert body["reverted"].count(item_id) == 1, f"Expected 1 occurrence, got: {body['reverted']}"
+
+    item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item["status"] == "available"

@@ -5,12 +5,12 @@ from __future__ import annotations
 
 import pytest
 
-from celerp_inventory.projections import apply_item_event
+from celerp_inventory.projections import apply_item_event, is_item_available
 
 
 def test_item_all_events() -> None:
     state = apply_item_event({}, "item.created", {"sku": "S", "name": "A", "quantity": 1})
-    assert state["is_available"] is True
+    assert is_item_available(state)
 
     state = apply_item_event(state, "item.updated", {"fields_changed": {"name": {"old": "A", "new": "B"}}})
     assert state["name"] == "B"
@@ -18,8 +18,8 @@ def test_item_all_events() -> None:
     state = apply_item_event(state, "item.pricing.set", {"price_type": "price", "new_price": 10})
     assert state["price"] == 10
 
-    state = apply_item_event(state, "item.status.set", {"new_status": "active"})
-    assert state["status"] == "active"
+    state = apply_item_event(state, "item.status.set", {"new_status": "available"})
+    assert state["status"] == "available"
 
     state = apply_item_event(state, "item.transferred", {"to_location_id": "loc:1"})
     assert state["location_id"] == "loc:1"
@@ -41,7 +41,7 @@ def test_item_all_events() -> None:
 
     state2 = apply_item_event(state, "item.split", {"child_ids": ["x", "y"], "child_skus": ["SKU-A", "SKU-B"], "quantities": [1.0, 1.0]})
     # Parent stays available after split (qty reduced via item.quantity.adjusted)
-    assert state2.get("is_available") is not False
+    assert is_item_available(state2)
     assert state2["children"] == ["x", "y"]
 
     state3 = apply_item_event(state, "item.merged", {"source_entity_ids": ["a"]})
@@ -49,7 +49,7 @@ def test_item_all_events() -> None:
     assert state3["quantity"] == 6
 
     state4 = apply_item_event(state, "item.expired", {})
-    assert state4["is_available"] is False and state4["is_expired"] is True
+    assert not is_item_available(state4) and state4["is_expired"] is True
 
     state5 = apply_item_event(state, "item.status.set", {"new_status": "archived"})
     assert state5["status"] == "archived"
@@ -57,7 +57,7 @@ def test_item_all_events() -> None:
 
 def test_item_snapshot_is_like_create() -> None:
     state = apply_item_event({}, "item.snapshot", {"sku": "S", "name": "A", "quantity": 1})
-    assert state["is_available"] is True
+    assert is_item_available(state)
 
 
 def test_item_unknown_raises() -> None:
@@ -117,9 +117,9 @@ def test_merged_is_noop_marker() -> None:
 
 
 def test_source_deactivated_preserves_original_qty_and_marks_unavailable() -> None:
-    state = {"sku": "RICE-001", "quantity": 300, "is_available": True}
+    state = {"sku": "RICE-001", "quantity": 300, "status": "available"}
     result = apply_item_event(state, "item.source_deactivated", {"merged_into": "item:target-1", "original_qty": 300.0})
-    assert result["is_available"] is False
+    assert not is_item_available(result)
     assert result["quantity"] == 300.0
     assert result["status"] == "merged"
     assert result["merged_into"] == "item:target-1"
@@ -127,10 +127,10 @@ def test_source_deactivated_preserves_original_qty_and_marks_unavailable() -> No
 
 def test_source_deactivated_falls_back_to_current_qty_when_no_original_qty() -> None:
     """If original_qty is absent (old events), current quantity is preserved."""
-    state = {"sku": "RICE-002", "quantity": 50.0, "is_available": True}
+    state = {"sku": "RICE-002", "quantity": 50.0, "status": "available"}
     result = apply_item_event(state, "item.source_deactivated", {"merged_into": "item:target-2"})
     assert result["quantity"] == 50.0
-    assert result["is_available"] is False
+    assert not is_item_available(result)
 
 
 
@@ -191,12 +191,12 @@ def test_item_updated_can_disable_allow_splitting() -> None:
 
 
 def test_split_does_not_mark_unavailable():
-    """item.split event should NOT set is_available to False."""
+    """item.split event should NOT make parent unavailable."""
     state = apply_item_event(
-        {"sku": "SP-1", "quantity": 10, "is_available": True},
+        {"sku": "SP-1", "quantity": 10, "status": "available"},
         "item.split",
         {"child_ids": ["item:c1", "item:c2"], "child_skus": ["C1", "C2"], "quantities": [3.0, 3.0]},
     )
-    assert state["is_available"] is True
+    assert is_item_available(state)
     assert state["children"] == ["item:c1", "item:c2"]
     assert state["child_skus"] == ["C1", "C2"]

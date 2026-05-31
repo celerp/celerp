@@ -76,7 +76,8 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         if data.get("sent_to"):
             current["sent_to"] = data["sent_to"]
     elif event_type == "doc.finalized":
-        current["status"] = "final"
+        # Bills with only non-stock items skip receiving and go straight to awaiting_payment.
+        current["status"] = "awaiting_payment" if data.get("skip_receiving") else "final"
         # Invoice finalize assigns real ref_id (INV-...) and preserves proforma ref
         if data.get("ref_id"):
             current["ref_id"] = data["ref_id"]
@@ -111,6 +112,16 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         # Track how many times this doc has been reverted so re-finalization
         # uses a distinct JE id and idempotency key each cycle.
         current["revert_count"] = int(current.get("revert_count", 0)) + 1
+        # Inbound docs: clear receive and fulfillment state on revert so the bill can be received again.
+        if current.get("doc_type") in ("bill", "consignment_in"):
+            current.pop("fulfilled_items", None)
+            current.pop("fulfillment_status", None)
+            current.pop("received_items", None)
+            current.pop("received_item_ids", None)
+            # Clear entity_id from line items so they appear as "Not Received" again.
+            for li in current.get("line_items", []):
+                li.pop("entity_id", None)
+                li.pop("quantity_received", None)
         # Fulfillment state is independent of doc status - do not clear it here.
         # Use the /unfulfill endpoint to explicitly revert fulfillment.
     elif event_type == "doc.unvoided":
@@ -185,7 +196,35 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("received_item_ids", [])
         current["received_item_ids"].extend(data.get("created_item_ids", []))
 
+        # Write entity_id back onto each line item so per-line fulfillment UI can key off it.
+        # For inbound docs (bill, consignment_in), item_id in the payload is the catalog template -
+        # the actual new parcel id is always in created_item_ids. Always consume from created_item_ids.
+        # For outbound docs (purchase_order), item_id IS the entity that was adjusted.
         line_items = current.get("line_items", [])
+        created_ids = list(data.get("created_item_ids", []))
+        created_id_iter = iter(created_ids)
+        _is_inbound_doc = current.get("doc_type") in ("bill", "consignment_in")
+        for recv in received:
+            if _is_inbound_doc:
+                # Always consume from created_item_ids for inbound docs
+                assigned_id = next(created_id_iter, None) if (recv.get("receive_as", "stock") or "stock") == "stock" else None
+            else:
+                assigned_id = recv.get("item_id")
+                if not assigned_id:
+                    if (recv.get("receive_as", "stock") or "stock") == "stock":
+                        assigned_id = next(created_id_iter, None)
+            if not assigned_id:
+                continue
+            idx = int(recv.get("po_line_index", -1))
+            if 0 <= idx < len(line_items):
+                line_items[idx].setdefault("entity_id", assigned_id)
+            else:
+                sku = (recv.get("sku") or "").strip()
+                if sku:
+                    for li in line_items:
+                        if str(li.get("sku") or "").strip() == sku and not li.get("entity_id"):
+                            li["entity_id"] = assigned_id
+                            break
         all_received = True
         any_received = False
         for idx, line in enumerate(line_items):
@@ -230,6 +269,9 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["received_items"] = []
         current["received_item_ids"] = []
         current["status"] = "final"
+        # Clear entity_id from line items so per-line status column resets to "Not Received".
+        for li in current.get("line_items", []):
+            li.pop("entity_id", None)
     elif event_type == "doc.shared_import":
         # Inbound doc received via p2p share / bundle upload.
         # Carries the sender's full doc state; status forced to "received".
@@ -306,6 +348,7 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
         current["fulfilled_at"] = data.get("fulfilled_at") or ""
         current["fulfilled_by"] = data["fulfilled_by"]
     elif event_type == "doc.fulfillment_reversed":
+        current["fulfill_cycle"] = int(current.get("fulfill_cycle", 0)) + 1
         current.pop("fulfillment_status", None)
         current.pop("fulfilled_items", None)
         current.pop("fulfilled_at", None)

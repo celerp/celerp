@@ -339,21 +339,24 @@ class TestVirtualCostTotalColumn:
 
     def test_render_virtual_total_cell(self):
         """_render_virtual_total_cell computes unit_price * qty and formats with currency."""
+        from fasthtml.common import to_xml
         from ui.routes.inventory import _render_virtual_total_cell
         td = _render_virtual_total_cell("item:1", "cost_price_total", 100.0, 5.0, "THB")
-        html = str(td)
+        html = to_xml(td)
         assert "500" in html  # 100 * 5
 
     def test_render_virtual_total_cell_zero_qty(self):
         """Zero quantity results in '--' display."""
+        from fasthtml.common import to_xml
         from ui.routes.inventory import _render_virtual_total_cell
         td = _render_virtual_total_cell("item:1", "cost_price_total", 100.0, 0.0, "THB")
-        html = str(td)
+        html = to_xml(td)
         assert "--" in html
 
     def test_render_virtual_total_cell_zero_price(self):
         """Zero unit price results in '--' display."""
+        from fasthtml.common import to_xml
         from ui.routes.inventory import _render_virtual_total_cell
         td = _render_virtual_total_cell("item:1", "cost_price_total", 0.0, 10.0, "THB")
-        html = str(td)
+        html = to_xml(td)
         assert "--" in html

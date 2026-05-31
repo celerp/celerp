@@ -133,22 +133,26 @@ def test_dump_database_timeout(monkeypatch):
 # ── relay_http_url ────────────────────────────────────────────────────────────
 
 def test_relay_base_url_from_gateway_url():
-    orig = settings.gateway_http_url
-    settings.gateway_http_url = ""
-    settings.gateway_url = "wss://relay.celerp.com/ws/connect"
+    import celerp.config as _cfg
+    orig_http = _cfg.settings.gateway_http_url
+    orig_ws = _cfg.settings.gateway_url
+    _cfg.settings.gateway_http_url = ""
+    _cfg.settings.gateway_url = "wss://relay.celerp.com/ws/connect"
     try:
         assert relay_http_url() == "https://relay.celerp.com"
     finally:
-        settings.gateway_http_url = orig
+        _cfg.settings.gateway_http_url = orig_http
+        _cfg.settings.gateway_url = orig_ws
 
 
 def test_relay_base_url_from_http_url():
-    orig = settings.gateway_http_url
-    settings.gateway_http_url = "https://custom-relay.example.com"
+    import celerp.config as _cfg
+    orig = _cfg.settings.gateway_http_url
+    _cfg.settings.gateway_http_url = "https://custom-relay.example.com"
     try:
         assert relay_http_url() == "https://custom-relay.example.com"
     finally:
-        settings.gateway_http_url = orig
+        _cfg.settings.gateway_http_url = orig
 
 
 # ── upload_to_relay ───────────────────────────────────────────────────────────
@@ -156,8 +160,8 @@ def test_relay_base_url_from_http_url():
 @pytest.mark.asyncio
 @respx.mock
 async def test_upload_to_relay_success(monkeypatch):
-    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     import celerp.gateway.state as gs
     gs.set_session_token("test-token")
 
@@ -172,8 +176,8 @@ async def test_upload_to_relay_success(monkeypatch):
 @pytest.mark.asyncio
 @respx.mock
 async def test_upload_to_relay_failure(monkeypatch):
-    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     import celerp.gateway.state as gs
     gs.set_session_token("test-token")
 
@@ -235,8 +239,8 @@ async def test_run_backup_no_key():
 async def test_run_backup_happy_path(monkeypatch):
     _, b64 = _make_key()
     settings.backup_encryption_key = b64
-    monkeypatch.setattr(settings, "gateway_http_url", "https://relay.test.com")
-    monkeypatch.setattr(settings, "gateway_instance_id", "test-instance")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_http_url", "https://relay.test.com")
+    monkeypatch.setattr(__import__("celerp.config", fromlist=["settings"]).settings, "gateway_instance_id", "test-instance")
     import celerp.gateway.state as gs
     gs.set_session_token("test-token")
 

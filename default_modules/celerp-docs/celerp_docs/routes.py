@@ -11,7 +11,7 @@ from datetime import UTC, datetime, date as _date
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import select, func as _func
 import sqlalchemy as _sa
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +31,7 @@ from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import PickResult, compute_pick_plan
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, UNFULFILLABLE_STATUSES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -171,6 +171,16 @@ class BatchImportResult(BaseModel):
 class DocBatchImportRequest(BaseModel):
     records: list[DocImportRecord]
     upsert: bool = False
+
+
+class FulfillLinesRequest(BaseModel):
+    line_entity_ids: list[str]
+
+    @field_validator("line_entity_ids")
+    @classmethod
+    def strip_empty(cls, v: list[str]) -> list[str]:
+        """Drop empty strings and de-duplicate — JS bulk selects may include value="" rows."""
+        return list(dict.fromkeys(eid for eid in v if eid))
 
 
 def _assert_date_order(patch: dict, current: dict | None = None) -> None:
@@ -357,7 +367,7 @@ async def list_docs(
         list_q = list_q.limit(limit)
 
     rows = (await session.execute(list_q)).scalars().all()
-    out = [r.state | {"id": r.entity_id} for r in rows]
+    out = [r.state | {"id": r.entity_id, "_updated_at": r.updated_at.isoformat() if r.updated_at else None} for r in rows]
     return {"items": out, "total": total}
 
 
@@ -685,6 +695,16 @@ async def create_doc(
 
 @router.patch("/{entity_id}")
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
+    _FINALIZED_EDITABLE_FIELDS = {
+        "description", "customer_note", "internal_note",
+        "shipping_attn", "contact_shipping_address", "ref_id",
+        "line_items",  # partial: only description/account_code per line
+        # Contact snapshot fields - stored on doc, no JE impact
+        "contact_id", "contact_name", "contact_company_name", "contact_billing_address",
+        "contact_phone", "contact_email", "contact_tax_id", "payment_terms",
+    }
+    _LI_FINALIZED_EDITABLE = {"description", "account_code"}
     _PROTECTED_FIELDS = {"status", "entity_type", "company_id"}
     protected_attempted = _PROTECTED_FIELDS & set(payload.fields_changed)
     if protected_attempted:
@@ -695,11 +715,29 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     row = await _get_doc(session, company_id, entity_id)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
-        status_label = (row.state.get("status") or "finalized").replace("_", " ").title()
-        raise HTTPException(
-            status_code=409,
-            detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
-        )
+        locked_fields = set(payload.fields_changed) - _FINALIZED_EDITABLE_FIELDS
+        if locked_fields:
+            status_label = (row.state.get("status") or "finalized").replace("_", " ").title()
+            raise HTTPException(
+                status_code=409,
+                detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
+            )
+        # Guard: line_items patch on finalized doc may only touch _LI_FINALIZED_EDITABLE fields
+        if "line_items" in payload.fields_changed:
+            incoming_lis = (payload.fields_changed["line_items"].get("new") or [])
+            existing_lis = row.state.get("line_items") or []
+            existing_by_idx = {i: li for i, li in enumerate(existing_lis)}
+            for i, incoming in enumerate(incoming_lis):
+                original = existing_by_idx.get(i, {})
+                for k, v in incoming.items():
+                    if k in _LI_FINALIZED_EDITABLE:
+                        continue
+                    orig_v = original.get(k)
+                    if v != orig_v:
+                        raise HTTPException(
+                            status_code=409,
+                            detail=f"Field '{k}' in line item {i} cannot be changed on a finalized document.",
+                        )
     # Uniqueness check when ref_id is being changed
     new_ref = (payload.fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
@@ -710,7 +748,7 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
 
     # Validate patched line items when present
     new_line_items = (payload.fields_changed.get("line_items") or {}).get("new")
-    if new_line_items and isinstance(new_line_items, list):
+    if new_line_items is not None and isinstance(new_line_items, list):
         unit_map = await _get_unit_map(session, company_id)
         sell_by_map = await _get_item_sell_by_map(session, company_id)
         for li in new_line_items:
@@ -722,6 +760,26 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
                 unit_map,
                 label=li.get("name") or sku or "Line item",
             )
+
+        # Fix 3: guard against deleting fulfilled line items via the patch endpoint.
+        # Compare the current doc's entity_ids against the incoming list; any entity_id
+        # that disappears must not be in a fulfilled state.
+        existing_eids = {
+            li.get("entity_id") or li.get("item_id") or ""
+            for li in (row.state.get("line_items") or [])
+        } - {""}
+        incoming_eids = {
+            li.get("entity_id") or li.get("item_id") or ""
+            for li in new_line_items
+        } - {""}
+        removed_eids = existing_eids - incoming_eids
+        for eid in removed_eids:
+            item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+            if item_proj and item_proj.state.get("status") in FULFILLED_ITEM_STATUSES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot delete fulfilled line item {eid!r}. Revert fulfillment first.",
+                )
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
@@ -834,6 +892,13 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
         event_type = "doc.converted_to_bill"
         await session.flush()
 
+    # Bills with only non-stock line items skip receiving and go straight to awaiting_payment.
+    if doc_type == "bill":
+        _line_items = _initial_doc_state.get("line_items") or []
+        _has_stock = any((li.get("receive_as") or "stock") == "stock" for li in _line_items)
+        if not _has_stock:
+            finalize_data["skip_receiving"] = True
+
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type=event_type,
         data=finalize_data,
@@ -842,10 +907,28 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
     # Auto-JE on finalize (invoices, direct bills, or convert to bill (POs))
     if doc_type == "invoice":
         await auto_je.create_for_doc_finalized(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
+        # Promote memo_out items to sold: memo→invoice conversion leaves items in memo_out.
+        # Finalizing the invoice is the point at which the sale is confirmed.
+        _cid = uuid.UUID(str(company_id))
+        for _li in _initial_doc_state.get("line_items", []):
+            _eid = _li.get("entity_id") or _li.get("item_id") or ""
+            if not _eid:
+                continue
+            _iproj = await session.get(Projection, {"company_id": company_id, "entity_id": _eid})
+            if _iproj and _iproj.state.get("status") == "memo_out":
+                await emit_event(
+                    session, company_id=_cid, entity_id=_eid, entity_type="item",
+                    event_type="item.status.set",
+                    data={"new_status": "sold", "source_doc_id": entity_id},
+                    actor_id=_user_id, location_id=None, source="invoice_finalize",
+                    idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
+                )
     elif doc_type in ("purchase_order", "bill"):
         # Bill conversion JE: debit expense/inventory accounts, credit AP (2110)
         # Covers both PO->bill conversion and directly-created bills finalized directly.
-        await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency)
+        # Pass revert_count so cycle-aware idempotency keys are used on re-finalize.
+        _revert_count = int(_initial_doc_state.get("revert_count", 0))
+        await auto_je.create_for_bill_conversion(session, company_id=company_id, user_id=_user_id, doc_id=entity_id, doc=_initial_doc_state, base_currency=_base_currency, revert_count=_revert_count)
     # Fire doc_finalize_hook for modules (e.g. warehousing) to react — before commit.
     await fire_lifecycle(
         "doc_finalize_hook",
@@ -883,13 +966,35 @@ async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     previous_status = state.get("status")
-    _REVERTABLE = {"final", "sent", "awaiting_payment"}
+    # Inbound docs (bill, consignment_in) can also revert from received/fulfilled statuses.
+    _doc_type = state.get("doc_type", "")
+    _is_inbound = _doc_type in INBOUND_DOC_TYPES
+    _REVERTABLE = (
+        {"final", "sent", "awaiting_payment", "received", "partially_received", "fulfilled"}
+        if _is_inbound
+        else {"final", "sent", "awaiting_payment"}
+    )
     if previous_status not in _REVERTABLE:
         raise HTTPException(status_code=409, detail="Can only revert documents in 'final', 'sent', or 'awaiting_payment' status")
     if float(state.get("amount_paid", 0) or 0) != 0:
         raise HTTPException(status_code=409, detail="Cannot revert document with existing payments")
     if state.get("received_items"):
-        raise HTTPException(status_code=409, detail="Cannot revert document with received items")
+        raise HTTPException(status_code=409, detail="Cannot revert document with received items - return goods first")
+
+    # Fix 1: block revert when any line item has been fulfilled.
+    # Fulfilled items are tracked in state["fulfilled_items"]; each entry with a non-null item_id
+    # corresponds to an inventory item that is now in a terminal fulfilled state.
+    # The user must revert fulfillment line-by-line first, then revert the document.
+    fulfilled_items = [
+        fi for fi in (state.get("fulfilled_items") or [])
+        if fi.get("item_id") is not None
+    ]
+    if fulfilled_items:
+        raise HTTPException(
+            status_code=409,
+            detail="Cannot revert to draft: line items have been fulfilled. "
+                   "Revert fulfillment on each fulfilled line first, then revert the document.",
+        )
 
     event_data: dict = {"reverted_by": str(user.id), "previous_status": previous_status}
     if payload.reason:
@@ -1016,6 +1121,31 @@ async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = D
 
     await session.commit()
     return {"event_id": entry.id}
+
+
+@router.delete("/bulk-draft")
+async def bulk_delete_drafts(
+    doc_ids: str,
+    company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_manager),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Delete multiple draft documents in one request. Non-draft docs are skipped (not an error)."""
+    ids = [x.strip() for x in doc_ids.split(",") if x.strip()]
+    if not ids:
+        raise HTTPException(status_code=422, detail="No document IDs specified")
+    from celerp.models.ledger import LedgerEntry
+    import sqlalchemy as _sa
+    deleted = []
+    for eid in ids:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": eid})
+        if row is None or row.state.get("status") != "draft":
+            continue
+        await session.execute(_sa.delete(Projection).where(Projection.company_id == company_id, Projection.entity_id == eid))
+        await session.execute(_sa.delete(LedgerEntry).where(LedgerEntry.company_id == company_id, LedgerEntry.entity_id == eid))
+        deleted.append(eid)
+    await session.commit()
+    return {"deleted": deleted, "count": len(deleted)}
 
 
 @router.delete("/{entity_id}")
@@ -1520,6 +1650,10 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         location_uuid = None
 
     is_consignment = doc_type == "consignment_in"
+    # Inbound docs always create new parcels - never adjust an existing item's qty.
+    # bill and consignment_in are both inbound: goods arrive and become new catalog entries.
+    # purchase_order is outbound-style: it adjusts qty on the canonical item record.
+    is_inbound = doc_type in ("bill", "consignment_in")
     created_item_ids: list[str] = []
 
     # Build sell_by lookup: item projections are authoritative; doc line items as fallback
@@ -1559,7 +1693,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
 
     for it in payload.received_items:
-        if it.item_id:
+        if it.item_id and not is_inbound:
+            # PO (outbound-style): adjust quantity on the canonical catalog item.
             item = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
             if item is None:
                 raise HTTPException(status_code=404, detail=f"Item not found: {it.item_id}")
@@ -1568,28 +1703,39 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             new_qty = float(item.state.get("quantity", 0) or 0) + stock_qty_received
             await emit_event(
                 session, company_id=company_id, entity_id=it.item_id, entity_type="item", event_type="item.quantity.adjusted",
-                data={"new_qty": new_qty, **({"consignment_flag": "in"} if is_consignment else {})},
+                data={"new_qty": new_qty},
                 actor_id=user.id, location_id=None, source="api",
                 idempotency_key=str(uuid.uuid4()), metadata_={"source_doc": entity_id},
             )
         else:
+            # Inbound doc (bill, consignment_in): always create a new parcel.
+            # If item_id is set it refers to a catalog template - use it for attribute inheritance only.
             if it.receive_as != "stock":
                 continue
-            if not it.sku or not it.name:
-                raise HTTPException(status_code=422, detail="sku and name required when creating received item")
+            if not it.name:
+                raise HTTPException(status_code=422, detail="name is required when creating received item")
+            # Auto-generate SKU from name if not provided (e.g. custom ad-hoc items)
+            _sku = it.sku or it.name.strip().upper().replace(" ", "-")[:40]
 
-            # Copy attributes from an existing item with same SKU (best-effort enrichment)
-            # Reuse all_item_rows already fetched above - no extra DB query needed
-            sku_ref: dict = next(
-                (r.state for r in all_item_rows
-                 if str(r.state.get("sku") or "").strip() == it.sku.strip()),
-                {},
-            )
+            # Template: prefer existing item by item_id, fall back to SKU match.
+            template_state: dict = {}
+            if it.item_id:
+                tmpl_row = await session.get(Projection, {"company_id": company_id, "entity_id": it.item_id})
+                if tmpl_row:
+                    template_state = tmpl_row.state
+            if not template_state:
+                template_state = next(
+                    (r.state for r in all_item_rows
+                     if str(r.state.get("sku") or "").strip() == _sku.strip()),
+                    {},
+                )
+            # sku_ref is an alias kept for clarity below
+            sku_ref: dict = template_state
 
             # Bill line item: explicit user-set fields take highest priority over sku_ref
             doc_line: dict = next(
                 (li for li in row.state.get("line_items", [])
-                 if str(li.get("sku") or "").strip() == it.sku.strip()),
+                 if str(li.get("sku") or "").strip() == _sku.strip()),
                 {},
             )
 
@@ -1613,17 +1759,18 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 if _v:
                     item_data[_f] = _v
             # Resolve conversion factor: doc line overrides sku_ref
-            sku_key = it.sku.strip() if it.sku else ""
-            conversion = doc_line_conversion.get(sku_key) or sku_conversion_map.get(sku_key) or 1
+            conversion = doc_line_conversion.get(_sku.strip()) or sku_conversion_map.get(_sku.strip()) or 1
             # Payload values always take precedence for the fields below
             item_data.update({
-                "sku": it.sku,
+                "sku": _sku,
                 "name": it.name,
                 "quantity": float(it.quantity_received) * conversion,
                 "location_id": payload.location_id,
             })
             if it.cost_price is not None:
-                item_data["cost_price"] = it.cost_price
+                # Emit cost_total when quantity is known (cost_total is the primitive)
+                _recv_qty = float(it.quantity_received) * conversion
+                item_data["cost_total"] = it.cost_price * _recv_qty if _recv_qty else it.cost_price
             if is_consignment:
                 item_data["consignment_flag"] = "in"
             new_eid = f"item:{uuid.uuid4()}"
@@ -1764,7 +1911,31 @@ async def convert_doc(entity_id: str, company_id: str = Depends(get_current_comp
         company = await session.get(Company, company_id)
         ref = next_doc_ref(company, "invoice")
         new_doc_id = f"doc:{ref}"
-        new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type"}}
+
+        # Filter line_items: only carry over items with status=memo_out
+        original_line_items = state.get("line_items", [])
+        qualifying_line_items = []
+        for li in original_line_items:
+            li_eid = li.get("entity_id") or li.get("item_id") or ""
+            if not li_eid:
+                continue
+            item_proj = await session.get(
+                Projection, {"company_id": company_id, "entity_id": li_eid}
+            )
+            if item_proj and item_proj.state.get("status") == "memo_out":
+                qualifying_line_items.append(li)
+
+        if not qualifying_line_items:
+            raise HTTPException(
+                status_code=422,
+                detail="Cannot convert: no line items are currently On Memo (memo_out). Fulfill at least one item before converting.",
+            )
+
+        filtered_state = {**state, "line_items": qualifying_line_items}
+        # Strip monetary totals: invoice may have fewer items than memo, so memo totals are stale.
+        # The invoice will recompute totals from its own line items.
+        _MEMO_TOTAL_FIELDS = frozenset({"total", "outstanding", "tax_total", "discount_total", "subtotal", "amount_due"})
+        new_data = {k: v for k, v in filtered_state.items() if k not in {"status", "entity_type"} | _MEMO_TOTAL_FIELDS}
         new_data.update({"doc_type": "invoice", "ref_id": ref, "source_memo_id": entity_id, "status": "draft"})
         await emit_event(
             session, company_id=company_id, entity_id=new_doc_id, entity_type="doc", event_type="doc.created", data=new_data,
@@ -2755,147 +2926,304 @@ async def batch_import_lists(
 # ---------------------------------------------------------------------------
 # Fulfillment endpoints
 # ---------------------------------------------------------------------------
+def _validate_line_entity_ids_subset(line_entity_ids: list[str], doc_state: dict) -> None:
+    """Guard: every item entity_id must belong to this document's line_items."""
+    doc_eids: set[str] = {
+        li.get("entity_id") or li.get("item_id") or ""
+        for li in doc_state.get("line_items", [])
+    } - {""}
+    foreign = set(line_entity_ids) - doc_eids
+    if foreign:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Item IDs not linked to this document: {', '.join(sorted(foreign))}",
+        )
 
 
-@router.post("/{entity_id}/fulfill")
-async def fulfill_doc(
+@router.post("/{entity_id}/fulfill-lines")
+async def fulfill_lines(
     entity_id: str,
+    body: FulfillLinesRequest,
     company_id: str = Depends(get_current_company_id),
     _: None = Depends(require_manager),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Fulfill a document: compute pick plan and deduct inventory.
+    """Fulfill specific line items by entity_id. Valid for memo and invoice docs only.
 
-    For inbound doc types (e.g. consignment_in) the pick plan is skipped -
-    goods already arrived at receive time; fulfillment only closes the doc.
+    Inbound doc types (bill, consignment_in) must use POST /receive instead.
     """
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     doc_type = state.get("doc_type", "")
-    if state.get("status") in UNFULFILLABLE_STATUSES:
-        raise HTTPException(status_code=409, detail="Cannot fulfill a draft or voided document")
-    if state.get("fulfillment_status") == "fulfilled":
-        raise HTTPException(status_code=409, detail="Document is already fully fulfilled")
 
-    # Check that doc has at least one stocked (non-service) line item
-    line_items_all = state.get("line_items", [])
-    has_stocked = any(
-        (li.get("sku") or "") and (li.get("sell_by") or "") not in ("service", "hour")
-        for li in line_items_all
-    )
-    if not has_stocked:
-        raise HTTPException(
-            status_code=422,
-            detail="This document contains no stocked goods. Only service or non-SKU items are present - there is nothing to fulfill from inventory.",
+    allowed_statuses = FULFILLABLE_STATUSES.get(doc_type)
+    if allowed_statuses is None:
+        raise HTTPException(status_code=422, detail=f"fulfill-lines is not supported for doc type: {doc_type}")
+    if state.get("status") not in allowed_statuses:
+        raise HTTPException(status_code=409, detail=f"Cannot fulfill a {doc_type} in status '{state.get('status')}'")
+
+    _validate_line_entity_ids_subset(body.line_entity_ids, state)
+
+    if not body.line_entity_ids:
+        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
+
+    errors: list[str] = []
+    to_fulfill: list[str] = []
+    fetched: dict[str, Projection] = {}
+    for item_eid in body.line_entity_ids:
+        item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
+        if item_proj is None:
+            errors.append(f"{item_eid}: item not found")
+            continue
+        item_status = item_proj.state.get("status", "")
+        if item_status != "available":
+            errors.append(
+                f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', is '{item_status}'"
+            )
+            continue
+        fetched[item_eid] = item_proj
+        to_fulfill.append(item_eid)
+
+    if errors and not to_fulfill:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+
+    if not to_fulfill:
+        raise HTTPException(status_code=422, detail="No fulfillable items in the provided line_entity_ids")
+
+    now = datetime.now(UTC).isoformat()
+    cid = uuid.UUID(str(company_id))
+    uid = user.id
+
+    total_cogs = 0.0
+    for item_eid in to_fulfill:
+        item_proj = fetched[item_eid]
+        qty = float(item_proj.state.get("quantity", 0))
+        cost_total = item_proj.state.get("cost_total")
+        if cost_total is not None:
+            total_cogs += float(cost_total)
+        else:
+            total_cogs += float(item_proj.state.get("cost_price") or 0) * float(item_proj.state.get("quantity") or 0)
+        await emit_event(
+            session,
+            company_id=cid,
+            entity_id=item_eid,
+            entity_type="item",
+            event_type="item.fulfilled",
+            data={
+                "source_doc_id": entity_id,
+                "quantity_fulfilled": qty,
+                "fulfilled_by": str(uid),
+                "doc_type": doc_type,
+            },
+            actor_id=uid,
+            location_id=None,
+            source="fulfillment",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"doc_id": entity_id},
         )
 
-    # Validate line quantities against unit precision (catches data saved before this rule existed)
-    unit_map = await _get_unit_map(session, company_id)
-    sell_by_map = await _get_item_sell_by_map(session, company_id)
-    for li in line_items_all:
-        sku = li.get("sku") or ""
-        sell_by = li.get("sell_by") or (sell_by_map.get(sku) if sku else None)
-        qty = float(li.get("quantity", 0) or 0)
-        validate_line_quantity(qty, sell_by, unit_map, label=li.get("name") or sku or "Line item")
+    # Optimistically compute doc fulfillment_status
+    newly_out = set(to_fulfill)
+    line_items = state.get("line_items", [])
+    all_statuses: list[str] = []
+    for li in line_items:
+        li_eid = li.get("entity_id") or li.get("item_id") or ""
+        if not li_eid:
+            continue
+        if li_eid in newly_out:
+            all_statuses.append("memo_out")
+        else:
+            li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
+            all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
 
-    # Inbound docs (e.g. consignment_in): skip pick plan - no deduction needed.
-    # Goods arrived at receive time; fulfillment just marks the doc complete.
-    if doc_type in INBOUND_DOC_TYPES:
-        pick_result = PickResult(picks=[], unfulfilled=[], strategy="inbound")
+    if all_statuses and all(s in ("memo_out", "sold") for s in all_statuses):
+        doc_fulfillment_status = "fulfilled"
+        doc_event_type = "doc.fulfilled"
+        doc_event_data: dict = {
+            "fulfilled_items": [{"item_id": e} for e in to_fulfill],
+            "fulfilled_by": str(uid),
+            "fulfilled_at": now,
+            "strategy": "per_line",
+            "total_cogs": total_cogs,
+        }
     else:
-        # Gather available inventory for SKUs in line items
-        skus: set[str] = set()
-        for li in state.get("line_items", []):
-            sku = li.get("sku") or ""
-            if sku and (li.get("sell_by") or "") not in ("service", "hour"):
-                skus.add(sku)
+        doc_fulfillment_status = "partial"
+        doc_event_type = "doc.partially_fulfilled"
+        doc_event_data = {
+            "fulfilled_items": [{"item_id": e} for e in to_fulfill],
+            "unfulfilled_items": [],
+            "fulfilled_by": str(uid),
+            "fulfilled_at": now,
+            "strategy": "per_line",
+        }
 
-        available_inv: list[dict] = []
-        if skus:
-            from sqlalchemy import select as _sel
-            rows = (await session.execute(
-                _sel(Projection).where(
-                    Projection.company_id == company_id,
-                    Projection.entity_type == "item",
-                )
-            )).scalars().all()
-            for r in rows:
-                s = r.state
-                qty = float(s.get("quantity") or 0)
-                item_sku = s.get("sku") or ""
-                if qty <= 0 or not item_sku:
-                    continue
-                # Match exact or child prefix
-                matched = any(item_sku == sku or item_sku.startswith(f"{sku}.") for sku in skus)
-                if matched:
-                    available_inv.append({
-                        "entity_id": r.entity_id,
-                        "sku": item_sku,
-                        "quantity": qty,
-                        "created_at": s.get("created_at") or "",
-                        "expires_at": s.get("expires_at"),
-                        "cost_price": float(s.get("cost_price") or 0),
-                        "allow_splitting": bool(s.get("allow_splitting", True)),
-                    })
-
-        pick_result = compute_pick_plan(state.get("line_items", []), available_inv)
-
-        if pick_result.unfulfilled:
-            sku_to_name = {li.get("sku", ""): li.get("name", "Unknown") for li in state.get("line_items", [])}
-            shortages = []
-            for sh in pick_result.unfulfilled:
-                sku = sh.get("sku", "")
-                name = sku_to_name.get(sku, "Unknown")
-                shortages.append(f"  \u2022 {name} (SKU: {sku}): short by {sh.get('short_qty', 0)}")
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot fulfill: insufficient stock for the following items:\n" + "\n".join(shortages),
-            )
-
-    from celerp.modules.slots import fire_lifecycle_strict
-    await fire_lifecycle_strict("pre_fulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
-    result = await execute_fulfill(
+    await emit_event(
         session,
-        doc_entity_id=entity_id,
-        doc_state=state,
-        pick_result=pick_result,
-        company_id=company_id,
-        user_id=user.id,
-        doc_type=doc_type,
+        company_id=cid,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type=doc_event_type,
+        data=doc_event_data,
+        actor_id=uid,
+        location_id=None,
+        source="fulfillment",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
     )
+
+    # Create COGS JE only for invoices that reach fully-fulfilled status.
+    # Memos don't get a COGS JE here; that happens when the invoice is finalized.
+    if doc_type == "invoice" and doc_fulfillment_status == "fulfilled":
+        await auto_je.create_for_doc_fulfilled(
+            session, company_id=cid, user_id=uid, doc_id=entity_id, total_cogs=total_cogs,
+            cycle=state.get("fulfill_cycle", 0),
+        )
+
     await session.commit()
-    return result
+    return {"fulfillment_status": doc_fulfillment_status, "fulfilled": to_fulfill}
 
 
-@router.post("/{entity_id}/unfulfill")
-async def unfulfill_doc(
+@router.post("/{entity_id}/revert-lines")
+async def revert_lines(
     entity_id: str,
+    body: FulfillLinesRequest,
     company_id: str = Depends(get_current_company_id),
     _: None = Depends(require_manager),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Reverse fulfillment: restore inventory and clear fulfillment state."""
+    """Revert fulfillment for specific line items. Valid for memo and invoice docs only.
+
+    Inbound doc types (bill, consignment_in) must use DELETE /receive instead.
+    """
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
-    fs = state.get("fulfillment_status")
-    if not fs or fs == "unfulfilled":
-        raise HTTPException(status_code=409, detail="Document is not fulfilled")
+    doc_type = state.get("doc_type", "")
 
-    result = await execute_unfulfill(
+    if FULFILLABLE_STATUSES.get(doc_type) is None:
+        raise HTTPException(status_code=422, detail=f"revert-lines is not supported for doc type: {doc_type}")
+
+    _validate_line_entity_ids_subset(body.line_entity_ids, state)
+
+    if not body.line_entity_ids:
+        raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
+
+    errors: list[str] = []
+    to_revert: list[str] = []
+    fetched: dict[str, Projection] = {}
+    for item_eid in body.line_entity_ids:
+        item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
+        if item_proj is None:
+            errors.append(f"{item_eid}: item not found")
+            continue
+        item_status = item_proj.state.get("status", "")
+        if item_status not in ("memo_out", "sold"):
+            errors.append(
+                f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'memo_out' or 'sold' to revert, is '{item_status}'"
+            )
+            continue
+        fetched[item_eid] = item_proj
+        to_revert.append(item_eid)
+
+    if errors and not to_revert:
+        raise HTTPException(status_code=422, detail={"errors": errors})
+
+    if not to_revert:
+        raise HTTPException(status_code=422, detail="No revertible items in the provided line_entity_ids")
+
+    now = datetime.now(UTC).isoformat()
+    cid = uuid.UUID(str(company_id))
+    uid = user.id
+
+    for item_eid in to_revert:
+        item_proj = fetched[item_eid]
+        qty = float(item_proj.state.get("quantity", 0))
+        await emit_event(
+            session,
+            company_id=cid,
+            entity_id=item_eid,
+            entity_type="item",
+            event_type="item.fulfillment_reversed",
+            data={
+                "source_doc_id": entity_id,
+                "quantity_restored": qty,
+                "reversed_by": str(uid),
+                "reason": "per_line_revert",
+                "doc_type": doc_type,
+            },
+            actor_id=uid,
+            location_id=None,
+            source="fulfillment",
+            idempotency_key=str(uuid.uuid4()),
+            metadata_={"doc_id": entity_id},
+        )
+
+    # Optimistically compute doc fulfillment_status
+    newly_available = set(to_revert)
+    line_items = state.get("line_items", [])
+    all_statuses: list[str] = []
+    for li in line_items:
+        li_eid = li.get("entity_id") or li.get("item_id") or ""
+        if not li_eid:
+            continue
+        if li_eid in newly_available:
+            all_statuses.append("available")
+        else:
+            li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
+            all_statuses.append(li_proj.state.get("status", "available") if li_proj else "available")
+
+    if not all_statuses or all(s == "available" for s in all_statuses):
+        doc_fulfillment_status = "unfulfilled"
+        doc_event_type = "doc.fulfillment_reversed"
+        doc_event_data = {
+            "reversed_items": [{"item_id": e} for e in to_revert],
+            "reversed_by": str(uid),
+            "reason": "per_line_revert",
+        }
+    elif any(s in ("memo_out", "sold") for s in all_statuses):
+        doc_fulfillment_status = "partial"
+        doc_event_type = "doc.partially_fulfilled"
+        doc_event_data = {
+            "fulfilled_items": [],
+            "unfulfilled_items": [],
+            "fulfilled_by": str(uid),
+            "fulfilled_at": now,
+            "strategy": "per_line",
+        }
+    else:
+        doc_fulfillment_status = "unfulfilled"
+        doc_event_type = "doc.fulfillment_reversed"
+        doc_event_data = {
+            "reversed_items": [{"item_id": e} for e in to_revert],
+            "reversed_by": str(uid),
+            "reason": "per_line_revert",
+        }
+
+    await emit_event(
         session,
-        doc_entity_id=entity_id,
-        doc_state=state,
-        company_id=company_id,
-        user_id=user.id,
-        reason="manual",
-        doc_type=state.get("doc_type", ""),
+        company_id=cid,
+        entity_id=entity_id,
+        entity_type="doc",
+        event_type=doc_event_type,
+        data=doc_event_data,
+        actor_id=uid,
+        location_id=None,
+        source="fulfillment",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
     )
-    from celerp.modules.slots import fire_lifecycle_strict
-    await fire_lifecycle_strict("post_unfulfill_hook", doc_id=entity_id, company_id=company_id, session=session)
+
+    # Void COGS JE for invoices when fulfillment is fully reversed.
+    # void_for_doc_fulfilled is a no-op if no JE exists (safe to call unconditionally).
+    if doc_type == "invoice" and doc_fulfillment_status == "unfulfilled":
+        await auto_je.void_for_doc_fulfilled(
+            session, company_id=cid, user_id=uid, doc_id=entity_id,
+            cycle=state.get("fulfill_cycle", 0),
+        )
+
     await session.commit()
-    return result
+    return {"fulfillment_status": doc_fulfillment_status, "reverted": to_revert}
 
 
 class ReturnReceivedItem(BaseModel):
@@ -3134,7 +3462,7 @@ async def undo_receive_return(
     now = datetime.now(UTC).isoformat()
     item_ids = [r["item_id"] for r in received_items if r.get("item_id")]
     total_cogs = sum(
-        float(r.get("cost_price") or 0) * float(r.get("quantity") or 0)
+        float(r.get("cost_total") or 0) or (float(r.get("cost_price") or 0) * float(r.get("quantity") or 0))
         for r in received_items
     )
 

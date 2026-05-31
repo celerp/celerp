@@ -3,11 +3,17 @@
 
 from __future__ import annotations
 
+import re
+
 from fasthtml.common import *
 from ui.i18n import t, get_lang
 
 # Canonical empty-value placeholder (rule k)
 EMPTY = "--"
+
+# Statuses that dim a row to indicate it is not actively available for sale/use.
+# Allowlist: adding a new status requires an explicit decision (mirrors fulfillment guard pattern).
+INACTIVE_ITEM_STATUSES: frozenset[str] = frozenset({"archived", "expired", "sold", "memo_out"})
 
 # Default column widths for fixed-layout tables.
 # Keys are schema field keys; "_attr_default" applies to any column not listed here.
@@ -197,7 +203,7 @@ def searchable_select(
     return Div(
         Input(type="text", cls=f"combobox-input {cls_extra}".strip(),
               value=display_label, placeholder=placeholder, autocomplete="off"),
-        Input(type="hidden", name=name, value=value, **htmx_attrs),
+        Input(type="hidden", name=name, data_name=name, value=value, **htmx_attrs),
         Div(*opt_els, cls="combobox-list"),
         **wrap_attrs,
     )
@@ -323,10 +329,12 @@ def editable_cell(
         options = [(o, label_map.get(o, o)) for o in options]
     # ESC cancel: prevent onblur from also firing by setting a flag before removing focus.
     # Enter: trigger blur to save.
-    # Scroll preservation is handled by the htmx:beforeRequest/afterSettle global handlers
-    # in data_table's script block — no per-cell scroll logic needed here.
+    # ESC: capture scroll position synchronously at keydown (before browser may reset it),
+    # then force-set _scrollSnap so the global htmx:afterSettle handler restores it.
     escape_js = (
         f"if(event.key==='Escape'){{"
+        f"var _sw=document.querySelector('.table-scroll-wrap');"
+        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"this._escaping=true;"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
@@ -336,6 +344,8 @@ def editable_cell(
     # ESC handler for combobox wrapper (keydown bubbles up from the inner input)
     combobox_escape_js = (
         f"if(event.key==='Escape'){{"
+        f"var _sw=document.querySelector('.table-scroll-wrap');"
+        f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
         f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
         f"event.preventDefault();}}"
     )
@@ -466,12 +476,15 @@ def display_cell(
     display_value = label_map.get(value, value) if label_map and value is not None else value
     inner = _display_val(display_value, cell_type, currency)
     _edit = edit_url or f"/api/items/{entity_id}/field/{field}/edit"
+    _safe_id = entity_id.replace(":", "-")
+    _safe_field = re.sub(r"[^A-Za-z0-9_-]", "_", field)
+    _cell_id = f"cell-{_safe_id}-{_safe_field}"
 
     if not editable:
         # Only render hyperlink when there's actual content (not empty/placeholder)
         if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
-            return Td(A(inner, href=link_href, cls="table-link"), cls=f"cell cell--{cell_type}", data_col=field)
-        return Td(inner, cls=f"cell cell--{cell_type}", data_col=field)
+            return Td(A(inner, href=link_href, cls="table-link"), id=_cell_id, cls=f"cell cell--{cell_type}", data_col=field)
+        return Td(inner, id=_cell_id, cls=f"cell cell--{cell_type}", data_col=field)
 
     if cell_type == "image":
         # Drag-drop zone: dropping a file POSTs to the attachment endpoint.
@@ -484,12 +497,12 @@ def display_cell(
                 cls="cell-image-input",
                 hx_post=f"/api/items/{entity_id}/attachments",
                 hx_encoding="multipart/form-data",
-                hx_target=f"#img-cell-{entity_id}",
+                hx_target=f"#img-cell-{entity_id.replace(':', '-')}",
                 hx_swap="outerHTML",
                 style="display:none",
-                id=f"img-input-{entity_id}",
+                id=f"img-input-{entity_id.replace(':', '-')}",
             ),
-            id=f"img-cell-{entity_id}",
+            id=f"img-cell-{entity_id.replace(':', '-')}",
             cls="cell cell--image cell--droppable",
             data_entity_id=entity_id,
             data_col=field,
@@ -499,6 +512,7 @@ def display_cell(
     if link_href and value is not None and str(value).strip() and str(value).strip() != EMPTY:
         return Td(
             A(inner, href=link_href, cls="table-link"),
+            id=_cell_id,
             title="Double-click to edit",
             hx_get=_edit,
             hx_target="this",
@@ -511,6 +525,7 @@ def display_cell(
     if field == "sku":
         return Td(
             A(inner, href=f"/inventory/{entity_id}", cls="table-link"),
+            id=_cell_id,
             title="Double-click to edit",
             hx_get=_edit,
             hx_target="this",
@@ -522,6 +537,7 @@ def display_cell(
 
     return Td(
         inner,
+        id=_cell_id,
         title="Double-click to edit",
         hx_get=_edit,
         hx_target="this",
@@ -661,6 +677,8 @@ def data_table(
                      data_weight_unit=row.get("weight_unit", ""),
                      data_sell_by=row.get("sell_by", ""),
                ), cls="col-checkbox")] if show_checkboxes else []
+        status_val = str(row.get("status", "") or "").lower()
+        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
         return Tr(
             *checkbox_td,
             *[
@@ -680,7 +698,7 @@ def data_table(
             ],
             *action_cell,
             id=f"row-{safe_id}",
-            cls="data-row",
+            cls=row_cls,
         )
 
     # JS: smart column defaults + localStorage persistence + drag-to-resize
@@ -692,11 +710,14 @@ def data_table(
         _schema_defaults = {f["key"]: (f["key"] in show_cols) for f in visible}
     else:
         _schema_defaults = {f["key"]: f.get("show_in_table", True) for f in visible}
-    # Map primary_key → [virtual_key, ...] so drag and restore both move virtual cols with their primary
+    # Map primary_key → [virtual_key, ...] so drag and restore both move virtual cols with their primary.
+    # Virtual total always follows its paired unit-price column (the primary).
     _virtual_followers: dict[str, list[str]] = {}
     for f in schema:
         if f.get("virtual") and f.get("paired_with"):
-            _virtual_followers.setdefault(f["paired_with"], []).append(f["key"])
+            paired = f["paired_with"]
+            key = f["key"]
+            _virtual_followers.setdefault(paired, []).append(key)
     _js = f"""
 (function(){{
   var PAGE_KEY = '{page_key}';
@@ -746,13 +767,20 @@ def data_table(
     }});
   }}
 
-  // Apply visibility — use data-col attribute so order-independent
-  function applyVis() {{
-    ths.forEach(function(th) {{
+  // Apply visibility — accept optional live table so post-swap calls use the new DOM node
+  function applyVis(liveTable) {{
+    liveTable = liveTable || table;
+    // Re-read prefs from localStorage so post-swap calls reflect changes made in
+    // the column-manager dropdown (which writes to the same PAGE_KEY but doesn't
+    // share the in-memory `prefs` variable from this IIFE closure).
+    try {{ prefs = JSON.parse(localStorage.getItem(PAGE_KEY) || 'null') || prefs; }} catch(e) {{}}
+    var liveRows = Array.from(liveTable.querySelectorAll('tbody tr.data-row'));
+    var liveThs = Array.from(liveTable.querySelectorAll('thead th[data-key]'));
+    liveThs.forEach(function(th) {{
       var key = th.dataset.key;
       var show = prefs[key] !== false;
       th.style.display = show ? '' : 'none';
-      rows.forEach(function(tr) {{
+      liveRows.forEach(function(tr) {{
         var td = tr.querySelector('[data-col="' + key + '"]');
         if (td) td.style.display = show ? '' : 'none';
       }});
@@ -760,6 +788,20 @@ def data_table(
     localStorage.setItem(PAGE_KEY, JSON.stringify(prefs));
   }}
   applyVis();
+  // Re-apply after HTMX settles so rows added during the swap phase are also covered.
+  // Guard with a global flag so repeated IIFE executions (after HTMX swaps) don't
+  // accumulate duplicate listeners on document.body.
+  var _VIS_SETTLE_KEY = '__celerpVisSettle_{entity_type}';
+  if (!window[_VIS_SETTLE_KEY]) {{
+    window[_VIS_SETTLE_KEY] = true;
+    document.body.addEventListener('htmx:afterSettle', function(e) {{
+      if (e.detail && e.detail.target && e.detail.target.id === 'inventory-content') {{
+        // Re-query the live table after each settle - the old `table` ref may be detached
+        var liveTable = document.getElementById('data-table');
+        if (liveTable) applyVis(liveTable);
+      }}
+    }});
+  }}
 
   // Drag-to-resize column headers — persist widths to localStorage
   var WIDTH_KEY = 'celerp_col_widths_{entity_type}';
@@ -986,6 +1028,7 @@ function bulkActionChanged(action){
   if(!tpl) return;
   // Validate selection count constraints
   if(action==='split'&&n!==1){alert('Select exactly 1 item to split.');return;}
+  if(action==='transform'&&n!==1){alert('Select exactly 1 item to transform.');return;}
   if(action==='merge'&&n<2){alert('Select at least 2 items to merge.');return;}
   var clone=tpl.content.cloneNode(true);
   ctx.appendChild(clone);
@@ -993,6 +1036,19 @@ function bulkActionChanged(action){
   if(action==='split'){
     if(window.htmx) htmx.process(ctx);
     if(typeof bulkSplitAutoLoad==='function') bulkSplitAutoLoad();
+    return;
+  }
+  // Transform: auto-load preview immediately
+  if(action==='transform'){
+    var ids = CelerpSelection.ids();
+    if(!ids.length) return;
+    var entityId = ids[0];
+    var url = '/api/items/bulk/transform-preview?entity_id=' + encodeURIComponent(entityId);
+    htmx.ajax('GET', url, { target: '#bulk-transform-preview', swap: 'innerHTML' })
+      .then(function() {
+        if (window.htmx) htmx.process(document.getElementById('bulk-transform-preview'));
+        if (typeof transformPreviewInit === 'function') transformPreviewInit('bulk-transform-preview-form');
+      });
     return;
   }
   // Merge: populate target dropdown with selected items
@@ -1143,18 +1199,21 @@ function sendToTypeChanged(docType){
     window.__celerpHtmxHandlers=true;
   // Preserve horizontal scroll position across any HTMX request that may replace
   // the table or its scroll container (cell edits, sort, search, pagination, etc.).
-  // Save on htmx:beforeRequest (before any focus/reset can occur).
-  // Restore on htmx:afterSettle (after the new DOM is in place).
-  var _scrollSnap=null;
+  // Save on htmx:beforeRequest AND eagerly exposed as window.__celerpScrollSnap so
+  // inline ESC handlers can set it synchronously before the browser resets scroll.
+  // Restore on htmx:afterSettle using requestAnimationFrame to run after browser reflow.
+  window.__celerpScrollSnap=null;
   document.body.addEventListener('htmx:beforeRequest',function(e){
     var sw=document.querySelector('.table-scroll-wrap');
-    if(sw){_scrollSnap=sw.scrollLeft;}
+    if(sw){window.__celerpScrollSnap=sw.scrollLeft;}
   });
   document.body.addEventListener('htmx:afterSettle',function(e){
-    if(_scrollSnap!=null){
-      var s=_scrollSnap;_scrollSnap=null;
-      var sw=document.querySelector('.table-scroll-wrap');
-      if(sw)sw.scrollLeft=s;
+    if(window.__celerpScrollSnap!=null){
+      var s=window.__celerpScrollSnap;window.__celerpScrollSnap=null;
+      requestAnimationFrame(function(){
+        var sw=document.querySelector('.table-scroll-wrap');
+        if(sw)sw.scrollLeft=s;
+      });
     }
   });
   // Sync derived cells (weight/pieces) after a quantity PATCH.

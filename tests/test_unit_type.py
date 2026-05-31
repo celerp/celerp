@@ -225,8 +225,9 @@ class TestInventoryCellRenderers:
         }
 
     def _render_str(self, td) -> str:
-        """Convert fasthtml FT to string for assertion."""
-        return str(td)
+        """Convert fasthtml FT to XML string for assertion."""
+        from fasthtml.common import to_xml
+        return to_xml(td)
 
     def test_weight_renderer_derived_for_weight_sell_by(self):
         from ui.routes.inventory import _inventory_cell_renderers

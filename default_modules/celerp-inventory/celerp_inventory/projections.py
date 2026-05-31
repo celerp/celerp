@@ -14,6 +14,16 @@ _WEIGHT_UNIT_MAP: dict[str, str] = {
 
 _IMAGE_MIME_PREFIXES = ("image/",)
 
+# Statuses where an item is available for operations (split, transform, etc.)
+# Allowlist by design: unknown/new statuses are unavailable until explicitly added here.
+# is_item_available() is the single source of truth — derive at read time, never store.
+_ACTIVE_STATUSES: frozenset[str] = frozenset({"available", "active"})
+
+
+def is_item_available(state: dict) -> bool:
+    """Derive availability from status. Single authoritative check — no stored flag."""
+    return str(state.get("status") or "").lower() in _ACTIVE_STATUSES
+
 # Old attachment type → new document_tag mapping (for lazy migration)
 _ATTACHMENT_TYPE_TO_TAG: dict[str, str] = {
     "image": "product_images",
@@ -109,7 +119,6 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
     if event_type in {"item.created", "item.snapshot"}:
         current.update(data)
-        current.setdefault("is_available", True)
         current.setdefault("status", "available")
         current.setdefault("inventory_type", "stocked")
         # Default purchase unit = sell unit, conversion = 1 (most items bought in same unit as sold)
@@ -134,9 +143,18 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                 current[field] = change.get("new")
         current = _sync_expiry_from_attributes(current)
     elif event_type == "item.pricing.set":
-        current[data["price_type"]] = data["new_price"]
+        pt = data["price_type"]
+        price = data["new_price"]
+        if pt == "cost_total":
+            current["cost_total"] = price
+            current.pop("cost_price", None)  # cost_price is now derived
+        elif pt == "cost_price":
+            current["cost_price"] = price   # legacy path - do NOT pop cost_total here
+        else:
+            current[pt] = price
     elif event_type == "item.status.set":
-        current["status"] = data["new_status"]
+        new_status = data["new_status"]
+        current["status"] = new_status
     elif event_type == "item.transferred":
         current["location_id"] = data["to_location_id"]
         if "updated_at" in data:
@@ -144,19 +162,19 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.quantity.adjusted":
         current["quantity"] = data["new_qty"]
     elif event_type in {"item.expired", "item.disposed"}:  # item.disposed is legacy; maps to archived
-        current["is_available"] = False
         current["is_expired"] = event_type == "item.expired"
         current["status"] = "expired" if event_type == "item.expired" else "archived"
     elif event_type == "item.split":
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])
         current["child_skus"] = data.get("child_skus", [])
+    elif event_type == "item.transform":
+        current["transformed_into"] = data.get("child_id")
     elif event_type == "item.merged":
         # No-op: marker event only. Real state is set by item.created on the new item.
         pass
     elif event_type == "item.source_deactivated":
         # Emitted on source items when absorbed by a merge.
-        current["is_available"] = False
         current["quantity"] = float(data.get("original_qty") or current.get("quantity") or 0)
         current["status"] = "merged"
         current["merged_into"] = data.get("merged_into")
@@ -171,13 +189,11 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     elif event_type == "item.fulfilled":
         current["quantity"] = float(data.get("quantity_fulfilled", 0))
         current["quantity_fulfilled"] = float(data.get("quantity_fulfilled", 0))
-        current["is_available"] = False
         current["status"] = "memo_out" if data.get("doc_type") == "memo" else "sold"
         current.setdefault("fulfilled_for_docs", [])
         current["fulfilled_for_docs"].append(data["source_doc_id"])
     elif event_type == "item.fulfillment_reversed":
         current["quantity"] = float(data["quantity_restored"])
-        current["is_available"] = True
         current["status"] = "available"
         doc_id = data.get("source_doc_id")
         fulfilled_docs = current.get("fulfilled_for_docs", [])

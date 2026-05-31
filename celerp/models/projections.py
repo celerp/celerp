@@ -22,6 +22,7 @@ class Projection(Base):
     state: Mapped[dict] = mapped_column(sa.JSON, nullable=False)
     version: Mapped[int] = mapped_column(BigInteger, nullable=False)
     location_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), ForeignKey("locations.id"), nullable=True)
+    created_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[object] = mapped_column(DateTime(timezone=True), nullable=False)
     is_available: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     is_on_memo: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

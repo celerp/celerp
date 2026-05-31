@@ -7,6 +7,7 @@ import asyncio
 import csv
 import io
 import logging
+import re
 from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
@@ -19,7 +20,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, INACTIVE_ITEM_STATUSES
 from ui.config import get_token as _token, API_BASE as _api_base
 from ui.i18n import t, get_lang
 from celerp.services.units import is_weight_unit, is_pieces_unit
@@ -35,6 +36,14 @@ function splitRecalcMotherWeight(input) {
   var childVal = parseFloat(input.value) || 0;
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+  // For weight-unit items weight and qty are the same — also update mother qty display.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
+    var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
+    var mqd = form.querySelector('.mother-qty-display');
+    if (mqd) mqd.textContent = Math.max(0, parentQty - childVal).toFixed(unitDecimals);
+  }
 }
 function splitClampWeight(input) {
   var form = input.closest('form');
@@ -45,10 +54,22 @@ function splitClampWeight(input) {
   input.value = childVal.toFixed(decimals);
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
+  // For weight-unit items weight and qty are the same — sync qty input and mother qty display.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
+    var qtyInput = form.querySelector('[name="child_qty"]');
+    if (qtyInput) { qtyInput.value = childVal.toFixed(unitDecimals); }
+    var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
+    var mqd = form.querySelector('.mother-qty-display');
+    if (mqd) mqd.textContent = Math.max(0, parentQty - childVal).toFixed(unitDecimals);
+  }
 }
 function splitRecalcMotherPieces(input) {
   var form = input.closest('form');
   if (!form) return;
+  // For piece-unit items pieces and qty are the same — delegate to the bidirectional handler.
+  if (form.dataset.sellBy === 'piece') { bulkSplitChildPiecesChanged(input); return; }
   var parentPieces = parseFloat(form.dataset.parentPieces || '0');
   var childP = parseFloat(input.value) || 0;
   var mp = form.querySelector('.mother-pieces-display');
@@ -63,6 +84,15 @@ function splitClampPieces(input) {
   input.value = String(Math.round(childP));
   var mp = form.querySelector('.mother-pieces-display');
   if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
+  // Keep qty in sync for piece-unit items.
+  if (form.dataset.sellBy === 'piece') {
+    var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
+    var qtyInput = form.querySelector('[name="child_qty"]');
+    if (qtyInput) qtyInput.value = childP.toFixed(decimals);
+    var motherQtyDisplay = form.querySelector('.mother-qty-display');
+    var parentQty = parseFloat(form.dataset.parentQty || parentPieces);
+    if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childP).toFixed(decimals);
+  }
 }
 function bulkSplitAutoLoad() {
   var checked = document.querySelector('.row-select:checked');
@@ -83,6 +113,60 @@ function bulkSplitChildQtyChanged(input) {
   input.value = childQty.toFixed(decimals);
   var motherQtyDisplay = form.querySelector('.mother-qty-display');
   if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childQty).toFixed(decimals);
+  // For piece-unit items qty and pieces are the same — keep them in sync.
+  if (form.dataset.sellBy === 'piece') {
+    var piecesInput = form.querySelector('[name="child_pieces"]');
+    if (piecesInput) { piecesInput.value = Math.round(childQty); }
+    var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
+    var mp = form.querySelector('.mother-pieces-display');
+    if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childQty)));
+  }
+  // For weight-unit items qty IS the weight — mirror to weight field.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+    var weightInput = form.querySelector('[name="child_weight"]');
+    if (weightInput) { weightInput.value = childQty.toFixed(weightDecimals); }
+    var parentWeight = parseFloat(form.dataset.parentWeight || parentQty);
+    var mw = form.querySelector('.mother-weight-display');
+    if (mw) mw.textContent = Math.max(0, parentWeight - childQty).toFixed(weightDecimals);
+  }
+}
+function bulkSplitChildPiecesChanged(input) {
+  // Mirror pieces → qty for piece-unit items (they are the same value).
+  var form = input.closest('form');
+  if (!form || form.dataset.sellBy !== 'piece') return;
+  var parentQty = parseFloat(form.dataset.parentQty || '0');
+  var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
+  var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
+  var childPieces = Math.min(Math.max(0, Math.round(parseFloat(input.value) || 0)), Math.round(parentQty) - 1);
+  input.value = String(childPieces);
+  var qtyInput = form.querySelector('[name="child_qty"]');
+  if (qtyInput) { qtyInput.value = childPieces.toFixed(decimals); }
+  var motherQtyDisplay = form.querySelector('.mother-qty-display');
+  if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childPieces).toFixed(decimals);
+  var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
+  var mp = form.querySelector('.mother-pieces-display');
+  if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childPieces)));
+}
+function bulkSplitChildWeightChanged(input) {
+  // Mirror weight → qty for weight-unit items (they are the same value).
+  var form = input.closest('form');
+  if (!form) return;
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) === -1) return;
+  var parentWeight = parseFloat(form.dataset.parentWeight || '0');
+  var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+  var decimals = parseInt(form.dataset.unitDecimals || weightDecimals, 10);
+  var childWeight = Math.min(Math.max(0, parseFloat(input.value) || 0), parentWeight);
+  input.value = childWeight.toFixed(weightDecimals);
+  var qtyInput = form.querySelector('[name="child_qty"]');
+  if (qtyInput) { qtyInput.value = childWeight.toFixed(decimals); }
+  var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
+  var motherQtyDisplay = form.querySelector('.mother-qty-display');
+  if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childWeight).toFixed(decimals);
+  var mw = form.querySelector('.mother-weight-display');
+  if (mw) mw.textContent = Math.max(0, parentWeight - childWeight).toFixed(weightDecimals);
 }
 function bulkSplitSkuChanged(input) {
   // SKU is a free-text field; no server call needed.
@@ -98,6 +182,44 @@ function bulkSplitSubmit(formEl) {
     } else { existing.value = entityId; }
   }
   return true;
+}
+"""
+
+_BULK_TRANSFORM_JS = """
+function transformCostManualEdit(input) {
+  input.closest('form').dataset.costOverridden = 'true';
+}
+function transformUnitChanged(select) {
+  var form = select.closest('form');
+  var unit = select.value;
+  var weightTd = form.querySelector('.tr-weight-td');
+  var piecesTd = form.querySelector('.tr-pieces-td');
+  var weightInput = weightTd ? weightTd.querySelector('input') : null;
+  var piecesInput = piecesTd ? piecesTd.querySelector('input') : null;
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  var qtyInput = form.querySelector('[name="child_qty"]');
+  var qtyVal = qtyInput ? qtyInput.value : '0';
+  if (weightUnits.indexOf(unit) !== -1) {
+    if (weightInput) { weightInput.value = qtyVal; weightInput.disabled = true; weightInput.classList.add('tr-locked'); }
+    if (piecesInput) { piecesInput.disabled = false; piecesInput.classList.remove('tr-locked'); }
+  } else if (unit === 'piece') {
+    if (piecesInput) { piecesInput.value = Math.round(parseFloat(qtyVal || '0')); piecesInput.disabled = true; piecesInput.classList.add('tr-locked'); }
+    if (weightInput) { weightInput.disabled = false; weightInput.classList.remove('tr-locked'); }
+  } else {
+    if (weightInput) { weightInput.disabled = false; weightInput.classList.remove('tr-locked'); }
+    if (piecesInput) { piecesInput.disabled = false; piecesInput.classList.remove('tr-locked'); }
+  }
+}
+function transformQtyChanged(input) {
+  var form = input.closest('form');
+  var unitSelect = form.querySelector('[name="child_sell_by"]');
+  if (unitSelect) transformUnitChanged(unitSelect);
+}
+function transformPreviewInit(formId) {
+  var form = document.getElementById(formId);
+  if (!form) return;
+  var unitSelect = form.querySelector('[name="child_sell_by"]');
+  if (unitSelect) transformUnitChanged(unitSelect);
 }
 """
 
@@ -323,6 +445,7 @@ def setup_routes(app):
             ),
             content,
             Script(_BULK_SPLIT_JS),
+            Script(_BULK_TRANSFORM_JS),
             title="Inventory - Celerp",
             nav_active="inventory",
             lang=lang,
@@ -865,6 +988,10 @@ def setup_routes(app):
                     if _flt(unit_key) is not None:
                         # Unit price already mapped - total is redundant, skip silently
                         continue
+                    if unit_key == "cost_price":
+                        # cost_total is the primitive; store directly (no back-calculation)
+                        data["cost_total"] = total_val
+                        continue
                     if not qty or qty == 0:
                         _price_errors.append(
                             f"Cannot back-calculate {unit_key} from {col_key}: quantity is 0 or missing"
@@ -1110,9 +1237,13 @@ function celerpPrintLabel(entityId, templateId) {
             vf = virtual_fields[field]
             paired = vf.get("paired_with", "")
             try:
-                unit_price = float(item.get(paired) or 0)
-                qty = float(item.get("quantity") or 0)
-                total = unit_price * qty
+                if field == "cost_price_total" and item.get("cost_total") is not None:
+                    # cost_total is the primitive; display it directly
+                    total = float(item["cost_total"])
+                else:
+                    unit_price = float(item.get(paired) or 0)
+                    qty = float(item.get("quantity") or 0)
+                    total = unit_price * qty
                 display_val = f"{total:.2f}" if total != 0 else ""
             except (ValueError, TypeError):
                 display_val = ""
@@ -1146,6 +1277,8 @@ function celerpPrintLabel(entityId, templateId) {
             swap = dict(hx_patch=patch_url, hx_target="closest td", hx_swap="outerHTML", hx_include="this")
             escape_js = (
                 f"if(event.key==='Escape'){{"
+                f"var _sw=document.querySelector('.table-scroll-wrap');"
+                f"if(_sw&&window.__celerpScrollSnap!==undefined){{window.__celerpScrollSnap=_sw.scrollLeft;}}"
                 f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
                 f"event.preventDefault();}}"
             )
@@ -1195,6 +1328,23 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        # Virtual total fields store no value in item state; derive from primitives
+        virtual_fields = {f["key"]: f for f in schema if f.get("virtual")}
+        if field in virtual_fields:
+            vf = virtual_fields[field]
+            paired = vf.get("paired_with", "")
+            try:
+                if field == "cost_price_total" and item.get("cost_total") is not None:
+                    unit_price = float(item["cost_total"])
+                    qty = 1.0
+                else:
+                    unit_price = float(item.get(paired) or 0)
+                    qty = float(item.get("quantity") or 0)
+            except (ValueError, TypeError):
+                unit_price, qty = 0.0, 0.0
+            company = await api.get_company(token)
+            currency = (company or {}).get("currency") or "USD"
+            return _render_virtual_total_cell(entity_id, field, unit_price, qty, currency)
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
@@ -1219,10 +1369,25 @@ function celerpPrintLabel(entityId, templateId) {
             value = value.lower() in ("true", "1", "yes")
         # Convert numeric fields from string to float
         elif field == "quantity" or field.endswith("_price") or field.endswith("_price_total"):
+            raw_str = str(form.get("value", ""))
             try:
                 value = float(value)
             except (ValueError, TypeError):
-                return P(t("error.invalid_number"), cls="cell-error")
+                # Return editable cell with error so user can correct without a page reload.
+                cell_type = "number" if field == "quantity" else "money"
+                patch_url = f"/api/items/{entity_id}/field/{field}"
+                restore_url = (
+                    f"/api/items/{entity_id}/field/{field}/paired-display"
+                    if field in _PAIRED_FIELDS
+                    else f"/api/items/{entity_id}/field/{field}/display"
+                )
+                from ui.components.table import editable_cell
+                edit_td = editable_cell(
+                    entity_id=entity_id, field=field, value=raw_str,
+                    cell_type=cell_type, restore_url=restore_url,
+                )
+                edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                return edit_td
 
         try:
             if field == "location_name":
@@ -1233,18 +1398,62 @@ function celerpPrintLabel(entityId, templateId) {
                     return P(f"Unknown location: {value}", cls="cell-error")
                 await api.transfer_item(token, entity_id, loc.get("location_id") or loc.get("id", ""))
             elif field.endswith("_price_total"):
-                # Virtual total field: back-calculate unit price = total / qty, then patch unit price field
+                # Virtual total field: patch cost_total directly; back-calculate unit for other price lists.
+                # Return: a placeholder td (keeps the cell in place) + OOB row reload (refreshes all cells
+                # with correct formatting). Single-cell render can't work here because cost_total is not
+                # a schema field, so field resolution produces no formatting.
                 unit_price_field = field[: -len("_total")]  # e.g. "cost_price_total" → "cost_price"
                 old_item = await api.get_item(token, entity_id)
-                qty = float(old_item.get("quantity") or 0)
-                if qty == 0:
-                    return P(t("error.cannot_divide_by_zero_qty", "Cannot compute unit price: quantity is zero"), cls="cell-error")
-                unit_price = float(value) / qty
-                old_unit_price = old_item.get(unit_price_field)
-                await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
-                # Patch field variable so downstream re-render uses unit_price_field
-                field = unit_price_field
-                value = unit_price
+                if unit_price_field == "cost_price":
+                    # cost_total is the primitive; patch it directly
+                    old_cost_total = old_item.get("cost_total")
+                    await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": float(value)}})
+                else:
+                    qty = float(old_item.get("quantity") or 0)
+                    if qty == 0:
+                        return P(t("error.cannot_divide_by_zero_qty", "Cannot compute unit price: quantity is zero"), cls="cell-error")
+                    unit_price = float(value) / qty
+                    old_unit_price = old_item.get(unit_price_field)
+                    await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
+                safe_id = entity_id.replace(":", "-")
+                # Fetch updated item and currency for cell rendering
+                updated_item = await api.get_item(token, entity_id)
+                try:
+                    company = await api.get_company(token)
+                    currency = (company.get("currency") or "").strip() or None
+                except Exception:
+                    currency = None
+                flat = _flatten_item_attrs(updated_item)
+                qty = float(flat.get("quantity") or 0)
+                new_cost_total = float(value)
+                new_cost_price = new_cost_total / qty if qty else 0.0
+                from ui.components.table import fmt_money, display_cell
+                # Cell 1: cost_price_total (the edited cell, main swap target)
+                total_formatted = fmt_money(new_cost_total, currency) if new_cost_total != 0 else "--"
+                total_inner = Span(total_formatted, cls="cell-money") if total_formatted != "--" else Span("--")
+                total_td = Td(
+                    total_inner,
+                    id=f"cell-{safe_id}-cost_price_total",
+                    cls="cell cell--money cell--clickable",
+                    data_col="cost_price_total",
+                    hx_get=f"/api/items/{entity_id}/field/cost_price_total/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                )
+                # Cell 2: cost_price (OOB swap into its existing td by id)
+                unit_formatted = fmt_money(new_cost_price, currency) if new_cost_price != 0 else "--"
+                unit_inner = Span(unit_formatted, cls="cell-money") if unit_formatted != "--" else Span("--")
+                sell_by = (flat.get("sell_by") or "").strip()
+                annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
+                unit_td = Td(
+                    unit_inner, annotation,
+                    id=f"cell-{safe_id}-cost_price",
+                    hx_swap_oob="true",
+                    cls="cell cell--money cell--clickable",
+                    data_col="cost_price",
+                    hx_get=f"/api/items/{entity_id}/field/cost_price/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                )
+                return total_td, unit_td
             else:
                 # Fetch old value before patching so activity log shows old → new.
                 # get_item returns a _flatten_item result: attribute fields are already
@@ -1300,6 +1509,7 @@ function celerpPrintLabel(entityId, templateId) {
                 )
         # Paired fields: return the combined paired cell after save
         if field in _PAIRED_FIELDS:
+            from ui.components.table import fmt_money
             try:
                 paired_td = await _paired_display(token, entity_id, field)
             except Exception:
@@ -1309,16 +1519,84 @@ function celerpPrintLabel(entityId, templateId) {
                 has_virtual_totals = any(f2.get("virtual") and f2.get("type") == "money" for f2 in schema)
                 if field == "quantity" and has_virtual_totals:
                     safe_id = entity_id.replace(":", "-")
-                    oob_row = Div(
-                        hx_get=f"/api/items/{entity_id}/row",
-                        hx_trigger="load",
-                        hx_target=f"#row-{safe_id}",
-                        hx_swap="outerHTML",
-                        hx_swap_oob="true",
-                        id=f"oob-row-reload-{safe_id}",
-                        style="display:none",
-                    )
-                    return paired_td, oob_row
+                    # Re-fetch updated item for new virtual total values
+                    updated_item = await api.get_item(token, entity_id)
+                    flat = _flatten_item_attrs(updated_item)
+                    try:
+                        company = await api.get_company(token)
+                        currency2 = (company.get("currency") or "").strip() or None
+                    except Exception:
+                        currency2 = None
+                    # Build OOB cells for all virtual totals
+                    oob_cells = []
+                    for vf in schema:
+                        if not (vf.get("virtual") and vf.get("type") == "money"):
+                            continue
+                        vkey = vf["key"]
+                        cell_id = f"cell-{safe_id}-{vkey}"
+                        if vkey == "cost_price_total":
+                            cost_total = float(flat.get("cost_total") or 0)
+                            formatted = fmt_money(cost_total, currency2) if cost_total != 0 else "--"
+                        else:
+                            unit_field = vf.get("paired_with", "")
+                            unit_price = float(flat.get(unit_field) or 0)
+                            new_qty = float(flat.get("quantity") or 0)
+                            total = unit_price * new_qty
+                            formatted = fmt_money(total, currency2) if total != 0 else "--"
+                        inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                        oob_cells.append(Td(
+                            inner,
+                            id=cell_id,
+                            hx_swap_oob="true",
+                            cls="cell cell--money cell--clickable",
+                            data_col=vkey,
+                            hx_get=f"/api/items/{entity_id}/field/{vkey}/edit",
+                            hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
+                        ))
+                    # Also re-render derived weight/pieces cells (qty value changed)
+                    try:
+                        units_resp2 = await api.get_units(token)
+                        _umap2 = {u["name"]: u for u in units_resp2 if u.get("name")}
+                        unit_names2 = [u["name"] for u in units_resp2 if u.get("name")]
+                    except Exception:
+                        _umap2, unit_names2 = {}, []
+                    cell_renderers2 = _inventory_cell_renderers(schema, unit_names2, _umap2)
+                    for derive_field in ("weight", "pieces"):
+                        if derive_field not in cell_renderers2:
+                            continue
+                        rendered = cell_renderers2[derive_field](entity_id, flat)
+                        children = list(rendered.children) if hasattr(rendered, "children") else []
+                        attrs = {k: v for k, v in rendered.attrs.items() if k not in ("id",)}
+                        oob_cells.append(Td(*children, id=f"cell-{safe_id}-{derive_field}",
+                                            hx_swap_oob="true", **attrs))
+                    return paired_td, *oob_cells
+                # sell_by change: re-render weight and pieces cells via shared renderers so
+                # they correctly switch between derived (read-only) and paired/editable display.
+                if field == "sell_by":
+                    safe_id = entity_id.replace(":", "-")
+                    try:
+                        units_resp2 = await api.get_units(token)
+                        _umap2 = {u["name"]: u for u in units_resp2 if u.get("name")}
+                        unit_names2 = [u["name"] for u in units_resp2 if u.get("name")]
+                    except Exception:
+                        _umap2, unit_names2 = {}, []
+                    cell_renderers2 = _inventory_cell_renderers(schema, unit_names2, _umap2)
+                    flat = _flatten_item_attrs(item)
+                    oob_derived = []
+                    for derive_field in ("weight", "pieces"):
+                        if derive_field not in cell_renderers2:
+                            continue
+                        rendered = cell_renderers2[derive_field](entity_id, flat)
+                        # Ensure the td carries id + hx-swap-oob for OOB targeting.
+                        # display_cell already sets id=cell-{safe_id}-{field}; derived Td does not.
+                        # Re-create with both attrs as constructor kwargs (underscore→hyphen by FastHTML).
+                        children = list(rendered.children) if hasattr(rendered, "children") else []
+                        attrs = {k: v for k, v in rendered.attrs.items() if k not in ("id",)}
+                        oob_td = Td(*children, id=f"cell-{safe_id}-{derive_field}",
+                                    hx_swap_oob="true", **attrs)
+                        oob_derived.append(oob_td)
+                    if oob_derived:
+                        return paired_td, *oob_derived
                 return paired_td
         # Price fields: re-render with currency symbol + / sell_unit annotation
         if cell_type == "money":
@@ -1336,27 +1614,36 @@ function celerpPrintLabel(entityId, templateId) {
                 formatted = "--"
             annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
             inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+            safe_id = entity_id.replace(":", "-")
             price_td = Td(
                 inner, annotation,
-                cls="cell cell--money",
+                id=f"cell-{safe_id}-{field}",
+                cls="cell cell--money cell--clickable",
                 data_col=field,
                 hx_get=f"/api/items/{entity_id}/field/{field}/edit",
                 hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
             )
-            # If this price field has a virtual total counterpart, update it OOB
+            # If this price field has a virtual total counterpart, update it OOB by cell id
             virtual_total_field = f"{field}_total"
-            if any(f2.get("key") == virtual_total_field and f2.get("virtual") for f2 in schema):
-                safe_id = entity_id.replace(":", "-")
-                oob_row = Div(
-                    hx_get=f"/api/items/{entity_id}/row",
-                    hx_trigger="load",
-                    hx_target=f"#row-{safe_id}",
-                    hx_swap="outerHTML",
+            vf_def = next((f2 for f2 in schema if f2.get("key") == virtual_total_field and f2.get("virtual")), None)
+            if vf_def:
+                qty = float(item.get("quantity") or 0)
+                if virtual_total_field == "cost_price_total":
+                    total_val = float(item.get("cost_total") or 0)
+                else:
+                    total_val = float(val) * qty if val not in (None, "", "--") else 0.0
+                total_formatted = fmt_money(total_val, currency) if total_val != 0 else "--"
+                total_inner = Span(total_formatted, cls="cell-money") if total_formatted != "--" else Span("--")
+                total_td = Td(
+                    total_inner,
+                    id=f"cell-{safe_id}-{virtual_total_field}",
                     hx_swap_oob="true",
-                    id=f"oob-row-reload-{safe_id}",
-                    style="display:none",
+                    cls="cell cell--money cell--clickable",
+                    data_col=virtual_total_field,
+                    hx_get=f"/api/items/{entity_id}/field/{virtual_total_field}/edit",
+                    hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
                 )
-                return price_td, oob_row
+                return price_td, total_td
             return price_td
         from ui.components.table import display_cell
         try:
@@ -1436,6 +1723,11 @@ function celerpPrintLabel(entityId, templateId) {
             category_label_map = await api.get_category_display_names(token)
         except Exception:
             category_label_map = {}
+        try:
+            company = await api.get_company(token)
+            currency = (company.get("currency") or "").strip() or None
+        except Exception:
+            currency = None
         active_cat = item.get("category", "")
         eff_schema = _effective_schema(schema, cat_schemas, active_cat)
         col_prefs: dict = {}
@@ -1444,24 +1736,66 @@ function celerpPrintLabel(entityId, templateId) {
         except Exception:
             pass
         visible_cols = _resolve_visible_cols(eff_schema, col_prefs, active_cat, [])
+        visible_cols_set = set(visible_cols) if visible_cols else None
         cell_renderers = _inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency)
-        from ui.components.table import display_cell, EMPTY
+        from ui.components.table import display_cell
         safe_id = entity_id.replace(":", "-")
         flat = _flatten_item_attrs(item)
-        visible = [f for f in eff_schema if f.get("key") in set(visible_cols)] if visible_cols else eff_schema
-        cells = [
-            cell_renderers[f["key"]](entity_id, flat) if f["key"] in cell_renderers
-            else display_cell(
-                entity_id=entity_id,
-                field=f["key"],
-                value=flat.get(f["key"], ""),
-                cell_type=f.get("type", "text"),
-                options=f.get("options"),
-                editable=f.get("editable", True),
-            )
-            for f in visible
-        ]
-        return Tr(*cells, id=f"row-{safe_id}", cls="data-row")
+        # Render ALL schema columns (minus paired secondaries), matching data_table behaviour.
+        # Columns not in visible_cols are still rendered but hidden via style="display:none" so
+        # that the td count matches the header and JS column toggling works correctly.
+        all_cols = [f for f in eff_schema if f["key"] not in _PAIRED_SECONDARY_KEYS]
+        data_cells = []
+        for f in all_cols:
+            col_hidden = visible_cols_set is not None and f["key"] not in visible_cols_set
+            if f["key"] in cell_renderers:
+                td = cell_renderers[f["key"]](entity_id, flat)
+            else:
+                td = display_cell(
+                    entity_id=entity_id,
+                    field=f["key"],
+                    value=flat.get(f["key"], ""),
+                    cell_type=f.get("type", "text"),
+                    options=f.get("options"),
+                    editable=f.get("editable", True),
+                    currency=currency,
+                )
+            if col_hidden:
+                # Inject display:none to match what data_table JS would apply
+                td.attrs["style"] = "display:none"
+            data_cells.append(td)
+        # Checkbox cell (matches data_table output)
+        checkbox_td = Td(
+            Input(type="checkbox", cls="row-select", name="selected", value=entity_id,
+                  data_entity_id=entity_id,
+                  data_sku=flat.get("sku", ""),
+                  data_name=flat.get("name", ""),
+                  data_qty=str(flat.get("quantity", 0)),
+                  data_weight=str(flat.get("weight", "") or ""),
+                  data_weight_unit=flat.get("weight_unit", ""),
+                  data_sell_by=flat.get("sell_by", ""),
+            ),
+            cls="col-checkbox",
+        )
+        # Action cell (matches data_table output)
+        action_td = Td(
+            Div(
+                Button("⋮", cls="row-menu-btn", onclick=f"toggleRowMenu('{safe_id}')"),
+                Div(
+                    A(t("btn.edit"), href=f"/inventory/{entity_id}", cls="row-menu-item"),
+                    Button(t("btn.delete"), cls="row-menu-item row-menu-item--danger",
+                           onclick=f"if(!confirm('Delete this item? This cannot be undone.'))return;"
+                                   f"htmx.ajax('DELETE','/api/items/{entity_id}',"
+                                   f"{{target:'#row-{safe_id}',swap:'outerHTML'}})"),
+                    cls="row-menu-dropdown", id=f"menu-{safe_id}",
+                ),
+                cls="row-menu",
+            ),
+            cls="col-actions",
+        )
+        status_val = str(flat.get("status", "") or "").lower()
+        row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
+        return Tr(checkbox_td, *data_cells, action_td, id=f"row-{safe_id}", cls=row_cls)
 
     async def _paired_display(token: str, entity_id: str, field: str):
         """Return a display cell TD for the pair/triple containing `field`."""
@@ -1680,7 +2014,7 @@ function celerpPrintLabel(entityId, templateId) {
             except APIError as e:
                 return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
         total_qty = sum(float(it.get("quantity", 0) or 0) for it in items)
-        _CORE_KEYS = _CORE_ITEM_COLS | {"id", "is_available", "is_expired", "children",
+        _CORE_KEYS = _CORE_ITEM_COLS | {"id", "is_expired", "children",
                                          "child_skus", "merged_into", "reserved_quantity",
                                          "tax_codes", "unit", "expires_at", "total_cost",
                                          "entity_id"}
@@ -1856,6 +2190,8 @@ function celerpPrintLabel(entityId, templateId) {
             "data_weight_decimals": str(weight_decimals),
             "data_unit_decimals": str(decimals),
             "data_parent_qty": str(preview["parent_qty"]),
+            "data_sell_by": preview["sell_by"],
+            "data_weight_units": ",".join(preview.get("weight_unit_names", [])),
         }
         if show_weight:
             form_data["data_parent_weight"] = str(preview["parent_weight"])
@@ -1951,6 +2287,177 @@ function celerpPrintLabel(entityId, templateId) {
         exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
             f"Split: {orig_sku} ({remaining_qty}) + {child_sku} ({split_qty}).",
+            f"?skus={exact_skus}&status=all",
+        )
+
+    @app.get("/api/items/bulk/transform-preview")
+    async def bulk_transform_preview(request: Request):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        entity_id = request.query_params.get("entity_id", "").strip()
+        if not entity_id:
+            return Div()
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"))
+
+        parent_qty = float(item.get("quantity") or 0)
+        parent_sell_by = item.get("sell_by") or "piece"
+        parent_category = item.get("category") or ""
+        parent_weight_unit = item.get("weight_unit") or parent_sell_by
+        parent_pieces = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
+        parent_cost_total = float(item.get("cost_total") or 0) or round(float(item.get("cost_price") or 0) * parent_qty, 2)
+
+        units = await api.get_units(token)
+        unit_map = {u["name"]: u for u in units}
+        unit_names = [u["name"] for u in units]
+        weight_unit_names = [u["name"] for u in units if u.get("unit_type") == "weight"]
+
+        # For weight-sold items, quantity IS the weight; no separate weight field
+        sell_by_is_weight = is_weight_unit(parent_sell_by, unit_map)
+        if sell_by_is_weight:
+            parent_weight = parent_qty
+            parent_weight_unit = parent_sell_by
+        else:
+            parent_weight = item.get("weight")
+
+        categories = await api.list_item_categories(token)
+
+        child_sku = await _next_split_sku(token, item.get("sku", ""))
+
+        fmt = lambda v, d=2: f"{float(v):.{d}f}" if v is not None else ""
+
+        def _static_td(val):
+            return Td(val, cls="sp-td")
+
+        unit_select = Select(
+            *[Option(u, value=u, selected=(u == parent_sell_by)) for u in unit_names],
+            name="child_sell_by",
+            cls="form-input form-input--xs",
+            onchange="transformUnitChanged(this)",
+        )
+        cat_select = Select(
+            *[Option(c, value=c, selected=(c == parent_category)) for c in categories],
+            name="child_category",
+            cls="form-input form-input--sm",
+            style="min-width:160px",
+        )
+
+        # Weight and pieces columns always shown (may be empty if item has no value)
+        mother_cells = [
+            Td("Mother", cls="sp-row-label"),
+            _static_td(item.get("sku", "")),
+            _static_td(parent_category),
+            _static_td(f"{fmt(parent_qty)} {parent_sell_by}"),
+            _static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--"),
+            _static_td(str(int(parent_pieces)) if parent_pieces is not None else "--"),
+            _static_td(fmt(parent_cost_total)),
+        ]
+
+        child_qty_input = Td(
+            Input(type="number", name="child_qty", value=fmt(parent_qty), step="any", min="0",
+                  cls="form-input form-input--xs sp-input",
+                  onchange="transformQtyChanged(this)"),
+            unit_select,
+            cls="sp-td",
+        )
+        child_weight_td = Td(
+            Input(type="number", name="child_weight",
+                  value=fmt(parent_weight) if parent_weight is not None else "",
+                  step="any", cls="form-input form-input--xs sp-input"),
+            cls="sp-td tr-weight-td",
+        )
+        child_pieces_td = Td(
+            Input(type="number", name="child_pieces",
+                  value=str(int(parent_pieces)) if parent_pieces is not None else "",
+                  step="1", cls="form-input form-input--xs sp-input"),
+            cls="sp-td tr-pieces-td",
+        )
+
+        child_cells = [
+            Td("Child", cls="sp-row-label"),
+            Td(Input(type="text", name="child_sku", value=child_sku, cls="form-input sp-sku-input"), cls="sp-td"),
+            Td(cat_select, cls="sp-td"),
+            child_qty_input,
+            child_weight_td,
+            child_pieces_td,
+            Td(
+                Input(type="number", name="child_cost_total", value=fmt(parent_cost_total), step="0.01",
+                      cls="form-input form-input--xs sp-input",
+                      oninput="transformCostManualEdit(this)"),
+                cls="sp-td",
+            ),
+        ]
+
+        headers = [
+            Th(""), Th("SKU", cls="sp-th"), Th("Category", cls="sp-th"),
+            Th("Qty + Unit", cls="sp-th"), Th("Weight", cls="sp-th"),
+            Th("Pieces", cls="sp-th"), Th("Cost Total", cls="sp-th"),
+        ]
+
+        form_attrs = {
+            "data-parent-cost-total": str(parent_cost_total),
+            "data-weight-units": ",".join(weight_unit_names),
+            "data-parent-qty": str(parent_qty),
+        }
+
+        return Form(
+            Input(type="hidden", name="entity_id", value=entity_id),
+            Table(
+                Thead(Tr(*headers)),
+                Tbody(Tr(*mother_cells), Tr(*child_cells)),
+                cls="split-preview-table",
+            ),
+            Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
+            hx_post="/api/items/bulk/transform",
+            hx_target="#bulk-action-result",
+            hx_swap="outerHTML",
+            id="bulk-transform-preview-form",
+            **form_attrs,
+        )
+
+    @app.post("/api/items/bulk/transform")
+    async def bulk_item_transform(request: Request):
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401)
+        form = await request.form()
+        entity_id = str(form.get("entity_id", "")).strip()
+        if not entity_id:
+            return Div(P("No item selected.", cls="flash flash--warning"), id="bulk-action-result")
+
+        try:
+            child_qty = float(str(form.get("child_qty", "0")).strip())
+            child_cost_total = float(str(form.get("child_cost_total", "0")).strip())
+        except ValueError:
+            return Div(P("Invalid numeric input.", cls="flash flash--warning"), id="bulk-action-result")
+
+        child_weight_raw = str(form.get("child_weight", "")).strip()
+        child_pieces_raw = str(form.get("child_pieces", "")).strip()
+
+        payload = {
+            "child_sku": str(form.get("child_sku", "")).strip(),
+            "child_category": str(form.get("child_category", "")).strip(),
+            "child_sell_by": str(form.get("child_sell_by", "")).strip(),
+            "child_quantity": child_qty,
+            "child_weight": float(child_weight_raw) if child_weight_raw else None,
+            "child_pieces": int(child_pieces_raw) if child_pieces_raw else None,
+            "child_cost_total": child_cost_total,
+        }
+
+        try:
+            result = await api.transform_item(token, entity_id, payload)
+        except APIError as e:
+            return Div(P(str(e.detail), cls="flash flash--warning"), id="bulk-action-result")
+
+        child_sku = result.get("child_sku", "")
+        parent_sku = result.get("parent_sku", "")
+        from urllib.parse import quote
+        exact_skus = f"{quote(parent_sku)},{quote(child_sku)}"
+        return _bulk_destructive_success(
+            f"Transformed: {parent_sku} → {child_sku}",
             f"?skus={exact_skus}&status=all",
         )
 
@@ -2156,6 +2663,9 @@ function celerpPrintLabel(entityId, templateId) {
         except Exception:
             price_lists = [{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}]
         try:
+            # Fetch item once to get qty (needed for cost_price → cost_total conversion)
+            item_for_price = await api.get_item(token, entity_id)
+            item_qty = float(item_for_price.get("quantity") or 0)
             for pl in price_lists:
                 pl_name = pl.get("name", "")
                 conventional_key = f"{pl_name.lower()}_price"
@@ -2165,7 +2675,14 @@ function celerpPrintLabel(entityId, templateId) {
                         price = float(val)
                     except ValueError:
                         continue
-                    await api.set_item_price(token, entity_id, pl_name, price)
+                    # cost_price is a derived field; always save as cost_total to avoid being
+                    # overwritten by _flatten_item on the next read.
+                    # Use patch_item (not set_item_price) so price_type normalization doesn't mangle "cost_total".
+                    if conventional_key == "cost_price" and item_qty > 0:
+                        old_cost_total = item_for_price.get("cost_total")
+                        await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}})
+                    else:
+                        await api.set_item_price(token, entity_id, pl_name, price)
         except APIError as e:
             return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
@@ -2338,7 +2855,6 @@ function celerpPrintLabel(entityId, templateId) {
     @app.post("/api/items/{entity_id}/split-inline")
     async def item_split_inline(request: Request, entity_id: str):
         """Detail page split: one or more children, auto-SKU, redirect to exact filtered inventory."""
-        from urllib.parse import quote as _quote
         token = _token(request)
         if not token:
             return Response("", status_code=401, headers={"HX-Redirect": "/login"})
@@ -2360,21 +2876,117 @@ function celerpPrintLabel(entityId, templateId) {
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         orig_sku = str(item.get("sku", "") or "")
+        sell_by = str(item.get("sell_by") or "piece")
+        from celerp.services.units import DEFAULT_UNITS
+        _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
+        # Optional complement fields (one value per row; may be empty)
+        comp_weights  = form.getlist("split_weight")
+        comp_pieces_l = form.getlist("split_pieces")
         # Auto-generate sequential SKUs for each child
         children: list[dict] = []
         used_skus: set[str] = set()
-        for qty in children_qtys:
+        for idx, qty in enumerate(children_qtys):
             child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
             used_skus.add(child_sku)
-            children.append({"sku": child_sku, "quantity": qty})
+            child: dict = {"sku": child_sku, "quantity": qty}
+            # Attach complement if provided for this row
+            if is_pieces_unit(sell_by, _default_umap) and idx < len(comp_weights):
+                raw_w = (comp_weights[idx] or "").strip()
+                if raw_w:
+                    try:
+                        _apply_complement(child, sell_by, float(raw_w), _default_umap)
+                    except (ValueError, TypeError):
+                        pass
+            elif is_weight_unit(sell_by, _default_umap) and idx < len(comp_pieces_l):
+                raw_p = (comp_pieces_l[idx] or "").strip()
+                if raw_p:
+                    try:
+                        _apply_complement(child, sell_by, float(raw_p), _default_umap)
+                    except (ValueError, TypeError):
+                        pass
+            children.append(child)
         try:
             await api.split_item(token, entity_id, children)
         except APIError as e:
             return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
         child_skus = [c["sku"] for c in children]
+        return _split_redirect(orig_sku, child_skus)
+
+    def _split_redirect(orig_sku: str, child_skus: list[str]) -> Response:
+        """Build the HX-Redirect response after a successful split."""
+        from urllib.parse import quote as _quote
         skus_param = ",".join(_quote(s) for s in [orig_sku] + child_skus)
         redirect = f"/inventory?skus={skus_param}&status=all" if orig_sku else "/inventory"
         return Response("", status_code=204, headers={"HX-Redirect": redirect})
+
+    def _apply_complement(child: dict, sell_by: str, complement: float, unit_map: dict) -> None:
+        """Attach the complement field to a split child dict based on the item's sell_by unit.
+
+        weight-unit items carry pieces as the complement; piece-unit items carry weight.
+        Mutates child in place.
+        """
+        if is_weight_unit(sell_by, unit_map):
+            child["pieces"] = int(round(complement))
+        elif is_pieces_unit(sell_by, unit_map):
+            child["weight"] = complement
+
+    @app.post("/api/items/{entity_id}/batch-split")
+    async def item_batch_split(request: Request, entity_id: str):
+        """Batch split: N identical children of the same qty, auto-SKU, redirect to filtered inventory."""
+        token = _token(request)
+        if not token:
+            return Response("", status_code=401, headers={"HX-Redirect": "/login"})
+        form = await request.form()
+        raw_qty   = str(form.get("batch_qty",   "")).strip()
+        raw_count = str(form.get("batch_count", "")).strip()
+        try:
+            batch_qty = float(raw_qty)
+        except (ValueError, TypeError):
+            return Span(t("inv.invalid_split_quantity"), cls="flash flash--error", id="item-action-error")
+        try:
+            batch_count = int(raw_count)
+        except (ValueError, TypeError):
+            return Span("Count must be a whole number.", cls="flash flash--error", id="item-action-error")
+        if batch_qty <= 0:
+            return Span(t("inv.split_quantity_must_be_greater_than_0"), cls="flash flash--error", id="item-action-error")
+        if batch_count < 2:
+            return Span("Count must be at least 2.", cls="flash flash--error", id="item-action-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
+        available = float(item.get("quantity") or 0)
+        if batch_qty * batch_count > available:
+            return Span(
+                f"Total ({batch_qty * batch_count}) exceeds available ({available}).",
+                cls="flash flash--error", id="item-action-error",
+            )
+        orig_sku = str(item.get("sku", "") or "")
+        # Optional complement field (weight when sell_by is pieces, pieces when sell_by is weight)
+        raw_comp = str(form.get("batch_complement", "")).strip()
+        complement: float | None = None
+        if raw_comp:
+            try:
+                complement = float(raw_comp)
+            except (ValueError, TypeError):
+                pass
+        used_skus: set[str] = set()
+        children: list[dict] = []
+        sell_by = item.get("sell_by") or "piece"
+        from celerp.services.units import DEFAULT_UNITS
+        _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
+        for _ in range(batch_count):
+            child_sku = await _next_split_sku(token, orig_sku, exclude=used_skus)
+            used_skus.add(child_sku)
+            child: dict = {"sku": child_sku, "quantity": batch_qty}
+            if complement is not None:
+                _apply_complement(child, sell_by, complement, _default_umap)
+            children.append(child)
+        try:
+            await api.split_item(token, entity_id, children)
+        except APIError as e:
+            return Span(str(e.detail), cls="flash flash--error", id="item-action-error")
+        return _split_redirect(orig_sku, [c["sku"] for c in children])
 
     @app.post("/api/items/merge")
     async def item_merge(request: Request):
@@ -2387,14 +2999,14 @@ function celerpPrintLabel(entityId, templateId) {
         if not source_entity_ids or not target_sku_from:
             return Span(t("inv.source_items_and_target_selection_are_required"), cls="flash flash--error")
         raw_qty = str(form.get("resulting_quantity", "")).strip()
-        raw_cost = str(form.get("resulting_cost_price", "")).strip()
+        raw_cost = str(form.get("resulting_cost_total", "")).strip()
         resulting_name = str(form.get("resulting_name", "")).strip() or None
         try:
             resulting_quantity = float(raw_qty) if raw_qty else None
         except ValueError:
             return Span(t("error.invalid_resulting_quantity"), cls="flash flash--error")
         try:
-            resulting_cost_price = float(raw_cost) if raw_cost else None
+            resulting_cost_total = float(raw_cost) if raw_cost else None
         except ValueError:
             return Span(t("inv.invalid_resulting_cost_price"), cls="flash flash--error")
         # Collect resolved attributes for string conflicts.
@@ -2415,7 +3027,7 @@ function celerpPrintLabel(entityId, templateId) {
                 source_entity_ids=source_entity_ids,
                 target_sku_from=target_sku_from,
                 resulting_quantity=resulting_quantity,
-                resulting_cost_price=resulting_cost_price,
+                resulting_cost_total=resulting_cost_total,
                 resulting_name=resulting_name,
                 resolved_attributes=resolved_attributes or None,
             )
@@ -2652,6 +3264,7 @@ def _bulk_toolbar(locations: list[dict], p: dict | None = None, total_items: int
         Option(t("inv.action"), value="", disabled=True, selected=True),
         Option(t("btn.transfer"), value="transfer"),
         Option(t("inv.split"), value="split"),
+        Option(t("inv.transform"), value="transform"),
         Option(t("inv.merge"), value="merge"),
     ]
     if send_to_opts:
@@ -2731,6 +3344,15 @@ def _bulk_context_templates(
             id="bulk-split-form",
         ),
         id="tpl-split",
+    )
+
+    # Transform: auto-loads preview on action select
+    transform_tpl = Template(
+        Div(
+            Div(id="bulk-transform-preview"),
+            id="bulk-transform-form",
+        ),
+        id="tpl-transform",
     )
 
     # Merge: target dropdown + confirm
@@ -2827,6 +3449,7 @@ def _bulk_context_templates(
     return Div(
         transfer_tpl,
         split_tpl,
+        transform_tpl,
         merge_tpl,
         send_to_tpl,
         *module_tpls,
@@ -3073,10 +3696,10 @@ _PAIRED_TABLE: dict[str, str] = {"quantity": "sell_by", "weight": "weight_unit",
 _PAIRED_SECONDARY_KEYS: frozenset[str] = frozenset(_PAIRED_TABLE.values())
 # Core item fields shown in the left (core details) panel on the detail page — single definition
 _ITEM_CORE_KEYS: frozenset[str] = frozenset({
-    "sku", "name", "status", "category", "quantity", "weight", "weight_unit",
-    "sell_by", "allow_splitting", "barcode", "hs_code", "location_name",
-    "short_description", "purchase_sku", "purchase_name", "purchase_unit",
-    "purchase_conversion_factor",
+    "sku", "name", "status", "category", "quantity", "pieces", "weight", "weight_unit",
+    "gross_weight", "gross_weight_unit", "sell_by", "allow_splitting", "barcode",
+    "hs_code", "location_name", "short_description", "purchase_sku", "purchase_name",
+    "purchase_unit", "purchase_conversion_factor",
 })
 
 
@@ -3102,9 +3725,11 @@ def _render_virtual_total_cell(entity_id: str, field: str, unit_price: float | N
     except (ValueError, TypeError):
         formatted = "--"
     inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+    safe_eid = entity_id.replace(":", "-")
     return Td(
         inner,
-        cls="cell cell--money",
+        id=f"cell-{safe_eid}-{field}",
+        cls="cell cell--money cell--clickable",
         data_col=field,
         hx_get=f"/api/items/{entity_id}/field/{field}/edit",
         hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
@@ -3179,6 +3804,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
         _weight_paired = renderers.get("weight")  # paired renderer built above (may be None)
         def _weight_renderer(entity_id: str, row: dict, _umap=_umap, _paired=_weight_paired) -> FT:
             sell_by = row.get("sell_by") or ""
+            _safe_id = entity_id.replace(":", "-")
             if is_weight_unit(sell_by, _umap):
                 qty_val = row.get("quantity", "")
                 fmt = format_qty(qty_val, sell_by, _umap)
@@ -3189,13 +3815,16 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                         title="Derived from Qty column",
                         cls="cell-derived",
                     ),
+                    id=f"cell-{_safe_id}-weight",
                     cls="cell cell--number",
                     data_col="weight",
                     data_decimals=str(decimals),
                 )
             # Not a weight unit - use paired cell (weight + weight_unit) or plain editable
             if _paired:
-                return _paired(entity_id, row)
+                td = _paired(entity_id, row)
+                td.attrs["id"] = f"cell-{_safe_id}-weight"
+                return td
             return display_cell(entity_id=entity_id, field="weight", value=row.get("weight", ""), cell_type="number", editable=True)
         renderers["weight"] = _weight_renderer
 
@@ -3203,6 +3832,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
     if "pieces" in schema_keys:
         def _pieces_renderer(entity_id: str, row: dict, _umap=_umap) -> FT:
             sell_by = row.get("sell_by") or ""
+            _safe_id = entity_id.replace(":", "-")
             if is_pieces_unit(sell_by, _umap):
                 qty_val = row.get("quantity", "")
                 fmt = format_qty(qty_val, sell_by, _umap)
@@ -3213,6 +3843,7 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                         title="Derived from Qty column",
                         cls="cell-derived",
                     ),
+                    id=f"cell-{_safe_id}-pieces",
                     cls="cell cell--number",
                     data_col="pieces",
                     data_decimals=str(decimals),
@@ -3245,9 +3876,11 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
                     formatted = "--"
                 annotation = Span(f"/ {sell_by}", cls="cell-price-unit") if sell_by else ""
                 inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                _safe_eid = entity_id.replace(":", "-")
                 return Td(
                     inner, annotation,
-                    cls="cell cell--money",
+                    id=f"cell-{_safe_eid}-{field}",
+                    cls="cell cell--money cell--clickable",
                     data_col=field,
                     hx_get=f"/api/items/{entity_id}/field/{field}/edit",
                     hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
@@ -3255,22 +3888,28 @@ def _inventory_cell_renderers(schema: list[dict], unit_names: list[str] | None =
             return renderer
         renderers[pk] = _make_price_renderer()
 
-    # Virtual total column renderers: cost_price_total = cost_price * quantity
+    # Virtual total column renderers
     for vk, vf in virtual_total_fields.items():
         paired = vf.get("paired_with", "")
         def _make_total_renderer(total_field=vk, unit_field=paired, _currency=_cur):
             def renderer(entity_id: str, row: dict) -> FT:
                 try:
-                    unit_price = float(row.get(unit_field) or 0)
-                    qty = float(row.get("quantity") or 0)
-                    total = unit_price * qty
+                    if total_field == "cost_price_total" and row.get("cost_total") is not None:
+                        # cost_total is the primitive; display it directly
+                        total = float(row["cost_total"])
+                    else:
+                        unit_price = float(row.get(unit_field) or 0)
+                        qty = float(row.get("quantity") or 0)
+                        total = unit_price * qty
                     formatted = fmt_money(total, _currency) if total != 0 else "--"
                 except (ValueError, TypeError):
                     formatted = "--"
                 inner = Span(formatted, cls="cell-money") if formatted != "--" else Span("--")
+                _safe_eid = entity_id.replace(":", "-")
                 return Td(
                     inner,
-                    cls="cell cell--money",
+                    id=f"cell-{_safe_eid}-{total_field}",
+                    cls="cell cell--money cell--clickable",
                     data_col=total_field,
                     hx_get=f"/api/items/{entity_id}/field/{total_field}/edit",
                     hx_target="this", hx_swap="outerHTML", hx_trigger="dblclick",
@@ -3294,12 +3933,14 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
     _cm_exclude = _PAIRED_SECONDARY_KEYS | {f.get("key") for f in schema if f.get("virtual")}
     col_data = [{"key": f.get("key", ""), "label": f.get("label", f.get("key", ""))} for f in schema if f.get("key") not in _cm_exclude]
     col_data_js = _json.dumps(col_data)
-    # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary
-    virtual_followers_js = _json.dumps({
-        f["paired_with"]: [f["key"]]
-        for f in schema
-        if f.get("virtual") and f.get("paired_with")
-    })
+    # Map: primary_key → [virtual_key, ...] so applyOrderToTable can drag virtual cols alongside primary.
+    # Virtual total always follows its paired unit-price column (the primary).
+    _vf_map: dict[str, list[str]] = {}
+    for f in schema:
+        if f.get("virtual") and f.get("paired_with"):
+            key, paired = f["key"], f["paired_with"]
+            _vf_map.setdefault(paired, []).append(key)
+    virtual_followers_js = _json.dumps(_vf_map)
     selected_js = _json.dumps(sorted(selected))
     # Hidden inputs for fallback server save (category, status, sort etc.)
     hidden_state = {k: v for k, v in _base_state(p).items() if k != "cols"}
@@ -4341,39 +4982,143 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
             A(action.get("label", "Action"), href=href, cls="btn btn--secondary btn--sm")
         )
 
+    safe_id = re.sub(r"[^a-zA-Z0-9]", "_", entity_id)
+
     # 2x2 compact action cards
     allow_splitting = item.get("allow_splitting", True)
     sell_by = item.get("sell_by") or "piece"
     if allow_splitting:
         sell_by_label = sell_by.capitalize()
+        # Determine complement field: pieces sell_by → optional weight; weight sell_by → optional pieces
+        from celerp.services.units import DEFAULT_UNITS
+        _default_umap = {u["name"]: u for u in DEFAULT_UNITS}
+        _is_weight = is_weight_unit(sell_by, _default_umap)
+        _is_pieces = is_pieces_unit(sell_by, _default_umap)
+        if _is_weight:
+            _comp_name   = "split_pieces"
+            _comp_ph     = "Pieces (optional)"
+            _comp_title  = t("inv.tooltip.split_pieces_opt")
+            _comp_step   = "1"
+        elif _is_pieces:
+            _comp_name   = "split_weight"
+            _comp_ph     = "Weight (optional)"
+            _comp_title  = t("inv.tooltip.split_weight_opt")
+            _comp_step   = "0.001"
+        else:
+            _comp_name   = None
+            _comp_ph     = None
+            _comp_title  = None
+            _comp_step   = None
+
+        _qty_title         = t("inv.tooltip.split_qty").replace("{unit}", sell_by_label)
+        _batch_qty_title   = t("inv.tooltip.batch_qty").replace("{unit}", sell_by_label)
+        _batch_count_title = t("inv.tooltip.batch_count")
+
+        # Complement input for manual rows (rendered inline via FastHTML and duplicated by JS)
+        _comp_inputs = ([Input(type="number", name=_comp_name,
+                               placeholder=_comp_ph, title=_comp_title,
+                               step=_comp_step, min="0",
+                               cls="form-input form-input--sm split-complement")]
+                        if _comp_name else [])
+        # JS fragment for complement field in dynamically added rows
+        _comp_js = (
+            f'+ \'<input type="number" name="{_comp_name}" placeholder="{_comp_ph}"'
+            f' title="{_comp_title}" step="{_comp_step}" min="0"'
+            f' class="form-input form-input--sm split-complement">\''
+        ) if _comp_name else ""
+
+        # Combined Split + Batch Split card (single card, divider between sections)
         split_card = Div(
             Form(
                 Strong(t("inv.u2702_split"), cls="action-card-title"),
+                # ── Manual split rows ──
                 Div(
-                    # Dynamic qty rows - JS adds more via addSplitRow()
                     Div(
-                        Div(
-                            Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
-                                   onclick="addSplitRow(this)"),
-                            Input(type="number", name="split_qty", placeholder=f"{sell_by_label} to split off",
-                                  step="any", min="0.001", cls="form-input form-input--sm", required=True),
-                            cls="split-qty-row",
-                        ),
-                        id="split-qty-rows",
+                        Input(type="number", name="split_qty",
+                              placeholder=f"{sell_by_label} to split off",
+                              title=_qty_title,
+                              step="any", min="0.001",
+                              cls="form-input form-input--sm split-qty-main", required=True),
+                        *_comp_inputs,
+                        cls="split-qty-row",
                     ),
-                    Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs"),
-                    cls="action-card-row action-card-row--col",
+                    id="split-qty-rows",
                 ),
+                Div(
+                    Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
+                           onclick="addSplitRow(this)"),
+                    Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
+                           onclick="(function(btn){btn.disabled=true;btn.style.opacity='0.5';btn.form.requestSubmit();})(this);return false;"),
+                    cls="action-card-row", style="margin-top:4px",
+                ),
+                # ── Divider + Batch Split heading ──
+                Hr(cls="action-card-divider"),
+                Strong(t("inv.batch_split"), cls="action-card-title", style="margin-bottom:4px"),
+                # ── Batch split row ──
+                Div(
+                    Input(type="number", name="batch_qty",
+                          placeholder=f"{sell_by_label} per child",
+                          title=_batch_qty_title,
+                          step="any", min="0.001",
+                          cls="form-input form-input--sm split-qty-main",
+                          oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                    *([Input(type="number", name="batch_complement",
+                             placeholder=_comp_ph, title=_comp_title,
+                             step=_comp_step, min="0",
+                             cls="form-input form-input--sm split-complement",
+                             oninput=f"batchSplitPreview_{safe_id}(this.form)")]
+                      if _comp_name else []),
+                    Span("\u00d7", cls="batch-split-sep"),
+                    Input(type="number", name="batch_count",
+                          placeholder="Count",
+                          title=_batch_count_title,
+                          step="1", min="2",
+                          cls="form-input form-input--sm batch-split-count",
+                          oninput=f"batchSplitPreview_{safe_id}(this.form)"),
+                    Button("Batch", type="button",
+                           title=t("inv.tooltip.batch_submit"),
+                           cls="btn btn--primary btn--xs btn--batch-submit",
+                           onclick=f"batchSplitSubmit_{safe_id}(this.closest('form'))"),
+                    cls="action-card-row",
+                ),
+                Div(id=f"batch-split-preview-{safe_id}", cls="batch-split-preview"),
                 Script(f"""
 function addSplitRow(btn) {{
   var container = document.getElementById('split-qty-rows');
   var row = document.createElement('div');
   row.className = 'split-qty-row';
-  row.innerHTML = '<button type="button" class="btn btn--secondary btn--xs split-add-btn" onclick="addSplitRow(this)">+</button>'
-    + '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" step="any" min="0.001" class="form-input form-input--sm" required>'
-    + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">✕</button>';
+  row.innerHTML = '<input type="number" name="split_qty" placeholder="{sell_by_label} to split off" title="{_qty_title}" step="any" min="0.001" class="form-input form-input--sm split-qty-main" required>'
+    {_comp_js}
+    + '<button type="button" class="btn btn--ghost btn--xs split-remove-btn" onclick="this.parentNode.remove()">\u2715</button>';
   container.appendChild(row);
   row.querySelector('input').focus();
+}}
+function batchSplitPreview_{safe_id}(form) {{
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value)     || 0;
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10) || 0;
+  var avail = {current_qty};
+  var unit  = '{sell_by_label}';
+  var el    = document.getElementById('batch-split-preview-{safe_id}');
+  if (!el) return;
+  if (!qty || !count) {{ el.innerHTML = ''; return; }}
+  var total = qty * count;
+  var over  = total > avail;
+  el.innerHTML = count + ' \u00d7 ' + qty + '\u00a0' + unit
+    + ' = ' + total.toFixed(2) + '\u00a0' + unit
+    + (over ? ' <span class="batch-split-over">exceeds available (' + avail + ')</span>' : '');
+}}
+function batchSplitSubmit_{safe_id}(form) {{
+  var qty   = parseFloat(form.querySelector('[name=batch_qty]').value);
+  var count = parseInt(form.querySelector('[name=batch_count]').value, 10);
+  if (!qty || qty <= 0) {{ alert('Enter a valid quantity per child.'); return; }}
+  if (!count || count < 2) {{ alert('Count must be at least 2.'); return; }}
+  var btn = form.querySelector('.btn--batch-submit');
+  if (btn) {{ btn.disabled = true; btn.style.opacity = '0.5'; }}
+  var compEl = form.querySelector('[name=batch_complement]');
+  var vals = {{ batch_qty: qty, batch_count: count }};
+  if (compEl && compEl.value) vals.batch_complement = compEl.value;
+  htmx.ajax('POST', '/api/items/{entity_id}/batch-split',
+    {{ target: '#item-action-error', swap: 'outerHTML', values: vals }});
 }}
 """),
                 hx_post=f"/api/items/{entity_id}/split-inline",
@@ -4388,6 +5133,8 @@ function addSplitRow(btn) {{
             P(t("inv.splitting_disabled_hint"), cls="action-card-hint"),
             cls="action-card action-card--disabled",
         )
+
+    batch_split_card = ""  # merged into split_card above
 
     duplicate_card = Div(
         Form(
@@ -4500,6 +5247,7 @@ function addSplitRow(btn) {{
         Span("", id="item-action-error"),
         Div(
             split_card,
+            batch_split_card,
             duplicate_card,
             *lifecycle_cards,
             rtv_card,

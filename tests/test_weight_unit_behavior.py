@@ -486,115 +486,6 @@ class TestRoundTrip:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. gemcloud_adapter helpers (importable functions, no JSONL files needed)
-# ─────────────────────────────────────────────────────────────────────────────
-
-@pytest.fixture(scope="module")
-def adapter():
-    """Import gemcloud_adapter.py from the migration directory."""
-    import importlib.util, sys
-    from pathlib import Path
-    adapter_path = Path(__file__).resolve().parents[1] / "context" / "migration" / "gemcloud_adapter.py"
-    if not adapter_path.exists():
-        pytest.skip("gemcloud_adapter.py not in repo — skipping adapter tests")
-    spec = importlib.util.spec_from_file_location("gemcloud_adapter", str(adapter_path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-class TestGemCloudAdapterWeightFields:
-    """adapt_item should map GemCloud weight to weight/weight_unit='ct', not weight_ct."""
-
-    def _gc_item_event(self, **overrides) -> dict:
-        data = {
-            "id": "999",
-            "product_title": "Test Stone",
-            "status": "available",
-            "weight": None,
-            "cost_per_carat": None,
-            "total_cost": None,
-            "total_selling_price": None,
-            "retail_price": None,
-            "calibrated": "",
-        }
-        data.update(overrides)
-        return {"data": data, "idempotency_key": "key:999"}
-
-    def test_adapt_item_weight_ct_maps_to_weight_plus_unit(self, adapter) -> None:
-        event = self._gc_item_event(weight="2.50ct")
-        item = adapter.adapt_item(event)
-        assert item.weight == Decimal("2.50")
-        assert item.weight_unit == "ct"
-
-    def test_adapt_item_no_weight_gives_none_unit(self, adapter) -> None:
-        event = self._gc_item_event(weight=None)
-        item = adapter.adapt_item(event)
-        assert item.weight is None
-        assert item.weight_unit is None
-
-    def test_adapt_item_cost_per_carat_maps_to_cost_per_unit(self, adapter) -> None:
-        event = self._gc_item_event(weight="1.0", cost_per_carat="$300.00")
-        item = adapter.adapt_item(event)
-        assert item.cost_per_unit == Decimal("300.00")
-
-    def test_adapt_item_no_cost_per_carat_gives_none(self, adapter) -> None:
-        event = self._gc_item_event(cost_per_carat=None)
-        item = adapter.adapt_item(event)
-        assert item.cost_per_unit is None
-
-    def test_adapt_item_no_weight_ct_field_on_result(self, adapter) -> None:
-        event = self._gc_item_event(weight="1.5")
-        item = adapter.adapt_item(event)
-        assert not hasattr(item, "weight_ct"), "weight_ct must not exist on CIFItem"
-        assert not hasattr(item, "cost_per_ct"), "cost_per_ct must not exist on CIFItem"
-
-    def test_adapt_item_attributes_contain_stone_fields_not_weight(self, adapter) -> None:
-        """Stone-type fields go into attributes; weight stays top-level."""
-        event = self._gc_item_event(
-            weight="3.0",
-            **{"stone_types": {"name": "Ruby"}, "stone_type_colors": {"name": "Red"}},
-        )
-        item = adapter.adapt_item(event)
-        assert item.weight == Decimal("3.0")
-        assert item.weight_unit == "ct"
-        assert item.attributes.get("stone_type") == "Ruby"
-        # weight is NOT in attributes
-        assert "weight" not in item.attributes
-        assert "weight_ct" not in item.attributes
-
-    def test_adapt_line_item_weight_maps_correctly(self, adapter) -> None:
-        """adapt_invoice produces CIFLineItems with weight/weight_unit, not weight_ct."""
-        invoice_event = {
-            "data": {
-                "id": "inv:1",
-                "customer_id": "42",
-                "status": "Paid",
-                "is_void": 0,
-                "is_payment_recieved": "1",
-                "converted_price": "$5000.00",
-                "payment_remaining": "$0.00",
-                "stone_order_invoice_products": [
-                    {
-                        "stone_detail_id": "100",
-                        "weight": "2.15ct",
-                        "unit_price": "$5000.00",
-                        "total_selling_price": "$5000.00",
-                        "stone": {"total_cost": "$2000.00"},
-                    }
-                ],
-            },
-            "idempotency_key": "key:inv:1",
-        }
-        doc = adapter.adapt_invoice(invoice_event)
-        assert len(doc.line_items) == 1
-        li = doc.line_items[0]
-        assert li.weight == Decimal("2.15")
-        assert li.weight_unit == "ct"
-        assert not hasattr(li, "weight_ct"), "weight_ct must not exist on CIFLineItem"
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # 8. ItemCreate router model — weight_unit and sell_by are universal
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -658,78 +549,32 @@ class TestItemCreateModel:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestTimestampFields:
-    """created_at and updated_at are universal fields preserved through the full pipeline."""
+    """created_at/updated_at are system-managed Projection columns, not CIF fields.
 
-    def test_cif_item_has_updated_at_field(self) -> None:
-        assert "updated_at" in CIFItem.model_fields
+    CIFItem and CIFDocument intentionally omit these fields — Celerp stamps
+    created_at on INSERT via ProjectionEngine; external provenance timestamps
+    are discarded.
+    """
 
-    def test_cif_item_updated_at_none_by_default(self) -> None:
+    def test_cif_item_has_no_created_at_field(self) -> None:
+        assert "created_at" not in CIFItem.model_fields
+
+    def test_cif_item_has_no_updated_at_field(self) -> None:
+        assert "updated_at" not in CIFItem.model_fields
+
+    def test_cif_item_constructs_without_timestamps(self) -> None:
         item = CIFItem(external_id="i:1", name="Stone", status="available")
-        assert item.updated_at is None
-
-    def test_cif_item_updated_at_set(self) -> None:
-        from datetime import datetime, timezone
-        dt = datetime(2026, 2, 19, 15, 59, 22, tzinfo=timezone.utc)
-        item = CIFItem(
-            external_id="i:1",
-            name="Stone",
-            status="available",
-            created_at=datetime(2019, 11, 14, tzinfo=timezone.utc),
-            updated_at=dt,
-        )
-        assert item.updated_at == dt
-
-    def test_cif_item_timestamps_survive_roundtrip(self) -> None:
-        from datetime import datetime, timezone
-        item = CIFItem(
-            external_id="i:1",
-            name="Stone",
-            status="available",
-            created_at=datetime(2019, 11, 14, tzinfo=timezone.utc),
-            updated_at=datetime(2026, 2, 19, 15, 59, 22, tzinfo=timezone.utc),
-        )
-        raw = json.loads(item.model_dump_json())
-        restored = CIFItem.model_validate(raw)
-        assert restored.created_at == item.created_at
-        assert restored.updated_at == item.updated_at
+        assert not hasattr(item, "created_at")
+        assert not hasattr(item, "updated_at")
 
     def test_item_snapshot_schema_has_timestamp_fields(self) -> None:
+        # ItemSnapshot (event schema) retains these for event payloads
         from celerp.events.schemas import ItemSnapshot
         assert "created_at" in ItemSnapshot.model_fields
         assert "updated_at" in ItemSnapshot.model_fields
 
-    def test_importer_payload_includes_updated_at(self) -> None:
-        from unittest.mock import AsyncMock, patch
-        from datetime import datetime, timezone
-
-        manifest = CIFImportManifest(
-            source="test",
-            exported_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
-            bundle=CIFImportBundle(items=[
-                CIFItem(
-                    external_id="i:1",
-                    name="Stone",
-                    status="available",
-                    created_at=datetime(2019, 11, 14, tzinfo=timezone.utc),
-                    updated_at=datetime(2026, 2, 19, 15, 59, 22, tzinfo=timezone.utc),
-                )
-            ]),
-        )
-        captured: list[dict] = []
-
-        async def _fake_post(client, endpoint, records):
-            captured.extend(records)
-            return {"created": len(records), "skipped": 0, "errors": []}
-
-        importer = BundleImporter(api_base="http://localhost", token="tok")
-        with patch.object(importer, "_post_batch", new=AsyncMock(side_effect=_fake_post)):
-            _run_coroutine(importer.run(manifest))
-
-        payload = next(p for p in captured if p.get("event_type") == "item.snapshot")
-        assert payload["data"]["updated_at"] == "2026-02-19T15:59:22+00:00"
-        assert payload["data"]["created_at"] == "2019-11-14T00:00:00+00:00"
-
-    def test_importer_payload_updated_at_none_when_absent(self) -> None:
+    def test_importer_payload_has_no_timestamps(self) -> None:
+        """Importer must not emit created_at/updated_at in item event data."""
         from unittest.mock import AsyncMock, patch
         from datetime import datetime, timezone
 
@@ -751,5 +596,5 @@ class TestTimestampFields:
             _run_coroutine(importer.run(manifest))
 
         payload = next(p for p in captured if p.get("event_type") == "item.snapshot")
-        assert payload["data"]["updated_at"] is None
-        assert payload["data"]["created_at"] is None
+        assert "created_at" not in payload["data"], "created_at must not be in importer payload"
+        assert "updated_at" not in payload["data"], "updated_at must not be in importer payload"

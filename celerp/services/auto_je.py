@@ -255,6 +255,7 @@ async def create_for_bill_conversion(
     doc_id: str,
     doc: dict,
     base_currency: str = "USD",
+    revert_count: int = 0,
 ) -> None:
     """Create JE when a bill is finalized (direct bill) or when a PO is converted to a bill.
 
@@ -308,8 +309,8 @@ async def create_for_bill_conversion(
         company_id=company_id,
         user_id=user_id,
         je_id=f"je:auto:{doc_id}:bill",
-        idem_create=je_idempotency_key(doc_id, "po.converted_to_bill", "c"),
-        idem_posted=je_idempotency_key(doc_id, "po.converted_to_bill", "p"),
+        idem_create=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"po.converted_to_bill:{revert_count}", "p"),
         memo=f"Auto JE for {doc_id} converted to bill",
         ts=doc.get("issue_date") or doc.get("finalized_at") or __import__("datetime").date.today().isoformat(),
         entries=entries,
@@ -430,17 +431,25 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
         )
 
 
-async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float) -> None:
-    """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1300)."""
+async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0) -> None:
+    """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1300).
+
+    cycle must be incremented each time a doc is re-fulfilled (e.g. use doc revert_count so that
+    fulfill → revert → re-fulfill produces distinct JE idempotency keys and entity IDs).
+    """
     if total_cogs <= 0:
         return
+    cycle_tag = f"fulfill-{cycle}" if cycle else "fulfill"
+    # Use cycle-scoped deterministic idempotency keys so retries are safe (same key → no-op)
+    # while re-fulfill after revert produces a distinct JE (different cycle → different keys).
+    # The original uuid4 approach was an overcorrection that broke retry idempotency.
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
         user_id=user_id,
-        je_id=f"je:auto:{doc_id}:fulfill",
-        idem_create=je_idempotency_key(doc_id, "fulfill", "c"),
-        idem_posted=je_idempotency_key(doc_id, "fulfill", "p"),
+        je_id=f"je:auto:{doc_id}:{cycle_tag}",
+        idem_create=f"je:auto:{doc_id}:{cycle_tag}:create",
+        idem_posted=f"je:auto:{doc_id}:{cycle_tag}:posted",
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
@@ -450,9 +459,13 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
     )
 
 
-async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str) -> None:
-    """Reverse the COGS JE created when a doc was fulfilled."""
-    je_id = f"je:auto:{doc_id}:fulfill"
+async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, cycle: int = 0) -> None:
+    """Reverse the COGS JE created when a doc was fulfilled.
+
+    cycle must match the value passed to create_for_doc_fulfilled for this fulfill cycle.
+    """
+    cycle_tag = f"fulfill-{cycle}" if cycle else "fulfill"
+    je_id = f"je:auto:{doc_id}:{cycle_tag}"
     row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
     if row is not None and row.state.get("status") == "posted":
         await emit_event(
@@ -465,7 +478,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str) -
             actor_id=user_id,
             location_id=None,
             source="auto_je",
-            idempotency_key=je_idempotency_key(doc_id, "fulfill-void", "void"),
+            idempotency_key=f"je:auto:{doc_id}:{cycle_tag}:void",
             metadata_={"trigger": "doc.fulfillment_reversed", "doc_id": doc_id},
         )
 
@@ -617,9 +630,9 @@ async def upsert_opening_inventory_je(
             continue
         if (s.get("inventory_type") or "stocked") != "stocked":
             continue
-        tc = s.get("total_cost")
-        if tc is not None:
-            catalog_total += _Dec(str(tc))
+        cost_total = float(s.get("cost_total") or 0)
+        if cost_total:
+            catalog_total += _Dec(str(cost_total))
         else:
             cost = s.get("cost_price") or s.get("cost price")
             qty = s.get("quantity") or 0
@@ -707,4 +720,36 @@ async def upsert_opening_inventory_je(
         ],
         metadata_={"trigger": "opening_inventory.auto"},
         ts=today,
+    )
+
+
+def _category_inventory_account(category: str) -> str:
+    """Placeholder: all categories map to 1300 until category-level CoA mapping is built."""
+    return "1300"
+
+
+async def create_for_item_transform(
+    session, *, company_id, user_id, parent_entity_id: str,
+    parent_cost_total: float, parent_category: str, child_category: str,
+) -> None:
+    """Inventory reclassification JE for transform. Moves parent_cost_total exactly.
+    Currently a no-op (both categories -> 1300). Scaffolded for future category-CoA mapping.
+    """
+    dr_account = _category_inventory_account(child_category)
+    cr_account = _category_inventory_account(parent_category)
+    if dr_account == cr_account:
+        return
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:transform:{parent_entity_id}",
+        idem_create=je_idempotency_key(parent_entity_id, "item.transform", "c"),
+        idem_posted=je_idempotency_key(parent_entity_id, "item.transform", "p"),
+        memo=f"Inventory transform: {parent_category} -> {child_category}",
+        entries=[
+            {"account": dr_account, "debit": parent_cost_total, "credit": 0.0},
+            {"account": cr_account, "debit": 0.0, "credit": parent_cost_total},
+        ],
+        metadata_={"trigger": "item.transform", "parent_entity_id": parent_entity_id},
     )
