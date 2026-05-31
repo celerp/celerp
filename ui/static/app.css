@@ -2411,3 +2411,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .toast__close:hover { opacity: 1; }
 .table-pagination { display: flex; align-items: center; gap: 0.75rem; padding: 0.5rem 0; justify-content: flex-end; }
 .per-page-select { font-size: 12px; padding: 2px 6px; border: 1px solid var(--c-border); border-radius: var(--radius); background: var(--c-bg2); color: var(--c-text); cursor: pointer; }
+.history-footer { display: flex; align-items: center; justify-content: space-between; padding: 0.5rem 0.75rem 0.25rem; }
+.history-page-btns { display: flex; align-items: center; gap: 0.25rem; }
+.history-per-page { display: flex; align-items: center; gap: 0.4rem; }
+.btn--active { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }

@@ -2954,6 +2954,9 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return _R("", status_code=401)
+        # entity_id may contain colons (e.g. "doc:BILL-2605-0003") which break
+        # CSS querySelectorAll. Use a safe slug for the DOM id.
+        safe_id = entity_id.replace(":", "-").replace("/", "-")
         _DEFAULT_PER_PAGE = 10
         try:
             page = max(1, int(request.query_params.get("page", 1)))
@@ -2984,29 +2987,41 @@ celerpUpdateBulkAlloc();
             actor_display = actor if (actor and not _is_uuid(actor)) else EMPTY
             return Tr(event_cell, Td(ts_display), Td(actor_display), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
-        prev_btn = (
-            Button("← Newer", cls="btn btn--ghost btn--xs",
-              hx_get=f"/docs/{entity_id}/history?page={page-1}&per_page={per_page}",
-              hx_target=f"#doc-history-{entity_id}", hx_swap="outerHTML")
-            if page > 1 else ""
-        )
-        next_btn = (
-            Button("Older →", cls="btn btn--ghost btn--xs",
-              hx_get=f"/docs/{entity_id}/history?page={page+1}&per_page={per_page}",
-              hx_target=f"#doc-history-{entity_id}", hx_swap="outerHTML")
-            if has_next else ""
-        )
-        page_info = Span(f"Page {page}", cls="text-muted") if (page > 1 or has_next) else ""
+        def _page_btn(p: int, label: str = None, active: bool = False):
+            return Button(
+                label or str(p),
+                cls=f"btn btn--ghost btn--xs{'  btn--active' if active else ''}",
+                hx_get=f"/docs/{entity_id}/history?page={p}&per_page={per_page}",
+                hx_target=f"#doc-history-{safe_id}",
+                hx_swap="outerHTML",
+            )
+        # Build compact page number list: always show first, last, current ±1,
+        # with ellipsis gaps. We don't know total pages without a count query,
+        # so show prev/current/next when known.
+        page_btns = []
+        if page > 2:
+            page_btns.append(_page_btn(1))
+        if page > 3:
+            page_btns.append(Span("…", cls="text-muted"))
+        if page > 1:
+            page_btns.append(_page_btn(page - 1))
+        page_btns.append(_page_btn(page, active=True))
+        if has_next:
+            page_btns.append(_page_btn(page + 1))
         per_page_select = Select(
             *[Option(str(n), value=str(n), selected=(per_page == n)) for n in (10, 20, 50, 100)],
             cls="per-page-select",
             hx_get=f"/docs/{entity_id}/history?page=1",
-            hx_target=f"#doc-history-{entity_id}",
+            hx_target=f"#doc-history-{safe_id}",
             hx_swap="outerHTML",
             hx_include="this",
             name="per_page",
         )
-        footer = Div(prev_btn, page_info, next_btn, Span("Show:", cls="text-muted"), per_page_select, cls="table-pagination") if (page > 1 or has_next or True) else ""
+        footer = Div(
+            Div(*page_btns, cls="history-page-btns"),
+            Div(Span("Show:", cls="text-muted"), per_page_select, cls="history-per-page"),
+            cls="history-footer",
+        )
         if not entries and page == 1:
             content = P("No activity recorded yet.", cls="empty-state-msg")
         else:
@@ -3019,7 +3034,7 @@ celerpUpdateBulkAlloc();
             Div(Span("📜", cls="section-icon"), H3("History", cls="section-title"), cls="section-header"),
             content,
             footer,
-            id=f"doc-history-{entity_id}",
+            id=f"doc-history-{safe_id}",
             cls="doc-section",
         )
 
@@ -5947,7 +5962,7 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-internal",
         ),
         # --- History / Activity section ---
-        Div(id=f"doc-history-{entity_id}",
+        Div(id=f"doc-history-{entity_id.replace(':', '-').replace('/', '-')}",
             hx_get=f"/docs/{entity_id}/history?page=1",
             hx_trigger="load",
             hx_swap="outerHTML"),
