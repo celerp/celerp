@@ -2954,19 +2954,23 @@ celerpUpdateBulkAlloc();
         token = _token(request)
         if not token:
             return _R("", status_code=401)
-        _PER_PAGE = 20
+        _DEFAULT_PER_PAGE = 10
         try:
             page = max(1, int(request.query_params.get("page", 1)))
         except ValueError:
             page = 1
-        offset = (page - 1) * _PER_PAGE
         try:
-            resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": _PER_PAGE + 1, "offset": offset, "resolve": "true"})
+            per_page = max(1, int(request.query_params.get("per_page", _DEFAULT_PER_PAGE)))
+        except ValueError:
+            per_page = _DEFAULT_PER_PAGE
+        offset = (page - 1) * per_page
+        try:
+            resp = await api.list_ledger(token, {"entity_id": entity_id, "limit": per_page + 1, "offset": offset, "resolve": "true"})
             items = resp.get("items", []) if isinstance(resp, dict) else []
         except Exception:
             items = []
-        has_next = len(items) > _PER_PAGE
-        entries = items[:_PER_PAGE]
+        has_next = len(items) > per_page
+        entries = items[:per_page]
         from ui.components.activity import format_timestamp, detail_from_entry, _event_display, _is_uuid
         EMPTY = "--"
         def _row(e: dict):
@@ -2981,19 +2985,28 @@ celerpUpdateBulkAlloc();
             return Tr(event_cell, Td(ts_display), Td(actor_display), Td(detail or EMPTY))
         rows = [_row(e) for e in entries]
         prev_btn = (
-            A("← Newer", href="#", cls="btn btn--ghost btn--xs",
-              hx_get=f"/docs/{entity_id}/history?page={page-1}",
+            Button("← Newer", cls="btn btn--ghost btn--xs",
+              hx_get=f"/docs/{entity_id}/history?page={page-1}&per_page={per_page}",
               hx_target=f"#doc-history-{entity_id}", hx_swap="outerHTML")
             if page > 1 else ""
         )
         next_btn = (
-            A("Older →", href="#", cls="btn btn--ghost btn--xs",
-              hx_get=f"/docs/{entity_id}/history?page={page+1}",
+            Button("Older →", cls="btn btn--ghost btn--xs",
+              hx_get=f"/docs/{entity_id}/history?page={page+1}&per_page={per_page}",
               hx_target=f"#doc-history-{entity_id}", hx_swap="outerHTML")
             if has_next else ""
         )
         page_info = Span(f"Page {page}", cls="text-muted") if (page > 1 or has_next) else ""
-        footer = Div(prev_btn, page_info, next_btn, cls="table-pagination") if (page > 1 or has_next) else ""
+        per_page_select = Select(
+            *[Option(str(n), value=str(n), selected=(per_page == n)) for n in (10, 20, 50, 100)],
+            cls="per-page-select",
+            hx_get=f"/docs/{entity_id}/history?page=1",
+            hx_target=f"#doc-history-{entity_id}",
+            hx_swap="outerHTML",
+            hx_include="this",
+            name="per_page",
+        )
+        footer = Div(prev_btn, page_info, next_btn, Span("Show:", cls="text-muted"), per_page_select, cls="table-pagination") if (page > 1 or has_next or True) else ""
         if not entries and page == 1:
             content = P("No activity recorded yet.", cls="empty-state-msg")
         else:
