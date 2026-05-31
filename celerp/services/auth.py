@@ -43,6 +43,7 @@ def create_access_token(
     email: str = "",
     jti: str | None = None,
     snonce: str = "",
+    modules: list[str] | None = None,
 ) -> tuple[str, str]:
     """Return (encoded_token, jti).
 
@@ -51,6 +52,9 @@ def create_access_token(
 
     *snonce* must be the caller-provided per-user nonce fetched from DB via
     ``session_tracker.get_nonce(session, user_id)`` before calling this function.
+
+    *modules* is the list of enabled module names for the company, embedded so
+    the UI can filter the sidebar without any additional DB or API calls.
     """
     import uuid as _uuid
     expire_minutes = min(int(settings.access_token_expire_minutes), 24 * 60)
@@ -62,6 +66,7 @@ def create_access_token(
         "role": role,
         "jti": token_jti,
         "snonce": snonce,
+        "modules": modules or [],
         "exp": datetime.now(timezone.utc) + timedelta(minutes=expire_minutes),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm), token_jti

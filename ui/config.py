@@ -71,6 +71,28 @@ def get_user_email(request) -> str | None:
         return None
 
 
+def get_enabled_modules(request) -> set[str]:
+    """Decode the 'modules' claim from the JWT cookie without signature verification.
+
+    Returns the set of enabled module names for the current company.
+    Returns empty set on any decode error or missing claim (shows all nav items as fallback).
+    """
+    import base64
+    import json as _json
+
+    token = get_token(request)
+    if not token:
+        return set()
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_bytes = base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4))
+        claims = _json.loads(payload_bytes)
+        raw = claims.get("modules", [])
+        return set(raw) if isinstance(raw, list) else set()
+    except Exception:
+        return set()
+
+
 async def get_relay_info(request) -> dict:
     """Return relay status info for the topbar indicator.
 
