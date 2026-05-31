@@ -1575,10 +1575,12 @@ celerpUpdateBulkAlloc();
                 pass
 
         # Resolve default billing/shipping address from contact if not yet stored on doc
+        contact_shipping_addresses: list[dict] = []
         if cid and (not doc.get("contact_billing_address") or not doc.get("contact_shipping_address")):
             try:
                 contact = _resolved_contact or await api.get_contact(token, cid)
                 addresses = contact.get("addresses") or []
+                contact_shipping_addresses = [a for a in addresses if a.get("address_type") == "shipping"]
                 def _resolve_addr(addr_type: str) -> str:
                     default = next((a for a in addresses if a.get("address_type") == addr_type and a.get("is_default")), None)
                     if default:
@@ -1597,6 +1599,13 @@ celerpUpdateBulkAlloc();
                     first_ship = default_ship or next((a for a in addresses if a.get("address_type") == "shipping"), None)
                     if first_ship and first_ship.get("attn"):
                         doc["shipping_attn"] = first_ship["attn"]
+            except Exception:
+                pass
+        elif cid:
+            # Already have addresses on doc - still fetch shipping list for dropdown
+            try:
+                contact = _resolved_contact or await api.get_contact(token, cid)
+                contact_shipping_addresses = [a for a in (contact.get("addresses") or []) if a.get("address_type") == "shipping"]
             except Exception:
                 pass
         # Backward compat: migrate contact_address → contact_billing_address
@@ -1715,7 +1724,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, chart_accounts=chart_accounts),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
@@ -4095,6 +4104,46 @@ def _ship_to_picker(doc_id: str, current_address: str, locations: list, is_list:
     ) if locations else _doc_display_cell(doc_id, "contact_shipping_address", current_address or "--")
 
 
+def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_addresses: list, contact_id: str = "") -> FT:
+    """Sales-doc Ship To: dropdown of contact's shipping addresses; GDR Add new → contact detail."""
+    def _addr_text(a: dict) -> str:
+        return a.get("full_address") or a.get("address") or a.get("label") or ""
+
+    add_new_url = f"/contacts/{contact_id}" if contact_id else "/contacts"
+
+    if not contact_shipping_addresses:
+        # No shipping addresses on file - show plain cell + hint
+        cell = _doc_display_cell(doc_id, "contact_shipping_address", current_address or "--")
+        return Div(cell, A("+ Add shipping address", href=add_new_url, target="_blank",
+                           style="font-size:11px;margin-top:2px;display:block;"))
+
+    options = [Option("-- select address --", value="", selected=(not current_address))]
+    for a in contact_shipping_addresses:
+        addr_text = _addr_text(a)
+        label = a.get("label") or a.get("attn") or addr_text[:40]
+        options.append(Option(label, value=addr_text, selected=(addr_text == current_address)))
+    # Preserve unknown free-text value
+    known = {_addr_text(a) for a in contact_shipping_addresses}
+    if current_address and current_address not in known and current_address != "--":
+        options.append(Option(f"Custom: {current_address[:40]}", value=current_address, selected=True))
+    # GDR: always include Add new option
+    options.append(Option("+ Add new shipping address", value="__add_new__"))
+
+    return Div(
+        Select(
+            *options,
+            name="value",
+            hx_patch=f"/docs/{doc_id}/field/contact_shipping_address",
+            hx_target="closest .editable-cell",
+            hx_swap="outerHTML",
+            hx_trigger="change",
+            onchange=f"if(this.value==='__add_new__'){{window.open('{add_new_url}','_blank');this.value='';return;}}",
+            cls="cell-input cell-input--select",
+        ),
+        cls="editable-cell editable-cell--editing",
+    )
+
+
 def _company_address_picker(doc_id: str, current_address: str, company_locations: list) -> FT:
     """Render address as a location picker dropdown if locations exist, else a plain editable cell."""
     if not company_locations:
@@ -4253,7 +4302,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None, chart_accounts: list | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5958,7 +6007,7 @@ async function celerpCsvImport(input, entityId) {{
                     Div(Div(t("doc.address"), cls="form-label"),
                         _ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", locations or [], is_list)
                         if _is_vendor_doc else
-                        _cell("contact_shipping_address", doc.get("contact_shipping_address")),
+                        _contact_ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", contact_shipping_addresses or [], doc.get("contact_id") or ""),
                         cls="form-group"),
                     Div(Div(t("doc.attn"), cls="form-label"), _cell("shipping_attn", doc.get("shipping_attn")), cls="form-group"),
                     cls="doc-section", style="margin-top:0.75rem",
