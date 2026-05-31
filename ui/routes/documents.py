@@ -2132,8 +2132,8 @@ celerpUpdateBulkAlloc();
         esc_js = f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',{{target:'#{cell_id}',swap:'outerHTML'}});}}"
         if field == "account_code":
             try:
-                acct_resp = await api.get_chart_accounts(token)
-                accts = acct_resp.get("items") or acct_resp if isinstance(acct_resp, list) else []
+                acct_resp = await api.get_chart(token)
+                accts = acct_resp.get("items", [])
             except Exception:
                 accts = []
             acct_opts = [(a.get("code", ""), f"{a.get('code','')} – {a.get('name','')}") for a in accts if a.get("code")]
@@ -2197,8 +2197,8 @@ celerpUpdateBulkAlloc();
         display_value = value
         if field == "account_code" and value:
             try:
-                acct_resp = await api.get_chart_accounts(token)
-                accts = acct_resp.get("items") or acct_resp if isinstance(acct_resp, list) else []
+                acct_resp = await api.get_chart(token)
+                accts = acct_resp.get("items", [])
                 acct_map = {a.get("code", ""): f"{a.get('code','')} – {a.get('name','')}" for a in accts if a.get("code")}
                 display_value = acct_map.get(value) or value
             except Exception:
