@@ -6084,7 +6084,7 @@ async function celerpCsvImport(input, entityId) {{
                         _ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", locations or [], is_list)
                         if _is_vendor_doc else
                         (_contact_ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", contact_shipping_addresses or [], doc.get("contact_id") or "")
-                         if doc.get("contact_id") else Span("—", cls="form-value-placeholder", title="Select a Customer first")),
+                         if doc.get("contact_id") else Span("--", cls="form-value-placeholder", title="Select a Customer first")),
                         cls="form-group"),
                     Div(Div(t("doc.attn"), cls="form-label"), _cell("shipping_attn", doc.get("shipping_attn")), cls="form-group"),
                     cls="doc-section", style="margin-top:0.75rem",
