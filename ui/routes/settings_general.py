@@ -104,7 +104,7 @@ def _danger_zone_section() -> FT:
                         A("Download backup first",
                           href="/backup/export",
                           cls="btn btn--sm btn--ghost",
-                          onclick=to_step2_js + "return false;",
+                          onclick=to_step2_js,
                           download=True),
                         Button("Skip — continue",
                                type="button",
