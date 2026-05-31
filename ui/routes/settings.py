@@ -2384,9 +2384,12 @@ def setup_routes(app):
         except Exception as exc:
             return Div(f"Error: {exc}", cls="flash flash--error")
         from starlette.responses import Response as _Resp
+        from ui.config import _settings as _ui_settings
+        _secure = getattr(_ui_settings, "cookie_secure", False)
         resp = _Resp(status_code=200, content='{"ok":true}', media_type="application/json")
-        resp.delete_cookie(COOKIE_NAME)
-        resp.delete_cookie(REFRESH_COOKIE_NAME)
+        resp.delete_cookie(COOKIE_NAME, httponly=True, samesite="lax", secure=_secure)
+        resp.delete_cookie(REFRESH_COOKIE_NAME, httponly=True, samesite="lax", secure=_secure)
+        resp.headers["HX-Redirect"] = "/setup"
         return resp
 
     @app.delete("/settings/company/deactivate")
