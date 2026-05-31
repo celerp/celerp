@@ -17,7 +17,7 @@ _IMAGE_MIME_PREFIXES = ("image/",)
 # Statuses where an item is available for operations (split, transform, etc.)
 # Allowlist by design: unknown/new statuses are unavailable until explicitly added here.
 # is_item_available() is the single source of truth — derive at read time, never store.
-_ACTIVE_STATUSES: frozenset[str] = frozenset({"available"})
+_ACTIVE_STATUSES: frozenset[str] = frozenset({"available", "active"})
 
 
 def is_item_available(state: dict) -> bool:

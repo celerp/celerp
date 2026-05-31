@@ -321,7 +321,7 @@ document.addEventListener('htmx:sendError', function(e) {
 function initImageDropZones(root) {
   root.querySelectorAll('.cell--droppable').forEach(function(cell) {
     cell.addEventListener('click', function() {
-      var input = document.getElementById('img-input-' + cell.dataset.entityId);
+      var input = document.getElementById('img-input-' + cell.dataset.entityId.replace(/:/g, '-'));
       if (input) input.click();
     });
     ['dragover', 'dragenter'].forEach(function(ev) {
@@ -333,10 +333,11 @@ function initImageDropZones(root) {
         cell.classList.remove('cell--drag-over');
         if (ev === 'drop' && e.dataTransfer.files.length) {
           var entityId = cell.dataset.entityId;
+          var safeId = entityId.replace(/:/g, '-');
           var fd = new FormData();
           fd.append('file', e.dataTransfer.files[0]);
           htmx.ajax('POST', '/api/items/' + entityId + '/attachments', {
-            target: '#img-cell-' + entityId,
+            target: '#img-cell-' + safeId,
             swap: 'outerHTML',
             values: fd,
           });
