@@ -2372,7 +2372,7 @@ def setup_routes(app):
         role = _get_role(request)
         if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["owner"]:
             return Div("Owner role required.", cls="flash flash--error")
-        from ui.config import API_BASE
+        from ui.config import API_BASE, COOKIE_NAME, REFRESH_COOKIE_NAME
         token = _token(request)
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
@@ -2385,7 +2385,8 @@ def setup_routes(app):
             return Div(f"Error: {exc}", cls="flash flash--error")
         from starlette.responses import Response as _Resp
         resp = _Resp(status_code=200, content='{"ok":true}', media_type="application/json")
-        resp.delete_cookie("celerp_token")
+        resp.delete_cookie(COOKIE_NAME)
+        resp.delete_cookie(REFRESH_COOKIE_NAME)
         return resp
 
     @app.delete("/settings/company/deactivate")

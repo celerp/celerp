@@ -149,6 +149,47 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         return auth_shell(_setup_form(), title="Set up Celerp")
 
+    @app.get("/setup/import-backup")
+    async def setup_import_page(request: Request):
+        if request.cookies.get(COOKIE_NAME):
+            return RedirectResponse("/", status_code=302)
+        try:
+            bootstrapped = await bootstrap_status()
+        except APIError as e:
+            return auth_shell(_api_error_page(str(e.detail)), title="API Unavailable - Celerp")
+        if bootstrapped:
+            return RedirectResponse("/login", status_code=302)
+        return auth_shell(_setup_import_form(), title="Restore from backup - Celerp")
+
+    @app.post("/setup/import-backup")
+    async def setup_import_submit(request: Request):
+        import httpx
+        try:
+            bootstrapped = await bootstrap_status()
+        except APIError as e:
+            return auth_shell(_api_error_page(str(e.detail)), title="API Unavailable - Celerp")
+        if bootstrapped:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        file = form.get("backup_file")
+        if not file or not hasattr(file, "read"):
+            return auth_shell(_setup_import_form(error="Please select a .celerp backup file."), title="Restore from backup - Celerp")
+        raw = await file.read()
+        if not raw:
+            return auth_shell(_setup_import_form(error="File is empty."), title="Restore from backup - Celerp")
+        try:
+            async with httpx.AsyncClient(base_url=API_BASE, timeout=120.0) as c:
+                r = await c.post(
+                    "/system/import-bootstrap",
+                    files={"file": (file.filename, raw, "application/octet-stream")},
+                )
+            if r.status_code != 200:
+                detail = r.json().get("detail", "Import failed.") if r.headers.get("content-type", "").startswith("application/json") else "Import failed."
+                return auth_shell(_setup_import_form(error=detail), title="Restore from backup - Celerp")
+        except Exception as exc:
+            return auth_shell(_setup_import_form(error=f"Error: {exc}"), title="Restore from backup - Celerp")
+        return RedirectResponse("/login?imported=1", status_code=302)
+
     @app.post("/setup")
     async def setup_submit(request: Request):
         try:
@@ -474,6 +515,40 @@ def _setup_form(
                 cls="form-group"),
             Button(t("btn.create_workspace", lang), type="submit", cls="btn btn--primary btn--full"),
             method="post", action="/setup", cls="auth-form",
+        ),
+        P(
+            "Already have data? ",
+            A("Restore from a Celerp backup", href="/setup/import-backup", cls="auth-link"),
+            ".",
+            cls="auth-alt-action",
+        ),
+        cls="auth-card",
+    )
+
+
+def _setup_import_form(error: str | None = None) -> FT:
+    return Div(
+        Div(
+            Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+            H1("Restore from backup", cls="auth-title"),
+            P("Upload a .celerp backup file to restore your data.", cls="auth-subtitle"),
+            cls="auth-header",
+        ),
+        Form(
+            flash(error) if error else "",
+            Div(
+                Label("Backup file (.celerp)", For="backup_file", cls="form-label"),
+                Input(type="file", id="backup_file", name="backup_file",
+                      accept=".celerp", required=True, cls="form-input"),
+                cls="form-group",
+            ),
+            Button("Restore backup", type="submit", cls="btn btn--primary btn--full"),
+            method="post", action="/setup/import-backup",
+            enctype="multipart/form-data", cls="auth-form",
+        ),
+        P(
+            A("← Back to setup", href="/setup", cls="auth-link"),
+            cls="auth-alt-action",
         ),
         cls="auth-card",
     )

@@ -382,9 +382,37 @@ async def factory_reset(
             {"cid": str(company_id)},
         )
 
+    # Bust in-process nonce cache — all users deleted, stale tokens must not auto-create rows
+    from celerp.services.session_tracker import _nonce_cache_bust_all
+    _nonce_cache_bust_all()
+
     att_dir = _ATTACHMENT_ROOT / str(company_id)
     if att_dir.exists():
         import shutil
         shutil.rmtree(att_dir, ignore_errors=True)
 
     return {"ok": True}
+
+
+# ── Bootstrap import (public — only usable when system is not yet bootstrapped) ──
+
+bootstrap_router = APIRouter()
+
+
+@bootstrap_router.post("/import-bootstrap")
+async def import_bootstrap(
+    file: UploadFile,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Import a .celerp archive when the system has no users yet.
+
+    Locked out once any user exists (system bootstrapped).
+    Allows factory-reset users to restore from a backup on the setup wizard screen.
+    """
+    existing = (await session.execute(select(User))).scalars().first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="System already bootstrapped. Log in and use Settings > Backup to restore.",
+        )
+    return await import_system(file=file, session=session)
