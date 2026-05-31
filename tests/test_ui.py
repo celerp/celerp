@@ -8475,7 +8475,8 @@ class TestDocContactBoxLayout:
         assert r.status_code == 200
         html = r.content.decode()
         assert "Ship To" in html
-        assert 'hx-get="/docs/d:1/field/contact_shipping_address/edit"' in html
+        assert 'name="value"' in html  # ship-to dropdown select is rendered
+        assert 'hx-patch="/docs/d:1/field/contact_shipping_address"' in html
         assert 'hx-get="/docs/d:1/field/shipping_attn/edit"' in html
 
     @pytest.mark.asyncio
