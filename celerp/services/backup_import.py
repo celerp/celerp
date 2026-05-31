@@ -65,14 +65,27 @@ def validate_archive(path: Path) -> ImportMeta:
     except Exception:
         current = "0.0.0"
 
-    backup_major = meta.celerp_version.split(".")[0] if meta.celerp_version != "unknown" else "0"
-    current_major = current.split(".")[0]
+    backup_ver = meta.celerp_version if meta.celerp_version != "unknown" else "0.0.0"
+    backup_parts = backup_ver.split(".")
+    current_parts = current.split(".")
 
-    if backup_major > current_major and backup_major != "unknown":
+    backup_major = backup_parts[0] if backup_parts else "0"
+    current_major = current_parts[0] if current_parts else "0"
+
+    if backup_major > current_major:
         raise ValueError(
             f"This backup is from a newer version ({meta.celerp_version}) "
             f"than the current installation ({current}). "
             "Update Celerp before importing."
+        )
+
+    backup_minor = int(backup_parts[1]) if len(backup_parts) > 1 else 0
+    current_minor = int(current_parts[1]) if len(current_parts) > 1 else 0
+    if backup_minor != current_minor:
+        log.warning(
+            "Backup version %s differs from current %s (minor version mismatch). "
+            "Schema migrations will run automatically after restore.",
+            meta.celerp_version, current,
         )
 
     return meta
@@ -106,6 +119,16 @@ async def run_import(path: Path):
 
             # Restore database
             restore_database(dump_bytes, settings.database_url)
+
+            # Reconcile schema — run any missing migrations after pg_restore
+            try:
+                from alembic.config import Config as _AlembicConfig
+                from alembic import command as _alembic_cmd
+                _cfg = _AlembicConfig("alembic.ini")
+                _alembic_cmd.upgrade(_cfg, "head")
+                log.info("Alembic upgrade head completed after pg_restore")
+            except Exception as alembic_exc:
+                log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
 
             # Extract files (attachments, ai_uploads)
             from celerp.config import settings as _settings

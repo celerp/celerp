@@ -486,7 +486,7 @@ def _factory_reset_card() -> FT:
                              "This cannot be undone.")),
                     Div(
                         A("Download backup first",
-                          href="/system/export",
+                          href="/backup/export",
                           cls="btn btn--sm btn--ghost",
                           onclick=to_step2_js,
                           download=True),
@@ -2533,27 +2533,6 @@ def setup_routes(app):
             return RedirectResponse("/login", status_code=302)
         try:
             content, content_type, content_disp = await _api.export_backup(token)
-        except _api.APIError as exc:
-            from fasthtml.common import Div, to_xml
-            return Response(
-                content=to_xml(Div(str(exc.detail), cls="flash flash--error")),
-                media_type="text/html",
-            )
-        return Response(
-            content=content,
-            media_type=content_type,
-            headers={"Content-Disposition": content_disp},
-        )
-
-    @app.get("/system/export")
-    async def system_export(request: Request):
-        """Download portable company snapshot as .celerp ZIP (for factory-reset restore)."""
-        import ui.api_client as _api
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            content, content_type, content_disp = await _api.export_system_snapshot(token)
         except _api.APIError as exc:
             from fasthtml.common import Div, to_xml
             return Response(

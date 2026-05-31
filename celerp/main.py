@@ -308,7 +308,6 @@ app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(ledger.router, prefix="/ledger", tags=["ledger"])
 app.include_router(companies.router, prefix="/companies", tags=["companies"])
 app.include_router(system.router, prefix="/system", tags=["system"])
-app.include_router(system.bootstrap_router, prefix="/system", tags=["system"])
 app.include_router(notifications.router)
 app.include_router(events_router_mod.router)
 

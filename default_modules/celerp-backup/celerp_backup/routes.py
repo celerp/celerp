@@ -4,12 +4,13 @@
 """Backup router — /backup/*
 
 Endpoints:
-  POST /backup/trigger          Run a backup (database or files)
-  GET  /backup/list             List backups from relay (proxied)
-  POST /backup/restore/{id}     Restore a cloud backup
-  GET  /backup/export           Export full local backup (.celerp-backup)
-  GET  /backup/export/{id}      Export a cloud backup as .celerp-backup
-  POST /backup/import           Import a .celerp-backup file
+  POST /backup/trigger            Run a backup (database or files)
+  GET  /backup/list               List backups from relay (proxied)
+  POST /backup/restore/{id}       Restore a cloud backup
+  GET  /backup/export             Export full local backup (.celerp-backup)
+  GET  /backup/export/{id}        Export a cloud backup as .celerp-backup
+  POST /backup/import             Import a .celerp-backup file (authenticated)
+  POST /backup/import-bootstrap   Import a .celerp-backup file (no auth, pre-bootstrap only)
 """
 
 from __future__ import annotations
@@ -21,6 +22,9 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response
+
+from celerp.db import get_session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
@@ -220,3 +224,48 @@ async def import_backup(request: Request, file: UploadFile = File(...)):
         f"Imported backup from {meta.company_name or 'unknown'}. "
         "Restart the application to apply changes."
     )
+
+
+# ── Bootstrap import (public — no auth, only works before first user exists) ──
+
+public_router = APIRouter()
+
+
+@public_router.post("/import-bootstrap")
+async def import_backup_bootstrap(
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_session),
+):
+    """Import a .celerp-backup file when no users exist (setup wizard restore).
+
+    Locked out once any user exists — cannot be exploited on a live system.
+    Uses the same run_import() as the authenticated /backup/import endpoint.
+    """
+    from sqlalchemy import select
+    from celerp.models.company import User
+
+    existing = (await session.execute(select(User))).scalars().first()
+    if existing is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="System already bootstrapped. Log in and use Settings > Backup to restore.",
+        )
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".celerp-backup", delete=False)
+    tmp.write(await file.read())
+    tmp.close()
+    tmp_path = Path(tmp.name)
+
+    try:
+        meta = validate_archive(tmp_path)
+    except ValueError as exc:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    result = await run_import(tmp_path)
+    tmp_path.unlink(missing_ok=True)
+
+    if not result.ok:
+        raise HTTPException(status_code=422, detail=result.error or "Import failed")
+
+    return {"ok": True, "company_name": meta.company_name}
