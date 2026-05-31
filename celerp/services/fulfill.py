@@ -28,11 +28,6 @@ _SERVICE_SELL_BY = {"service", "hour"}
 # bill: inbound; parcels created at receive time, fulfill-lines is blocked for these.
 _NO_COGS_DOC_TYPES = frozenset({"bill", "consignment_in", "memo"})
 
-# Doc types where COGS must NOT be recognized at fulfillment time.
-# consignment_in: goods not owned; COGS when vendor bill settled.
-# memo: goods still nominally owned; COGS recognized when invoice is issued.
-_NO_COGS_DOC_TYPES = _INBOUND_DOC_TYPES | frozenset({"memo"})
-
 
 def _to_uuid(val) -> _uuid.UUID:
     """Coerce str or UUID to UUID."""
