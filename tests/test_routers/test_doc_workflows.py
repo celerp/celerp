@@ -284,17 +284,16 @@ async def test_edit_ref_id_uniqueness(client, session):
 
 
 @pytest.mark.anyio
-async def test_edit_ref_id_blocked_on_non_draft(client, session):
-    """Non-draft docs should block all edits including ref_id."""
+async def test_edit_ref_id_allowed_on_non_draft(client, session):
+    """ref_id is in the finalized-editable allowlist and should be patchable on finalized docs."""
     token = await _register(client)
     eid = await _create_invoice(client, token)
     await client.post(f"/docs/{eid}/finalize", headers=_h(token))
     r = await client.patch(
         f"/docs/{eid}", headers=_h(token),
-        json={"fields_changed": {"ref_id": {"old": None, "new": "NOPE"}}},
+        json={"fields_changed": {"ref_id": {"old": None, "new": "REF-UPDATED"}}},
     )
-    assert r.status_code == 409
-    assert "draft" in r.json()["detail"].lower()
+    assert r.status_code == 200
 
 
 @pytest.mark.anyio

@@ -2101,6 +2101,72 @@ celerpUpdateBulkAlloc();
             display_value = doc.get(field)
         return _doc_display_cell(entity_id, field, display_value)
 
+    # Line-item fields editable on finalized docs (description, account_code)
+    _LI_FINALIZED_EDITABLE = {"description", "account_code"}
+
+    @app.get("/docs/{entity_id}/line/{li_index}/field/{field}/edit")
+    async def doc_li_field_edit(request: Request, entity_id: str, li_index: str, field: str):
+        if field not in _LI_FINALIZED_EDITABLE:
+            return P(t("error.unauthorized"), cls="cell-error")
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            doc = await api.get_doc(token, entity_id)
+            line_items = doc.get("line_items") or []
+            idx = int(li_index)
+            li = line_items[idx] if 0 <= idx < len(line_items) else {}
+        except Exception:
+            return P("Error", cls="cell-error")
+        current = li.get(field) or ""
+        restore_url = f"/docs/{entity_id}/line/{li_index}/field/{field}/display"
+        cell_id = f"li-{li_index}-{field}"
+        return Div(
+            Input(type="text", name="value", value=current, cls="cell-input",
+                  hx_patch=f"/docs/{entity_id}/line/{li_index}/field/{field}",
+                  hx_target=f"#{cell_id}",
+                  hx_swap="outerHTML",
+                  hx_trigger="blur, keydown[key=='Enter']",
+                  onkeydown=f"if(event.key==='Escape'){{htmx.ajax('GET','{restore_url}',{{target:'#{cell_id}',swap:'outerHTML'}});}}",
+                  autofocus=True),
+            id=cell_id, cls="editable-cell editable-cell--editing",
+        )
+
+    @app.get("/docs/{entity_id}/line/{li_index}/field/{field}/display")
+    async def doc_li_field_display(request: Request, entity_id: str, li_index: str, field: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            doc = await api.get_doc(token, entity_id)
+            line_items = doc.get("line_items") or []
+            idx = int(li_index)
+            li = line_items[idx] if 0 <= idx < len(line_items) else {}
+        except Exception:
+            return P("Error", cls="cell-error")
+        return _li_field_display_cell(entity_id, li_index, field, li.get(field) or "")
+
+    @app.patch("/docs/{entity_id}/line/{li_index}/field/{field}")
+    async def doc_li_field_patch(request: Request, entity_id: str, li_index: str, field: str):
+        if field not in _LI_FINALIZED_EDITABLE:
+            return _action_error(t("error.unauthorized"))
+        token = _token(request)
+        if not token:
+            return _action_error(t("error.unauthorized"))
+        form = await request.form()
+        value = str(form.get("value", ""))
+        try:
+            doc = await api.get_doc(token, entity_id)
+            line_items = list(doc.get("line_items") or [])
+            idx = int(li_index)
+            if not (0 <= idx < len(line_items)):
+                return _action_error("Line item not found.")
+            line_items[idx] = {**line_items[idx], field: value}
+            await api.patch_doc(token, entity_id, {"line_items": line_items})
+        except APIError as e:
+            return _action_error(str(e.detail))
+        return _li_field_display_cell(entity_id, li_index, field, value)
+
     @app.post("/docs/{entity_id}/field/{field}")
     async def doc_field_post(request: Request, entity_id: str, field: str):
         """Handle autosave of text fields (customer_note, internal_note) via hx_post."""
@@ -3763,6 +3829,19 @@ def _resolve_contact_display(doc: dict, field: str) -> str:
     if raw.startswith("contact:"):
         return "--"
     return raw
+
+
+def _li_field_display_cell(entity_id: str, li_index: str, field: str, value: str) -> FT:
+    """Finalized line-item cell: double-click to edit description or account_code."""
+    cell_id = f"li-{li_index}-{field}"
+    return Div(
+        format_value(value or None),
+        id=cell_id,
+        hx_get=f"/docs/{entity_id}/line/{li_index}/field/{field}/edit",
+        hx_target=f"#{cell_id}", hx_swap="outerHTML", hx_trigger="dblclick",
+        title="Double-click to edit",
+        cls="editable-cell",
+    )
 
 
 def _doc_display_cell(entity_id: str, field: str, value, doc_type: str = "") -> FT:
@@ -5685,7 +5764,7 @@ async function celerpCsvImport(input, entityId) {{
             if a.get("code") and a.get("name")
         }
 
-        def _li_row(li: dict) -> FT:
+        def _li_row(li: dict, idx: int = 0) -> FT:
             qty = float(li.get("quantity", 0) or 0)
             price = float(li.get("unit_price", 0) or 0)
             discount_pct = float(li.get("discount_pct") or 0)
@@ -5728,7 +5807,7 @@ async function celerpCsvImport(input, entityId) {{
                         cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
             cells += [
                 Td(format_value(li.get("sku") or None), cls="col-sku"),
-                Td(format_value(li.get("description") or li.get("name")), cls="col-desc"),
+                Td(_li_field_display_cell(entity_id, str(idx), "description", li.get("description") or li.get("name") or ""), cls="col-desc"),
             ]
             if _is_vendor_doc:
                 cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
@@ -5741,8 +5820,8 @@ async function celerpCsvImport(input, entityId) {{
             ])
             if doc_type in ("purchase_order", "bill"):
                 acct_code = li.get("account_code") or ""
-                acct_display = _acct_map.get(acct_code) or acct_code or None
-                cells.append(Td(format_value(acct_display), title=acct_display or "", cls="col-account"))
+                acct_display = _acct_map.get(acct_code) or acct_code or ""
+                cells.append(Td(_li_field_display_cell(entity_id, str(idx), "account_code", acct_display), title=acct_display, cls="col-account"))
             cells.append(Td(format_value(line_total, "money"), cls="cell--number col-total"))
             return Tr(*cells)
 
@@ -5764,7 +5843,7 @@ async function celerpCsvImport(input, entityId) {{
             _li_bulk_toolbar(entity_id, is_list, labels_only=True, show_fulfill=_fin_show_fulfill, is_inbound=_is_vendor_doc, inbound_line_items=line_items if _is_vendor_doc else None, locations=locations) if _fin_show_bulk else None,
             Table(
                 Thead(Tr(*_thead_base)),
-                Tbody(*([_li_row(li) for li in line_items] if line_items else [
+                Tbody(*([_li_row(li, i) for i, li in enumerate(line_items)] if line_items else [
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ]), id=_fin_bulk_id),
                 cls="data-table doc-lines",

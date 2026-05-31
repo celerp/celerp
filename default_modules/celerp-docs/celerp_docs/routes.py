@@ -695,6 +695,11 @@ async def create_doc(
 
 @router.patch("/{entity_id}")
 async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    # Fields editable on finalized docs (cosmetic/corrective, no financial impact on totals or inventory)
+    _FINALIZED_EDITABLE_FIELDS = {
+        "description", "customer_note", "internal_note",
+        "shipping_attn", "contact_shipping_address", "ref_id",
+    }
     _PROTECTED_FIELDS = {"status", "entity_type", "company_id"}
     protected_attempted = _PROTECTED_FIELDS & set(payload.fields_changed)
     if protected_attempted:
@@ -705,11 +710,13 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
     row = await _get_doc(session, company_id, entity_id)
     is_draft = row.state.get("status") == "draft"
     if not is_draft:
-        status_label = (row.state.get("status") or "finalized").replace("_", " ").title()
-        raise HTTPException(
-            status_code=409,
-            detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
-        )
+        locked_fields = set(payload.fields_changed) - _FINALIZED_EDITABLE_FIELDS
+        if locked_fields:
+            status_label = (row.state.get("status") or "finalized").replace("_", " ").title()
+            raise HTTPException(
+                status_code=409,
+                detail=f"This document is in {status_label} status and cannot be edited. To make changes, revert it to Draft first.",
+            )
     # Uniqueness check when ref_id is being changed
     new_ref = (payload.fields_changed.get("ref_id") or {}).get("new")
     if new_ref:
