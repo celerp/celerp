@@ -140,7 +140,7 @@ def restore_database(dump_bytes: bytes, database_url: str) -> None:
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     try:
         result = subprocess.run(
-            ["pg_restore", "--clean", "--if-exists", "--no-password", "-d", pg_url],
+            ["pg_restore", "--clean", "--if-exists", "--no-password", "--no-privileges", "--no-owner", "-d", pg_url],
             input=dump_bytes,
             capture_output=True,
             timeout=600,
