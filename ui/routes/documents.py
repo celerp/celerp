@@ -4109,7 +4109,7 @@ def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_
     def _addr_text(a: dict) -> str:
         return a.get("full_address") or a.get("address") or a.get("label") or ""
 
-    add_new_url = f"/contacts/{contact_id}" if contact_id else "/contacts"
+    add_new_url = f"/contacts/{contact_id}" if contact_id else "/contacts/customers"
 
     options = [Option("-- select address --", value="", selected=(not current_address))]
     for a in contact_shipping_addresses:
