@@ -507,21 +507,22 @@ a:hover { text-decoration: underline; }
 .doc-lines { margin-top: 12px; }
 .data-table.doc-lines { table-layout: fixed; width: 100%; max-width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
-.doc-lines th.col-checkbox,   .doc-lines td.col-checkbox   { width: 28px;  padding-left: 0; padding-right: 0; text-align: center; overflow: visible; }
-.doc-lines th.col-item-status,.doc-lines td.col-item-status{ width: 100px; }
-.doc-lines th.col-sku,        .doc-lines td.col-sku        { width: 90px; }
-.doc-lines th.col-desc,       .doc-lines td.col-desc       { width: 280px; }
-.doc-lines th.col-cat,        .doc-lines td.col-cat        { width: 70px; }
-.doc-lines th.col-type,       .doc-lines td.col-type       { width: 70px; }
-.doc-lines th.col-qty,        .doc-lines td.col-qty        { width: 55px; }
-.doc-lines th.col-unit,       .doc-lines td.col-unit       { width: 44px; }
-.doc-lines th.col-unit-price, .doc-lines td.col-unit-price { width: 100px; }
-.doc-lines th.col-disc,       .doc-lines td.col-disc       { width: 50px; }
-.doc-lines th.col-tax,        .doc-lines td.col-tax        { width: 65px; }
-.doc-lines th.col-account,    .doc-lines td.col-account    { width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.doc-lines td.col-total, .doc-lines th.col-total           { width: 130px; overflow: visible; padding: 0 0 0 12px; }
-.doc-lines td.col-total { display: flex; align-items: center; padding-right: 8px; }
-.data-table td.col-total input.line-total { flex: 1; width: auto !important; min-width: 0; text-align: right !important; max-width: none !important; box-sizing: border-box; margin: 0; }
+/* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
+.doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }
+.doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 100px; }
+.doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 80px;  }
+.doc-lines th.col-desc,        .doc-lines td.col-desc        { width: auto;  } /* flex fill */
+.doc-lines th.col-cat,         .doc-lines td.col-cat         { width: 70px;  }
+.doc-lines th.col-type,        .doc-lines td.col-type        { width: 60px;  }
+.doc-lines th.col-qty,         .doc-lines td.col-qty         { width: 55px;  text-align: right; }
+.doc-lines th.col-unit,        .doc-lines td.col-unit        { width: 50px;  }
+.doc-lines th.col-unit-price,  .doc-lines td.col-unit-price  { width: 95px;  text-align: right; }
+.doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 50px;  text-align: right; }
+.doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 55px;  text-align: right; }
+.doc-lines th.col-account,     .doc-lines td.col-account     { width: 110px; }
+.doc-lines th.col-total,       .doc-lines td.col-total       { width: 110px; text-align: right; padding-right: 8px; }
+/* input inside editable total cell — fills cell width */
+.doc-lines td.col-total input.line-total { width: 100%; text-align: right; box-sizing: border-box; }
 .line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
 
 /* ─── Reports ─────────────────────────────────────────────────────────── */
@@ -1067,7 +1068,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 }
 
 /* Line item checkbox column */
-.li-checkbox-cell { width: 40px; text-align: center; }
+/* li-checkbox-cell width deferred to doc-lines col-checkbox rule above */
+.li-checkbox-cell { text-align: center; }
 
 /* ─── Utility classes ─────────────────────────────────────────────────── */
 /* Spacing: margin */
@@ -1448,7 +1450,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .data-table td:has(.combobox-wrap) { overflow: visible; }
 /* Total column: th right-align (!important beats base th{text-align:center}) */
 .data-table th.cell--number { text-align: right !important; }
-.doc-lines th.col-total { text-align: center !important; }
+/* col-total header alignment: right-aligned (consolidated in doc-lines block above) */
 .catalog-ac-wrap { position: relative; display: flex; align-items: center; gap: 4px; }
 .item-link { font-size: 12px; text-decoration: none; cursor: pointer; flex-shrink: 0; line-height: 1; }
 .item-link--active { color: var(--c-accent); }
