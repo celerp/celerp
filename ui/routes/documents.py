@@ -5599,8 +5599,8 @@ async function celerpCsvImport(input, entityId) {{
                     else:
                         cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
             cells += [
-                Td(format_value(li.get("sku") or None)),
-                Td(format_value(li.get("description") or li.get("name"))),
+                Td(format_value(li.get("sku") or None), cls="col-sku"),
+                Td(format_value(li.get("description") or li.get("name")), cls="col-desc"),
             ]
             if _is_vendor_doc:
                 cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
@@ -5623,7 +5623,7 @@ async function celerpCsvImport(input, entityId) {{
             _thead_base.append(Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"))
         if _show_item_status:
             _thead_base.append(Th("Status", cls="col-item-status"))
-        _thead_base += [Th(t("th.skuitem")), Th(t("th.description"))]
+        _thead_base += [Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.type"), cls="col-type")]
         _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
