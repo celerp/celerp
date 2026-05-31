@@ -117,29 +117,36 @@ async def run_import(path: Path):
                 return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
             dump_bytes = dump_file.read()
 
-            # Restore database
-            restore_database(dump_bytes, settings.database_url)
+        # Dispose connection pool BEFORE pg_restore so live connections don't
+        # hold locks that block pg_restore from dropping/recreating tables.
+        try:
+            from celerp.db import engine as _engine
+            await _engine.dispose()
+            log.info("Connection pool disposed before pg_restore")
+        except Exception as pool_exc:
+            log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
 
-            # Dispose connection pool — pg_restore recreated the schema underneath
-            # existing pool connections; dispose forces all to reconnect fresh.
-            try:
-                from celerp.db import engine as _engine
-                await _engine.dispose()
-                log.info("Connection pool disposed after pg_restore")
-            except Exception as pool_exc:
-                log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
+        # Run pg_restore in a thread executor — it's a blocking subprocess call.
+        # Running it directly in an async function blocks the uvicorn event loop,
+        # which prevents the response from being sent back and causes HTTPX timeouts.
+        import asyncio
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, lambda: restore_database(dump_bytes, settings.database_url)
+        )
 
-            # Reconcile schema — run any missing migrations after pg_restore
-            try:
-                from alembic.config import Config as _AlembicConfig
-                from alembic import command as _alembic_cmd
-                _cfg = _AlembicConfig("alembic.ini")
-                _alembic_cmd.upgrade(_cfg, "head")
-                log.info("Alembic upgrade head completed after pg_restore")
-            except Exception as alembic_exc:
-                log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
+        # Reconcile schema — run any missing migrations after pg_restore
+        try:
+            from alembic.config import Config as _AlembicConfig
+            from alembic import command as _alembic_cmd
+            _cfg = _AlembicConfig("alembic.ini")
+            await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
+            log.info("Alembic upgrade head completed after pg_restore")
+        except Exception as alembic_exc:
+            log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
 
-            # Extract files (attachments, ai_uploads)
+        # Extract files outside the tar context (already read dump above)
+        with tarfile.open(str(path), "r:gz") as tar:
             from celerp.config import settings as _settings
             _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/")
             for member in tar.getmembers():
