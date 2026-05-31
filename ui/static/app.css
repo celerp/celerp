@@ -504,23 +504,22 @@ a:hover { text-decoration: underline; }
 /* ─── Doc detail ──────────────────────────────────────────────────────── */
 .doc-meta { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
-.doc-lines { margin-top: 12px; table-layout: fixed; width: 100%; max-width: 100%; }
+.doc-lines { margin-top: 12px; }
+.data-table.doc-lines { table-layout: fixed; width: 100%; max-width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 0; }
-.doc-lines th.col-checkbox, .doc-lines td.col-checkbox { width: 28px; min-width: 28px; max-width: 28px; padding-left: 0; padding-right: 0; text-align: center; overflow: visible; }
+.doc-lines th.col-checkbox,   .doc-lines td.col-checkbox   { width: 28px;  padding-left: 0; padding-right: 0; text-align: center; overflow: visible; }
+.doc-lines th.col-item-status,.doc-lines td.col-item-status{ width: 100px; }
 .doc-lines th.col-sku,        .doc-lines td.col-sku        { width: 90px; }
 .doc-lines th.col-desc,       .doc-lines td.col-desc       { width: 280px; }
-.doc-lines th.col-qty,        .doc-lines td.col-qty        { width: 60px;  min-width: 60px;  max-width: 70px; }
-.doc-lines th.col-unit,       .doc-lines td.col-unit       { width: 44px;  min-width: 44px;  max-width: 50px; }
-.doc-lines th.col-unit-price, .doc-lines td.col-unit-price { width: 100px; min-width: 90px;  max-width: 120px; }
-.doc-lines th.col-disc,       .doc-lines td.col-disc       { width: 50px;  min-width: 50px;  max-width: 60px; }
-.doc-lines th.col-tax,        .doc-lines td.col-tax        { width: 70px;  min-width: 70px;  max-width: 90px; }
-.doc-lines th.col-cat,        .doc-lines td.col-cat        { width: 70px;  min-width: 60px;  max-width: 90px; overflow: hidden; }
-.doc-lines th.col-type,       .doc-lines td.col-type       { width: 70px;  min-width: 60px;  max-width: 80px; }
-.doc-lines th.col-account,    .doc-lines td.col-account    { width: 100px;  min-width: 80px;  max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.doc-lines td.col-total, .doc-lines th.col-total { width: 140px; min-width: 140px; max-width: 160px; overflow: visible; padding: 0 0 0 12px; }
-.doc-lines th.col-category,   .doc-lines td.col-category   { width: 110px; min-width: 80px;  max-width: 120px; }
-.doc-lines th.col-type,       .doc-lines td.col-type       { width: 80px;  min-width: 70px;  max-width: 90px; }
-.doc-lines th.col-item-status,.doc-lines td.col-item-status{ width: 100px; min-width: 90px;  max-width: 110px; }
+.doc-lines th.col-cat,        .doc-lines td.col-cat        { width: 70px; }
+.doc-lines th.col-type,       .doc-lines td.col-type       { width: 70px; }
+.doc-lines th.col-qty,        .doc-lines td.col-qty        { width: 55px; }
+.doc-lines th.col-unit,       .doc-lines td.col-unit       { width: 44px; }
+.doc-lines th.col-unit-price, .doc-lines td.col-unit-price { width: 100px; }
+.doc-lines th.col-disc,       .doc-lines td.col-disc       { width: 50px; }
+.doc-lines th.col-tax,        .doc-lines td.col-tax        { width: 65px; }
+.doc-lines th.col-account,    .doc-lines td.col-account    { width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.doc-lines td.col-total, .doc-lines th.col-total           { width: 130px; overflow: visible; padding: 0 0 0 12px; }
 .doc-lines td.col-total { display: flex; align-items: center; padding-right: 8px; }
 .data-table td.col-total input.line-total { flex: 1; width: auto !important; min-width: 0; text-align: right !important; max-width: none !important; box-sizing: border-box; margin: 0; }
 .line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
