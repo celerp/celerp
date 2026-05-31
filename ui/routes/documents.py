@@ -501,6 +501,8 @@ def _doc_print_view(doc: dict) -> FT:
     contact_address = doc.get("contact_billing_address") or doc.get("contact_address") or ""
     contact_tax_id = doc.get("contact_tax_id") or ""
     contact_email = doc.get("contact_email") or ""
+    ship_to_address = doc.get("contact_shipping_address") or ""
+    shipping_attn = doc.get("shipping_attn") or ""
 
     line_items = doc.get("line_items") or []
 
@@ -571,7 +573,15 @@ def _doc_print_view(doc: dict) -> FT:
                 cls="dp-party-sub",
             ),
         )
-        parties_section = Div(vendor_box, bill_to_box, cls="dp-parties")
+        ship_to_box = Div(
+            P("Ship To", cls="dp-party-label"),
+            P(shipping_attn, cls="dp-party-name") if shipping_attn else None,
+            Div(
+                P(ship_to_address) if ship_to_address else None,
+                cls="dp-party-sub",
+            ),
+        ) if ship_to_address else None
+        parties_section = Div(vendor_box, bill_to_box, ship_to_box, cls="dp-parties")
     else:
         # Sales docs: Bill To = the contact (customer)
         parties_section = Div(
@@ -586,6 +596,11 @@ def _doc_print_view(doc: dict) -> FT:
                     cls="dp-party-sub",
                 ),
             ) if contact_name else None,
+            Div(
+                P("Ship To", cls="dp-party-label"),
+                P(shipping_attn, cls="dp-party-name") if shipping_attn else None,
+                Div(P(ship_to_address) if ship_to_address else None, cls="dp-party-sub"),
+            ) if ship_to_address else None,
             cls="dp-parties",
         )
 
@@ -4043,6 +4058,43 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
     )
 
 
+def _ship_to_picker(doc_id: str, current_address: str, locations: list, is_list: bool = False) -> FT:
+    """Purchasing-doc Ship To: dropdown of company locations, patches contact_shipping_address."""
+    base = f"/lists/{doc_id}" if is_list else f"/docs/{doc_id}"
+
+    def _addr_text(loc: dict) -> str:
+        return unwrap_address(loc.get("address")) or loc.get("name") or ""
+
+    options = [Option("-- select address --", value="", selected=(not current_address))]
+    for loc in locations:
+        addr_text = _addr_text(loc)
+        options.append(Option(
+            loc.get("name") or addr_text,
+            value=addr_text,
+            selected=(addr_text == current_address),
+        ))
+    # Preserve unknown free-text value
+    known = {_addr_text(l) for l in locations}
+    if current_address and current_address not in known and current_address != "--":
+        options.append(Option(f"Custom: {current_address[:40]}", value=current_address, selected=True))
+    # GDR: always include Add new option
+    options.append(Option("+ Add new location", value="__add_new__"))
+
+    return Div(
+        Select(
+            *options,
+            name="value",
+            hx_patch=f"{base}/field/contact_shipping_address",
+            hx_target="closest .editable-cell",
+            hx_swap="outerHTML",
+            hx_trigger="change",
+            onchange="if(this.value==='__add_new__'){window.open('/settings/inventory?tab=locations','_blank');this.value='';return;}",
+            cls="cell-input cell-input--select",
+        ),
+        cls="editable-cell editable-cell--editing",
+    ) if locations else _doc_display_cell(doc_id, "contact_shipping_address", current_address or "--")
+
+
 def _company_address_picker(doc_id: str, current_address: str, company_locations: list) -> FT:
     """Render address as a location picker dropdown if locations exist, else a plain editable cell."""
     if not company_locations:
@@ -4213,6 +4265,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     status = doc.get("status", "draft")
     doc_type = doc.get("doc_type", "")
     is_draft = status == "draft"
+    _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
     ref = _pick("ref_id", "doc_number", "ref", "external_id") or entity_id
     from celerp.services.auth import ROLE_LEVELS as _RL
     _user_level = _RL.get(role, _RL["owner"])
@@ -5548,7 +5601,6 @@ async function celerpCsvImport(input, entityId) {{
             cls="lines-section",
         )
     else:
-        _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
         # Show checkboxes + bulk toolbar on finalized docs when celerp-labels is installed
         # or when doc type supports per-line fulfill/revert
         from celerp.modules.slots import get as _get_slot_labels_fin
@@ -5903,7 +5955,11 @@ async function celerpCsvImport(input, entityId) {{
                 Div(*_contact_rows, cls="doc-section"),
                 Div(
                     Div(Span("🚚", cls="section-icon"), H3(t("page.ship_to"), cls="section-title"), cls="section-header"),
-                    Div(Div(t("doc.address"), cls="form-label"), _cell("contact_shipping_address", doc.get("contact_shipping_address")), cls="form-group"),
+                    Div(Div(t("doc.address"), cls="form-label"),
+                        _ship_to_picker(entity_id, doc.get("contact_shipping_address") or "", locations or [], is_list)
+                        if _is_vendor_doc else
+                        _cell("contact_shipping_address", doc.get("contact_shipping_address")),
+                        cls="form-group"),
                     Div(Div(t("doc.attn"), cls="form-label"), _cell("shipping_attn", doc.get("shipping_attn")), cls="form-group"),
                     cls="doc-section", style="margin-top:0.75rem",
                 ),
