@@ -71,6 +71,16 @@ document.addEventListener('htmx:afterRequest', function(e) {
   try {
     var obj = JSON.parse(hdr);
     if (obj.celerpToast) celerpToast(obj.celerpToast.message, obj.celerpToast.type || 'error');
+    if (obj.celerpRestoreCell) {
+      // Close any open editable cell: trigger ESC on focused element, then blur
+      var active = document.activeElement;
+      if (active && active !== document.body) {
+        active.dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true}));
+        active.blur();
+      }
+      // Also close any open combobox lists
+      document.querySelectorAll('.combobox-list.open').forEach(function(l) { l.classList.remove('open'); });
+    }
   } catch(ex) {}
 });
 

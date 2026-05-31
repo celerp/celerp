@@ -144,7 +144,7 @@ def _render_fulfillment_badge(doc: dict):
 
 
 def _action_error(msg: str, target_id: str = "action-error"):
-    """Fire a toast popup for action errors. target_id kept for compat but no longer used for inline swap."""
+    """Fire a toast popup for action errors and restore any open editable cell to display mode."""
     import json as _json
     from starlette.responses import HTMLResponse as _HR
     return _HR(
@@ -152,7 +152,10 @@ def _action_error(msg: str, target_id: str = "action-error"):
         status_code=200,
         headers={
             "HX-Reswap": "none",
-            "HX-Trigger": _json.dumps({"celerpToast": {"message": msg, "type": "error"}}),
+            "HX-Trigger": _json.dumps({
+                "celerpToast": {"message": msg, "type": "error"},
+                "celerpRestoreCell": True,
+            }),
         },
     )
 
