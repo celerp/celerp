@@ -184,10 +184,19 @@ def setup_routes(app):
                     files={"file": (file.filename, raw, "application/octet-stream")},
                 )
             if r.status_code != 200:
-                detail = r.json().get("detail", "Import failed.") if r.headers.get("content-type", "").startswith("application/json") else "Import failed."
+                ct = r.headers.get("content-type", "")
+                if ct.startswith("application/json"):
+                    try:
+                        detail = r.json().get("detail", "Import failed.")
+                    except Exception:
+                        detail = "Import failed (unreadable response)."
+                else:
+                    detail = r.text[:300] or "Import failed."
                 return auth_shell(_setup_import_form(error=detail), title="Restore from backup - Celerp")
+        except httpx.TimeoutException:
+            return auth_shell(_setup_import_form(error="Import timed out. The file may be too large or the server is busy."), title="Restore from backup - Celerp")
         except Exception as exc:
-            return auth_shell(_setup_import_form(error=f"Error: {exc}"), title="Restore from backup - Celerp")
+            return auth_shell(_setup_import_form(error=f"Connection error: {exc!r}"), title="Restore from backup - Celerp")
         return RedirectResponse("/login?imported=1", status_code=302)
 
     @app.post("/setup")
@@ -542,7 +551,15 @@ def _setup_import_form(error: str | None = None) -> FT:
                       accept=".celerp-backup", required=True, cls="form-input"),
                 cls="form-group",
             ),
-            Button("Restore backup", type="submit", cls="btn btn--primary btn--full"),
+            Button("Restore backup", type="submit", id="restore-btn", cls="btn btn--primary btn--full"),
+            Script("""
+document.querySelector('#restore-btn').closest('form').addEventListener('submit', function() {
+  var btn = document.getElementById('restore-btn');
+  btn.disabled = true;
+  btn.textContent = 'Restoring\u2026';
+  btn.classList.add('btn--loading');
+});
+"""),
             method="post", action="/setup/import-backup",
             enctype="multipart/form-data", cls="auth-form",
         ),

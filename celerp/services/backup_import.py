@@ -120,6 +120,15 @@ async def run_import(path: Path):
             # Restore database
             restore_database(dump_bytes, settings.database_url)
 
+            # Dispose connection pool — pg_restore recreated the schema underneath
+            # existing pool connections; dispose forces all to reconnect fresh.
+            try:
+                from celerp.db import engine as _engine
+                await _engine.dispose()
+                log.info("Connection pool disposed after pg_restore")
+            except Exception as pool_exc:
+                log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
+
             # Reconcile schema — run any missing migrations after pg_restore
             try:
                 from alembic.config import Config as _AlembicConfig
@@ -154,6 +163,8 @@ async def run_import(path: Path):
         return BackupResult(ok=True, size_bytes=len(dump_bytes))
 
     except ValueError as exc:
+        log.error("Backup import validation error: %s", exc)
         return BackupResult(ok=False, size_bytes=0, error=str(exc))
     except Exception as exc:
-        return BackupResult(ok=False, size_bytes=0, error=str(exc))
+        log.exception("Backup import failed unexpectedly")
+        return BackupResult(ok=False, size_bytes=0, error=str(exc) or repr(exc))
