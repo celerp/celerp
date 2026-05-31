@@ -183,16 +183,17 @@ function initCombobox(wrap) {
   var list = wrap.querySelector('.combobox-list');
   var hidden = wrap.querySelector('input[type=hidden]');
   if (!input || !list) return;
+  // Guard: don't double-init
+  if (wrap._comboboxInit) return;
+  wrap._comboboxInit = true;
   var opts = Array.from(list.querySelectorAll('.combobox-option'));
   var allowCustom = wrap.dataset.allowCustom === 'true';
 
-  // Move list to body so it escapes overflow:hidden/auto ancestors, position via fixed
-  if (list.parentElement !== document.body) {
-    document.body.appendChild(list);
-    list.style.position = 'fixed';
-    list.style.zIndex = '9999';
-    list.style.width = '';
-  }
+  // position:fixed on the list so overflow:hidden/auto ancestors can't clip it.
+  // We set top/left/width inline on open so it tracks the input position.
+  list.style.position = 'fixed';
+  list.style.zIndex = '9999';
+
   function positionList() {
     var r = input.getBoundingClientRect();
     list.style.top = (r.bottom + 2) + 'px';
@@ -285,7 +286,9 @@ function initCombobox(wrap) {
     }
   }
 }
-document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+});
 /* Re-init after HTMX swaps — search from document to handle outerHTML swaps */
 document.addEventListener('htmx:afterSettle', function(e) {
   var root = (e.detail.elt && e.detail.elt.isConnected) ? e.detail.elt : document;
