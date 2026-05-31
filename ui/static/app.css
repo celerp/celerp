@@ -510,17 +510,17 @@ a:hover { text-decoration: underline; }
 /* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
 .doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }
 .doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 100px; }
-.doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 80px;  }
-.doc-lines th.col-desc,        .doc-lines td.col-desc        { width: 200px; } /* largest explicit col; fills proportionally in fixed layout */
-.doc-lines th.col-cat,         .doc-lines td.col-cat         { width: 70px;  }
-.doc-lines th.col-type,        .doc-lines td.col-type        { width: 60px;  }
-.doc-lines th.col-qty,         .doc-lines td.col-qty         { width: 55px;  text-align: right; }
-.doc-lines th.col-unit,        .doc-lines td.col-unit        { width: 50px;  }
-.doc-lines th.col-unit-price,  .doc-lines td.col-unit-price  { width: 95px;  text-align: right; }
-.doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 50px;  text-align: right; }
-.doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 55px;  text-align: right; }
-.doc-lines th.col-account,     .doc-lines td.col-account     { width: 110px; }
-.doc-lines th.col-total,       .doc-lines td.col-total       { width: 110px; text-align: right; padding-right: 8px; }
+.doc-lines th.col-sku,         .doc-lines td.col-sku         { width: 70px;  }
+.doc-lines th.col-desc,        .doc-lines td.col-desc        { width: 300px; }
+.doc-lines th.col-cat,         .doc-lines td.col-cat         { width: 60px;  }
+.doc-lines th.col-type,        .doc-lines td.col-type        { width: 55px;  }
+.doc-lines th.col-qty,         .doc-lines td.col-qty         { width: 45px;  text-align: right; }
+.doc-lines th.col-unit,        .doc-lines td.col-unit        { width: 44px;  }
+.doc-lines th.col-unit-price,  .doc-lines td.col-unit-price  { width: 90px;  text-align: right; }
+.doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 44px;  text-align: right; }
+.doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 50px;  text-align: right; }
+.doc-lines th.col-account,     .doc-lines td.col-account     { width: 100px; }
+.doc-lines th.col-total,       .doc-lines td.col-total       { width: 100px; text-align: right; padding-right: 8px; }
 /* input inside editable total cell — fills cell width */
 .doc-lines td.col-total input.line-total { width: 100%; text-align: right; box-sizing: border-box; }
 .line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
