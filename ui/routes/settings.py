@@ -433,6 +433,94 @@ def _register_price_lists_crud(app, prefix: str, get_fn_name: str, patch_fn_name
     app.delete(f"/settings/{prefix}/{{idx}}")(_make_delete(get_fn_name, patch_fn_name, redirect_url, "get_default_price_list"))
 
 
+def _factory_reset_card() -> FT:
+    """Reset All Data card — lives inside the existing Danger Zone section."""
+    modal_id = "factory-reset-modal"
+    step1_id = "factory-reset-step1"
+    step2_id = "factory-reset-step2"
+    input_id = "factory-reset-confirm-input"
+    btn_id   = "factory-reset-confirm-btn"
+
+    to_step2_js = (
+        f"document.getElementById('{step1_id}').style.display='none';"
+        f"document.getElementById('{step2_id}').style.display='block';"
+        f"document.getElementById('{input_id}').focus();"
+    )
+    validate_js = (
+        f"document.getElementById('{btn_id}').disabled="
+        f"document.getElementById('{input_id}').value!=='RESET';"
+    )
+    success_js = (
+        f"document.getElementById('{modal_id}').addEventListener('htmx:afterRequest',function(e){{"
+        f"if(e.detail.xhr.status===200){{window.location.href='/setup';}}"
+        f"}},{{once:true}});"
+    )
+
+    return Div(
+        Div(id="reset-flash"),
+        P("Permanently delete all company data and return to the initial setup wizard. "
+          "Installed modules and server settings will be preserved.",
+          cls="settings-help-text"),
+        Button("Reset All Data",
+               type="button",
+               cls="btn btn--outline btn--danger",
+               onclick=f"document.getElementById('{modal_id}').showModal()"),
+        Dialog(
+            Div(
+                Div(
+                    H3("Reset all data?", cls="modal-dialog__title"),
+                    P("This will permanently delete all business data — contacts, items, "
+                      "transactions, documents, and all other records. "
+                      "Your app settings and installed modules will be preserved. "
+                      "This cannot be undone."),
+                    Div(
+                        A("Download backup first",
+                          href="/backup/export",
+                          cls="btn btn--sm btn--ghost",
+                          onclick=to_step2_js,
+                          download=True),
+                        Button("Skip — continue",
+                               type="button",
+                               cls="btn btn--sm",
+                               onclick=to_step2_js),
+                        cls="modal-dialog__actions",
+                    ),
+                    id=step1_id,
+                ),
+                Div(
+                    H3("Type RESET to confirm", cls="modal-dialog__title"),
+                    P("This action is irreversible. Type ", Strong("RESET"), " below to confirm."),
+                    Input(type="text", id=input_id, placeholder="RESET",
+                          autocomplete="off", cls="form-input",
+                          oninput=validate_js),
+                    Div(
+                        Button("Delete everything",
+                               type="submit",
+                               id=btn_id,
+                               cls="btn btn--danger",
+                               disabled=True,
+                               hx_post="/system/factory-reset",
+                               hx_target="#reset-flash",
+                               hx_swap="innerHTML",
+                               onclick=success_js),
+                        Button("Cancel",
+                               type="button",
+                               cls="btn btn--ghost",
+                               onclick=f"document.getElementById('{modal_id}').close()"),
+                        cls="modal-dialog__actions",
+                    ),
+                    id=step2_id,
+                    style="display:none",
+                ),
+                cls="modal-dialog__body",
+            ),
+            id=modal_id,
+            cls="modal-dialog",
+        ),
+        cls="settings-card settings-card--danger",
+    )
+
+
 def setup_routes(app):
 
     @app.get("/settings")
@@ -3006,6 +3094,7 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en",
                     ),
                     cls="settings-card settings-card--danger",
                 ),
+                _factory_reset_card(),
                 *(
                     [
                         Div(
