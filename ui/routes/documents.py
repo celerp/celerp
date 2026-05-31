@@ -5615,7 +5615,7 @@ async function celerpCsvImport(input, entityId) {{
             if doc_type in ("purchase_order", "bill"):
                 acct_code = li.get("account_code") or ""
                 acct_display = _acct_map.get(acct_code) or acct_code or None
-                cells.append(Td(format_value(acct_display), cls="col-account"))
+                cells.append(Td(format_value(acct_display), title=acct_display or "", cls="col-account"))
             cells.append(Td(format_value(line_total, "money"), cls="cell--number col-total"))
             return Tr(*cells)
 
