@@ -158,6 +158,10 @@ def detail_from_entry(data: dict, event_type: str) -> str:
         summary = _fields_changed_summary(fields_changed)
         if summary:
             return summary
+        # fields_changed was present but all entries were noise (empty→empty etc.)
+        # Fall through to event-type-specific detail or generic "Updated".
+        if event_type and event_type.endswith(".updated"):
+            return "Updated"
     if event_type in ("item.quantity.adjusted", "item.quantity_adjusted"):
         new_qty = data.get("new_qty") or data.get("quantity")
         if new_qty is not None:
