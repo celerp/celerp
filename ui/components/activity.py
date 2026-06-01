@@ -106,6 +106,48 @@ def entity_url(entity_id: str) -> str:
 
 _SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
 
+# Human-readable labels for field keys shown in activity change summaries.
+_FIELD_LABELS: dict[str, str] = {
+    "contact_name": "Contact",
+    "contact_company_name": "Contact company",
+    "contact_id": "Contact",
+    "commission_contact_id": "Commission contact",
+    "contact_billing_address": "Billing address",
+    "contact_shipping_address": "Shipping address",
+    "contact_phone": "Phone",
+    "contact_email": "Email",
+    "contact_tax_id": "Tax ID",
+    "payment_terms": "Payment terms",
+    "ref_id": "Reference",
+    "due_date": "Due date",
+    "issue_date": "Issue date",
+    "amount_outstanding": "Amount outstanding",
+    "total": "Total",
+    "status": "Status",
+    "description": "Description",
+    "customer_note": "Customer note",
+    "internal_note": "Internal note",
+    "currency": "Currency",
+    "price_list": "Price list",
+    "terms_text": "Terms",
+    "shipping_attn": "Ship to",
+    "doc_number": "Doc number",
+    "name": "Name",
+    "sku": "SKU",
+    "quantity": "Quantity",
+    "price": "Price",
+    "category": "Category",
+    "barcode": "Barcode",
+    "location": "Location",
+}
+
+# ID fields that carry a raw entity-ID value; suppressed when a companion
+# human-readable field is present in the same changeset.
+_ID_FIELD_COMPANIONS: dict[str, str] = {
+    "contact_id": "contact_name",
+    "commission_contact_id": "commission_contact_name",
+}
+
 
 def detail_from_entry(data: dict, event_type: str) -> str:
     """Extract a short human-readable detail string from a ledger entry's data dict."""
@@ -265,6 +307,11 @@ def _fields_changed_summary(fields_changed: dict) -> str:
     if not user_fields:
         return ""
 
+    # Suppress raw-ID fields when the companion human-readable field is also present.
+    for id_field, companion in _ID_FIELD_COMPANIONS.items():
+        if id_field in user_fields and companion in user_fields:
+            del user_fields[id_field]
+
     _COMPLEX_LABELS: dict[str, str] = {
         "line_items": "Lines edited",
         "received_items": "Received items updated",
@@ -295,10 +342,11 @@ def _fields_changed_summary(fields_changed: dict) -> str:
 
         old_str = (str(old)[:40] + "…" if old is not None and len(str(old)) > 40 else str(old)) if old is not None else "none"
         new_str = (str(new)[:40] + "…" if new is not None and len(str(new)) > 40 else str(new)) if new is not None else "none"
+        label = _FIELD_LABELS.get(k) or k.replace("_", " ").title()
         if new is not None:
-            scalar_parts.append(f"{k}: {old_str} → {new_str}")
+            scalar_parts.append(f"{label}: {old_str} → {new_str}")
         else:
-            scalar_parts.append(k)
+            scalar_parts.append(label)
 
     all_parts = scalar_parts + complex_labels
     if not all_parts:

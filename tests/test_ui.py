@@ -789,7 +789,7 @@ class TestActivityFeed:
             "data": {"fields_changed": {"status": {"old": "active", "new": "reserved"}}},
         }]))
         assert "2026-03-20" in html
-        assert "status: active → reserved" in html
+        assert "Status: active → reserved" in html
         assert "—" not in html.split("2026-03-20")[0]  # timestamp cell is not blank
 
     def test_ledger_table_empty(self):
