@@ -101,6 +101,12 @@ def entity_url(entity_id: str) -> str:
         return f"/contacts/{entity_id}"
     if entity_id.startswith("deal:"):
         return f"/crm/deals/{entity_id}"
+    if entity_id.startswith("je:auto:"):
+        # je:auto:{doc_id}:{op} — link back to the source document
+        rest = entity_id[len("je:auto:"):]  # e.g. "doc:INV-2026-0001:fin"
+        parts = rest.rsplit(":", 1)
+        if len(parts) == 2:
+            return f"/docs/{parts[0]}"
     return ""
 
 
