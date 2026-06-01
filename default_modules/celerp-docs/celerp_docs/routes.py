@@ -783,7 +783,11 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
-        data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
+        data={"fields_changed": {
+            k: {"old": (change.get("old") if change.get("old") is not None else row.state.get(k)), "new": change.get("new")}
+            for k, change in payload.fields_changed.items()
+        }, "idempotency_key": payload.idempotency_key},
+        actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     await session.commit()

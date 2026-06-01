@@ -338,25 +338,60 @@ def _fields_changed_summary(fields_changed: dict) -> str:
         # If either value is a list or dict, treat as complex
         if isinstance(old, (list, dict)) or isinstance(new, (list, dict)):
             if k == "line_items" and isinstance(new, list):
-                parts = []
-                for li in new:
-                    if not isinstance(li, dict):
-                        continue
-                    name = li.get("name") or li.get("sku") or ""
-                    if not name:
-                        continue
-                    qty = li.get("quantity")
-                    price = li.get("unit_price") or li.get("price")
-                    detail = name
-                    if qty is not None:
-                        detail += f" ×{qty}"
-                    if price is not None:
-                        detail += f" @ {price}"
-                    parts.append(detail)
+                if isinstance(old, list):
+                    # True diff: old and new both present
+                    def _li_key(li):
+                        return li.get("entity_id") or li.get("item_id") or li.get("sku") or li.get("name") or ""
+                    def _li_label(li):
+                        name = li.get("name") or li.get("sku") or ""
+                        qty = li.get("quantity")
+                        return f"{name} ×{qty}" if qty is not None else name
+
+                    old_by_key = {_li_key(li): li for li in old if isinstance(li, dict)}
+                    new_by_key = {_li_key(li): li for li in new if isinstance(li, dict)}
+                    added = [_li_label(li) for k2, li in new_by_key.items() if k2 not in old_by_key]
+                    removed = [_li_label(li) for k2, li in old_by_key.items() if k2 not in new_by_key]
+                    changed = []
+                    for k2, new_li in new_by_key.items():
+                        if k2 in old_by_key:
+                            old_li = old_by_key[k2]
+                            old_qty = old_li.get("quantity")
+                            new_qty = new_li.get("quantity")
+                            old_price = old_li.get("unit_price") or old_li.get("price")
+                            new_price = new_li.get("unit_price") or new_li.get("price")
+                            name = new_li.get("name") or new_li.get("sku") or ""
+                            if old_qty != new_qty:
+                                changed.append(f"{name} ×{old_qty}→{new_qty}")
+                            elif old_price != new_price:
+                                changed.append(f"{name} {old_price}→{new_price}")
+                    parts = (
+                        [f"+{x}" for x in added[:2]]
+                        + [f"~{x}" for x in changed[:2]]
+                        + [f"-{x}" for x in removed[:2]]
+                    )
+                    overflow = (len(added) + len(changed) + len(removed)) - len(parts)
+                else:
+                    # No old state - show final line state with qty/price
+                    parts = []
+                    for li in new:
+                        if not isinstance(li, dict):
+                            continue
+                        name = li.get("name") or li.get("sku") or ""
+                        if not name:
+                            continue
+                        qty = li.get("quantity")
+                        price = li.get("unit_price") or li.get("price")
+                        detail = name
+                        if qty is not None:
+                            detail += f" ×{qty}"
+                        if price is not None:
+                            detail += f" @ {price}"
+                        parts.append(detail)
+                    overflow = max(0, len(parts) - 3)
                 if parts:
                     summary = "; ".join(parts[:3])
-                    if len(parts) > 3:
-                        summary += f" +{len(parts) - 3} more"
+                    if overflow > 0:
+                        summary += f" +{overflow} more"
                     complex_labels.append(summary)
                     continue
             label = _COMPLEX_LABELS.get(k) or f"{k.replace('_', ' ').title()} updated"
