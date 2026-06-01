@@ -467,7 +467,8 @@ def _is_uuid(s: str) -> bool:
 def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
                    section_cls: str = "section", icon: str = "",
                    empty_msg: str = "No activity yet.",
-                   max_display: int | None = None) -> FT:
+                   max_display: int | None = None,
+                   history_url: str | None = None) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
 
     Columns: Event (linked to entity) | When (timestamp) | Details | User
@@ -518,7 +519,14 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         header_parts.append(Span(icon, cls="section-icon"))
     header_parts.append(H3(title, cls="section-title"))
 
-    footer = P(f"Showing last {len(display_rows)} events", cls="table-footer-note") if len(all_rows) >= threshold else ""
+    footer_text = f"Showing last {len(display_rows)} events"
+    if len(all_rows) >= threshold:
+        footer = P(
+            A(footer_text, href=history_url, cls="table-link") if history_url else footer_text,
+            cls="table-footer-note",
+        )
+    else:
+        footer = ""
 
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),

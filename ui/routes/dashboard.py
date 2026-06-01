@@ -644,7 +644,14 @@ def setup_routes(app):
         from ui.components.activity import activity_table
         from ui.components.table import pagination
 
-        extra = "&".join(f"{k}={v}" for k, v in base_params.items() if v)
+        extra_parts = []
+        if q:
+            extra_parts.append(f"q={q}")
+        if date_from:
+            extra_parts.append(f"date_from={date_from}")
+        if date_to:
+            extra_parts.append(f"date_to={date_to}")
+        extra = "&".join(extra_parts)
 
         filters = Form(
             Div(
@@ -844,11 +851,7 @@ def _activity_feed(activities: list[dict], currency: str | None = None) -> FT:
     from ui.components.activity import activity_table
     if not activities:
         return ""
-    return Div(
-        activity_table(activities, max_display=15),
-        P(A("View full history →", href="/history", cls="table-link"), cls="table-footer-note"),
-        cls="activity-feed-wrapper",
-    )
+    return activity_table(activities, max_display=15, history_url="/history")
 
 
 
