@@ -159,9 +159,7 @@ def detail_from_entry(data: dict, event_type: str) -> str:
         if summary:
             return summary
         # fields_changed was present but all entries were noise (empty→empty etc.)
-        # Fall through to event-type-specific detail or generic "Updated".
-        if event_type and event_type.endswith(".updated"):
-            return "Updated"
+        # Fall through to event-type-specific detail - no generic "Updated" fallback.
     if event_type in ("item.quantity.adjusted", "item.quantity_adjusted"):
         new_qty = data.get("new_qty") or data.get("quantity")
         if new_qty is not None:
@@ -339,6 +337,15 @@ def _fields_changed_summary(fields_changed: dict) -> str:
 
         # If either value is a list or dict, treat as complex
         if isinstance(old, (list, dict)) or isinstance(new, (list, dict)):
+            if k == "line_items" and isinstance(new, list):
+                names = [li.get("name") or li.get("sku") or "" for li in new if isinstance(li, dict)]
+                names = [n for n in names if n]
+                if names:
+                    summary = ", ".join(names[:3])
+                    if len(names) > 3:
+                        summary += f" +{len(names) - 3} more"
+                    complex_labels.append(summary)
+                    continue
             label = _COMPLEX_LABELS.get(k) or f"{k.replace('_', ' ').title()} updated"
             if label not in complex_labels:
                 complex_labels.append(label)
@@ -430,7 +437,7 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
             cls=section_cls,
         )
 
-    def _row(e: dict) -> FT:
+    def _row(e: dict) -> FT | None:
         display_text, url = _event_display(e)
         event_cell = Td(A(display_text, href=url, cls="table-link") if url else display_text)
 
@@ -441,6 +448,11 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         data = e.get("data") or {}
         raw_type = str(e.get("event_type") or "")
         detail = detail_from_entry(data, raw_type) if isinstance(data, dict) else ""
+
+        # Drop rows that carried only noise (empty→empty field changes with no other detail)
+        if not detail and isinstance(data, dict) and data.get("fields_changed"):
+            return None
+
         detail_cell = Td(detail or EMPTY)
 
         actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
@@ -462,7 +474,7 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),
         Table(
             Thead(Tr(Th(t("th.event")), Th(t("th.when")), Th(t("th.user")), Th(t("th.details")))),
-            Tbody(*[_row(e) for e in display]),
+            Tbody(*[r for e in display if (r := _row(e)) is not None]),
             cls="data-table",
         ),
         footer,
