@@ -338,12 +338,25 @@ def _fields_changed_summary(fields_changed: dict) -> str:
         # If either value is a list or dict, treat as complex
         if isinstance(old, (list, dict)) or isinstance(new, (list, dict)):
             if k == "line_items" and isinstance(new, list):
-                names = [li.get("name") or li.get("sku") or "" for li in new if isinstance(li, dict)]
-                names = [n for n in names if n]
-                if names:
-                    summary = ", ".join(names[:3])
-                    if len(names) > 3:
-                        summary += f" +{len(names) - 3} more"
+                parts = []
+                for li in new:
+                    if not isinstance(li, dict):
+                        continue
+                    name = li.get("name") or li.get("sku") or ""
+                    if not name:
+                        continue
+                    qty = li.get("quantity")
+                    price = li.get("unit_price") or li.get("price")
+                    detail = name
+                    if qty is not None:
+                        detail += f" ×{qty}"
+                    if price is not None:
+                        detail += f" @ {price}"
+                    parts.append(detail)
+                if parts:
+                    summary = "; ".join(parts[:3])
+                    if len(parts) > 3:
+                        summary += f" +{len(parts) - 3} more"
                     complex_labels.append(summary)
                     continue
             label = _COMPLEX_LABELS.get(k) or f"{k.replace('_', ' ').title()} updated"
