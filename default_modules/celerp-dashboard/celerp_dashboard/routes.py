@@ -149,5 +149,6 @@ async def get_activity(limit: int = Query(default=15, le=100), company_id=Depend
             "entity_type": e.entity_type,
             "name": name,
             "actor_name": actor_map.get(str(e.actor_id), str(e.actor_id) if e.actor_id else ""),
+            "data": e.data if isinstance(e.data, dict) else {},
         })
     return {"activities": activities}
