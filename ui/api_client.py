@@ -1654,6 +1654,20 @@ async def get_activity(token: str, limit: int = 15) -> list[dict]:
         return r.json().get("activities", [])
 
 
+async def search_activity(token: str, *, q: str = "", date_from: str = "", date_to: str = "", page: int = 1, per_page: int = 50) -> dict:
+    async with _api_client(token) as c:
+        params = {"page": page, "per_page": per_page}
+        if q:
+            params["q"] = q
+        if date_from:
+            params["date_from"] = date_from
+        if date_to:
+            params["date_to"] = date_to
+        r = await c.get("/dashboard/activity/search", params=params)
+        if r.is_error:
+            return {"activities": [], "total": 0, "page": 1, "per_page": per_page, "pages": 1}
+        return r.json()
+
 async def get_dashboard_kpis(token: str) -> dict:
     """GET /dashboard/kpis - full KPI payload for vertical-aware dashboard rendering."""
     async with _api_client(token) as c:

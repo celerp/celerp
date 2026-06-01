@@ -987,6 +987,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
 /* ─── Activity feed ───────────────────────────────────────────────────── */
 .activity-feed { margin-bottom: 24px; }
+.activity-detail-cell { max-width: 420px; word-wrap: break-word; white-space: normal; }
+.table-footer-note { font-size: 11px; color: var(--c-text2); margin-top: 6px; text-align: right; }
 .activity-list { list-style: none; padding: 0; margin: 0; }
 .activity-item {
   display: flex; align-items: center; gap: 12px; padding: 8px 0;

@@ -501,28 +501,30 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         if not detail and isinstance(data, dict) and data.get("fields_changed"):
             return None
 
-        detail_cell = Td(detail or EMPTY)
+        detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
 
         actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
         user_cell = Td(actor if (actor and not _is_uuid(actor)) else EMPTY)
 
         return Tr(event_cell, when_cell, user_cell, detail_cell)
 
-    display = ledger[:max_display] if max_display else ledger
-    threshold = max_display or len(ledger)
+    # Filter first, then slice — so max_display counts meaningful rows only
+    all_rows = [r for e in ledger if (r := _row(e)) is not None]
+    display_rows = all_rows[:max_display] if max_display else all_rows
+    threshold = max_display or len(all_rows)
 
     header_parts = []
     if icon:
         header_parts.append(Span(icon, cls="section-icon"))
     header_parts.append(H3(title, cls="section-title"))
 
-    footer = P(f"Showing last {len(display)} events", cls="table-footer-note") if len(ledger) >= threshold else ""
+    footer = P(f"Showing last {len(display_rows)} events", cls="table-footer-note") if len(all_rows) >= threshold else ""
 
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),
         Table(
             Thead(Tr(Th(t("th.event")), Th(t("th.when")), Th(t("th.user")), Th(t("th.details")))),
-            Tbody(*[r for e in display if (r := _row(e)) is not None]),
+            Tbody(*display_rows),
             cls="data-table",
         ),
         footer,

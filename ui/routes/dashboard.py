@@ -584,7 +584,7 @@ def setup_routes(app):
             ar_aging = {"buckets": {}}
 
         try:
-            activities = await api.get_activity(token, limit=15)
+            activities = await api.get_activity(token, limit=30)
         except Exception:
             activities = []
 
@@ -612,6 +612,66 @@ def setup_routes(app):
             nav_active="dashboard",
             companies=companies,
             lang=lang,
+            request=request,
+        )
+
+    @app.get("/history")
+    async def history_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+
+        q = request.query_params.get("q", "")
+        date_from = request.query_params.get("date_from", "")
+        date_to = request.query_params.get("date_to", "")
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except ValueError:
+            page = 1
+        per_page = 50
+
+        try:
+            result = await api.search_activity(token, q=q, date_from=date_from, date_to=date_to, page=page, per_page=per_page)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            result = {"activities": [], "total": 0, "page": 1, "per_page": per_page, "pages": 1}
+
+        activities = result.get("activities", [])
+        total = result.get("total", 0)
+        pages = result.get("pages", 1)
+
+        from ui.components.activity import activity_table
+        from ui.components.table import pagination
+
+        extra = "&".join(f"{k}={v}" for k, v in base_params.items() if v)
+
+        filters = Form(
+            Div(
+                Input(type="search", name="q", value=q, placeholder="Search events…", cls="filter-input"),
+                Input(type="date", name="date_from", value=date_from, cls="filter-input", style="width:160px"),
+                Input(type="date", name="date_to", value=date_to, cls="filter-input", style="width:160px"),
+                Button("Search", type="submit", cls="btn btn-primary"),
+                cls="filter-bar",
+            ),
+            method="get", action="/history",
+        )
+
+        table = activity_table(activities, title="", section_cls="")
+
+        pager = pagination(page, total, per_page, "/history", extra) if pages > 1 else ""
+
+        return base_shell(
+            page_header("Activity History", actions=[A("← Dashboard", href="/dashboard", cls="btn btn-secondary")]),
+            Div(
+                filters,
+                P(f"{total:,} events found", cls="result-count") if q or date_from or date_to else "",
+                table,
+                pager,
+                cls="page-body",
+            ),
+            title="Activity History - Celerp",
+            nav_active="dashboard",
             request=request,
         )
 
@@ -784,7 +844,11 @@ def _activity_feed(activities: list[dict], currency: str | None = None) -> FT:
     from ui.components.activity import activity_table
     if not activities:
         return ""
-    return activity_table(activities, max_display=15)
+    return Div(
+        activity_table(activities, max_display=15),
+        P(A("View full history →", href="/history", cls="table-link"), cls="table-footer-note"),
+        cls="activity-feed-wrapper",
+    )
 
 
 

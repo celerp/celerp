@@ -114,15 +114,68 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
 @router.get("/activity")
 async def get_activity(limit: int = Query(default=15, le=100), company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
     rows = (await session.execute(select(LedgerEntry).where(LedgerEntry.company_id == company_id).order_by(LedgerEntry.id.desc()).limit(limit))).scalars().all()
+    return {"activities": await _hydrate_entries(rows, company_id, session)}
 
-    # Batch-load projections to resolve human-readable names
+
+@router.get("/activity/search")
+async def search_activity(
+    q: str = Query(default=""),
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=1, le=200),
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    from sqlalchemy import and_, func
+    import sqlalchemy as _sa
+
+    stmt = select(LedgerEntry).where(LedgerEntry.company_id == company_id)
+
+    if date_from:
+        try:
+            dt_from = datetime.fromisoformat(date_from).replace(tzinfo=UTC)
+            stmt = stmt.where(LedgerEntry.ts >= dt_from)
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            dt_to = datetime.fromisoformat(date_to).replace(tzinfo=UTC)
+            stmt = stmt.where(LedgerEntry.ts <= dt_to)
+        except ValueError:
+            pass
+    if q:
+        ql = f"%{q.lower()}%"
+        stmt = stmt.where(
+            _sa.or_(
+                _sa.func.lower(LedgerEntry.event_type).like(ql),
+                _sa.func.lower(LedgerEntry.entity_id).like(ql),
+                _sa.cast(LedgerEntry.data, _sa.Text).ilike(ql),
+            )
+        )
+
+    total = (await session.execute(select(func.count()).select_from(stmt.subquery()))).scalar_one()
+    rows = (await session.execute(
+        stmt.order_by(LedgerEntry.id.desc()).offset((page - 1) * per_page).limit(per_page)
+    )).scalars().all()
+
+    return {
+        "activities": await _hydrate_entries(rows, company_id, session),
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": max(1, (total + per_page - 1) // per_page),
+    }
+
+
+async def _hydrate_entries(rows, company_id: str, session) -> list[dict]:
+    """Batch-resolve entity names and actor names for a list of LedgerEntry rows."""
     entity_ids = list({e.entity_id for e in rows})
     proj_rows = (await session.execute(
         select(Projection).where(Projection.company_id == company_id, Projection.entity_id.in_(entity_ids))
-    )).scalars().all()
+    )).scalars().all() if entity_ids else []
     proj_by_id = {p.entity_id: p.state for p in proj_rows}
 
-    # Resolve actor names
     actor_ids = list({e.actor_id for e in rows if e.actor_id})
     actor_map: dict[str, str] = {}
     if actor_ids:
@@ -135,13 +188,7 @@ async def get_activity(limit: int = Query(default=15, le=100), company_id=Depend
     activities = []
     for e in rows:
         state = proj_by_id.get(e.entity_id, {})
-        name = (
-            state.get("name") or
-            state.get("sku") or
-            state.get("doc_number") or
-            state.get("title") or
-            None
-        )
+        name = state.get("name") or state.get("sku") or state.get("doc_number") or state.get("title") or None
         activities.append({
             "ts": e.ts.isoformat() if hasattr(e.ts, "isoformat") else str(e.ts),
             "event_type": e.event_type,
@@ -151,4 +198,4 @@ async def get_activity(limit: int = Query(default=15, le=100), company_id=Depend
             "actor_name": actor_map.get(str(e.actor_id), str(e.actor_id) if e.actor_id else ""),
             "data": e.data if isinstance(e.data, dict) else {},
         })
-    return {"activities": activities}
+    return activities
