@@ -340,10 +340,19 @@ def _fields_changed_summary(fields_changed: dict) -> str:
                 complex_labels.append(label)
             continue
 
-        old_str = (str(old)[:40] + "…" if old is not None and len(str(old)) > 40 else str(old)) if old is not None else "none"
-        new_str = (str(new)[:40] + "…" if new is not None and len(str(new)) > 40 else str(new)) if new is not None else "none"
+        # Treat None / "" / whitespace-only as semantically empty; skip no-op changes.
+        def _empty(v) -> bool:
+            return v is None or (isinstance(v, str) and not v.strip())
+
+        if _empty(old) and _empty(new):
+            continue
+        if old == new:
+            continue
+
+        old_str = (str(old)[:40] + "…" if old is not None and len(str(old)) > 40 else str(old)) if not _empty(old) else "none"
+        new_str = (str(new)[:40] + "…" if new is not None and len(str(new)) > 40 else str(new)) if not _empty(new) else "none"
         label = _FIELD_LABELS.get(k) or k.replace("_", " ").title()
-        if new is not None:
+        if not _empty(new):
             scalar_parts.append(f"{label}: {old_str} → {new_str}")
         else:
             scalar_parts.append(label)
