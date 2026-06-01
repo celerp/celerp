@@ -669,7 +669,7 @@ def setup_routes(app):
         pager = pagination(page, total, per_page, "/history", extra) if pages > 1 else ""
 
         return base_shell(
-            page_header("Activity History", actions=[A("← Dashboard", href="/dashboard", cls="btn btn-secondary")]),
+            page_header("Activity History", A("← Dashboard", href="/dashboard", cls="btn btn-secondary")),
             Div(
                 filters,
                 P(f"{total:,} events found", cls="result-count") if q or date_from or date_to else "",

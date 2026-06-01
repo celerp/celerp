@@ -104,6 +104,31 @@ def entity_url(entity_id: str) -> str:
     return ""
 
 
+# Event types that are system-internal and should not appear in user-facing history.
+_SYSTEM_EVENT_TYPES = frozenset({
+    "acc.journal_entry.created",
+    "acc.journal_entry.posted",
+    "acc.journal_entry.voided",
+})
+
+# Event types that are self-describing via their label; detail column intentionally blank.
+_SELF_DESCRIBING_EVENT_TYPES = frozenset({
+    "doc.finalized",
+    "doc.voided",
+    "doc.reverted_to_draft",
+    "doc.shared",
+    "doc.converted",
+    "doc.converted_to_bill",
+    "item.created",
+    "item.deleted",
+    "contact.created",
+    "deal.created",
+    "deal.won",
+    "deal.lost",
+    "memo.created",
+    "memo.returned",
+})
+
 _SYSTEM_FIELDS = frozenset({"updated_at", "created_at"})
 
 # Human-readable labels for field keys shown in activity change summaries.
@@ -487,6 +512,12 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         )
 
     def _row(e: dict) -> FT | None:
+        raw_type = str(e.get("event_type") or "")
+
+        # Suppress system-internal events entirely
+        if raw_type in _SYSTEM_EVENT_TYPES:
+            return None
+
         display_text, url = _event_display(e)
         event_cell = Td(A(display_text, href=url, cls="table-link") if url else display_text)
 
@@ -495,14 +526,17 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         when_cell = Td(ts_display)
 
         data = e.get("data") or {}
-        raw_type = str(e.get("event_type") or "")
         detail = detail_from_entry(data, raw_type) if isinstance(data, dict) else ""
 
         # Drop rows that carried only noise (empty→empty field changes with no other detail)
         if not detail and isinstance(data, dict) and data.get("fields_changed"):
             return None
 
-        detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
+        # Self-describing events: label carries all info, detail column blank
+        if not detail and raw_type in _SELF_DESCRIBING_EVENT_TYPES:
+            detail_cell = Td("")
+        else:
+            detail_cell = Td(detail or EMPTY, cls="activity-detail-cell")
 
         actor = str(e.get("actor_name") or e.get("actor") or e.get("actor_id") or "")
         user_cell = Td(actor if (actor and not _is_uuid(actor)) else EMPTY)
