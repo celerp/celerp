@@ -104,36 +104,14 @@ function bulkSplitAutoLoad() {
     .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
 }
 function bulkSplitMotherQtyChanged(input) {
-  // Mother qty edited directly: recalculate child qty = parentQty - motherQty and clamp both.
+  // Mother qty edited directly: clamp only. Child qty is independent — do NOT recalculate it.
   var form = input.closest('form');
   if (!form) return;
   var parentQty = parseFloat(form.dataset.parentQty || '0');
   var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
   var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
-  // Mother must be >= epsilon (leave room for at least one child unit) and <= parentQty - epsilon.
   var motherQty = Math.min(Math.max(epsilon, parseFloat(input.value) || epsilon), parentQty - epsilon);
   input.value = motherQty.toFixed(decimals);
-  var childQty = Math.max(0, parentQty - motherQty);
-  var childQtyInput = form.querySelector('[name="child_qty"]');
-  if (childQtyInput) { childQtyInput.value = childQty.toFixed(decimals); }
-  // Sync derived weight display when sell_by is weight.
-  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
-    var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
-    var parentWeight = parseFloat(form.dataset.parentWeight || parentQty);
-    var childWeightDisplay = form.querySelector('.child-weight-display');
-    if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals); }
-    var mw = form.querySelector('.mother-weight-display');
-    if (mw) mw.textContent = Math.max(0, parentWeight - childQty).toFixed(weightDecimals);
-  }
-  // Sync derived pieces display when sell_by is piece.
-  if (form.dataset.sellBy === 'piece') {
-    var childPiecesDisplay = form.querySelector('.child-pieces-display');
-    if (childPiecesDisplay) { childPiecesDisplay.textContent = String(Math.round(childQty)); }
-    var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
-    var mp = form.querySelector('.mother-pieces-display');
-    if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childQty)));
-  }
 }
 function bulkSplitChildQtyChanged(input) {
   var form = input.closest('form');
