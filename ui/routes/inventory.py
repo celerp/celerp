@@ -104,7 +104,7 @@ function bulkSplitAutoLoad() {
     .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
 }
 function bulkSplitMotherQtyChanged(input) {
-  // Mother qty edited directly: clamp only. Child qty is independent — do NOT recalculate it.
+  // Mother qty edited directly: clamp mother, then clamp child down if it now exceeds mother.
   var form = input.closest('form');
   if (!form) return;
   var parentQty = parseFloat(form.dataset.parentQty || '0');
@@ -112,6 +112,14 @@ function bulkSplitMotherQtyChanged(input) {
   var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
   var motherQty = Math.min(Math.max(epsilon, parseFloat(input.value) || epsilon), parentQty - epsilon);
   input.value = motherQty.toFixed(decimals);
+  var childQtyInput = form.querySelector('[name="child_qty"]');
+  if (childQtyInput) {
+    var childQty = parseFloat(childQtyInput.value) || 0;
+    if (childQty >= motherQty) {
+      childQty = Math.max(0, motherQty - epsilon);
+      childQtyInput.value = childQty.toFixed(decimals);
+    }
+  }
 }
 function bulkSplitChildQtyChanged(input) {
   var form = input.closest('form');
