@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, require_operator, ROLE_LEVELS
+from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit
 from celerp_inventory.projections import is_item_available
@@ -379,7 +379,6 @@ async def get_valuation(
     category: str | None = None,
     status: str | None = None,
     company_id=Depends(get_current_company_id),
-    _: None = Depends(require_operator),
     role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:

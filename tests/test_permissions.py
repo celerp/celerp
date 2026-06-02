@@ -577,13 +577,18 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 403
 
-    async def test_viewer_cannot_access_valuation(self, client, session):
+    async def test_viewer_can_access_valuation_without_cost(self, client, session):
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
         viewer_tok = await _invite_user(client, session, admin_h, "viewer2@x.com", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         r = await client.get("/items/valuation", headers=viewer_h)
-        assert r.status_code == 403
+        assert r.status_code == 200
+        data = r.json()
+        assert "cost_total" not in data
+        # no cost/landed price lists should leak
+        for name in data.get("price_totals", {}).keys():
+            assert name.lower() not in {"cost", "cost price", "landed"}
 
     async def test_operator_blocked_from_manager_ops(self, client, session):
         """Operator (level 2) cannot perform manager-level operations."""
@@ -1118,12 +1123,20 @@ class TestNavMinRole:
                 )
 
     def test_operational_nav_requires_operator(self):
-        operator_groups = {"Sales Documents", "Purchasing Documents", "Inventory", "Contacts"}
+        operator_groups = {"Sales Documents", "Purchasing Documents", "Contacts"}
+        # Inventory nav entries vary: core inventory pages are viewer-accessible,
+        # operator-level tools (labels) may also live in this group.
+        inventory_viewer_keys = {"inventory", "inventory_sold", "inventory_archived"}
         for item in self._load_nav_items():
             group = item.get("group")
+            key = item.get("key")
             if group in operator_groups:
                 assert item.get("min_role") == "operator", (
-                    f"Nav item {item.get('key')} in {group} should require operator, got {item.get('min_role')}"
+                    f"Nav item {key} in {group} should require operator, got {item.get('min_role')}"
+                )
+            elif key in inventory_viewer_keys:
+                assert item.get("min_role") == "viewer", (
+                    f"Nav item {key} in Inventory should allow viewer, got {item.get('min_role')}"
                 )
 
     def test_dashboard_allows_viewer(self):
