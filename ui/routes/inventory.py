@@ -996,12 +996,8 @@ def setup_routes(app):
                         # cost_total is the primitive; store directly (no back-calculation)
                         data["cost_total"] = total_val
                         continue
-                    if not qty or qty == 0:
-                        _price_errors.append(
-                            f"Cannot back-calculate {unit_key} from {col_key}: quantity is 0 or missing"
-                        )
-                    else:
-                        data[unit_key] = round(total_val / qty, 10)
+                    # qty=0 or missing: treat as 1 (total = unit price for a single item)
+                    data[unit_key] = round(total_val / (qty or 1), 10)
                 elif col_key.endswith("_price") and _flt(col_key) is not None:
                     data[col_key] = _flt(col_key)
             if _price_errors:
