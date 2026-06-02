@@ -206,6 +206,7 @@ class TransformBody(BaseModel):
     child_category: str
     child_sell_by: str
     child_quantity: float
+    child_name: str | None = None
     child_weight: float | None = None
     child_weight_unit: str | None = None
     child_pieces: int | None = None
@@ -1433,7 +1434,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     }
     child_data.update({
         "sku": payload.child_sku,
-        "name": parent.state.get("name", payload.child_sku),
+        "name": (payload.child_name or "").strip() or parent.state.get("name", payload.child_sku),
         "quantity": payload.child_quantity,
         "sell_by": payload.child_sell_by,
         "category": payload.child_category,

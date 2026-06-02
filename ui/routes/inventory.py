@@ -2403,9 +2403,11 @@ function celerpPrintLabel(entityId, templateId) {
         )
 
         # Weight and pieces columns always shown (may be empty if item has no value)
+        parent_name = item.get("name") or ""
         mother_cells = [
             Td("Mother", cls="sp-row-label"),
             _static_td(item.get("sku", "")),
+            _static_td(parent_name),
             _static_td(parent_category),
             _static_td(f"{fmt(parent_qty)} {parent_sell_by}"),
             _static_td(f"{fmt(parent_weight)} {parent_weight_unit}" if parent_weight is not None else "--"),
@@ -2436,6 +2438,7 @@ function celerpPrintLabel(entityId, templateId) {
         child_cells = [
             Td("Child", cls="sp-row-label"),
             Td(Input(type="text", name="child_sku", value=child_sku, cls="form-input sp-sku-input"), cls="sp-td"),
+            Td(Input(type="text", name="child_name", value=parent_name, cls="form-input sp-sku-input"), cls="sp-td"),
             Td(cat_select, cls="sp-td"),
             child_qty_input,
             child_weight_td,
@@ -2449,7 +2452,7 @@ function celerpPrintLabel(entityId, templateId) {
         ]
 
         headers = [
-            Th(""), Th("SKU", cls="sp-th"), Th("Category", cls="sp-th"),
+            Th(""), Th("SKU", cls="sp-th"), Th("Name", cls="sp-th"), Th("Category", cls="sp-th"),
             Th("Qty + Unit", cls="sp-th"), Th("Weight", cls="sp-th"),
             Th("Pieces", cls="sp-th"), Th("Cost Total", cls="sp-th"),
         ]
@@ -2496,6 +2499,7 @@ function celerpPrintLabel(entityId, templateId) {
 
         payload = {
             "child_sku": str(form.get("child_sku", "")).strip(),
+            "child_name": str(form.get("child_name", "")).strip() or None,
             "child_category": str(form.get("child_category", "")).strip(),
             "child_sell_by": str(form.get("child_sell_by", "")).strip(),
             "child_quantity": child_qty,
