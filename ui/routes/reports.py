@@ -14,8 +14,14 @@ import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import EMPTY, empty_state_cta, fmt_money
-from ui.config import get_token as _token
+from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
+
+
+def _show_margin(request) -> bool:
+    """Return True only if the current user has manager role or above."""
+    from celerp.services.auth import ROLE_LEVELS
+    return ROLE_LEVELS.get(_get_role(request), 0) >= ROLE_LEVELS["manager"]
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +148,7 @@ def setup_routes(app):
                              settings_link="/settings/sales?tab=terms",
                              extra_params=f"&group_by={group_by}",
                              lang=get_lang(request)),
-            _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency),
+            _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request)),
         ]
         return _page_or_fragment(request, *content, title="Sales Report - Celerp", nav_active="reports")
 
@@ -178,7 +184,7 @@ def setup_routes(app):
                              settings_link="/settings/sales?tab=terms",
                              extra_params=f"&group_by={group_by}",
                              lang=get_lang(request)),
-            _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency),
+            _sales_view(data, sort=sort, sort_dir=sort_dir, currency=currency, show_margin=_show_margin(request)),
         ]
         return _page_or_fragment(request, *content, title="Purchases Report - Celerp", nav_active="reports")
 
@@ -508,7 +514,7 @@ def _kpi(label: str, value: str, cls_suffix: str = "") -> FT:
     )
 
 
-def _summary_bar(data: dict, currency: str | None, group_by: str) -> FT:
+def _summary_bar(data: dict, currency: str | None, group_by: str, show_margin: bool = True) -> FT:
     """Render the KPI summary bar for sales/purchases reports."""
     total_rev = float(data.get("total_revenue") or data.get("total_spend") or data.get("total", 0))
     total_cost = float(data.get("total_cost", 0) or 0)
@@ -525,7 +531,7 @@ def _summary_bar(data: dict, currency: str | None, group_by: str) -> FT:
     if gross_profit:
         gp_cls = " report-kpi__value--positive" if gross_profit >= 0 else " report-kpi__value--negative"
         kpis.append(_kpi("Gross Profit", fmt_money(gross_profit, currency), gp_cls))
-        if total_rev:
+        if total_rev and show_margin:
             margin = gross_profit / total_rev * 100
             margin_cls = " report-kpi__value--positive" if margin >= 0 else " report-kpi__value--negative"
             kpis.append(_kpi("Margin %", f"{margin:.1f}%", margin_cls))
@@ -533,32 +539,34 @@ def _summary_bar(data: dict, currency: str | None, group_by: str) -> FT:
     return Div(*kpis, cls="report-summary-bar")
 
 
-def _sales_view_columns(group_by: str, is_purchases: bool = False) -> list[tuple[str, str, str]]:
+def _sales_view_columns(group_by: str, is_purchases: bool = False, show_margin: bool = True) -> list[tuple[str, str, str]]:
     """Return list of (header, key, css_class) for the report table columns."""
+    def _strip(cols: list) -> list:
+        return cols if show_margin else [(h, k, c) for h, k, c in cols if k != "margin_pct"]
     if group_by == "customer":
-        return [
+        return _strip([
             ("Customer", "label", ""),
             ("# Invoices", "count", "cell--right"),
             ("Revenue", "total", "cell--number"),
             ("Cost", "total_cost", "cell--number"),
             ("Gross Profit", "gross_profit", "cell--number"),
             ("Margin %", "margin_pct", "cell--right"),
-        ]
+        ])
     if group_by == "supplier":
-        return [
+        return _strip([
             ("Supplier", "label", ""),
             ("# Orders", "count", "cell--right"),
             ("Spend", "total", "cell--number"),
-        ]
+        ])
     if group_by == "item":
         if is_purchases:
-            return [
+            return _strip([
                 ("Item", "label", ""),
                 ("Qty Purchased", "qty_purchased", "cell--right"),
                 ("Avg Unit Cost", "avg_unit_cost", "cell--number"),
                 ("Total Spend", "total", "cell--number"),
-            ]
-        return [
+            ])
+        return _strip([
             ("Item", "label", ""),
             ("Qty Sold", "qty_sold", "cell--right"),
             ("Avg Price", "avg_price", "cell--number"),
@@ -566,7 +574,7 @@ def _sales_view_columns(group_by: str, is_purchases: bool = False) -> list[tuple
             ("Cost", "total_cost", "cell--number"),
             ("Gross Profit", "gross_profit", "cell--number"),
             ("Margin %", "margin_pct", "cell--right"),
-        ]
+        ])
     if group_by == "period":
         label = "Period"
         count_hdr = "# Orders" if is_purchases else "# Invoices"
@@ -577,14 +585,14 @@ def _sales_view_columns(group_by: str, is_purchases: bool = False) -> list[tuple
         return cols
     if group_by == "price_range":
         if is_purchases:
-            return [
+            return _strip([
                 ("Item", "label", ""),
                 ("Price Range", "price_range", ""),
                 ("Unit Price", "unit_price", "cell--number"),
                 ("Qty Purchased", "qty_purchased", "cell--right"),
                 ("Spend", "total", "cell--number"),
-            ]
-        return [
+            ])
+        return _strip([
             ("Item", "label", ""),
             ("Price Range", "price_range", ""),
             ("Unit Price", "unit_price", "cell--number"),
@@ -593,12 +601,12 @@ def _sales_view_columns(group_by: str, is_purchases: bool = False) -> list[tuple
             ("Cost", "total_cost", "cell--number"),
             ("Gross Profit", "gross_profit", "cell--number"),
             ("Margin %", "margin_pct", "cell--right"),
-        ]
+        ])
     # fallback
-    return [("Group", "label", ""), ("Count", "count", "cell--right"), ("Amount", "total", "cell--number")]
+    return _strip([("Group", "label", ""), ("Count", "count", "cell--right"), ("Amount", "total", "cell--number")])
 
 
-def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", currency: str | None = None) -> FT:
+def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", currency: str | None = None, show_margin: bool = True) -> FT:
     raw_lines = data.get("lines", [])
     group_by = data.get("group_by", "")
     is_purchases = bool(data.get("total_spend") and not data.get("total_revenue"))
@@ -616,7 +624,7 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
     if not lines:
         return empty_state_cta("No data for this period. Try adjusting the date range.")
 
-    cols = _sales_view_columns(group_by, is_purchases)
+    cols = _sales_view_columns(group_by, is_purchases, show_margin=show_margin)
 
     sort_key_map = {
         "group": lambda l: str(l.get("label", "") or ""),
@@ -651,7 +659,7 @@ def _sales_view(data: dict, sort: str = "amount", sort_dir: str = "desc", curren
     th_row = Tr(*[_th(hdr, "group" if key == "label" else ("count" if key == "count" else "amount" if key == "total" else key)) for hdr, key, _ in cols])
 
     return Div(
-        _summary_bar(data, currency, group_by),
+        _summary_bar(data, currency, group_by, show_margin=show_margin),
         Table(
             Thead(th_row),
             Tbody(*[_row(l) for l in lines]),

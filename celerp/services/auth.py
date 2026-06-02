@@ -190,6 +190,15 @@ def require_admin(token: str = Depends(oauth2_scheme)) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")
 
 
+def require_operator(token: str = Depends(oauth2_scheme)) -> None:
+    """Raise 403 if role < operator."""
+    claims = _decode_token(token)
+    raw_role = claims.get("role", "viewer")
+    role = _ROLE_MIGRATION.get(raw_role, raw_role)
+    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["operator"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Operator role required")
+
+
 def require_manager(token: str = Depends(oauth2_scheme)) -> None:
     """Raise 403 if role < manager."""
     claims = _decode_token(token)

@@ -3228,19 +3228,20 @@ def _role_permissions_table(lang: str = "en") -> FT:
 
     # (label, viewer, operator, manager, admin, owner)
     rows: list[tuple[str, str, str, str, str, str]] = [
-        ("View dashboards & reports",     _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("View documents & contacts",     _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("View inventory",                _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Create & edit drafts",          _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Create contacts",              _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("See margins & markups",         _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Finalize, void & delete docs",  _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Record payments",              _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("See cost prices",             _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Import / export data",         _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Run financial reports",        _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Manage users & company settings", _CROSS, _CROSS, _CROSS, _CHECKS, _CHECKS),
-        ("Billing & subscription",       _CROSS,  _CROSS,  _CROSS,  _CROSS,  _CHECKS),
+        ("View dashboards & reports",        _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("View documents & contacts",         _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("View inventory",                    _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("Create & edit drafts",              _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("Create contacts",                   _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("Finalize & void docs",              _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("Record payments",                   _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("See margins & markups",             _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("Delete docs",                       _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("See cost prices",                   _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("Import / export data",              _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("Run financial reports",             _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("Manage users & company settings",   _CROSS,  _CROSS,  _CROSS,  _CHECKS, _CHECKS),
+        ("Billing & subscription",            _CROSS,  _CROSS,  _CROSS,  _CROSS,  _CHECKS),
     ]
 
     return Details(

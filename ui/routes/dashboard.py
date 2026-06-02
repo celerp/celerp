@@ -601,6 +601,10 @@ def setup_routes(app):
                              crm_data, mfg_data, purchasing_data, currency)
 
         role = _get_role(request)
+        # Strip margin sub-text for roles below manager.
+        from celerp.services.auth import ROLE_LEVELS as _DRL
+        if _DRL.get(role, 0) < _DRL["manager"]:
+            values.pop("margin_pct_sub", None)
         return base_shell(
             page_header(t("page.dashboard", lang)),
             _kpi_grid(cfg, values, role=role),
