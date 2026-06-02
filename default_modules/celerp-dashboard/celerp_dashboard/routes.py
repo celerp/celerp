@@ -12,13 +12,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user
+from celerp.services.auth import get_current_company_id, get_current_user, get_current_role
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 @router.get("/kpis")
-async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
+async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> dict:
     rows = (await session.execute(select(Projection).where(Projection.company_id == company_id))).scalars().all()
     items = [r for r in rows if r.entity_type == "item"]
     docs = [r for r in rows if r.entity_type == "doc"]
@@ -41,10 +41,10 @@ async def get_kpis(company_id=Depends(get_current_company_id), session: AsyncSes
     # Inventory: delegate entirely to the canonical valuation endpoint.
     # This is the single source of truth for item counts and price totals.
     from celerp_inventory.routes import get_valuation as _get_valuation
-    valuation = await _get_valuation(company_id=company_id, session=session)
-    total_value_cost = valuation["cost_total"]
-    total_value_retail = valuation["retail_total"]
-    active_item_count_inv = valuation["active_item_count"]
+    valuation = await _get_valuation(company_id=company_id, role=role, session=session)
+    total_value_cost = valuation.get("cost_total", 0.0)
+    total_value_retail = valuation.get("retail_total", 0.0)
+    active_item_count_inv = valuation.get("active_item_count", 0)
 
     # For KPI sub-fields that need per-item access, re-use already-loaded items list.
     _CONSIGNMENT_IN = "in"
