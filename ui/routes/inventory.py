@@ -112,22 +112,29 @@ function bulkSplitMotherQtyChanged(input) {
   var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
   var motherQty = Math.min(Math.max(epsilon, parseFloat(input.value) || epsilon), parentQty - epsilon);
   input.value = motherQty.toFixed(decimals);
+  // For weight-unit items qty IS weight — keep mother-weight-display in sync with mother qty.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  var isWeightUnit = weightUnits.indexOf(form.dataset.sellBy) !== -1;
+  if (isWeightUnit) {
+    var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+    var mw = form.querySelector('.mother-weight-display');
+    if (mw) mw.textContent = motherQty.toFixed(weightDecimals);
+  }
   var childQtyInput = form.querySelector('[name="child_qty"]');
   if (childQtyInput) {
     var childQty = parseFloat(childQtyInput.value) || 0;
     if (childQty >= motherQty) {
       childQty = Math.max(0, motherQty - epsilon);
       childQtyInput.value = childQty.toFixed(decimals);
-      // Mirror the clamped child qty to static weight/pieces displays (same as bulkSplitChildQtyChanged).
+      // Mirror the clamped child qty to static weight/pieces displays.
       if (form.dataset.sellBy === 'piece') {
         var childPiecesDisplay = form.querySelector('.child-pieces-display');
         if (childPiecesDisplay) { childPiecesDisplay.textContent = String(Math.round(childQty)); }
       }
-      var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-      if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
-        var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+      if (isWeightUnit) {
+        var weightDecimals2 = parseInt(form.dataset.weightDecimals || '2', 10);
         var childWeightDisplay = form.querySelector('.child-weight-display');
-        if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals); }
+        if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals2); }
       }
     }
   }
@@ -162,9 +169,8 @@ function bulkSplitChildQtyChanged(input) {
     if (weightInput) { weightInput.value = childQty.toFixed(weightDecimals); }
     var childWeightDisplay = form.querySelector('.child-weight-display');
     if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals); }
-    var parentWeight = parseFloat(form.dataset.parentWeight || parentQty);
     var mw = form.querySelector('.mother-weight-display');
-    if (mw) mw.textContent = Math.max(0, parentWeight - childQty).toFixed(weightDecimals);
+    if (mw) mw.textContent = Math.max(0, currentMother - childQty).toFixed(weightDecimals);
   }
 }
 function bulkSplitChildPiecesChanged(input) {
@@ -201,7 +207,7 @@ function bulkSplitChildWeightChanged(input) {
   if (qtyInput) { qtyInput.value = childWeight.toFixed(decimals); }
   _setMotherQty(form, Math.max(0, currentMother - childWeight), decimals);
   var mw = form.querySelector('.mother-weight-display');
-  if (mw) mw.textContent = Math.max(0, parentWeight - childWeight).toFixed(weightDecimals);
+  if (mw) mw.textContent = Math.max(0, currentMother - childWeight).toFixed(weightDecimals);
 }
 function bulkSplitSkuChanged(input) {}
 function bulkSplitSubmit(formEl) {
