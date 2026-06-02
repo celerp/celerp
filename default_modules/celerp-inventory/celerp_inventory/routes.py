@@ -353,6 +353,11 @@ async def list_items(
             return (0, s.lower())
 
         result.sort(key=_sort_key, reverse=reverse)
+    elif not sort and (not company or (company.settings or {}).get("inventory_method") != "fefo"):
+        # Default: most-recently-updated first, then name asc, then entity_id asc for stability.
+        # Use two-pass: primary descending on updated_at, then stable sub-sort on name+entity_id.
+        result.sort(key=lambda item: (str(item.get("name") or "").lower(), str(item.get("entity_id") or "")))
+        result.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
     total = len(result)
     return {"items": result[offset: offset + limit], "total": total}
