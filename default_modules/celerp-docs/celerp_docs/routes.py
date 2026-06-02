@@ -2625,7 +2625,7 @@ async def revert_list_to_draft(
     entity_id: str,
     payload: DocRevertBody,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:

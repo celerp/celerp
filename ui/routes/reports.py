@@ -16,12 +16,12 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import EMPTY, empty_state_cta, fmt_money
 from ui.config import get_token as _token, get_role as _get_role
 from ui.i18n import t, get_lang
+from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 
 def _show_margin(request) -> bool:
     """Return True only if the current user has manager role or above."""
-    from celerp.services.auth import ROLE_LEVELS
-    return ROLE_LEVELS.get(_get_role(request), 0) >= ROLE_LEVELS["manager"]
+    return _ROLE_LEVELS.get(_get_role(request), 0) >= _ROLE_LEVELS["manager"]
 
 
 # ---------------------------------------------------------------------------

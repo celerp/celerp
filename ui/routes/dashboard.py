@@ -13,6 +13,7 @@ from ui.components.shell import base_shell, page_header
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
+from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 
 
 
@@ -602,8 +603,7 @@ def setup_routes(app):
 
         role = _get_role(request)
         # Strip margin sub-text for roles below manager.
-        from celerp.services.auth import ROLE_LEVELS as _DRL
-        if _DRL.get(role, 0) < _DRL["manager"]:
+        if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["manager"]:
             values.pop("margin_pct_sub", None)
         return base_shell(
             page_header(t("page.dashboard", lang)),
@@ -736,16 +736,14 @@ def _kpi_card(spec: dict, values: dict) -> FT:
 
 
 def _kpi_grid(cfg: dict, values: dict, role: str = "owner") -> FT:
-    from celerp.services.auth import ROLE_LEVELS
-    user_level = ROLE_LEVELS.get(role, ROLE_LEVELS["owner"])
+    user_level = _ROLE_LEVELS.get(role, _ROLE_LEVELS["owner"])
     cards = [_kpi_card(spec, values) for spec in cfg.get("kpis", [])
-             if user_level >= ROLE_LEVELS.get(spec.get("min_role", "viewer"), 1)]
+             if user_level >= _ROLE_LEVELS.get(spec.get("min_role", "viewer"), 1)]
     return Div(*cards, cls="kpi-grid")
 
 
 def _secondary_kpi_grid(cfg: dict, values: dict, role: str = "owner") -> FT:
-    from celerp.services.auth import ROLE_LEVELS
-    user_level = ROLE_LEVELS.get(role, ROLE_LEVELS["owner"])
+    user_level = _ROLE_LEVELS.get(role, _ROLE_LEVELS["owner"])
     secondary = cfg.get("secondary_kpis", [])
     if not secondary:
         return ""
