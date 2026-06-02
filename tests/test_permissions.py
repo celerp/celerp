@@ -261,19 +261,19 @@ class TestManagerRequiredItemOps:
         r = await client.post(f"/items/{ctx['item_id']}/expire", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_staff_cannot_access_valuation(self, client, session):
+    async def test_operator_can_access_valuation_without_cost(self, client, session):
         ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["staff_h"])
-        assert r.status_code == 403
+        assert r.status_code == 200
+        data = r.json()
+        assert "cost_total" not in data
+        for name in data.get("price_totals", {}):
+            assert name.lower() not in ("cost", "cost price", "landed")
 
     async def test_manager_can_access_valuation(self, client, session):
         ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["manager_h"])
         assert r.status_code == 200
-
-
-# ── require_manager: financial document operations ────────────────────────────
-# ── doc operations: operator can finalize/void/payment; only manager can delete ──
 
 class TestManagerRequiredDocOps:
 
@@ -929,10 +929,14 @@ class TestManagerRequiredItemOps:
         r = await client.post(f"/items/{ctx['item_id']}/expire", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_staff_cannot_access_valuation(self, client, session):
+    async def test_operator_can_access_valuation_without_cost(self, client, session):
         ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["staff_h"])
-        assert r.status_code == 403
+        assert r.status_code == 200
+        data = r.json()
+        assert "cost_total" not in data
+        for name in data.get("price_totals", {}):
+            assert name.lower() not in ("cost", "cost price", "landed")
 
     async def test_manager_can_access_valuation(self, client, session):
         ctx = await _setup(client, session)

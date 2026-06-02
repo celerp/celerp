@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
-from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
+from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, require_operator, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
 from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit
 from celerp_inventory.projections import is_item_available
@@ -379,7 +379,8 @@ async def get_valuation(
     category: str | None = None,
     status: str | None = None,
     company_id=Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Aggregate inventory valuation from projections.
@@ -475,12 +476,19 @@ async def get_valuation(
             except Exception:
                 pass
 
-    return {
+    _cost_pl_names = {pl.get("name", "") for pl in _price_lists if pl.get("name", "").lower() in ("cost", "cost price", "landed")}
+    show_cost = ROLE_LEVELS.get(role, 0) >= ROLE_LEVELS["manager"]
+
+    price_totals_out = {
+        k: float(v) for k, v in price_totals.items()
+        if show_cost or k not in _cost_pl_names
+    }
+
+    result: dict = {
         "item_count": active_item_count,
         "active_item_count": active_item_count,
-        "price_totals": {k: float(v) for k, v in price_totals.items()},
+        "price_totals": price_totals_out,
         # Backward-compatible keys for existing UI
-        "cost_total": float(price_totals.get("Cost", 0)),
         "wholesale_total": float(price_totals.get("Wholesale", 0)),
         "retail_total": float(price_totals.get("Retail", 0)),
         "category_counts": dict(sorted(category_counts.items(), key=lambda x: -x[1])),
@@ -489,6 +497,9 @@ async def get_valuation(
         "total_scoped_count": active_item_count,
         "count_by_status": count_by_status,
     }
+    if show_cost:
+        result["cost_total"] = float(price_totals.get("Cost", 0))
+    return result
 
 
 # Fields eligible for per-tenant distinct-value suggestions.
