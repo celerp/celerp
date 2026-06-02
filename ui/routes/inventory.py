@@ -113,20 +113,24 @@ function bulkSplitChildQtyChanged(input) {
   input.value = childQty.toFixed(decimals);
   var motherQtyDisplay = form.querySelector('.mother-qty-display');
   if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childQty).toFixed(decimals);
-  // For piece-unit items qty and pieces are the same — keep them in sync.
+  // For piece-unit items qty and pieces are the same — keep them in sync (input or static display).
   if (form.dataset.sellBy === 'piece') {
     var piecesInput = form.querySelector('[name="child_pieces"]');
     if (piecesInput) { piecesInput.value = Math.round(childQty); }
+    var childPiecesDisplay = form.querySelector('.child-pieces-display');
+    if (childPiecesDisplay) { childPiecesDisplay.textContent = String(Math.round(childQty)); }
     var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
     var mp = form.querySelector('.mother-pieces-display');
     if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childQty)));
   }
-  // For weight-unit items qty IS the weight — mirror to weight field.
+  // For weight-unit items qty IS the weight — mirror to static child weight display (no editable input).
   var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
   if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
     var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
     var weightInput = form.querySelector('[name="child_weight"]');
     if (weightInput) { weightInput.value = childQty.toFixed(weightDecimals); }
+    var childWeightDisplay = form.querySelector('.child-weight-display');
+    if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals); }
     var parentWeight = parseFloat(form.dataset.parentWeight || parentQty);
     var mw = form.querySelector('.mother-weight-display');
     if (mw) mw.textContent = Math.max(0, parentWeight - childQty).toFixed(weightDecimals);
@@ -2108,14 +2112,26 @@ function celerpPrintLabel(entityId, templateId) {
         weight_decimals = preview.get("weight_decimals", 2)
         fmt = f"{{:.{decimals}f}}"
         wfmt = f"{{:.{weight_decimals}f}}"
+        sell_by_type = preview.get("sell_by_type", "other")
+        weight_unit_label = preview.get("weight_unit_label", "")
 
-        # Show weight/pieces columns only when the parent actually has those values.
-        show_weight = preview.get("has_weight", False)
-        show_pieces = preview.get("has_pieces", False)
+        def _unit_display_name(label: str) -> str:
+            """Strip abbreviation in parens from a unit label: 'Carat (ct)' → 'Carat'."""
+            import re as _re
+            return _re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
 
-        headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY ({sell_by_label})", cls="sp-th")]
+        sell_by_display = _unit_display_name(sell_by_label)
+        weight_display = _unit_display_name(weight_unit_label)
+
+        # Weight column: always show when sell_by is weight (qty IS weight) or item has weight.
+        # Pieces column: always show when sell_by is pieces or item has pieces.
+        show_weight = preview.get("has_weight", False) or sell_by_type == "weight"
+        show_pieces = preview.get("has_pieces", False) or sell_by_type == "pieces"
+
+        weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
+        headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th")]
         if show_weight:
-            headers.append(Th("Weight", cls="sp-th"))
+            headers.append(Th(weight_col_header, cls="sp-th"))
         if show_pieces:
             headers.append(Th("Pieces", cls="sp-th"))
 
@@ -2144,16 +2160,26 @@ function celerpPrintLabel(entityId, templateId) {
             cells = [Td(label, cls="sp-row-label"), sku_cell, qty_cell]
             if show_weight:
                 w = wfmt.format(weight_val) if weight_val is not None else wfmt.format(0)
-                if weight_name and is_child:
+                # Child weight is editable only when sell_by is NOT a weight unit.
+                # When sell_by IS weight, qty = weight so child weight is derived from QTY (static).
+                child_weight_editable = is_child and weight_name and sell_by_type != "weight"
+                if child_weight_editable:
                     cells.append(_editable_td(weight_name, w, oninput=_child_weight_oninput, onblur=_child_weight_onblur))
+                elif is_child:
+                    cells.append(Td(Span(w, cls="child-weight-display sp-static-val"), cls="sp-td"))
                 else:
                     # Mother: static display, updated by JS
                     cells.append(Td(Span(w, cls="mother-weight-display"), cls="sp-td"))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
-                if is_child and pieces_name:
-                    pieces_max = str(int(preview["parent_pieces"]) - 1)
+                # Child pieces is editable only when sell_by is NOT a pieces unit.
+                # When sell_by IS pieces, qty = pieces so child pieces is derived from QTY (static).
+                child_pieces_editable = is_child and pieces_name and sell_by_type != "pieces"
+                if child_pieces_editable:
+                    pieces_max = str(int(preview.get("parent_pieces", 1)) - 1)
                     cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max))
+                elif is_child:
+                    cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td"))
                 else:
                     # Mother pieces: static display updated by JS
                     cells.append(Td(Span(p, cls="mother-pieces-display"), cls="sp-td"))
@@ -2181,8 +2207,10 @@ function celerpPrintLabel(entityId, templateId) {
                      onchange="bulkSplitChildQtyChanged(this)"), cls="sp-td"),
             None,
             0,
-            weight_name="child_weight" if show_weight else None,
-            pieces_name="child_pieces" if show_pieces else None,
+            # When sell_by is weight, child weight = qty (static, no editable field submitted).
+            # When sell_by is pieces, child pieces = qty (static, no editable field submitted).
+            weight_name="child_weight" if (show_weight and sell_by_type != "weight") else None,
+            pieces_name="child_pieces" if (show_pieces and sell_by_type != "pieces") else None,
             is_child=True,
         )
 
