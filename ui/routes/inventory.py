@@ -4877,7 +4877,7 @@ def _infer_category_schemas(cat_attr_values: dict[str, dict[str, list[str]]]) ->
         fields = []
         for key, distinct_vals in cols.items():
             if len(distinct_vals) <= _DROPDOWN_THRESHOLD:
-                ftype = "dropdown"
+                ftype = "select"
                 options = sorted(distinct_vals)
             else:
                 ftype = "text"
