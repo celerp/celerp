@@ -2123,10 +2123,11 @@ function celerpPrintLabel(entityId, templateId) {
         sell_by_display = _unit_display_name(sell_by_label)
         weight_display = _unit_display_name(weight_unit_label)
 
-        # Weight column: always show when sell_by is weight (qty IS weight) or item has weight.
-        # Pieces column: always show when sell_by is pieces or item has pieces.
+        # Weight column: show when sell_by is weight (qty IS weight) or item has weight.
+        # Pieces column: only show when item has pieces AND sell_by is NOT pieces
+        #   (when sell_by IS pieces, QTY = pieces - showing both is redundant).
         show_weight = preview.get("has_weight", False) or sell_by_type == "weight"
-        show_pieces = preview.get("has_pieces", False) or sell_by_type == "pieces"
+        show_pieces = preview.get("has_pieces", False) and sell_by_type != "pieces"
 
         weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
         headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th")]
