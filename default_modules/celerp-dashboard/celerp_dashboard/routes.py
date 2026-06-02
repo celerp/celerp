@@ -197,5 +197,6 @@ async def _hydrate_entries(rows, company_id: str, session) -> list[dict]:
             "name": name,
             "actor_name": actor_map.get(str(e.actor_id), str(e.actor_id) if e.actor_id else ""),
             "data": e.data if isinstance(e.data, dict) else {},
+            "metadata_": e.metadata_ if isinstance(e.metadata_, dict) else {},
         })
     return activities
