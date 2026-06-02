@@ -4895,7 +4895,7 @@ _CORE_ITEM_COLS: frozenset[str] = frozenset({
 })
 
 # Max distinct values before a column is treated as free-text instead of dropdown
-_DROPDOWN_THRESHOLD = 15
+_DROPDOWN_THRESHOLD = 30
 
 
 def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[str]]]:
