@@ -2123,9 +2123,10 @@ function celerpPrintLabel(entityId, templateId) {
         sell_by_display = _unit_display_name(sell_by_label)
         weight_display = _unit_display_name(weight_unit_label)
 
-        # Weight column: always show when sell_by is weight (qty IS weight) or item has weight.
+        # Weight column: always show when sell_by is weight (qty IS weight), item has weight, or sell_by is pieces
+        #   (pieces items always have an associated weight - user needs to enter/see it on split).
         # Pieces column: always show when sell_by is pieces or item has pieces.
-        show_weight = preview.get("has_weight", False) or sell_by_type == "weight"
+        show_weight = preview.get("has_weight", False) or sell_by_type in ("weight", "pieces")
         show_pieces = preview.get("has_pieces", False) or sell_by_type == "pieces"
 
         weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
@@ -3585,7 +3586,9 @@ def _inventory_status_cards(count_by_status: dict, active_status: str, vertical:
     'All' card with the total count for that filtered view instead of the
     available/reserved breakdown (which would all be 0 and is meaningless).
     """
-    base_state = {k: v for k, v in _base_state(p or {}).items() if k != "status"}
+    # Strip skus/q: clicking a status card is a catalog navigation action and should
+    # clear any transient item-specific filters (post-split/merge result views etc.)
+    base_state = {k: v for k, v in _base_state(p or {}).items() if k not in ("status", "skus", "q")}
     base_url = "/inventory" + (f"?{urlencode(base_state)}" if base_state else "")
 
     # When viewing a specific hidden/archived status, the available/reserved card
@@ -3620,7 +3623,9 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
     if not category_counts and not total_scoped:
         return ""
 
-    base = {k: v for k, v in _base_state(p).items() if k != "category"}
+    # Strip skus/q: clicking a category tab is a catalog navigation action and should
+    # clear any transient item-specific filters (post-split/merge result views etc.)
+    base = {k: v for k, v in _base_state(p).items() if k not in ("category", "skus", "q")}
 
     def _tab(label: str, cat: str, active: bool) -> FT:
         state = {**base, "category": cat} if cat else base
