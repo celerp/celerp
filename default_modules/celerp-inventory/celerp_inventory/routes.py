@@ -1242,7 +1242,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 location_id=None,
                 source="api",
                 idempotency_key=str(uuid.uuid4()),
-                metadata_={},
+                metadata_={"reason": "from_split"},
             )
         # Assign proportional cost_total to child (pre-computed with Decimal; remainder in last child)
         if _child_cost_totals[i] is not None:
@@ -1257,7 +1257,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 location_id=None,
                 source="api",
                 idempotency_key=str(uuid.uuid4()),
-                metadata_={},
+                metadata_={"reason": "from_split"},
             )
 
     # Reduce parent quantity
@@ -1463,7 +1463,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "from_transform"},
         )
 
     # 2b. Set child cost via item.pricing.set (consistent with split/post_item flows)
@@ -1478,7 +1478,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         location_id=None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
-        metadata_={},
+        metadata_={"reason": "from_transform"},
     )
 
     # 4. Mark parent archived (consumed by transform)
@@ -1693,7 +1693,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "from_merge"},
         )
 
     # Emit item.merged marker on the new item for history display.

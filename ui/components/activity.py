@@ -28,6 +28,7 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "item.status.set": "Status changed",
     "item.split": "Item split",
     "item.merged": "Items merged",
+    "item.transform": "Item transformed",
     "item.source_deactivated": "Merged into another item",
     "item.consumed": "Consumed in production",
     "item.produced": "Produced",
@@ -115,6 +116,18 @@ _SYSTEM_EVENT_TYPES = frozenset({
     "acc.journal_entry.created",
     "acc.journal_entry.posted",
     "acc.journal_entry.voided",
+})
+
+# metadata_.reason values that mark an event as a mechanical side-effect of a
+# split/transform/merge operation. These rows are suppressed from the activity feed
+# because the parent operation event (item.split / item.transform / item.merged) already
+# provides a clean summary.
+_OPERATION_NOISE_REASONS = frozenset({
+    "consumed_by_split",
+    "consumed_by_transform",
+    "from_split",
+    "from_transform",
+    "from_merge",
 })
 
 # Event types that are self-describing via their label; detail column intentionally blank.
@@ -215,6 +228,15 @@ def detail_from_entry(data: dict, event_type: str) -> str:
             return f"→ {', '.join(str(s) for s in child_skus)}"
         child_ids = data.get("child_ids", [])
         return f"{len(child_ids)} children" if child_ids else ""
+    if event_type == "item.transform":
+        child_sku = data.get("child_sku", "")
+        child_category = data.get("child_category", "")
+        parts = []
+        if child_sku:
+            parts.append(f"→ {child_sku}")
+        if child_category:
+            parts.append(f"({child_category})")
+        return " ".join(parts) if parts else ""
     if event_type == "item.merged":
         sources = data.get("source_entity_ids", [])
         source_skus = data.get("source_skus", {})
@@ -523,6 +545,20 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
         # Suppress system-internal events entirely
         if raw_type in _SYSTEM_EVENT_TYPES:
             return None
+
+        # Suppress mechanical side-effect events from split/transform/merge operations.
+        # The summary event (item.split / item.transform / item.merged) provides the
+        # user-facing record; individual item.created / item.pricing.set / item.status.set
+        # rows would only add noise.
+        metadata = e.get("metadata_") or e.get("metadata") or {}
+        if isinstance(metadata, dict):
+            reason = metadata.get("reason", "")
+            if reason in _OPERATION_NOISE_REASONS:
+                return None
+            # item.created with parent_id = child created by split or transform;
+            # shown via parent's item.split / item.transform event instead.
+            if raw_type == "item.created" and metadata.get("parent_id"):
+                return None
 
         display_text, url = _event_display(e)
         event_cell = Td(A(display_text, href=url, cls="table-link") if url else display_text)
