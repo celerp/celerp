@@ -118,6 +118,17 @@ function bulkSplitMotherQtyChanged(input) {
     if (childQty >= motherQty) {
       childQty = Math.max(0, motherQty - epsilon);
       childQtyInput.value = childQty.toFixed(decimals);
+      // Mirror the clamped child qty to static weight/pieces displays (same as bulkSplitChildQtyChanged).
+      if (form.dataset.sellBy === 'piece') {
+        var childPiecesDisplay = form.querySelector('.child-pieces-display');
+        if (childPiecesDisplay) { childPiecesDisplay.textContent = String(Math.round(childQty)); }
+      }
+      var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+      if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+        var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+        var childWeightDisplay = form.querySelector('.child-weight-display');
+        if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals); }
+      }
     }
   }
 }

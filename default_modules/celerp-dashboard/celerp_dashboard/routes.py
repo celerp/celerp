@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
@@ -141,7 +141,10 @@ async def search_activity(
     if date_to:
         try:
             dt_to = datetime.fromisoformat(date_to).replace(tzinfo=UTC)
-            stmt = stmt.where(LedgerEntry.ts <= dt_to)
+            # Advance by one day so a date-only value includes the full chosen day.
+            if "T" not in date_to and " " not in date_to:
+                dt_to += timedelta(days=1)
+            stmt = stmt.where(LedgerEntry.ts < dt_to)
         except ValueError:
             pass
     if q:

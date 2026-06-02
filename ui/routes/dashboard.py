@@ -14,6 +14,7 @@ from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from urllib.parse import urlencode as _urlencode
 
 
 
@@ -648,14 +649,14 @@ def setup_routes(app):
         from ui.components.activity import activity_table
         from ui.components.table import pagination
 
-        extra_parts = []
+        extra_parts = {}
         if q:
-            extra_parts.append(f"q={q}")
+            extra_parts["q"] = q
         if date_from:
-            extra_parts.append(f"date_from={date_from}")
+            extra_parts["date_from"] = date_from
         if date_to:
-            extra_parts.append(f"date_to={date_to}")
-        extra = "&".join(extra_parts)
+            extra_parts["date_to"] = date_to
+        extra = _urlencode(extra_parts)
 
         filters = Form(
             Div(
