@@ -122,9 +122,9 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
 def _apply_field_visibility(items: list[dict], role: str, field_schema: list[dict]) -> list[dict]:
     """Strip fields from item dicts that the caller's role is not allowed to see.
 
-    A field is restricted if its visible_to_roles list is non-empty AND the caller's
-    ROLE_LEVELS level is below the minimum level of any role in that list.
-    Empty visible_to_roles means visible to all.
+    Two sources of restrictions:
+    1. Schema-driven: field has visible_to_roles set and caller level is below minimum.
+    2. Hardcoded: cost fields (cost_price, cost_total) require manager+.
     """
     caller_level = ROLE_LEVELS.get(role, 0)
     restricted = {
@@ -134,6 +134,8 @@ def _apply_field_visibility(items: list[dict], role: str, field_schema: list[dic
             ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"]
         )
     }
+    if caller_level < ROLE_LEVELS["manager"]:
+        restricted |= _COST_ITEM_KEYS
     if not restricted:
         return items
     return [{k: v for k, v in item.items() if k not in restricted} for item in items]
@@ -240,6 +242,9 @@ _HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
 
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
+
+# Fields stripped from item responses for roles below manager.
+_COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 
 
 @router.get("")

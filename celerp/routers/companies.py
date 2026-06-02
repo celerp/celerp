@@ -16,7 +16,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
-from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, hash_password, require_admin, ROLE_LEVELS
+from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, require_admin, ROLE_LEVELS
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -608,9 +608,15 @@ from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA  # noqa: F401 re-ex
 from celerp.services.field_schema import get_effective_field_schema  # noqa: F401 re-export
 
 
+_COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"})
+
+
 @router.get("/me/item-schema")
-async def get_item_schema(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
-    return await get_effective_field_schema(session, company_id)
+async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> list[dict]:
+    schema = await get_effective_field_schema(session, company_id)
+    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
+        schema = [f for f in schema if f.get("key") not in _COST_SCHEMA_KEYS]
+    return schema
 
 
 @router.patch("/me/item-schema")
