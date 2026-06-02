@@ -28,6 +28,11 @@ from celerp.services.units import is_weight_unit, is_pieces_unit
 _DEFAULT_PER_PAGE = 50
 
 _BULK_SPLIT_JS = """
+function _setMotherQty(form, val, decimals) {
+  // Mother qty is now an editable input; update its value reactively.
+  var inp = form.querySelector('.mother-qty-input');
+  if (inp) inp.value = val.toFixed(decimals);
+}
 function splitRecalcMotherWeight(input) {
   var form = input.closest('form');
   if (!form) return;
@@ -36,13 +41,12 @@ function splitRecalcMotherWeight(input) {
   var childVal = parseFloat(input.value) || 0;
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
-  // For weight-unit items weight and qty are the same — also update mother qty display.
+  // For weight-unit items weight and qty are the same — also update mother qty input.
   var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
   if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
     var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
     var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
-    var mqd = form.querySelector('.mother-qty-display');
-    if (mqd) mqd.textContent = Math.max(0, parentQty - childVal).toFixed(unitDecimals);
+    _setMotherQty(form, Math.max(0, parentQty - childVal), unitDecimals);
   }
 }
 function splitClampWeight(input) {
@@ -54,21 +58,19 @@ function splitClampWeight(input) {
   input.value = childVal.toFixed(decimals);
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
-  // For weight-unit items weight and qty are the same — sync qty input and mother qty display.
+  // For weight-unit items weight and qty are the same — sync qty inputs.
   var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
   if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
     var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
     var qtyInput = form.querySelector('[name="child_qty"]');
     if (qtyInput) { qtyInput.value = childVal.toFixed(unitDecimals); }
     var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
-    var mqd = form.querySelector('.mother-qty-display');
-    if (mqd) mqd.textContent = Math.max(0, parentQty - childVal).toFixed(unitDecimals);
+    _setMotherQty(form, Math.max(0, parentQty - childVal), unitDecimals);
   }
 }
 function splitRecalcMotherPieces(input) {
   var form = input.closest('form');
   if (!form) return;
-  // For piece-unit items pieces and qty are the same — delegate to the bidirectional handler.
   if (form.dataset.sellBy === 'piece') { bulkSplitChildPiecesChanged(input); return; }
   var parentPieces = parseFloat(form.dataset.parentPieces || '0');
   var childP = parseFloat(input.value) || 0;
@@ -84,14 +86,12 @@ function splitClampPieces(input) {
   input.value = String(Math.round(childP));
   var mp = form.querySelector('.mother-pieces-display');
   if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
-  // Keep qty in sync for piece-unit items.
   if (form.dataset.sellBy === 'piece') {
     var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
     var qtyInput = form.querySelector('[name="child_qty"]');
     if (qtyInput) qtyInput.value = childP.toFixed(decimals);
-    var motherQtyDisplay = form.querySelector('.mother-qty-display');
     var parentQty = parseFloat(form.dataset.parentQty || parentPieces);
-    if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childP).toFixed(decimals);
+    _setMotherQty(form, Math.max(0, parentQty - childP), decimals);
   }
 }
 function bulkSplitAutoLoad() {
@@ -103,6 +103,38 @@ function bulkSplitAutoLoad() {
   htmx.ajax('GET', url, { target: '#bulk-split-preview', swap: 'innerHTML' })
     .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
 }
+function bulkSplitMotherQtyChanged(input) {
+  // Mother qty edited directly: recalculate child qty = parentQty - motherQty and clamp both.
+  var form = input.closest('form');
+  if (!form) return;
+  var parentQty = parseFloat(form.dataset.parentQty || '0');
+  var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
+  var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
+  // Mother must be >= epsilon (leave room for at least one child unit) and <= parentQty - epsilon.
+  var motherQty = Math.min(Math.max(epsilon, parseFloat(input.value) || epsilon), parentQty - epsilon);
+  input.value = motherQty.toFixed(decimals);
+  var childQty = Math.max(0, parentQty - motherQty);
+  var childQtyInput = form.querySelector('[name="child_qty"]');
+  if (childQtyInput) { childQtyInput.value = childQty.toFixed(decimals); }
+  // Sync derived weight display when sell_by is weight.
+  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+    var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+    var parentWeight = parseFloat(form.dataset.parentWeight || parentQty);
+    var childWeightDisplay = form.querySelector('.child-weight-display');
+    if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals); }
+    var mw = form.querySelector('.mother-weight-display');
+    if (mw) mw.textContent = Math.max(0, parentWeight - childQty).toFixed(weightDecimals);
+  }
+  // Sync derived pieces display when sell_by is piece.
+  if (form.dataset.sellBy === 'piece') {
+    var childPiecesDisplay = form.querySelector('.child-pieces-display');
+    if (childPiecesDisplay) { childPiecesDisplay.textContent = String(Math.round(childQty)); }
+    var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
+    var mp = form.querySelector('.mother-pieces-display');
+    if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childQty)));
+  }
+}
 function bulkSplitChildQtyChanged(input) {
   var form = input.closest('form');
   if (!form) return;
@@ -111,8 +143,7 @@ function bulkSplitChildQtyChanged(input) {
   var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
   var childQty = Math.min(Math.max(0, parseFloat(input.value) || 0), parentQty - epsilon);
   input.value = childQty.toFixed(decimals);
-  var motherQtyDisplay = form.querySelector('.mother-qty-display');
-  if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childQty).toFixed(decimals);
+  _setMotherQty(form, Math.max(0, parentQty - childQty), decimals);
   // For piece-unit items qty and pieces are the same — keep them in sync (input or static display).
   if (form.dataset.sellBy === 'piece') {
     var piecesInput = form.querySelector('[name="child_pieces"]');
@@ -123,7 +154,7 @@ function bulkSplitChildQtyChanged(input) {
     var mp = form.querySelector('.mother-pieces-display');
     if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childQty)));
   }
-  // For weight-unit items qty IS the weight — mirror to static child weight display (no editable input).
+  // For weight-unit items qty IS the weight — mirror to static child weight display.
   var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
   if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
     var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
@@ -137,24 +168,20 @@ function bulkSplitChildQtyChanged(input) {
   }
 }
 function bulkSplitChildPiecesChanged(input) {
-  // Mirror pieces → qty for piece-unit items (they are the same value).
   var form = input.closest('form');
   if (!form || form.dataset.sellBy !== 'piece') return;
   var parentQty = parseFloat(form.dataset.parentQty || '0');
   var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
-  var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
   var childPieces = Math.min(Math.max(0, Math.round(parseFloat(input.value) || 0)), Math.round(parentQty) - 1);
   input.value = String(childPieces);
   var qtyInput = form.querySelector('[name="child_qty"]');
   if (qtyInput) { qtyInput.value = childPieces.toFixed(decimals); }
-  var motherQtyDisplay = form.querySelector('.mother-qty-display');
-  if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childPieces).toFixed(decimals);
+  _setMotherQty(form, Math.max(0, parentQty - childPieces), decimals);
   var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
   var mp = form.querySelector('.mother-pieces-display');
   if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childPieces)));
 }
 function bulkSplitChildWeightChanged(input) {
-  // Mirror weight → qty for weight-unit items (they are the same value).
   var form = input.closest('form');
   if (!form) return;
   var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
@@ -167,14 +194,11 @@ function bulkSplitChildWeightChanged(input) {
   var qtyInput = form.querySelector('[name="child_qty"]');
   if (qtyInput) { qtyInput.value = childWeight.toFixed(decimals); }
   var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
-  var motherQtyDisplay = form.querySelector('.mother-qty-display');
-  if (motherQtyDisplay) motherQtyDisplay.textContent = Math.max(0, parentQty - childWeight).toFixed(decimals);
+  _setMotherQty(form, Math.max(0, parentQty - childWeight), decimals);
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childWeight).toFixed(weightDecimals);
 }
-function bulkSplitSkuChanged(input) {
-  // SKU is a free-text field; no server call needed.
-}
+function bulkSplitSkuChanged(input) {}
 function bulkSplitSubmit(formEl) {
   var existing = formEl.querySelector('input[name="entity_id"]');
   if (!existing || !existing.value) {
@@ -2165,8 +2189,8 @@ function celerpPrintLabel(entityId, templateId) {
                 elif is_child:
                     cells.append(Td(Span(w, cls="child-weight-display sp-static-val"), cls="sp-td"))
                 else:
-                    # Mother: static display, updated by JS
-                    cells.append(Td(Span(w, cls="mother-weight-display"), cls="sp-td"))
+                    # Mother: static display (grey italic), updated by JS
+                    cells.append(Td(Span(w, cls="mother-weight-display sp-static-val"), cls="sp-td"))
             if show_pieces:
                 p = str(int(pieces_val)) if pieces_val is not None else "0"
                 # Child pieces is editable only when sell_by is NOT a pieces unit.
@@ -2178,14 +2202,17 @@ function celerpPrintLabel(entityId, templateId) {
                 elif is_child:
                     cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td"))
                 else:
-                    # Mother pieces: static display updated by JS
-                    cells.append(Td(Span(p, cls="mother-pieces-display"), cls="sp-td"))
+                    # Mother pieces: static display (grey italic), updated by JS
+                    cells.append(Td(Span(p, cls="mother-pieces-display sp-static-val"), cls="sp-td"))
             return Tr(*cells)
 
         mother_row = _parcel_row(
             "Mother",
             _static_td(preview["parent_sku"]),
-            Td(Span(fmt.format(preview["parent_qty"]), cls="mother-qty-display"), cls="sp-td"),
+            Td(Input(type="number", name="mother_qty", value=fmt.format(preview["parent_qty"]),
+                     step=str(10 ** -decimals if decimals > 0 else 1), min="0",
+                     cls="form-input form-input--xs sp-input mother-qty-input",
+                     onchange="bulkSplitMotherQtyChanged(this)"), cls="sp-td"),
             preview.get("parent_weight"),
             preview.get("parent_pieces"),
             weight_name=None,
@@ -4885,7 +4912,7 @@ def _collect_category_attributes(rows: list[dict]) -> dict[str, dict[str, list[s
         if cat not in result:
             result[cat] = {}
         for k, v in row.items():
-            if k in _CORE_ITEM_COLS or k.endswith("_price"):
+            if k in _CORE_ITEM_COLS or k.endswith("_price") or k.endswith("_price_total"):
                 continue
             v_str = str(v).strip() if v is not None else ""
             if not v_str:
