@@ -60,6 +60,16 @@ def _read_pieces(state: dict) -> float | None:
     return float(raw) if raw is not None else None
 
 
+def _parse_uuid(value: str | None) -> uuid.UUID | None:
+    """Safely parse a UUID string; returns None on empty or malformed input."""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError):
+        return None
+
+
 # Fields that must NOT be inherited from parent in split/transform (child gets fresh values).
 # Everything else in parent.state is inherited automatically (copy-all-then-override).
 _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
@@ -1223,7 +1233,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             event_type="item.created",
             data=child_data,
             actor_id=user.id,
-            location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
+            location_id=_parse_uuid(parent_location_id),
             source="api",
             idempotency_key=str(uuid.uuid4()),
             metadata_={"parent_id": entity_id},
@@ -1444,7 +1454,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         event_type="item.created",
         data=child_data,
         actor_id=user.id,
-        location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
+        location_id=_parse_uuid(parent_location_id),
         source="api",
         idempotency_key=str(uuid.uuid4()),
         metadata_={"parent_id": entity_id},
