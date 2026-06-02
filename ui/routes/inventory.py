@@ -104,15 +104,14 @@ function bulkSplitAutoLoad() {
     .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
 }
 function bulkSplitMotherQtyChanged(input) {
-  // Mother qty edited directly: clamp mother, then clamp child down if it now exceeds mother.
+  // Mother qty edited: clamp to > 0, then clamp child down if it now exceeds mother.
   var form = input.closest('form');
   if (!form) return;
-  var parentQty = parseFloat(form.dataset.parentQty || '0');
   var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
   var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
-  var motherQty = Math.min(Math.max(epsilon, parseFloat(input.value) || epsilon), parentQty - epsilon);
+  var motherQty = Math.max(epsilon, parseFloat(input.value) || epsilon);
   input.value = motherQty.toFixed(decimals);
-  // For weight-unit items qty IS weight — keep mother-weight-display in sync with mother qty.
+  // For weight-unit items qty IS weight — keep mother-weight-display in sync.
   var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
   var isWeightUnit = weightUnits.indexOf(form.dataset.sellBy) !== -1;
   if (isWeightUnit) {
@@ -126,15 +125,13 @@ function bulkSplitMotherQtyChanged(input) {
     if (childQty >= motherQty) {
       childQty = Math.max(0, motherQty - epsilon);
       childQtyInput.value = childQty.toFixed(decimals);
-      // Mirror the clamped child qty to static weight/pieces displays.
       if (form.dataset.sellBy === 'piece') {
         var childPiecesDisplay = form.querySelector('.child-pieces-display');
         if (childPiecesDisplay) { childPiecesDisplay.textContent = String(Math.round(childQty)); }
       }
       if (isWeightUnit) {
-        var weightDecimals2 = parseInt(form.dataset.weightDecimals || '2', 10);
         var childWeightDisplay = form.querySelector('.child-weight-display');
-        if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(weightDecimals2); }
+        if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(parseInt(form.dataset.weightDecimals || '2', 10)); }
       }
     }
   }
