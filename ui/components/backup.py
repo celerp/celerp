@@ -71,12 +71,15 @@ def local_backup_buttons(
             onclick=f"document.getElementById('{import_input_id}').click()",
             cls=f"btn btn--secondary{size_cls}",
             title=_TOOLTIPS["import"],
+            id="backup-import-btn",
         ),
         Input(
             type="file", id=import_input_id, name="file",
             accept=".celerp-backup",
             hx_post="/backup/import", hx_encoding="multipart/form-data",
             hx_target=f"#{flash_target_id}", hx_swap="outerHTML",
+            hx_disabled_elt="#backup-import-btn",
+            onchange="var btn=document.getElementById('backup-import-btn');if(btn){btn.disabled=true;btn.textContent='Restoring\u2026';}",
             style="display:none",
         ),
     ]

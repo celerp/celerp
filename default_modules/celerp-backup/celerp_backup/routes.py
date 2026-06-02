@@ -200,7 +200,7 @@ async def export_cloud(backup_id: str) -> FileResponse:
 
 
 @router.post("/import")
-async def import_backup(request: Request, file: UploadFile = File(...)):
+async def import_backup(request: Request, file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
     """Import a .celerp-backup file."""
     from celerp.services.backup_import import run_import, validate_archive
 
@@ -214,6 +214,10 @@ async def import_backup(request: Request, file: UploadFile = File(...)):
     except ValueError as exc:
         tmp_path.unlink(missing_ok=True)
         return _flash(str(exc), "error")
+
+    # Close session NOW so its connection returns to the pool before engine.dispose().
+    # Keeping it open holds a lock and causes pg_restore to hang.
+    await session.close()
 
     result = await run_import(tmp_path)
     tmp_path.unlink(missing_ok=True)
