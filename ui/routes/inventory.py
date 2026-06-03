@@ -467,7 +467,9 @@ def setup_routes(app):
 
         content = await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=lang)
 
-        _is_manager = _ROLE_LEVELS.get(_get_role(request), 0) >= _ROLE_LEVELS["manager"]
+        _role_level = _ROLE_LEVELS.get(_get_role(request), 0)
+        _is_manager = _role_level >= _ROLE_LEVELS["manager"]
+        _is_operator = _role_level >= _ROLE_LEVELS["operator"]
         return base_shell(
             page_header(
                 t("page.inventory", lang),
@@ -477,7 +479,7 @@ def setup_routes(app):
                     url="/inventory/content",
                 ),
                 A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _is_manager else "",
-                Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _is_manager else "",
+                Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _is_operator else "",
                 A(t("btn.export_csv", lang), href="/inventory/export/csv", cls="btn btn--secondary") if _is_manager else "",
                 A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm") if _is_manager else "",
             ),
