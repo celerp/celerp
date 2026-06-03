@@ -12569,6 +12569,33 @@ class TestSplitThreeRules:
             "bulkSplitChildPiecesChanged must check motherEdited before clamping child pieces"
         )
 
+    def test_rule3_child_clamp_uses_parent_qty_not_current_mother(self):
+        """When motherEdited=false, clamp must be against parentQty, not currentMother.
+
+        Regression: 23ct item, child set to 13ct (mother recalcs to 10ct), then
+        child re-set to 20ct was clamped to 9.99ct because it used currentMother=10
+        instead of parentQty=23.
+        """
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildQtyChanged")
+        # The non-edited clamp branch must reference parentQty, not currentMother
+        assert "parentQty - epsilon" in fn or "parentQty - childQty" in fn, (
+            "child clamp must use parentQty as budget, not currentMother"
+        )
+        # currentMother must NOT be used as the clamp upper bound
+        assert "currentMother" not in fn, (
+            "currentMother removed: child qty budget is always parentQty (system value)"
+        )
+
+    def test_rule3_child_weight_clamp_uses_parent_weight_not_current_mother(self):
+        """bulkSplitChildWeightChanged clamp must use parentWeight, not currentMother."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
+        assert "parentWeight" in fn, "must reference parentWeight as budget"
+        assert "currentMother" not in fn, (
+            "currentMother removed: child weight budget is always parentWeight (system value)"
+        )
+
 
 class TestSplitPiecesClamp:
     """Bug 2: pieces clamping must happen on blur (splitClampPieces), not on input."""
