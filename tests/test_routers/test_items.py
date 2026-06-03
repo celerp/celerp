@@ -2158,3 +2158,56 @@ async def test_sell_by_change_piece_to_weight_no_weight_gives_none_qty(client):
     assert item.get("quantity") is None or item.get("quantity") == 0, (
         f"qty should be None/0 when weight was unset, got {item.get('quantity')}"
     )
+
+
+@pytest.mark.asyncio
+async def test_cost_price_edit_after_cost_total_edit(client):
+    """Editing cost_price (unit cost) after cost_total was set must persist.
+
+    Regression: _flatten_item derives cost_price from cost_total on every read.
+    If patching cost_price only writes cost_price to state (not cost_total), the
+    next read re-derives cost_price from the stale cost_total, silently reverting
+    the user's edit.
+
+    Fix: patching cost_price via the UI route must derive and overwrite cost_total
+    (unit × qty) so cost_total — the canonical primitive — reflects the new unit price.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Create item: qty=10, no cost set
+    r = await client.post("/items", json={
+        "sku": f"CP-{_ts}", "name": "Cost Test Stone",
+        "quantity": 10.0, "sell_by": "piece",
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+
+    # Step 1: Set cost_total = 100 (total cost for all 10 units)
+    r1 = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"cost_total": {"old": None, "new": 100.0}},
+    }, headers=h)
+    assert r1.status_code == 200, r1.text
+
+    # Verify cost_price is back-calculated to 10.0 (100 / 10)
+    item1 = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert float(item1["cost_price"]) == pytest.approx(10.0), f"expected 10.0, got {item1['cost_price']}"
+    assert float(item1["cost_total"]) == pytest.approx(100.0), f"expected 100.0, got {item1['cost_total']}"
+
+    # Step 2: Now patch cost_price to 15 (new unit cost — total should become 150)
+    r2 = await client.patch(f"/items/{item_id}", json={
+        "fields_changed": {"cost_price": {"old": 10.0, "new": 15.0}},
+    }, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    # Verify cost_price is now 15.0 and cost_total updated to 150.0 (15 × 10)
+    item2 = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert float(item2["cost_price"]) == pytest.approx(15.0), (
+        f"cost_price should be 15.0 after direct edit, got {item2['cost_price']}. "
+        f"cost_total in state: {item2.get('cost_total')}"
+    )
+    assert float(item2["cost_total"]) == pytest.approx(150.0), (
+        f"cost_total should be 150.0 (15 × 10), got {item2['cost_total']}"
+    )

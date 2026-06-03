@@ -1533,8 +1533,18 @@ function celerpPrintLabel(entityId, templateId) {
                 # get_item returns a _flatten_item result: attribute fields are already
                 # promoted to top level, so old_item.get(field) is always authoritative.
                 old_item = await api.get_item(token, entity_id)
-                old_val = old_item.get(field)
-                await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
+                if field == "cost_price":
+                    # cost_total is the canonical primitive in state. Editing unit cost must
+                    # derive and overwrite cost_total (unit × qty) so _flatten_item's back-
+                    # calculation doesn't silently revert the edit on next read.
+                    qty = float(old_item.get("quantity") or 0)
+                    new_unit = float(value)
+                    new_total = round(new_unit * qty, 2)
+                    old_total = old_item.get("cost_total")
+                    await api.patch_item(token, entity_id, {"cost_total": {"old": old_total, "new": new_total}})
+                else:
+                    old_val = old_item.get(field)
+                    await api.patch_item(token, entity_id, {field: {"old": old_val, "new": value}})
             schema, item, cat_schemas, locs_data = await asyncio.gather(
                 api.get_item_schema(token),
                 api.get_item(token, entity_id),
