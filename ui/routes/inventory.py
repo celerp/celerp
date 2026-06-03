@@ -21,7 +21,8 @@ from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, INACTIVE_ITEM_STATUSES
-from ui.config import get_token as _token, API_BASE as _api_base
+from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
+from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from ui.i18n import t, get_lang
 from celerp.services.units import is_weight_unit, is_pieces_unit
 
@@ -466,6 +467,7 @@ def setup_routes(app):
 
         content = await _inventory_content(token, p, schema, cat_schemas, col_prefs, company, locations, lang=lang)
 
+        _is_manager = _ROLE_LEVELS.get(_get_role(request), 0) >= _ROLE_LEVELS["manager"]
         return base_shell(
             page_header(
                 t("page.inventory", lang),
@@ -474,10 +476,10 @@ def setup_routes(app):
                     target="#inventory-content",
                     url="/inventory/content",
                 ),
-                A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary"),
-                Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary"),
-                A(t("btn.export_csv", lang), href="/inventory/export/csv", cls="btn btn--secondary"),
-                A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm"),
+                A(t("btn.import", lang), href="/inventory/import", cls="btn btn--secondary") if _is_manager else "",
+                Button(t("btn.add_item", lang), hx_post="/inventory/create-blank", hx_swap="none", cls="btn btn--primary") if _is_manager else "",
+                A(t("btn.export_csv", lang), href="/inventory/export/csv", cls="btn btn--secondary") if _is_manager else "",
+                A(t("inv.customize_fields"), href="/settings/inventory?tab=category-library", cls="btn btn--ghost btn--sm") if _is_manager else "",
             ),
             content,
             Script(_BULK_SPLIT_JS),
@@ -584,6 +586,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return RedirectResponse("/inventory", status_code=302)
         p = _parse_params(request)
         params: dict = {}
         if p["q"]:
@@ -611,6 +615,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         return base_shell(
             page_header(
@@ -630,6 +636,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return RedirectResponse("/inventory", status_code=302)
         try:
             price_lists = await api.get_price_lists(token)
         except Exception:
@@ -657,6 +665,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
         rows, err = await read_csv_upload(form)
@@ -720,6 +730,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return RedirectResponse("/inventory", status_code=302)
         lang = get_lang(request)
         form = await request.form()
         csv_text = _resolve_csv_text(form)
@@ -809,6 +821,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
         csv_data = _resolve_csv_text(form)
         if not csv_data:
@@ -837,6 +851,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return RedirectResponse("/inventory", status_code=302)
         form = await request.form()
         csv_data = _resolve_csv_text(form)
         rows = list(csv.DictReader(io.StringIO(csv_data)))
@@ -849,6 +865,8 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        if _ROLE_LEVELS.get(_get_role(request), 0) < _ROLE_LEVELS["manager"]:
+            return RedirectResponse("/inventory", status_code=302)
 
         import uuid
 
