@@ -1578,7 +1578,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .sp-td { text-align: left; white-space: nowrap; }
 .sp-totals-row td { border-top: 1px solid var(--c-text2); padding: 3px 8px 2px; font-size: 0.75rem; font-weight: 600; color: var(--c-text2); }
 .sp-total-label { font-size: 0.7rem; color: var(--c-text2); }
-.sp-total-val { text-align: center; }
+.sp-total-val { text-align: left; }
 .sp-static-val { color: var(--c-text2); font-style: italic; }
 .sp-sku { font-family: monospace; font-size: 0.82rem; }
 .sp-sku-input { width: 160px !important; font-family: monospace; font-size: 0.82rem !important; padding: 2px 6px !important; height: auto !important; }
