@@ -14,7 +14,7 @@ PLUGIN_MANIFEST = {
     "depends_on": [],
     "soft_depends": [],
     "slots": {
-        "nav": {"group": "Inventory", "key": "inventory", "href": "/inventory", "label": "Inventory", "order": 30, "min_role": "operator"},
+        "nav": {"group": "Inventory", "key": "inventory", "href": "/inventory", "label": "Inventory", "order": 30, "min_role": "viewer"},
         "projection_handler": {"prefix": "item.", "handler": "celerp_inventory.projections:apply_item_event"},
     },
     "migrations": None,

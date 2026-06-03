@@ -1418,6 +1418,9 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return Div(P(t("error.unauthorized")), id="bulk-payment-panel")
+        from celerp.services.auth import ROLE_LEVELS as _BPR
+        if _BPR.get(_get_role(request), 0) < _BPR["operator"]:
+            return Div(P(t("error.unauthorized")), id="bulk-payment-panel")
         doc_ids_raw = request.query_params.get("doc_ids", "")
         doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
         if not doc_ids:
@@ -3947,7 +3950,7 @@ def _bank_account_options(bank_accounts: list[dict] | None, default_code: str | 
     ]
 
 
-def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_manager: bool = True) -> FT:
+def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_operator: bool = True) -> FT:
     """Shared payment/credit section for invoices, bills, and credit notes.
 
     DRY: one function, different labels based on doc_type.
@@ -4006,7 +4009,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_mana
         if voided:
             void_reason = p.get("void_reason") or ""
             void_cell = Td(Span(t("doc.voided"), cls="badge badge--void", title=void_reason))
-        elif not voided and is_manager:
+        elif not voided and is_operator:
             void_cell = Td(
                 Details(
                     Summary("🗑", cls="btn btn--ghost btn--xs", title="Void this payment"),
@@ -4534,13 +4537,13 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             "receipt": "Issue Receipt",
         }
         finalize_label = _finalize_labels.get(doc_type, "Finalize")
-        if _is_manager and not suppress_doc_actions:
+        if _is_operator and not suppress_doc_actions:
             action_btns_left.append(
                 Button(finalize_label,
                        onclick=f"event.preventDefault();(async()=>{{await _celerpPersist();htmx.ajax('POST','/docs/{entity_id}/action/finalize',{{swap:'none'}});}})();",
                        cls="btn btn--primary")
             )
-    if status not in ("void", "draft") and _is_manager and not suppress_doc_actions:
+    if status not in ("void", "draft") and _is_operator and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("btn.void"), cls="btn btn--danger"),
@@ -4562,7 +4565,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if _is_inbound_doc
         else {"final", "sent"}
     )
-    if status in _revertable_statuses and amount_paid_for_revert == 0 and _is_manager and not suppress_doc_actions:
+    if status in _revertable_statuses and amount_paid_for_revert == 0 and _is_operator and not suppress_doc_actions:
         action_btns_right.insert(0,
             Details(
                 Summary(t("doc.revert_to_draft"), cls="btn btn--secondary"),
@@ -4576,7 +4579,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             )
         )
     # "Unvoid" button - only from void with pre_void_status set
-    if status == "void" and doc.get("pre_void_status") and _is_manager and not suppress_doc_actions:
+    if status == "void" and doc.get("pre_void_status") and _is_operator and not suppress_doc_actions:
         action_btns_right.append(
             Details(
                 Summary(t("doc.unvoid"), cls="btn btn--secondary"),
@@ -6148,7 +6151,7 @@ async function celerpCsvImport(input, entityId) {{
             cls="doc-section doc-section--totals",
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
-        _payment_section(doc, bank_accounts=bank_accounts, is_manager=_is_manager),
+        _payment_section(doc, bank_accounts=bank_accounts, is_operator=_is_operator),
         # Term & Conditions + Note to customer (2 columns)
         Div(
             Div(

@@ -57,7 +57,23 @@ def _read_pieces(state: dict) -> float | None:
     raw = state.get("pieces")
     if raw is None:
         raw = (state.get("attributes") or {}).get("pieces")
-    return float(raw) if raw is not None else None
+    return float(raw) if raw not in (None, "") else None
+
+
+def _read_float(state: dict, key: str) -> float | None:
+    """Safely read a numeric field from item state; treats None and '' as absent."""
+    raw = state.get(key)
+    return float(raw) if raw not in (None, "") else None
+
+
+def _parse_uuid(value: str | None) -> uuid.UUID | None:
+    """Safely parse a UUID string; returns None on empty or malformed input."""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(str(value))
+    except (ValueError, AttributeError):
+        return None
 
 
 # Fields that must NOT be inherited from parent in split/transform (child gets fresh values).
@@ -112,9 +128,9 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
 def _apply_field_visibility(items: list[dict], role: str, field_schema: list[dict]) -> list[dict]:
     """Strip fields from item dicts that the caller's role is not allowed to see.
 
-    A field is restricted if its visible_to_roles list is non-empty AND the caller's
-    ROLE_LEVELS level is below the minimum level of any role in that list.
-    Empty visible_to_roles means visible to all.
+    Two sources of restrictions:
+    1. Schema-driven: field has visible_to_roles set and caller level is below minimum.
+    2. Hardcoded: cost fields (cost_price, cost_total) require manager+.
     """
     caller_level = ROLE_LEVELS.get(role, 0)
     restricted = {
@@ -124,6 +140,8 @@ def _apply_field_visibility(items: list[dict], role: str, field_schema: list[dic
             ROLE_LEVELS.get(r, 0) for r in f["visible_to_roles"]
         )
     }
+    if caller_level < ROLE_LEVELS["manager"]:
+        restricted |= _COST_ITEM_KEYS
     if not restricted:
         return items
     return [{k: v for k, v in item.items() if k not in restricted} for item in items]
@@ -178,6 +196,8 @@ class SplitChild(BaseModel):
 
 class SplitBody(BaseModel):
     children: list[SplitChild]
+    mother_qty: float | None = None    # explicit mother qty override (used when user re-weighed mother)
+    mother_weight: float | None = None # explicit mother weight override
     idempotency_key: str | None = None
 
 
@@ -196,6 +216,7 @@ class TransformBody(BaseModel):
     child_category: str
     child_sell_by: str
     child_quantity: float
+    child_name: str | None = None
     child_weight: float | None = None
     child_weight_unit: str | None = None
     child_pieces: int | None = None
@@ -229,6 +250,9 @@ _HIDDEN_STATUSES = frozenset({"sold", "archived", "merged", "expired"})
 
 # "Archived" tab shows all terminal/inactive statuses grouped together.
 _ARCHIVED_GROUP = frozenset({"archived", "merged", "expired"})
+
+# Fields stripped from item responses for roles below manager.
+_COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 
 
 @router.get("")
@@ -353,6 +377,11 @@ async def list_items(
             return (0, s.lower())
 
         result.sort(key=_sort_key, reverse=reverse)
+    elif not sort and (not company or (company.settings or {}).get("inventory_method") != "fefo"):
+        # Default: most-recently-updated first, then name asc, then entity_id asc for stability.
+        # Use two-pass: primary descending on updated_at, then stable sub-sort on name+entity_id.
+        result.sort(key=lambda item: (str(item.get("name") or "").lower(), str(item.get("entity_id") or "")))
+        result.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
     total = len(result)
     return {"items": result[offset: offset + limit], "total": total}
@@ -363,7 +392,7 @@ async def get_valuation(
     category: str | None = None,
     status: str | None = None,
     company_id=Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Aggregate inventory valuation from projections.
@@ -459,12 +488,19 @@ async def get_valuation(
             except Exception:
                 pass
 
-    return {
+    _cost_pl_names = {pl.get("name", "") for pl in _price_lists if pl.get("name", "").lower() in ("cost", "cost price", "landed")}
+    show_cost = ROLE_LEVELS.get(role, 0) >= ROLE_LEVELS["manager"]
+
+    price_totals_out = {
+        k: float(v) for k, v in price_totals.items()
+        if show_cost or k not in _cost_pl_names
+    }
+
+    result: dict = {
         "item_count": active_item_count,
         "active_item_count": active_item_count,
-        "price_totals": {k: float(v) for k, v in price_totals.items()},
+        "price_totals": price_totals_out,
         # Backward-compatible keys for existing UI
-        "cost_total": float(price_totals.get("Cost", 0)),
         "wholesale_total": float(price_totals.get("Wholesale", 0)),
         "retail_total": float(price_totals.get("Retail", 0)),
         "category_counts": dict(sorted(category_counts.items(), key=lambda x: -x[1])),
@@ -473,6 +509,9 @@ async def get_valuation(
         "total_scoped_count": active_item_count,
         "count_by_status": count_by_status,
     }
+    if show_cost:
+        result["cost_total"] = float(price_totals.get("Cost", 0))
+    return result
 
 
 # Fields eligible for per-tenant distinct-value suggestions.
@@ -1020,8 +1059,7 @@ async def split_preview(
 
     parent_sku = parent.state.get("sku", "")
     parent_sell_by = parent.state.get("sell_by") or "piece"
-    parent_weight_raw = parent.state.get("weight")
-    parent_weight = float(parent_weight_raw) if parent_weight_raw is not None else None
+    parent_weight = _read_float(parent.state, "weight")
     parent_pieces = _read_pieces(parent.state)
 
     units = await _get_company_units(session, company_id)
@@ -1068,6 +1106,9 @@ async def split_preview(
         "child_sku": child_sku,
         "sell_by": parent_sell_by,
         "sell_by_label": sell_by_label,
+        "sell_by_type": "weight" if is_weight_unit(parent_sell_by, unit_map) else ("pieces" if is_pieces_unit(parent_sell_by, unit_map) else "other"),
+        "weight_unit": parent_weight_unit,
+        "weight_unit_label": weight_unit_cfg.get("label", parent_weight_unit),
         "unit_decimals": decimals,
         "weight_decimals": weight_decimals,
         "has_weight": parent_weight is not None,
@@ -1113,8 +1154,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     unit_cfg = unit_map.get(parent_sell_by)
     decimals = unit_cfg["decimals"] if unit_cfg else 0
 
-    parent_weight_raw = parent.state.get("weight")
-    parent_weight: float | None = float(parent_weight_raw) if parent_weight_raw is not None else None
+    parent_weight: float | None = _read_float(parent.state, "weight")
     parent_weight_unit = parent.state.get("weight_unit") or "gram"
     weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
     weight_decimals = weight_unit_cfg.get("decimals", 2)
@@ -1218,7 +1258,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             event_type="item.created",
             data=child_data,
             actor_id=user.id,
-            location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
+            location_id=_parse_uuid(parent_location_id),
             source="api",
             idempotency_key=str(uuid.uuid4()),
             metadata_={"parent_id": entity_id},
@@ -1237,7 +1277,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 location_id=None,
                 source="api",
                 idempotency_key=str(uuid.uuid4()),
-                metadata_={},
+                metadata_={"reason": "from_split"},
             )
         # Assign proportional cost_total to child (pre-computed with Decimal; remainder in last child)
         if _child_cost_totals[i] is not None:
@@ -1252,11 +1292,11 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 location_id=None,
                 source="api",
                 idempotency_key=str(uuid.uuid4()),
-                metadata_={},
+                metadata_={"reason": "from_split"},
             )
 
-    # Reduce parent quantity
-    new_parent_qty = round(parent_qty - total_child_qty, 10)
+    # Reduce parent quantity — use explicit mother_qty override when provided (user re-weighed mother).
+    new_parent_qty = payload.mother_qty if payload.mother_qty is not None else round(parent_qty - total_child_qty, 10)
     # Clamp sub-epsilon residuals from float subtraction to an exact zero.
     if new_parent_qty < 0:
         new_parent_qty = 0.0
@@ -1299,7 +1339,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         computed_mother_pieces = parent_pieces - total_child_pieces
 
     computed_mother_weight: float | None = None
-    if parent_weight is not None:
+    if payload.mother_weight is not None:
+        # User explicitly re-weighed the mother parcel — use that value directly.
+        computed_mother_weight = round(payload.mother_weight, weight_decimals)
+    elif parent_weight is not None:
         total_child_weight = sum(c.weight for c in payload.children if c.weight is not None)
         computed_mother_weight = round(parent_weight - total_child_weight, weight_decimals)
 
@@ -1415,7 +1458,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
     }
     child_data.update({
         "sku": payload.child_sku,
-        "name": parent.state.get("name", payload.child_sku),
+        "name": (payload.child_name or "").strip() or parent.state.get("name", payload.child_sku),
         "quantity": payload.child_quantity,
         "sell_by": payload.child_sell_by,
         "category": payload.child_category,
@@ -1439,7 +1482,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         event_type="item.created",
         data=child_data,
         actor_id=user.id,
-        location_id=uuid.UUID(parent_location_id) if parent_location_id else None,
+        location_id=_parse_uuid(parent_location_id),
         source="api",
         idempotency_key=str(uuid.uuid4()),
         metadata_={"parent_id": entity_id},
@@ -1458,7 +1501,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "from_transform"},
         )
 
     # 2b. Set child cost via item.pricing.set (consistent with split/post_item flows)
@@ -1473,7 +1516,7 @@ async def transform_item(entity_id: str, payload: TransformBody, company_id=Depe
         location_id=None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
-        metadata_={},
+        metadata_={"reason": "from_transform"},
     )
 
     # 4. Mark parent archived (consumed by transform)
@@ -1564,7 +1607,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Compute defaults.
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
-    weights = [float(p.state["weight"]) for p in source_projections if p.state.get("weight") is not None]
+    weights = [_read_float(p.state, "weight") for p in source_projections if p.state.get("weight") not in (None, "")]
     total_weight = sum(weights) if weights else None
     # Compute merged cost_total: sum of all source cost_totals (Q2=Option A)
     merged_cost_total = sum(
@@ -1688,7 +1731,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "from_merge"},
         )
 
     # Emit item.merged marker on the new item for history display.

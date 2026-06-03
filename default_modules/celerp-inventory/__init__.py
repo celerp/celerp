@@ -21,9 +21,9 @@ PLUGIN_MANIFEST = {
     "soft_depends": [],
     "slots": {
         "nav": [
-            {"group": "Inventory", "key": "inventory", "href": "/inventory", "label": "Inventory", "label_key": "nav.inventory", "order": 30, "settings_href": "/settings/inventory", "min_role": "operator"},
-            {"group": "Inventory", "key": "inventory_sold", "href": "/inventory?status=sold", "label": "Sold Inventory", "label_key": "nav.sold_inventory", "order": 31, "min_role": "operator"},
-            {"group": "Inventory", "key": "inventory_archived", "href": "/inventory?status=archived", "label": "Archived Inventory", "label_key": "nav.archived_inventory", "order": 32, "min_role": "operator"},
+            {"group": "Inventory", "key": "inventory", "href": "/inventory", "label": "Inventory", "label_key": "nav.inventory", "order": 30, "settings_href": "/settings/inventory", "min_role": "viewer"},
+            {"group": "Inventory", "key": "inventory_sold", "href": "/inventory?status=sold", "label": "Sold Inventory", "label_key": "nav.sold_inventory", "order": 31, "min_role": "viewer"},
+            {"group": "Inventory", "key": "inventory_archived", "href": "/inventory?status=archived", "label": "Archived Inventory", "label_key": "nav.archived_inventory", "order": 32, "min_role": "viewer"},
         ],
         "projection_handler": [
             {"prefix": "item.", "handler": "celerp_inventory.projections:apply_item_event"},

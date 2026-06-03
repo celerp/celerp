@@ -139,6 +139,18 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                     attrs["pieces"] = new_val
                 current["attributes"] = attrs
                 current.pop("pieces", None)
+            elif field == "cost_price":
+                # cost_total is the canonical primitive; writing cost_price must derive
+                # and overwrite cost_total (unit × qty) so _flatten_item's back-calculation
+                # doesn't silently revert this edit on the next read.
+                new_unit = change.get("new")
+                if new_unit is not None:
+                    qty = float(current.get("quantity") or 0)
+                    current["cost_total"] = round(float(new_unit) * qty, 2)
+                    current.pop("cost_price", None)
+                else:
+                    current.pop("cost_price", None)
+                    current.pop("cost_total", None)
             else:
                 current[field] = change.get("new")
         current = _sync_expiry_from_attributes(current)

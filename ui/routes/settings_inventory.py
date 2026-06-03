@@ -197,7 +197,6 @@ def _categories_tab(
         def _cat_row(idx: int, f: dict) -> FT:
             return Tr(
                 _cat_schema_display_cell(cat, idx, "position", f),
-                _cat_schema_display_cell(cat, idx, "key", f),
                 _cat_schema_display_cell(cat, idx, "label", f),
                 _cat_schema_display_cell(cat, idx, "type", f),
                 _cat_schema_display_cell(cat, idx, "required", f),
@@ -234,7 +233,7 @@ def _categories_tab(
             H3(f"{cat} Fields", cls="settings-section-title"),
             P(f"Attribute fields for the '{cat}' category. Click a cell to edit.", cls="settings-hint"),
             Table(
-                Thead(Tr(Th("#"), Th(t("th.key")), Th(t("th.label")), Th(t("th.doc_type")),
+                Thead(Tr(Th("#"), Th(t("th.label")), Th(t("th.doc_type")),
                          Th(t("th.required")), Th(t("th.editable")), Th(t("th.show_in_table")),
                          Th(t("th.options")), Th(""))),
                 Tbody(*[_cat_row(i, f) for i, f in enumerate(sorted_fields)], add_row),

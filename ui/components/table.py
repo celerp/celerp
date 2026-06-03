@@ -1261,10 +1261,43 @@ function sendToTypeChanged(docType){
   updateBulkToolbar();
 })();
 """
+    # Phantom top-scrollbar: a zero-height scrollable div that mirrors .table-scroll-wrap.
+    # Only injected when the table has more than 10 rows, otherwise not needed.
+    _top_scroll_js = Script("""
+(function(){
+  var wrap = document.querySelector('#data-table-wrap .table-scroll-wrap');
+  var phantom = document.querySelector('#data-table-wrap .table-top-scroll');
+  var inner = phantom && phantom.firstElementChild;
+  if (!wrap || !phantom || !inner) return;
+  // Size the inner spacer to match the scrollable content width
+  function syncWidth() {
+    inner.style.width = wrap.scrollWidth + 'px';
+  }
+  syncWidth();
+  // Bidirectional scroll sync (guard flag prevents infinite loop)
+  var syncing = false;
+  phantom.addEventListener('scroll', function() {
+    if (syncing) return; syncing = true;
+    wrap.scrollLeft = phantom.scrollLeft;
+    syncing = false;
+  });
+  wrap.addEventListener('scroll', function() {
+    if (syncing) return; syncing = true;
+    phantom.scrollLeft = wrap.scrollLeft;
+    syncing = false;
+  });
+  // Re-sync width if columns change (e.g. column manager toggle)
+  new MutationObserver(syncWidth).observe(wrap, {childList: true, subtree: true, attributes: true});
+})();
+""")
+    top_scroll = Div(Div(style="height:1px"), cls="table-top-scroll") if len(rows) > 10 else None
     scripts = [Script(_js)]
     if show_checkboxes:
         scripts.append(Script(_bulk_js.replace("'celerp_inv_selection'", f"'{selection_key}'")))
+    if top_scroll:
+        scripts.append(_top_scroll_js)
     return Div(
+        top_scroll,
         Div(
             Table(header, Tbody(*[_row(r) for r in rows]), cls="data-table", id="data-table"),
             cls="table-scroll-wrap",

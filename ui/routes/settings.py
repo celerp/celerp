@@ -1131,6 +1131,19 @@ def setup_routes(app):
 
     # ── Category schema PATCH/DELETE/POST endpoints ───────────────────
 
+    @app.get("/settings/cat-schema/{category}/{idx}/{field}/display")
+    async def cat_schema_field_display(request: Request, category: str, idx: int, field: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            fields = await api.get_category_schema(token, category)
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
+        sorted_fields = _load_cat_schema_sorted(fields)
+        f = sorted_fields[idx] if idx < len(sorted_fields) else {}
+        return _cat_schema_display_cell(category, idx, field, f)
+
     @app.get("/settings/cat-schema/{category}/{idx}/{field}/edit")
     async def cat_schema_field_edit(request: Request, category: str, idx: int, field: str):
         from urllib.parse import quote
@@ -1149,6 +1162,8 @@ def setup_routes(app):
         val = str(f.get(field, "") or "")
         enc = quote(category, safe="")
         patch_url = f"/settings/cat-schema/{enc}/{idx}/{field}"
+        display_url = f"/settings/cat-schema/{enc}/{idx}/{field}/display"
+        esc_js = f"if(event.key==='Escape'){{htmx.ajax('GET','{display_url}',{{target:this.closest('td'),swap:'outerHTML'}});}}"
         if field in ("required", "editable", "show_in_table"):
             return Td(
                 Select(
@@ -1159,6 +1174,7 @@ def setup_routes(app):
                     hx_target="closest td", hx_swap="outerHTML", hx_include="this",
                     hx_trigger="change",
                     cls="cell-input cell-input--select", autofocus=True,
+                    onkeydown=esc_js,
                 ),
                 cls="cell cell--editing",
             )
@@ -1172,6 +1188,7 @@ def setup_routes(app):
                     hx_target="closest td", hx_swap="outerHTML", hx_include="this",
                     hx_trigger="change",
                     cls="cell-input cell-input--select", autofocus=True,
+                    onkeydown=esc_js,
                 ),
                 cls="cell cell--editing",
             )
@@ -1187,6 +1204,7 @@ def setup_routes(app):
                 hx_target="closest td", hx_swap="outerHTML", hx_include="this",
                 hx_trigger="blur delay:200ms",
                 cls="cell-input", autofocus=True,
+                onkeydown=esc_js,
             ),
             cls="cell cell--editing",
         )
@@ -3210,19 +3228,20 @@ def _role_permissions_table(lang: str = "en") -> FT:
 
     # (label, viewer, operator, manager, admin, owner)
     rows: list[tuple[str, str, str, str, str, str]] = [
-        ("View dashboards & reports",     _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("View documents & contacts",     _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("View inventory",                _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Create & edit drafts",          _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Create contacts",              _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("See margins & markups",         _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
-        ("Finalize, void & delete docs",  _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Record payments",              _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("See cost prices",             _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Import / export data",         _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Run financial reports",        _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
-        ("Manage users & company settings", _CROSS, _CROSS, _CROSS, _CHECKS, _CHECKS),
-        ("Billing & subscription",       _CROSS,  _CROSS,  _CROSS,  _CROSS,  _CHECKS),
+        ("View dashboards & reports",        _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("View documents & contacts",         _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("View inventory",                    _CHECKS, _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("Create & edit drafts",              _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("Create contacts",                   _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("Finalize & void docs",              _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("Record payments",                   _CROSS,  _CHECKS, _CHECKS, _CHECKS, _CHECKS),
+        ("See margins & markups",             _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("Delete docs",                       _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("See cost prices",                   _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("Import / export data",              _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("Run financial reports",             _CROSS,  _CROSS,  _CHECKS, _CHECKS, _CHECKS),
+        ("Manage users & company settings",   _CROSS,  _CROSS,  _CROSS,  _CHECKS, _CHECKS),
+        ("Billing & subscription",            _CROSS,  _CROSS,  _CROSS,  _CROSS,  _CHECKS),
     ]
 
     return Details(

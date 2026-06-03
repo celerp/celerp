@@ -274,6 +274,9 @@ a:hover { text-decoration: underline; }
 /* Scroll wrapper enables horizontal scroll when many columns are visible.
    The inner table keeps overflow:visible so autocomplete dropdowns can escape. */
 .table-scroll-wrap { overflow-x: auto; width: 100%; }
+/* Phantom top scrollbar: mirrors .table-scroll-wrap, sits directly above the table body.
+   overflow-x:auto on a zero-height div shows only the scrollbar track. */
+.table-top-scroll { overflow-x: auto; overflow-y: hidden; width: 100%; height: 16px; }
 /* Catalog autocomplete dropdowns must escape table overflow */
 .data-table {
   width: max-content;
@@ -987,6 +990,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
 /* ─── Activity feed ───────────────────────────────────────────────────── */
 .activity-feed { margin-bottom: 24px; }
+.activity-detail-cell { max-width: 420px; word-wrap: break-word; white-space: normal; }
+.table-footer-note { font-size: 11px; color: var(--c-text2); margin-top: 6px; text-align: right; }
 .activity-list { list-style: none; padding: 0; margin: 0; }
 .activity-item {
   display: flex; align-items: center; gap: 12px; padding: 8px 0;
@@ -1574,6 +1579,10 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .split-preview-table tbody td { padding: 4px 8px; vertical-align: middle; }
 .sp-row-label { font-size: 0.75rem; font-weight: 600; color: var(--c-text2); white-space: nowrap; padding-right: 4px !important; }
 .sp-td { text-align: left; white-space: nowrap; }
+.sp-totals-row td { border-top: 1px solid var(--c-text2); padding: 3px 8px 2px; font-size: 0.75rem; font-weight: 600; color: var(--c-text2); }
+.sp-total-label { font-size: 0.7rem; color: var(--c-text2); }
+.sp-total-val { text-align: left; }
+.sp-static-val { color: var(--c-text2); font-style: italic; }
 .sp-sku { font-family: monospace; font-size: 0.82rem; }
 .sp-sku-input { width: 160px !important; font-family: monospace; font-size: 0.82rem !important; padding: 2px 6px !important; height: auto !important; }
 .sp-input { width: 72px !important; padding: 2px 5px !important; font-size: 0.82rem !important; height: auto !important; text-align: left; }

@@ -839,6 +839,32 @@ if (!gotLock) {
 // ── App lifecycle ────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  // ── macOS DMG guard ───────────────────────────────────────────────────────
+  // Detect if the user launched Celerp directly from a mounted disk image
+  // instead of installing it to /Applications first. The app bundle will be
+  // under /Volumes/* which is always read-only; alembic and embedded-postgres
+  // will immediately fail with EROFS. Block early with a clear message.
+  if (process.platform === "darwin" && app.isPackaged) {
+    const appPath = app.getAppPath();
+    if (appPath.startsWith("/Volumes/")) {
+      dialog.showMessageBoxSync({
+        type: "warning",
+        title: "Install Celerp First",
+        message: "Celerp is running from a disk image and cannot save data.",
+        detail:
+          "To install Celerp:\n\n" +
+          "1. Open Finder and locate the Celerp disk image.\n" +
+          "2. Drag Celerp into the Applications folder.\n" +
+          "3. Open Celerp from your Applications folder (or Launchpad).\n\n" +
+          "You can then eject the disk image.",
+        buttons: ["Quit"],
+        defaultId: 0,
+      });
+      app.exit(0);
+      return;
+    }
+  }
+
   setupAppMenu();
   try {
     if (DEV_MODE) {

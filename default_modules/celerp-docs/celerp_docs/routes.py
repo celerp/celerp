@@ -25,7 +25,7 @@ from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
-from celerp.services.auth import get_current_company_id, get_current_user, require_manager
+from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import PickResult, compute_pick_plan
@@ -783,7 +783,11 @@ async def patch_doc(entity_id: str, payload: DocPatch, company_id: str = Depends
 
     entry = await emit_event(
         session, company_id=company_id, entity_id=entity_id, entity_type="doc", event_type="doc.updated",
-        data=payload.model_dump(exclude_none=True), actor_id=user.id, location_id=None, source="api",
+        data={"fields_changed": {
+            k: {"old": (change.get("old") if change.get("old") is not None else row.state.get(k)), "new": change.get("new")}
+            for k, change in payload.fields_changed.items()
+        }, "idempotency_key": payload.idempotency_key},
+        actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     await session.commit()
@@ -841,7 +845,7 @@ async def send_doc(entity_id: str, payload: DocSendBody, company_id: str = Depen
 
 
 @router.post("/{entity_id}/finalize")
-async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     if row.state.get("status") == "void":
         raise HTTPException(status_code=409, detail="Cannot finalize void document")
@@ -944,7 +948,7 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
 
 
 @router.post("/{entity_id}/void")
-async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     current_status = row.state.get("status")
     if current_status in ("paid", "partial"):
@@ -962,7 +966,7 @@ async def void_doc(entity_id: str, payload: DocVoidBody, company_id: str = Depen
 
 
 @router.post("/{entity_id}/revert-to-draft")
-async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def revert_doc_to_draft(entity_id: str, payload: DocRevertBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     previous_status = state.get("status")
@@ -1080,7 +1084,7 @@ async def renumber_doc(
 
 
 @router.post("/{entity_id}/unvoid")
-async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def unvoid_doc(entity_id: str, payload: DocUnvoidBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     state = row.state
     if state.get("status") != "void":
@@ -1162,7 +1166,7 @@ async def delete_doc(entity_id: str, company_id: str = Depends(get_current_compa
 
 
 @router.post("/{entity_id}/payment")
-async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     # Snapshot scalar values before any flush() to avoid SQLAlchemy lazy-load expiry
     # (emit_event -> flush() -> ORM expires row -> MissingGreenlet on subsequent row.state access).
@@ -1220,7 +1224,7 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
 
 
 @router.post("/{entity_id}/refund")
-async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def refund_payment(entity_id: str, payload: DocPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     paid = float(row.state.get("amount_paid", 0) or 0)
     if payload.amount > paid + 1e-9:
@@ -1249,7 +1253,7 @@ class VoidPaymentBody(BaseModel):
 
 
 @router.post("/{entity_id}/void-payment")
-async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def void_payment(entity_id: str, payload: VoidPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     payments = row.state.get("payments", [])
     if payload.payment_index < 0 or payload.payment_index >= len(payments):
@@ -1323,7 +1327,7 @@ async def delete_payment(
     payment_index: int,
     payload: DeletePaymentBody = DeletePaymentBody(),
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -1417,7 +1421,7 @@ class ApplyToInvoiceBody(BaseModel):
 
 
 @router.post("/{entity_id}/apply-to-invoice")
-async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def apply_cn_to_invoice(entity_id: str, payload: ApplyToInvoiceBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     cn_row = await _get_doc(session, company_id, entity_id)
     cn = cn_row.state
     if cn.get("doc_type") != "credit_note":
@@ -1500,7 +1504,7 @@ class CnRefundBody(BaseModel):
 
 
 @router.post("/{entity_id}/cn-refund")
-async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def refund_cn(entity_id: str, payload: CnRefundBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     row = await _get_doc(session, company_id, entity_id)
     cn = row.state
     if cn.get("doc_type") != "credit_note":
@@ -1559,7 +1563,7 @@ class BulkPaymentBody(BaseModel):
 
 
 @router.post("/bulk-payment")
-async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_manager), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+async def bulk_payment(payload: BulkPaymentBody, company_id: str = Depends(get_current_company_id), _: None = Depends(require_operator), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     if not payload.doc_ids:
         raise HTTPException(status_code=422, detail="No documents specified")
 
@@ -2621,7 +2625,7 @@ async def revert_list_to_draft(
     entity_id: str,
     payload: DocRevertBody,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -2945,7 +2949,7 @@ async def fulfill_lines(
     entity_id: str,
     body: FulfillLinesRequest,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3089,7 +3093,7 @@ async def revert_lines(
     entity_id: str,
     body: FulfillLinesRequest,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3242,7 +3246,7 @@ async def receive_return(
     entity_id: str,
     payload: ReceiveReturnPayload,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3442,7 +3446,7 @@ async def receive_return(
 async def undo_receive_return(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
@@ -3549,7 +3553,7 @@ async def undo_receive_return(
 async def undo_receive(
     entity_id: str,
     company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_manager),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:

@@ -261,18 +261,19 @@ class TestManagerRequiredItemOps:
         r = await client.post(f"/items/{ctx['item_id']}/expire", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_staff_cannot_access_valuation(self, client, session):
+    async def test_operator_can_access_valuation_without_cost(self, client, session):
         ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["staff_h"])
-        assert r.status_code == 403
+        assert r.status_code == 200
+        data = r.json()
+        assert "cost_total" not in data
+        for name in data.get("price_totals", {}):
+            assert name.lower() not in ("cost", "cost price", "landed")
 
     async def test_manager_can_access_valuation(self, client, session):
         ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["manager_h"])
         assert r.status_code == 200
-
-
-# ── require_manager: financial document operations ────────────────────────────
 
 class TestManagerRequiredDocOps:
 
@@ -285,48 +286,98 @@ class TestManagerRequiredDocOps:
         assert r.status_code == 200, r.text
         return r.json()["id"]
 
-    async def test_staff_cannot_finalize_doc(self, client, session):
+    # --- viewer blocked from everything ---
+
+    async def test_viewer_cannot_finalize_doc(self, client, session):
+        ctx = await _setup(client, session)
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer@perm.com", "viewer")
+        viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
+        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
+        r = await client.post(f"/docs/{doc_id}/finalize", headers=viewer_h)
+        assert r.status_code == 403
+
+    async def test_viewer_cannot_record_payment(self, client, session):
+        ctx = await _setup(client, session)
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer2@perm.com", "viewer")
+        viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
+        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
+        r = await client.post(
+            f"/docs/{doc_id}/payment",
+            json={"payment_date": "2026-01-15", "amount": 100.0, "method": "cash", "reference": "REF1", "bank_account": "1111"},
+            headers=viewer_h,
+        )
+        assert r.status_code == 403
+
+    # --- operator CAN finalize/void/payments ---
+
+    async def test_operator_can_finalize_doc(self, client, session):
         ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
-        r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["staff_h"])
+        r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["operator_h"])
+        assert r.status_code in (200, 409)
+
+    async def test_operator_can_void_doc(self, client, session):
+        ctx = await _setup(client, session)
+        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
+        await client.post(f"/docs/{doc_id}/finalize", headers=ctx["admin_h"])
+        r = await client.post(f"/docs/{doc_id}/void", json={"reason": "operator test"}, headers=ctx["operator_h"])
+        assert r.status_code in (200, 409)
+
+    async def test_operator_can_record_payment(self, client, session):
+        ctx = await _setup(client, session)
+        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
+        await client.post(f"/docs/{doc_id}/finalize", headers=ctx["admin_h"])
+        r = await client.post(
+            f"/docs/{doc_id}/payment",
+            json={"payment_date": "2026-01-15", "amount": 100.0, "method": "cash", "reference": "REF1", "bank_account": "1111"},
+            headers=ctx["operator_h"],
+        )
+        assert r.status_code in (200, 409)
+
+    # --- operator CANNOT delete ---
+
+    async def test_operator_cannot_delete_doc(self, client, session):
+        ctx = await _setup(client, session)
+        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
+        r = await client.delete(f"/docs/{doc_id}", headers=ctx["operator_h"])
         assert r.status_code == 403
+
+    # --- manager CAN finalize and delete ---
 
     async def test_manager_can_finalize_doc(self, client, session):
         ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["manager_h"])
-        assert r.status_code in (200, 409)  # 409 if already finalized
+        assert r.status_code in (200, 409)
 
-    async def test_staff_cannot_void_doc(self, client, session):
+    async def test_manager_can_delete_doc(self, client, session):
         ctx = await _setup(client, session)
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
-        r = await client.post(
-            f"/docs/{doc_id}/void",
-            json={"reason": "test"},
-            headers=ctx["staff_h"],
-        )
-        assert r.status_code == 403
+        r = await client.delete(f"/docs/{doc_id}", headers=ctx["manager_h"])
+        assert r.status_code in (200, 404)
 
-    async def test_staff_cannot_record_payment(self, client, session):
+    # --- viewer blocked from void/refund ---
+
+    async def test_viewer_cannot_void_doc(self, client, session):
         ctx = await _setup(client, session)
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer3@perm.com", "viewer")
+        viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
-        r = await client.post(
-            f"/docs/{doc_id}/payment",
-            json={"payment_date": "2026-01-15", "amount": 100.0, "method": "cash", "reference": "REF1", "bank_account": "1111"},
-            headers=ctx["staff_h"],
-        )
+        await client.post(f"/docs/{doc_id}/finalize", headers=ctx["admin_h"])
+        r = await client.post(f"/docs/{doc_id}/void", json={"reason": "test"}, headers=viewer_h)
         assert r.status_code == 403
 
-    async def test_staff_cannot_refund_payment(self, client, session):
+    async def test_viewer_cannot_refund_payment(self, client, session):
         ctx = await _setup(client, session)
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "viewer4@perm.com", "viewer")
+        viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         doc_id = await self._create_draft_doc(client, ctx["admin_h"])
         r = await client.post(
             f"/docs/{doc_id}/refund",
             json={"amount": 10.0, "method": "cash", "reference": "REF2"},
-            headers=ctx["staff_h"],
+            headers=viewer_h,
         )
         assert r.status_code == 403
-
 
 # ── require_manager: accounting operations ────────────────────────────────────
 
@@ -526,13 +577,18 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 403
 
-    async def test_viewer_cannot_access_valuation(self, client, session):
+    async def test_viewer_can_access_valuation_without_cost(self, client, session):
         admin_tok = await _register_admin(client)
         admin_h = {"Authorization": f"Bearer {admin_tok}"}
         viewer_tok = await _invite_user(client, session, admin_h, "viewer2@x.com", "viewer")
         viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
         r = await client.get("/items/valuation", headers=viewer_h)
-        assert r.status_code == 403
+        assert r.status_code == 200
+        data = r.json()
+        assert "cost_total" not in data
+        # no cost/landed price lists should leak
+        for name in data.get("price_totals", {}).keys():
+            assert name.lower() not in {"cost", "cost price", "landed"}
 
     async def test_operator_blocked_from_manager_ops(self, client, session):
         """Operator (level 2) cannot perform manager-level operations."""
@@ -544,7 +600,7 @@ class TestRoleHierarchy:
         )
         assert r.status_code == 403
 
-    async def test_operator_blocked_from_finalize_doc(self, client, session):
+    async def test_viewer_blocked_from_finalize_doc(self, client, session):
         ctx = await _setup(client, session)
         r = await client.post(
             "/docs",
@@ -552,7 +608,9 @@ class TestRoleHierarchy:
             headers=ctx["admin_h"],
         )
         doc_id = r.json()["id"]
-        r2 = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["operator_h"])
+        viewer_tok = await _invite_user(client, session, ctx["admin_h"], "vhier@perm.com", "viewer")
+        viewer_h = {"Authorization": f"Bearer {viewer_tok}"}
+        r2 = await client.post(f"/docs/{doc_id}/finalize", headers=viewer_h)
         assert r2.status_code == 403
 
     async def test_invalid_role_rejected_on_create_user(self, client, session):
@@ -876,10 +934,14 @@ class TestManagerRequiredItemOps:
         r = await client.post(f"/items/{ctx['item_id']}/expire", headers=ctx["staff_h"])
         assert r.status_code == 403
 
-    async def test_staff_cannot_access_valuation(self, client, session):
+    async def test_operator_can_access_valuation_without_cost(self, client, session):
         ctx = await _setup(client, session)
         r = await client.get("/items/valuation", headers=ctx["staff_h"])
-        assert r.status_code == 403
+        assert r.status_code == 200
+        data = r.json()
+        assert "cost_total" not in data
+        for name in data.get("price_totals", {}):
+            assert name.lower() not in ("cost", "cost price", "landed")
 
     async def test_manager_can_access_valuation(self, client, session):
         ctx = await _setup(client, session)
@@ -888,61 +950,6 @@ class TestManagerRequiredItemOps:
 
 
 # ── require_manager: financial document operations ────────────────────────────
-
-class TestManagerRequiredDocOps:
-
-    async def _create_draft_doc(self, client, headers: dict) -> str:
-        r = await client.post(
-            "/docs",
-            json={"doc_type": "invoice", "contact_name": "Client", "line_items": []},
-            headers=headers,
-        )
-        assert r.status_code == 200, r.text
-        return r.json()["id"]
-
-    async def test_staff_cannot_finalize_doc(self, client, session):
-        ctx = await _setup(client, session)
-        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
-        r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["staff_h"])
-        assert r.status_code == 403
-
-    async def test_manager_can_finalize_doc(self, client, session):
-        ctx = await _setup(client, session)
-        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
-        r = await client.post(f"/docs/{doc_id}/finalize", headers=ctx["manager_h"])
-        assert r.status_code in (200, 409)  # 409 if already finalized
-
-    async def test_staff_cannot_void_doc(self, client, session):
-        ctx = await _setup(client, session)
-        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
-        r = await client.post(
-            f"/docs/{doc_id}/void",
-            json={"reason": "test"},
-            headers=ctx["staff_h"],
-        )
-        assert r.status_code == 403
-
-    async def test_staff_cannot_record_payment(self, client, session):
-        ctx = await _setup(client, session)
-        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
-        r = await client.post(
-            f"/docs/{doc_id}/payment",
-            json={"payment_date": "2026-01-15", "amount": 100.0, "method": "cash", "reference": "REF1", "bank_account": "1111"},
-            headers=ctx["staff_h"],
-        )
-        assert r.status_code == 403
-
-    async def test_staff_cannot_refund_payment(self, client, session):
-        ctx = await _setup(client, session)
-        doc_id = await self._create_draft_doc(client, ctx["admin_h"])
-        r = await client.post(
-            f"/docs/{doc_id}/refund",
-            json={"amount": 10.0, "method": "cash", "reference": "REF2"},
-            headers=ctx["staff_h"],
-        )
-        assert r.status_code == 403
-
-
 # ── require_manager: accounting operations ────────────────────────────────────
 
 class TestManagerRequiredAccountingOps:
@@ -1116,12 +1123,20 @@ class TestNavMinRole:
                 )
 
     def test_operational_nav_requires_operator(self):
-        operator_groups = {"Sales Documents", "Purchasing Documents", "Inventory", "Contacts"}
+        operator_groups = {"Sales Documents", "Purchasing Documents", "Contacts"}
+        # Inventory nav entries vary: core inventory pages are viewer-accessible,
+        # operator-level tools (labels) may also live in this group.
+        inventory_viewer_keys = {"inventory", "inventory_sold", "inventory_archived"}
         for item in self._load_nav_items():
             group = item.get("group")
+            key = item.get("key")
             if group in operator_groups:
                 assert item.get("min_role") == "operator", (
-                    f"Nav item {item.get('key')} in {group} should require operator, got {item.get('min_role')}"
+                    f"Nav item {key} in {group} should require operator, got {item.get('min_role')}"
+                )
+            elif key in inventory_viewer_keys:
+                assert item.get("min_role") == "viewer", (
+                    f"Nav item {key} in Inventory should allow viewer, got {item.get('min_role')}"
                 )
 
     def test_dashboard_allows_viewer(self):

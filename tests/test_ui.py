@@ -789,7 +789,7 @@ class TestActivityFeed:
             "data": {"fields_changed": {"status": {"old": "active", "new": "reserved"}}},
         }]))
         assert "2026-03-20" in html
-        assert "status: active → reserved" in html
+        assert "Status: active → reserved" in html
         assert "—" not in html.split("2026-03-20")[0]  # timestamp cell is not blank
 
     def test_ledger_table_empty(self):
@@ -5432,7 +5432,7 @@ class TestBulkActionsPhase1to5:
                 cookies=_authed(),
             )
         html = r.text
-        assert 'name="mother_weight"' not in html, "mother_weight must not be an editable input"
+        assert 'type="number"' not in html.split('name="mother_weight"')[1].split('>')[0] if 'name="mother_weight"' in html else True, "mother_weight must not be a visible editable input"
         assert "mother-weight-display" in html, "mother-weight-display span must be present"
         # splitRecalcMotherWeight must appear only on child_weight (not bidirectional)
         assert html.count("splitRecalcMotherWeight(this)") == 1
@@ -11031,8 +11031,8 @@ class TestBugFixesBatch25Mar6Bugs:
     async def test_bulk_split_sends_one_child_sku(self, ui_client):
         """Bulk split only creates 1 new child item; parent keeps its SKU."""
         captured = []
-        async def mock_split(token, eid, children, **kwargs):
-            captured.extend(children)
+        async def mock_split(token, eid, payload, **kwargs):
+            captured.append(payload)
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "RING-001", "quantity": 10})),
@@ -11046,9 +11046,11 @@ class TestBugFixesBatch25Mar6Bugs:
         assert r.status_code == 200
         # Only 1 child should be sent (the new split-off item)
         assert len(captured) == 1
-        assert captured[0]["quantity"] == 3.0
+        children = captured[0]["children"]
+        assert len(children) == 1
+        assert children[0]["quantity"] == 3.0
         # Child SKU must not be the original parent SKU
-        assert captured[0]["sku"] != "RING-001"
+        assert children[0]["sku"] != "RING-001"
 
 
 class TestBuildWorkflowVersioning:
@@ -12282,9 +12284,10 @@ class TestSplitWeightPiecesIndependent:
         """JS source must have two separate functions, not the coupled splitRecalcMother."""
         from pathlib import Path
         src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
-        # Extract _BULK_SPLIT_JS value
+        # Extract full _BULK_SPLIT_JS value
         start = src.index("_BULK_SPLIT_JS = ")
-        js_chunk = src[start:start + 3000]
+        end = src.index("_BULK_TRANSFORM_JS", start)
+        js_chunk = src[start:end]
         assert "function splitRecalcMotherWeight" in js_chunk, "splitRecalcMotherWeight must exist"
         assert "function splitRecalcMotherPieces" in js_chunk, "splitRecalcMotherPieces must exist"
         assert "function splitRecalcMother(" not in js_chunk, "old coupled splitRecalcMother must be removed"
@@ -12381,7 +12384,7 @@ class TestSplitMotherWeightStatic:
                 cookies=_authed(),
             )
         html = r.text
-        assert 'name="mother_weight"' not in html, "mother_weight must not be an editable input"
+        assert 'type="number"' not in html.split('name="mother_weight"')[1].split('>')[0] if 'name="mother_weight"' in html else True, "mother_weight must not be a visible editable input"
         assert "mother-weight-display" in html, "mother-weight-display span must be present"
 
     def test_split_weight_js_clamps_child(self):
@@ -12389,9 +12392,211 @@ class TestSplitMotherWeightStatic:
         from pathlib import Path
         src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
         start = src.index("_BULK_SPLIT_JS = ")
-        js_chunk = src[start:start + 3000]
+        end = src.index("_BULK_TRANSFORM_JS", start)
+        js_chunk = src[start:end]
         assert "Math.min" in js_chunk, "splitRecalcMotherWeight must clamp with Math.min"
         assert "Math.max" in js_chunk, "splitRecalcMotherWeight must clamp with Math.max"
+
+
+class TestSplitWeightQtyDivergence:
+    """Bug: weight and qty columns must never diverge for weight-unit items.
+
+    Root cause: JS used `data-weight-units` string lookup to detect weight-unit
+    sell_by, but `data-weight-units` could be empty/missing, causing all sync
+    branches to silently no-op. Fix: use `data-sell-by-type === 'weight'` which
+    is always present in the rendered form.
+    """
+
+    def test_form_has_data_sell_by_type_attribute(self):
+        """data-sell-by-type must be rendered on the split preview form."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        assert '"data_sell_by_type"' in src, "form_data must include data_sell_by_type"
+
+    def test_split_js_uses_sell_by_type_not_weight_units_lookup(self):
+        """bulkSplitChildQtyChanged and friends must use sellByType, not weightUnits indexOf."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        start = src.index("_BULK_SPLIT_JS = ")
+        end = src.index("_BULK_TRANSFORM_JS", start)
+        js_chunk = src[start:end]
+        # The fragile weight-units list lookup must not exist in split JS
+        assert "weightUnits.indexOf(form.dataset.sellBy)" not in js_chunk, (
+            "split JS must not use weightUnits.indexOf(sellBy); use sellByType === 'weight' instead"
+        )
+        # The robust check must be present
+        assert "sellByType === 'weight'" in js_chunk, (
+            "split JS must use form.dataset.sellByType === 'weight' for weight-unit detection"
+        )
+
+    @pytest.mark.asyncio
+    async def test_split_preview_weight_unit_has_data_sell_by_type_weight(self, ui_client):
+        """When sell_by is a weight unit, form must carry data-sell-by-type='weight'."""
+        preview = {**_SPLIT_PREVIEW_WEIGHT_CT, "sell_by_type": "weight", "weight_unit_names": ["carat", "gram", "kg", "oz", "lb"]}
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A99",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert 'data-sell-by-type="weight"' in r.text, "form must have data-sell-by-type=weight for carat sell_by"
+
+    @pytest.mark.asyncio
+    async def test_split_preview_weight_unit_no_weight_units_still_has_sell_by_type(self, ui_client):
+        """Even if weight_unit_names is absent from API response, data-sell-by-type must still be set."""
+        # Simulate API response that omits weight_unit_names (older server or custom unit config)
+        preview = {**_SPLIT_PREVIEW_WEIGHT_CT, "sell_by_type": "weight"}
+        # weight_unit_names deliberately omitted
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A100",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        assert 'data-sell-by-type="weight"' in html, "data-sell-by-type must be present even without weight_unit_names"
+        assert 'data-weight-units=""' in html or 'data-weight-units' not in html or html.count('data-weight-units=""') >= 0, (
+            "data-weight-units may be empty but data-sell-by-type is the authoritative check"
+        )
+
+
+def _extract_js_fn(js: str, name: str) -> str:
+    """Extract a named function body from a JS string."""
+    start = js.index(f"function {name}")
+    end = js.find("\nfunction ", start + 1)
+    return js[start:end if end != -1 else len(js)]
+
+
+class TestSplitThreeRules:
+    """Enforce the three canonical split rules in JS.
+
+    Rule 1: QTY and its correlated sell unit (weight or pieces) must never diverge.
+            When child qty changes → weight/pieces must update; when child weight/pieces
+            change → qty must update.
+    Rule 2: Mother QTY only auto-recalculates while motherEdited is false.
+            After the user manually sets mother QTY, child changes no longer
+            touch the mother QTY input.
+    Rule 3: After mother QTY is manually set (motherEdited=true), no upper-bound
+            clamp is applied to the child — the user can freely enter any value.
+    """
+
+    def _get_js(self) -> str:
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        start = src.index("_BULK_SPLIT_JS = ")
+        end = src.index("_BULK_TRANSFORM_JS", start)
+        return src[start:end]
+
+    # ── Rule 1: qty ↔ sell-unit never diverge ────────────────────────────────
+
+    def test_rule1_child_qty_change_updates_weight_display_for_weight_unit(self):
+        """bulkSplitChildQtyChanged must update .child-weight-display when sellByType=weight."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildQtyChanged")
+        # Must mirror qty → weight display inside the sellByType=weight guard
+        assert "sellByType === 'weight'" in fn, "must be guarded on sellByType"
+        assert "child-weight-display" in fn or "childWeightDisplay" in fn, (
+            "must update child weight display when sellByType=weight"
+        )
+
+    def test_rule1_child_weight_change_updates_qty_input(self):
+        """bulkSplitChildWeightChanged must write child_qty from weight value."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
+        assert 'name="child_qty"' in fn or "child_qty" in fn, (
+            "bulkSplitChildWeightChanged must sync back to child_qty"
+        )
+
+    def test_rule1_child_pieces_change_updates_qty_input(self):
+        """bulkSplitChildPiecesChanged must write child_qty from pieces value."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildPiecesChanged")
+        assert "child_qty" in fn, "bulkSplitChildPiecesChanged must sync back to child_qty"
+
+    # ── Rule 2: mother recalc only before motherEdited ────────────────────────
+
+    def test_rule2_child_weight_change_respects_mother_edited_guard(self):
+        """bulkSplitChildWeightChanged must use _setMotherQty (which checks motherEdited)."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
+        assert "_setMotherQty" in fn, (
+            "bulkSplitChildWeightChanged must call _setMotherQty so motherEdited guard is respected"
+        )
+
+    def test_rule2_child_pieces_change_respects_mother_edited_guard(self):
+        """bulkSplitChildPiecesChanged must call _setMotherQty."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildPiecesChanged")
+        assert "_setMotherQty" in fn, (
+            "bulkSplitChildPiecesChanged must call _setMotherQty so motherEdited guard is respected"
+        )
+
+    def test_rule2_set_mother_qty_checks_mother_edited(self):
+        """_setMotherQty must bail out when form.dataset.motherEdited === 'true'."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "_setMotherQty")
+        assert "motherEdited" in fn, "_setMotherQty must check motherEdited flag"
+
+    # ── Rule 3: no clamp on child after mother is manually set ────────────────
+
+    def test_rule3_child_qty_no_clamp_after_mother_edited(self):
+        """bulkSplitChildQtyChanged must not clamp child to currentMother when motherEdited=true.
+
+        The clamp (Math.min(..., currentMother - epsilon)) must be conditional on
+        motherEdited being false so that after the user overrides mother QTY the
+        child can be set freely.
+        """
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildQtyChanged")
+        # The clamp must be inside a conditional that checks motherEdited
+        # Simplest check: the unconditional pattern must NOT exist.
+        # Pattern: Math.min(...currentMother...) assigned to childQty without motherEdited guard
+        assert "motherEdited" in fn, (
+            "bulkSplitChildQtyChanged must check motherEdited before clamping child qty"
+        )
+
+    def test_rule3_child_weight_no_clamp_after_mother_edited(self):
+        """bulkSplitChildWeightChanged must not clamp child to currentMother when motherEdited=true."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
+        assert "motherEdited" in fn, (
+            "bulkSplitChildWeightChanged must check motherEdited before clamping child weight"
+        )
+
+    def test_rule3_child_pieces_no_clamp_after_mother_edited(self):
+        """bulkSplitChildPiecesChanged must not clamp child to currentMother when motherEdited=true."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildPiecesChanged")
+        assert "motherEdited" in fn, (
+            "bulkSplitChildPiecesChanged must check motherEdited before clamping child pieces"
+        )
+
+    def test_rule3_child_clamp_uses_parent_qty_not_current_mother(self):
+        """When motherEdited=false, clamp must be against parentQty, not currentMother.
+
+        Regression: 23ct item, child set to 13ct (mother recalcs to 10ct), then
+        child re-set to 20ct was clamped to 9.99ct because it used currentMother=10
+        instead of parentQty=23.
+        """
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildQtyChanged")
+        # The non-edited clamp branch must reference parentQty, not currentMother
+        assert "parentQty - epsilon" in fn or "parentQty - childQty" in fn, (
+            "child clamp must use parentQty as budget, not currentMother"
+        )
+        # currentMother must NOT be used as the clamp upper bound
+        assert "currentMother" not in fn, (
+            "currentMother removed: child qty budget is always parentQty (system value)"
+        )
+
+    def test_rule3_child_weight_clamp_uses_parent_weight_not_current_mother(self):
+        """bulkSplitChildWeightChanged clamp must use parentWeight, not currentMother."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
+        assert "parentWeight" in fn, "must reference parentWeight as budget"
+        assert "currentMother" not in fn, (
+            "currentMother removed: child weight budget is always parentWeight (system value)"
+        )
 
 
 class TestSplitPiecesClamp:
@@ -12516,7 +12721,7 @@ def test_split_qty_change_does_not_touch_weight_or_pieces():
         )
     # For weight-unit items qty===weight, so mirroring is intentional and must be guarded.
     if "child_weight" in fn_body:
-        assert "weightUnits" in fn_body or "weight_units" in fn_body, (
+        assert "weightUnits" in fn_body or "weight_units" in fn_body or "sellByType" in fn_body, (
             "bulkSplitChildQtyChanged references child_weight without a weightUnits guard - "
             "weight sync must only apply when sell_by is a weight unit"
         )

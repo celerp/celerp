@@ -16,7 +16,7 @@ from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.models.company import Company, Location, User
 from celerp.models.accounting import UserCompany
-from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, hash_password, require_admin, ROLE_LEVELS
+from celerp.services.auth import create_access_token, create_refresh_token, get_current_company_id, get_current_user, get_current_role, hash_password, require_admin, ROLE_LEVELS
 from celerp.tax_regimes import get_regime, TAX_REGIMES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -608,9 +608,15 @@ from celerp.services.field_schema import DEFAULT_ITEM_SCHEMA  # noqa: F401 re-ex
 from celerp.services.field_schema import get_effective_field_schema  # noqa: F401 re-export
 
 
+_COST_SCHEMA_KEYS: frozenset[str] = frozenset({"cost_price", "cost_price_total"})
+
+
 @router.get("/me/item-schema")
-async def get_item_schema(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> list[dict]:
-    return await get_effective_field_schema(session, company_id)
+async def get_item_schema(company_id=Depends(get_current_company_id), role: str = Depends(get_current_role), session: AsyncSession = Depends(get_session)) -> list[dict]:
+    schema = await get_effective_field_schema(session, company_id)
+    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
+        schema = [f for f in schema if f.get("key") not in _COST_SCHEMA_KEYS]
+    return schema
 
 
 @router.patch("/me/item-schema")
@@ -1755,9 +1761,13 @@ class DefaultPriceListPatch(BaseModel):
     name: str
 
 
+_COST_PL_NAMES: frozenset[str] = frozenset({"cost", "cost price", "landed", "landed cost"})
+
+
 @router.get("/me/price-lists")
 async def get_price_lists(
     company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     company = await session.get(Company, company_id)
@@ -1765,17 +1775,21 @@ async def get_price_lists(
         raise HTTPException(status_code=404, detail="Not found")
     existing = company.settings.get("price_lists")
     if existing is not None:
-        return existing
-    # Lazy seed defaults on first access
-    import copy
-    seeded = copy.deepcopy(DEFAULT_PRICE_LISTS)
-    settings = dict(company.settings)
-    settings["price_lists"] = seeded
-    if "default_price_list" not in settings:
-        settings["default_price_list"] = DEFAULT_PRICE_LIST_NAME
-    company.settings = settings
-    await session.commit()
-    return seeded
+        price_lists = existing
+    else:
+        # Lazy seed defaults on first access
+        import copy
+        seeded = copy.deepcopy(DEFAULT_PRICE_LISTS)
+        settings = dict(company.settings)
+        settings["price_lists"] = seeded
+        if "default_price_list" not in settings:
+            settings["default_price_list"] = DEFAULT_PRICE_LIST_NAME
+        company.settings = settings
+        await session.commit()
+        price_lists = seeded
+    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
+        price_lists = [pl for pl in price_lists if pl.get("name", "").lower() not in _COST_PL_NAMES]
+    return price_lists
 
 
 @router.patch("/me/price-lists")

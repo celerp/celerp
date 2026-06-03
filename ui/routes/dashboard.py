@@ -13,6 +13,8 @@ from ui.components.shell import base_shell, page_header
 from ui.config import get_token as _token, get_role as _get_role
 from ui.components.table import fmt_money as _fmt_money
 from ui.i18n import t, get_lang
+from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from urllib.parse import urlencode as _urlencode
 
 
 
@@ -584,7 +586,7 @@ def setup_routes(app):
             ar_aging = {"buckets": {}}
 
         try:
-            activities = await api.get_activity(token, limit=15)
+            activities = await api.get_activity(token, limit=30)
         except Exception:
             activities = []
 
@@ -601,6 +603,9 @@ def setup_routes(app):
                              crm_data, mfg_data, purchasing_data, currency)
 
         role = _get_role(request)
+        # Strip margin sub-text for roles below manager.
+        if _ROLE_LEVELS.get(role, 0) < _ROLE_LEVELS["manager"]:
+            values.pop("margin_pct_sub", None)
         return base_shell(
             page_header(t("page.dashboard", lang)),
             _kpi_grid(cfg, values, role=role),
@@ -612,6 +617,73 @@ def setup_routes(app):
             nav_active="dashboard",
             companies=companies,
             lang=lang,
+            request=request,
+        )
+
+    @app.get("/history")
+    async def history_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+
+        q = request.query_params.get("q", "")
+        date_from = request.query_params.get("date_from", "")
+        date_to = request.query_params.get("date_to", "")
+        try:
+            page = max(1, int(request.query_params.get("page", "1")))
+        except ValueError:
+            page = 1
+        per_page = 50
+
+        try:
+            result = await api.search_activity(token, q=q, date_from=date_from, date_to=date_to, page=page, per_page=per_page)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            result = {"activities": [], "total": 0, "page": 1, "per_page": per_page, "pages": 1}
+
+        activities = result.get("activities", [])
+        total = result.get("total", 0)
+        pages = result.get("pages", 1)
+
+        from ui.components.activity import activity_table
+        from ui.components.table import pagination
+
+        extra_parts = {}
+        if q:
+            extra_parts["q"] = q
+        if date_from:
+            extra_parts["date_from"] = date_from
+        if date_to:
+            extra_parts["date_to"] = date_to
+        extra = _urlencode(extra_parts)
+
+        filters = Form(
+            Div(
+                Input(type="search", name="q", value=q, placeholder="Search events…", cls="filter-input"),
+                Input(type="date", name="date_from", value=date_from, cls="filter-input", style="width:160px"),
+                Input(type="date", name="date_to", value=date_to, cls="filter-input", style="width:160px"),
+                Button("Search", type="submit", cls="btn btn-primary"),
+                cls="filter-bar",
+            ),
+            method="get", action="/history",
+        )
+
+        table = activity_table(activities, title="", section_cls="")
+
+        pager = pagination(page, total, per_page, "/history", extra) if pages > 1 else ""
+
+        return base_shell(
+            page_header("Activity History", A("← Dashboard", href="/dashboard", cls="btn btn-secondary")),
+            Div(
+                filters,
+                P(f"{total:,} events found", cls="result-count") if q or date_from or date_to else "",
+                table,
+                pager,
+                cls="page-body",
+            ),
+            title="Activity History - Celerp",
+            nav_active="dashboard",
             request=request,
         )
 
@@ -665,16 +737,14 @@ def _kpi_card(spec: dict, values: dict) -> FT:
 
 
 def _kpi_grid(cfg: dict, values: dict, role: str = "owner") -> FT:
-    from celerp.services.auth import ROLE_LEVELS
-    user_level = ROLE_LEVELS.get(role, ROLE_LEVELS["owner"])
+    user_level = _ROLE_LEVELS.get(role, _ROLE_LEVELS["owner"])
     cards = [_kpi_card(spec, values) for spec in cfg.get("kpis", [])
-             if user_level >= ROLE_LEVELS.get(spec.get("min_role", "viewer"), 1)]
+             if user_level >= _ROLE_LEVELS.get(spec.get("min_role", "viewer"), 1)]
     return Div(*cards, cls="kpi-grid")
 
 
 def _secondary_kpi_grid(cfg: dict, values: dict, role: str = "owner") -> FT:
-    from celerp.services.auth import ROLE_LEVELS
-    user_level = ROLE_LEVELS.get(role, ROLE_LEVELS["owner"])
+    user_level = _ROLE_LEVELS.get(role, _ROLE_LEVELS["owner"])
     secondary = cfg.get("secondary_kpis", [])
     if not secondary:
         return ""
@@ -784,7 +854,7 @@ def _activity_feed(activities: list[dict], currency: str | None = None) -> FT:
     from ui.components.activity import activity_table
     if not activities:
         return ""
-    return activity_table(activities, max_display=15)
+    return activity_table(activities, max_display=15, history_url="/history")
 
 
 
