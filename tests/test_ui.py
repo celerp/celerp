@@ -12458,6 +12458,118 @@ class TestSplitWeightQtyDivergence:
         )
 
 
+def _extract_js_fn(js: str, name: str) -> str:
+    """Extract a named function body from a JS string."""
+    start = js.index(f"function {name}")
+    end = js.find("\nfunction ", start + 1)
+    return js[start:end if end != -1 else len(js)]
+
+
+class TestSplitThreeRules:
+    """Enforce the three canonical split rules in JS.
+
+    Rule 1: QTY and its correlated sell unit (weight or pieces) must never diverge.
+            When child qty changes → weight/pieces must update; when child weight/pieces
+            change → qty must update.
+    Rule 2: Mother QTY only auto-recalculates while motherEdited is false.
+            After the user manually sets mother QTY, child changes no longer
+            touch the mother QTY input.
+    Rule 3: After mother QTY is manually set (motherEdited=true), no upper-bound
+            clamp is applied to the child — the user can freely enter any value.
+    """
+
+    def _get_js(self) -> str:
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        start = src.index("_BULK_SPLIT_JS = ")
+        end = src.index("_BULK_TRANSFORM_JS", start)
+        return src[start:end]
+
+    # ── Rule 1: qty ↔ sell-unit never diverge ────────────────────────────────
+
+    def test_rule1_child_qty_change_updates_weight_display_for_weight_unit(self):
+        """bulkSplitChildQtyChanged must update .child-weight-display when sellByType=weight."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildQtyChanged")
+        # Must mirror qty → weight display inside the sellByType=weight guard
+        assert "sellByType === 'weight'" in fn, "must be guarded on sellByType"
+        assert "child-weight-display" in fn or "childWeightDisplay" in fn, (
+            "must update child weight display when sellByType=weight"
+        )
+
+    def test_rule1_child_weight_change_updates_qty_input(self):
+        """bulkSplitChildWeightChanged must write child_qty from weight value."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
+        assert 'name="child_qty"' in fn or "child_qty" in fn, (
+            "bulkSplitChildWeightChanged must sync back to child_qty"
+        )
+
+    def test_rule1_child_pieces_change_updates_qty_input(self):
+        """bulkSplitChildPiecesChanged must write child_qty from pieces value."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildPiecesChanged")
+        assert "child_qty" in fn, "bulkSplitChildPiecesChanged must sync back to child_qty"
+
+    # ── Rule 2: mother recalc only before motherEdited ────────────────────────
+
+    def test_rule2_child_weight_change_respects_mother_edited_guard(self):
+        """bulkSplitChildWeightChanged must use _setMotherQty (which checks motherEdited)."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
+        assert "_setMotherQty" in fn, (
+            "bulkSplitChildWeightChanged must call _setMotherQty so motherEdited guard is respected"
+        )
+
+    def test_rule2_child_pieces_change_respects_mother_edited_guard(self):
+        """bulkSplitChildPiecesChanged must call _setMotherQty."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildPiecesChanged")
+        assert "_setMotherQty" in fn, (
+            "bulkSplitChildPiecesChanged must call _setMotherQty so motherEdited guard is respected"
+        )
+
+    def test_rule2_set_mother_qty_checks_mother_edited(self):
+        """_setMotherQty must bail out when form.dataset.motherEdited === 'true'."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "_setMotherQty")
+        assert "motherEdited" in fn, "_setMotherQty must check motherEdited flag"
+
+    # ── Rule 3: no clamp on child after mother is manually set ────────────────
+
+    def test_rule3_child_qty_no_clamp_after_mother_edited(self):
+        """bulkSplitChildQtyChanged must not clamp child to currentMother when motherEdited=true.
+
+        The clamp (Math.min(..., currentMother - epsilon)) must be conditional on
+        motherEdited being false so that after the user overrides mother QTY the
+        child can be set freely.
+        """
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildQtyChanged")
+        # The clamp must be inside a conditional that checks motherEdited
+        # Simplest check: the unconditional pattern must NOT exist.
+        # Pattern: Math.min(...currentMother...) assigned to childQty without motherEdited guard
+        assert "motherEdited" in fn, (
+            "bulkSplitChildQtyChanged must check motherEdited before clamping child qty"
+        )
+
+    def test_rule3_child_weight_no_clamp_after_mother_edited(self):
+        """bulkSplitChildWeightChanged must not clamp child to currentMother when motherEdited=true."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildWeightChanged")
+        assert "motherEdited" in fn, (
+            "bulkSplitChildWeightChanged must check motherEdited before clamping child weight"
+        )
+
+    def test_rule3_child_pieces_no_clamp_after_mother_edited(self):
+        """bulkSplitChildPiecesChanged must not clamp child to currentMother when motherEdited=true."""
+        js = self._get_js()
+        fn = _extract_js_fn(js, "bulkSplitChildPiecesChanged")
+        assert "motherEdited" in fn, (
+            "bulkSplitChildPiecesChanged must check motherEdited before clamping child pieces"
+        )
+
+
 class TestSplitPiecesClamp:
     """Bug 2: pieces clamping must happen on blur (splitClampPieces), not on input."""
 
