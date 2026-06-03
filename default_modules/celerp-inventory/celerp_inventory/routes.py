@@ -196,6 +196,8 @@ class SplitChild(BaseModel):
 
 class SplitBody(BaseModel):
     children: list[SplitChild]
+    mother_qty: float | None = None    # explicit mother qty override (used when user re-weighed mother)
+    mother_weight: float | None = None # explicit mother weight override
     idempotency_key: str | None = None
 
 
@@ -1293,8 +1295,8 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
                 metadata_={"reason": "from_split"},
             )
 
-    # Reduce parent quantity
-    new_parent_qty = round(parent_qty - total_child_qty, 10)
+    # Reduce parent quantity — use explicit mother_qty override when provided (user re-weighed mother).
+    new_parent_qty = payload.mother_qty if payload.mother_qty is not None else round(parent_qty - total_child_qty, 10)
     # Clamp sub-epsilon residuals from float subtraction to an exact zero.
     if new_parent_qty < 0:
         new_parent_qty = 0.0
@@ -1337,7 +1339,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         computed_mother_pieces = parent_pieces - total_child_pieces
 
     computed_mother_weight: float | None = None
-    if parent_weight is not None:
+    if payload.mother_weight is not None:
+        # User explicitly re-weighed the mother parcel — use that value directly.
+        computed_mother_weight = round(payload.mother_weight, weight_decimals)
+    elif parent_weight is not None:
         total_child_weight = sum(c.weight for c in payload.children if c.weight is not None)
         computed_mother_weight = round(parent_weight - total_child_weight, weight_decimals)
 

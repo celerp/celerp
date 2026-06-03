@@ -66,6 +66,12 @@ function _updateSplitTotals(form) {
     var cp = cpEl ? (parseInt(cpEl.value !== undefined ? cpEl.value : cpEl.textContent) || 0) : 0;
     piecesTotal.textContent = String(mp + cp);
   }
+  // Sync hidden inputs so form submission carries mother weight for server override.
+  var mwHidden = form.querySelector('[name="mother_weight"]');
+  if (mwHidden) {
+    var mwDisp = form.querySelector('.mother-weight-display');
+    if (mwDisp) mwHidden.value = mwDisp.textContent.trim();
+  }
 }
 function splitRecalcMotherWeight(input) {
   var form = input.closest('form');
@@ -2348,6 +2354,13 @@ function celerpPrintLabel(entityId, templateId) {
 
         return Form(
             Input(type="hidden", name="entity_id", value=entity_id),
+            # mother_weight hidden: tracks the mother-weight-display span value so JS
+            # can submit it; _updateSplitTotals keeps it in sync after every change.
+            *(
+                [Input(type="hidden", name="mother_weight",
+                       value=wfmt.format(preview.get("parent_weight") or 0))]
+                if show_weight else []
+            ),
             Table(
                 Thead(Tr(*headers)),
                 Tbody(mother_row, child_row),
@@ -2411,6 +2424,11 @@ function celerpPrintLabel(entityId, templateId) {
 
         child_weight = _opt_float("child_weight")
         child_pieces = _opt_float("child_pieces")
+        # mother_qty/mother_weight: present when user manually edited the mother parcel in the preview.
+        # Pass through to API so the server uses the user's value directly rather than computing
+        # parent_qty - child_qty (which would ignore the user's explicit override).
+        mother_qty_override = _opt_float("mother_qty")
+        mother_weight_override = _opt_float("mother_weight")
 
         if child_pieces is not None:
             parent_pieces_raw = item.get("pieces") or (item.get("attributes") or {}).get("pieces")
@@ -2422,17 +2440,21 @@ function celerpPrintLabel(entityId, templateId) {
         if child_weight is not None:
             child["weight"] = child_weight
         if child_pieces is not None:
-            # pieces lives in attributes on the item
             child["attributes"] = {"pieces": child_pieces}
 
+        split_payload: dict = {"children": [child]}
+        if mother_qty_override is not None:
+            split_payload["mother_qty"] = mother_qty_override
+        if mother_weight_override is not None:
+            split_payload["mother_weight"] = mother_weight_override
+
         try:
-            await api.split_item(token, eid, [child])
+            await api.split_item(token, eid, split_payload)
         except APIError as e:
             return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
 
         from urllib.parse import quote
-        remaining_qty = current_qty - split_qty
-        # Filter to exactly the two parcels by their SKUs
+        remaining_qty = mother_qty_override if mother_qty_override is not None else (current_qty - split_qty)
         exact_skus = f"{quote(orig_sku)},{quote(child_sku)}"
         return _bulk_destructive_success(
             f"Split: {orig_sku} ({remaining_qty}) + {child_sku} ({split_qty}).",

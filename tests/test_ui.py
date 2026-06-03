@@ -5432,7 +5432,7 @@ class TestBulkActionsPhase1to5:
                 cookies=_authed(),
             )
         html = r.text
-        assert 'name="mother_weight"' not in html, "mother_weight must not be an editable input"
+        assert 'type="number"' not in html.split('name="mother_weight"')[1].split('>')[0] if 'name="mother_weight"' in html else True, "mother_weight must not be a visible editable input"
         assert "mother-weight-display" in html, "mother-weight-display span must be present"
         # splitRecalcMotherWeight must appear only on child_weight (not bidirectional)
         assert html.count("splitRecalcMotherWeight(this)") == 1
@@ -11031,8 +11031,8 @@ class TestBugFixesBatch25Mar6Bugs:
     async def test_bulk_split_sends_one_child_sku(self, ui_client):
         """Bulk split only creates 1 new child item; parent keeps its SKU."""
         captured = []
-        async def mock_split(token, eid, children, **kwargs):
-            captured.extend(children)
+        async def mock_split(token, eid, payload, **kwargs):
+            captured.append(payload)
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "RING-001", "quantity": 10})),
@@ -11046,9 +11046,11 @@ class TestBugFixesBatch25Mar6Bugs:
         assert r.status_code == 200
         # Only 1 child should be sent (the new split-off item)
         assert len(captured) == 1
-        assert captured[0]["quantity"] == 3.0
+        children = captured[0]["children"]
+        assert len(children) == 1
+        assert children[0]["quantity"] == 3.0
         # Child SKU must not be the original parent SKU
-        assert captured[0]["sku"] != "RING-001"
+        assert children[0]["sku"] != "RING-001"
 
 
 class TestBuildWorkflowVersioning:
@@ -12382,7 +12384,7 @@ class TestSplitMotherWeightStatic:
                 cookies=_authed(),
             )
         html = r.text
-        assert 'name="mother_weight"' not in html, "mother_weight must not be an editable input"
+        assert 'type="number"' not in html.split('name="mother_weight"')[1].split('>')[0] if 'name="mother_weight"' in html else True, "mother_weight must not be a visible editable input"
         assert "mother-weight-display" in html, "mother-weight-display span must be present"
 
     def test_split_weight_js_clamps_child(self):

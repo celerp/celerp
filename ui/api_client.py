@@ -1341,10 +1341,10 @@ async def create_item(token: str, data: dict) -> dict:
         return _raise(await c.post("/items", json=data)).json()
 
 
-async def split_item(token: str, entity_id: str, children: list[dict]) -> dict:
-    body: dict = {"children": children}
+async def split_item(token: str, entity_id: str, payload: dict) -> dict:
+    """payload: {"children": [...], "mother_qty": float|None, "mother_weight": float|None}"""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/items/{entity_id}/split", json=body)).json()
+        return _raise(await c.post(f"/items/{entity_id}/split", json=payload)).json()
 
 
 async def transform_item(token: str, entity_id: str, payload: dict) -> dict:
