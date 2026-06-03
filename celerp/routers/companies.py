@@ -1761,9 +1761,13 @@ class DefaultPriceListPatch(BaseModel):
     name: str
 
 
+_COST_PL_NAMES: frozenset[str] = frozenset({"cost", "cost price", "landed", "landed cost"})
+
+
 @router.get("/me/price-lists")
 async def get_price_lists(
     company_id=Depends(get_current_company_id),
+    role: str = Depends(get_current_role),
     session: AsyncSession = Depends(get_session),
 ) -> list[dict]:
     company = await session.get(Company, company_id)
@@ -1771,17 +1775,21 @@ async def get_price_lists(
         raise HTTPException(status_code=404, detail="Not found")
     existing = company.settings.get("price_lists")
     if existing is not None:
-        return existing
-    # Lazy seed defaults on first access
-    import copy
-    seeded = copy.deepcopy(DEFAULT_PRICE_LISTS)
-    settings = dict(company.settings)
-    settings["price_lists"] = seeded
-    if "default_price_list" not in settings:
-        settings["default_price_list"] = DEFAULT_PRICE_LIST_NAME
-    company.settings = settings
-    await session.commit()
-    return seeded
+        price_lists = existing
+    else:
+        # Lazy seed defaults on first access
+        import copy
+        seeded = copy.deepcopy(DEFAULT_PRICE_LISTS)
+        settings = dict(company.settings)
+        settings["price_lists"] = seeded
+        if "default_price_list" not in settings:
+            settings["default_price_list"] = DEFAULT_PRICE_LIST_NAME
+        company.settings = settings
+        await session.commit()
+        price_lists = seeded
+    if ROLE_LEVELS.get(role, 0) < ROLE_LEVELS["manager"]:
+        price_lists = [pl for pl in price_lists if pl.get("name", "").lower() not in _COST_PL_NAMES]
+    return price_lists
 
 
 @router.patch("/me/price-lists")
