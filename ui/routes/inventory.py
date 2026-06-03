@@ -31,6 +31,8 @@ _DEFAULT_PER_PAGE = 50
 _BULK_SPLIT_JS = """
 function _setMotherQty(form, val, decimals) {
   // Mother qty is now an editable input; update its value reactively.
+  // Only updates if the user has NOT manually edited the mother qty field.
+  if (form.dataset.motherEdited === 'true') return;
   var inp = form.querySelector('.mother-qty-input');
   if (inp) inp.value = val.toFixed(decimals);
 }
@@ -140,9 +142,10 @@ function bulkSplitAutoLoad() {
     .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
 }
 function bulkSplitMotherQtyChanged(input) {
-  // Mother qty edited: clamp to > 0. Child qty is intentionally NOT recalculated.
+  // Mother qty manually edited: mark form so child-change handlers never overwrite it.
   var form = input.closest('form');
   if (!form) return;
+  form.dataset.motherEdited = 'true';
   var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
   var epsilon = decimals > 0 ? Math.pow(10, -decimals) : 1;
   var motherQty = Math.max(epsilon, parseFloat(input.value) || epsilon);
