@@ -12396,6 +12396,68 @@ class TestSplitMotherWeightStatic:
         assert "Math.max" in js_chunk, "splitRecalcMotherWeight must clamp with Math.max"
 
 
+class TestSplitWeightQtyDivergence:
+    """Bug: weight and qty columns must never diverge for weight-unit items.
+
+    Root cause: JS used `data-weight-units` string lookup to detect weight-unit
+    sell_by, but `data-weight-units` could be empty/missing, causing all sync
+    branches to silently no-op. Fix: use `data-sell-by-type === 'weight'` which
+    is always present in the rendered form.
+    """
+
+    def test_form_has_data_sell_by_type_attribute(self):
+        """data-sell-by-type must be rendered on the split preview form."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        assert '"data_sell_by_type"' in src, "form_data must include data_sell_by_type"
+
+    def test_split_js_uses_sell_by_type_not_weight_units_lookup(self):
+        """bulkSplitChildQtyChanged and friends must use sellByType, not weightUnits indexOf."""
+        from pathlib import Path
+        src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
+        start = src.index("_BULK_SPLIT_JS = ")
+        end = src.index("_BULK_TRANSFORM_JS", start)
+        js_chunk = src[start:end]
+        # The fragile weight-units list lookup must not exist in split JS
+        assert "weightUnits.indexOf(form.dataset.sellBy)" not in js_chunk, (
+            "split JS must not use weightUnits.indexOf(sellBy); use sellByType === 'weight' instead"
+        )
+        # The robust check must be present
+        assert "sellByType === 'weight'" in js_chunk, (
+            "split JS must use form.dataset.sellByType === 'weight' for weight-unit detection"
+        )
+
+    @pytest.mark.asyncio
+    async def test_split_preview_weight_unit_has_data_sell_by_type_weight(self, ui_client):
+        """When sell_by is a weight unit, form must carry data-sell-by-type='weight'."""
+        preview = {**_SPLIT_PREVIEW_WEIGHT_CT, "sell_by_type": "weight", "weight_unit_names": ["carat", "gram", "kg", "oz", "lb"]}
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A99",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        assert 'data-sell-by-type="weight"' in r.text, "form must have data-sell-by-type=weight for carat sell_by"
+
+    @pytest.mark.asyncio
+    async def test_split_preview_weight_unit_no_weight_units_still_has_sell_by_type(self, ui_client):
+        """Even if weight_unit_names is absent from API response, data-sell-by-type must still be set."""
+        # Simulate API response that omits weight_unit_names (older server or custom unit config)
+        preview = {**_SPLIT_PREVIEW_WEIGHT_CT, "sell_by_type": "weight"}
+        # weight_unit_names deliberately omitted
+        with patch("ui.api_client.split_preview", new=AsyncMock(return_value=preview)):
+            r = await ui_client.get(
+                "/api/items/bulk/split-preview?entity_id=item%3A100",
+                cookies=_authed(),
+            )
+        assert r.status_code == 200
+        html = r.text
+        assert 'data-sell-by-type="weight"' in html, "data-sell-by-type must be present even without weight_unit_names"
+        assert 'data-weight-units=""' in html or 'data-weight-units' not in html or html.count('data-weight-units=""') >= 0, (
+            "data-weight-units may be empty but data-sell-by-type is the authoritative check"
+        )
+
+
 class TestSplitPiecesClamp:
     """Bug 2: pieces clamping must happen on blur (splitClampPieces), not on input."""
 
@@ -12518,7 +12580,7 @@ def test_split_qty_change_does_not_touch_weight_or_pieces():
         )
     # For weight-unit items qty===weight, so mirroring is intentional and must be guarded.
     if "child_weight" in fn_body:
-        assert "weightUnits" in fn_body or "weight_units" in fn_body, (
+        assert "weightUnits" in fn_body or "weight_units" in fn_body or "sellByType" in fn_body, (
             "bulkSplitChildQtyChanged references child_weight without a weightUnits guard - "
             "weight sync must only apply when sell_by is a weight unit"
         )

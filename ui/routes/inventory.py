@@ -76,8 +76,7 @@ function splitRecalcMotherWeight(input) {
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
   // For weight-unit items weight and qty are the same — also update mother qty input.
-  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+  if (form.dataset.sellByType === 'weight') {
     var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
     var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
     _setMotherQty(form, Math.max(0, parentQty - childVal), unitDecimals);
@@ -94,8 +93,7 @@ function splitClampWeight(input) {
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, parentWeight - childVal).toFixed(decimals);
   // For weight-unit items weight and qty are the same — sync qty inputs.
-  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+  if (form.dataset.sellByType === 'weight') {
     var unitDecimals = parseInt(form.dataset.unitDecimals || decimals, 10);
     var qtyInput = form.querySelector('[name="child_qty"]');
     if (qtyInput) { qtyInput.value = childVal.toFixed(unitDecimals); }
@@ -151,8 +149,7 @@ function bulkSplitMotherQtyChanged(input) {
   var motherQty = Math.max(epsilon, parseFloat(input.value) || epsilon);
   input.value = motherQty.toFixed(decimals);
   // For weight-unit items qty IS weight — keep mother-weight-display in sync.
-  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+  if (form.dataset.sellByType === 'weight') {
     var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
     var mw = form.querySelector('.mother-weight-display');
     if (mw) mw.textContent = motherQty.toFixed(weightDecimals);
@@ -182,8 +179,7 @@ function bulkSplitChildQtyChanged(input) {
     if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childQty)));
   }
   // For weight-unit items qty IS the weight — mirror to static child weight display.
-  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
+  if (form.dataset.sellByType === 'weight') {
     var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
     var weightInput = form.querySelector('[name="child_weight"]');
     if (weightInput) { weightInput.value = childQty.toFixed(weightDecimals); }
@@ -215,8 +211,7 @@ function bulkSplitChildPiecesChanged(input) {
 function bulkSplitChildWeightChanged(input) {
   var form = input.closest('form');
   if (!form) return;
-  var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  if (weightUnits.indexOf(form.dataset.sellBy) === -1) return;
+  if (form.dataset.sellByType !== 'weight') return;
   var parentWeight = parseFloat(form.dataset.parentWeight || '0');
   var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
   var decimals = parseInt(form.dataset.unitDecimals || weightDecimals, 10);
@@ -2306,6 +2301,7 @@ function celerpPrintLabel(entityId, templateId) {
             "data_unit_decimals": str(decimals),
             "data_parent_qty": str(preview["parent_qty"]),
             "data_sell_by": preview["sell_by"],
+            "data_sell_by_type": sell_by_type,
             "data_weight_units": ",".join(preview.get("weight_unit_names", [])),
         }
         if show_weight:
