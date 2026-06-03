@@ -57,7 +57,13 @@ def _read_pieces(state: dict) -> float | None:
     raw = state.get("pieces")
     if raw is None:
         raw = (state.get("attributes") or {}).get("pieces")
-    return float(raw) if raw is not None else None
+    return float(raw) if raw not in (None, "") else None
+
+
+def _read_float(state: dict, key: str) -> float | None:
+    """Safely read a numeric field from item state; treats None and '' as absent."""
+    raw = state.get(key)
+    return float(raw) if raw not in (None, "") else None
 
 
 def _parse_uuid(value: str | None) -> uuid.UUID | None:
@@ -1051,8 +1057,7 @@ async def split_preview(
 
     parent_sku = parent.state.get("sku", "")
     parent_sell_by = parent.state.get("sell_by") or "piece"
-    parent_weight_raw = parent.state.get("weight")
-    parent_weight = float(parent_weight_raw) if parent_weight_raw is not None else None
+    parent_weight = _read_float(parent.state, "weight")
     parent_pieces = _read_pieces(parent.state)
 
     units = await _get_company_units(session, company_id)
@@ -1147,8 +1152,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     unit_cfg = unit_map.get(parent_sell_by)
     decimals = unit_cfg["decimals"] if unit_cfg else 0
 
-    parent_weight_raw = parent.state.get("weight")
-    parent_weight: float | None = float(parent_weight_raw) if parent_weight_raw is not None else None
+    parent_weight: float | None = _read_float(parent.state, "weight")
     parent_weight_unit = parent.state.get("weight_unit") or "gram"
     weight_unit_cfg = unit_map.get(parent_weight_unit) or {}
     weight_decimals = weight_unit_cfg.get("decimals", 2)
@@ -1598,7 +1602,7 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Compute defaults.
     total_qty = sum(float(p.state.get("quantity") or 0) for p in source_projections)
-    weights = [float(p.state["weight"]) for p in source_projections if p.state.get("weight") is not None]
+    weights = [_read_float(p.state, "weight") for p in source_projections if p.state.get("weight") not in (None, "")]
     total_weight = sum(weights) if weights else None
     # Compute merged cost_total: sum of all source cost_totals (Q2=Option A)
     merged_cost_total = sum(
