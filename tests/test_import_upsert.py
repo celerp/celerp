@@ -455,6 +455,7 @@ async def test_import_malformed_csv_shows_error(client):
     from httpx import AsyncClient
     from httpx._transports.asgi import ASGITransport
     from ui.app import app as ui_app
+    from test_helpers import make_test_token
 
     async with AsyncClient(
         transport=ASGITransport(app=ui_app),
@@ -465,7 +466,7 @@ async def test_import_malformed_csv_shows_error(client):
         malformed = b"name,sell_by\nfoo,piece,extra_unexpected_col\n"
         r = await c.post(
             "/inventory/import/preview",
-            cookies={"celerp_token": "dummy-token-for-test"},
+            cookies={"celerp_token": make_test_token(role="manager")},
             files={"csv_file": ("items.csv", malformed, "text/csv")},
         )
     assert r.status_code == 200
@@ -482,6 +483,7 @@ async def test_import_none_fieldnames_shows_error(client):
     from httpx import AsyncClient
     from httpx._transports.asgi import ASGITransport
     from ui.app import app as ui_app
+    from test_helpers import make_test_token
 
     async with AsyncClient(
         transport=ASGITransport(app=ui_app),
@@ -492,7 +494,7 @@ async def test_import_none_fieldnames_shows_error(client):
         empty_header = b"\n\nname,sell_by\ntest,piece\n"
         r = await c.post(
             "/inventory/import/preview",
-            cookies={"celerp_token": "dummy-token-for-test"},
+            cookies={"celerp_token": make_test_token(role="manager")},
             files={"csv_file": ("items.csv", empty_header, "text/csv")},
         )
     assert r.status_code == 200
