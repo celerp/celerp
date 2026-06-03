@@ -12282,9 +12282,10 @@ class TestSplitWeightPiecesIndependent:
         """JS source must have two separate functions, not the coupled splitRecalcMother."""
         from pathlib import Path
         src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
-        # Extract _BULK_SPLIT_JS value
+        # Extract full _BULK_SPLIT_JS value
         start = src.index("_BULK_SPLIT_JS = ")
-        js_chunk = src[start:start + 3000]
+        end = src.index("_BULK_TRANSFORM_JS", start)
+        js_chunk = src[start:end]
         assert "function splitRecalcMotherWeight" in js_chunk, "splitRecalcMotherWeight must exist"
         assert "function splitRecalcMotherPieces" in js_chunk, "splitRecalcMotherPieces must exist"
         assert "function splitRecalcMother(" not in js_chunk, "old coupled splitRecalcMother must be removed"
@@ -12389,7 +12390,8 @@ class TestSplitMotherWeightStatic:
         from pathlib import Path
         src = (Path(__file__).parent.parent / "ui/routes/inventory.py").read_text()
         start = src.index("_BULK_SPLIT_JS = ")
-        js_chunk = src[start:start + 3000]
+        end = src.index("_BULK_TRANSFORM_JS", start)
+        js_chunk = src[start:end]
         assert "Math.min" in js_chunk, "splitRecalcMotherWeight must clamp with Math.min"
         assert "Math.max" in js_chunk, "splitRecalcMotherWeight must clamp with Math.max"
 

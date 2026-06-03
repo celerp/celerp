@@ -34,6 +34,37 @@ function _setMotherQty(form, val, decimals) {
   var inp = form.querySelector('.mother-qty-input');
   if (inp) inp.value = val.toFixed(decimals);
 }
+function _updateSplitTotals(form) {
+  // Sum QTY, Weight, Pieces across mother + child rows and update tfoot cells.
+  var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
+  var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
+  // QTY total
+  var qtyTotal = form.querySelector('.sp-total-qty');
+  if (qtyTotal) {
+    var motherQty = parseFloat(form.querySelector('.mother-qty-input') ? form.querySelector('.mother-qty-input').value : '0') || 0;
+    var childQtyEl = form.querySelector('[name="child_qty"]');
+    var childQty = childQtyEl ? (parseFloat(childQtyEl.value) || 0) : 0;
+    qtyTotal.textContent = (motherQty + childQty).toFixed(decimals);
+  }
+  // Weight total
+  var weightTotal = form.querySelector('.sp-total-weight');
+  if (weightTotal) {
+    var mwEl = form.querySelector('.mother-weight-display');
+    var cwEl = form.querySelector('[name="child_weight"]') || form.querySelector('.child-weight-display');
+    var mw = mwEl ? (parseFloat(mwEl.textContent) || 0) : 0;
+    var cw = cwEl ? (parseFloat(cwEl.value !== undefined ? cwEl.value : cwEl.textContent) || 0) : 0;
+    weightTotal.textContent = (mw + cw).toFixed(weightDecimals);
+  }
+  // Pieces total
+  var piecesTotal = form.querySelector('.sp-total-pieces');
+  if (piecesTotal) {
+    var mpEl = form.querySelector('.mother-pieces-display');
+    var cpEl = form.querySelector('[name="child_pieces"]') || form.querySelector('.child-pieces-display');
+    var mp = mpEl ? (parseInt(mpEl.textContent) || 0) : 0;
+    var cp = cpEl ? (parseInt(cpEl.value !== undefined ? cpEl.value : cpEl.textContent) || 0) : 0;
+    piecesTotal.textContent = String(mp + cp);
+  }
+}
 function splitRecalcMotherWeight(input) {
   var form = input.closest('form');
   if (!form) return;
@@ -49,6 +80,7 @@ function splitRecalcMotherWeight(input) {
     var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
     _setMotherQty(form, Math.max(0, parentQty - childVal), unitDecimals);
   }
+  _updateSplitTotals(form);
 }
 function splitClampWeight(input) {
   var form = input.closest('form');
@@ -68,6 +100,7 @@ function splitClampWeight(input) {
     var parentQty = parseFloat(form.dataset.parentQty || parentWeight);
     _setMotherQty(form, Math.max(0, parentQty - childVal), unitDecimals);
   }
+  _updateSplitTotals(form);
 }
 function splitRecalcMotherPieces(input) {
   var form = input.closest('form');
@@ -77,6 +110,7 @@ function splitRecalcMotherPieces(input) {
   var childP = parseFloat(input.value) || 0;
   var mp = form.querySelector('.mother-pieces-display');
   if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childP)));
+  _updateSplitTotals(form);
 }
 function splitClampPieces(input) {
   var form = input.closest('form');
@@ -94,6 +128,7 @@ function splitClampPieces(input) {
     var parentQty = parseFloat(form.dataset.parentQty || parentPieces);
     _setMotherQty(form, Math.max(0, parentQty - childP), decimals);
   }
+  _updateSplitTotals(form);
 }
 function bulkSplitAutoLoad() {
   var checked = document.querySelector('.row-select:checked');
@@ -105,7 +140,7 @@ function bulkSplitAutoLoad() {
     .then(function() { if (window.htmx) htmx.process(document.getElementById('bulk-split-preview')); });
 }
 function bulkSplitMotherQtyChanged(input) {
-  // Mother qty edited: clamp to > 0, then clamp child down if it now exceeds mother.
+  // Mother qty edited: clamp to > 0. Child qty is intentionally NOT recalculated.
   var form = input.closest('form');
   if (!form) return;
   var decimals = parseInt(form.dataset.unitDecimals || '0', 10);
@@ -114,28 +149,12 @@ function bulkSplitMotherQtyChanged(input) {
   input.value = motherQty.toFixed(decimals);
   // For weight-unit items qty IS weight — keep mother-weight-display in sync.
   var weightUnits = (form.dataset.weightUnits || '').split(',').filter(Boolean);
-  var isWeightUnit = weightUnits.indexOf(form.dataset.sellBy) !== -1;
-  if (isWeightUnit) {
+  if (weightUnits.indexOf(form.dataset.sellBy) !== -1) {
     var weightDecimals = parseInt(form.dataset.weightDecimals || '2', 10);
     var mw = form.querySelector('.mother-weight-display');
     if (mw) mw.textContent = motherQty.toFixed(weightDecimals);
   }
-  var childQtyInput = form.querySelector('[name="child_qty"]');
-  if (childQtyInput) {
-    var childQty = parseFloat(childQtyInput.value) || 0;
-    if (childQty >= motherQty) {
-      childQty = Math.max(0, motherQty - epsilon);
-      childQtyInput.value = childQty.toFixed(decimals);
-      if (form.dataset.sellBy === 'piece') {
-        var childPiecesDisplay = form.querySelector('.child-pieces-display');
-        if (childPiecesDisplay) { childPiecesDisplay.textContent = String(Math.round(childQty)); }
-      }
-      if (isWeightUnit) {
-        var childWeightDisplay = form.querySelector('.child-weight-display');
-        if (childWeightDisplay) { childWeightDisplay.textContent = childQty.toFixed(parseInt(form.dataset.weightDecimals || '2', 10)); }
-      }
-    }
-  }
+  _updateSplitTotals(form);
 }
 function bulkSplitChildQtyChanged(input) {
   var form = input.closest('form');
@@ -170,6 +189,7 @@ function bulkSplitChildQtyChanged(input) {
     var mw = form.querySelector('.mother-weight-display');
     if (mw) mw.textContent = Math.max(0, currentMother - childQty).toFixed(weightDecimals);
   }
+  _updateSplitTotals(form);
 }
 function bulkSplitChildPiecesChanged(input) {
   var form = input.closest('form');
@@ -187,6 +207,7 @@ function bulkSplitChildPiecesChanged(input) {
   var parentPieces = parseFloat(form.dataset.parentPieces || parentQty);
   var mp = form.querySelector('.mother-pieces-display');
   if (mp) mp.textContent = String(Math.round(Math.max(0, parentPieces - childPieces)));
+  _updateSplitTotals(form);
 }
 function bulkSplitChildWeightChanged(input) {
   var form = input.closest('form');
@@ -206,6 +227,7 @@ function bulkSplitChildWeightChanged(input) {
   _setMotherQty(form, Math.max(0, currentMother - childWeight), decimals);
   var mw = form.querySelector('.mother-weight-display');
   if (mw) mw.textContent = Math.max(0, currentMother - childWeight).toFixed(weightDecimals);
+  _updateSplitTotals(form);
 }
 function bulkSplitSkuChanged(input) {}
 function bulkSplitSubmit(formEl) {
@@ -2278,11 +2300,30 @@ function celerpPrintLabel(entityId, templateId) {
         if show_pieces:
             form_data["data_parent_pieces"] = str(int(preview["parent_pieces"]))
 
+        # Totals footer: mother qty (initial) + child qty (0) for QTY column;
+        # weight/pieces use parent totals since child starts at 0.
+        tfoot_cells: list = [Td("Total", cls="sp-row-label sp-total-label"), Td("")]  # label + SKU col
+        tfoot_cells.append(Td(
+            fmt.format(preview["parent_qty"]),
+            cls="sp-td sp-total-val sp-total-qty",
+        ))
+        if show_weight:
+            tfoot_cells.append(Td(
+                wfmt.format(preview.get("parent_weight") or 0),
+                cls="sp-td sp-total-val sp-total-weight",
+            ))
+        if show_pieces:
+            tfoot_cells.append(Td(
+                str(int(preview.get("parent_pieces") or 0)),
+                cls="sp-td sp-total-val sp-total-pieces",
+            ))
+
         return Form(
             Input(type="hidden", name="entity_id", value=entity_id),
             Table(
                 Thead(Tr(*headers)),
                 Tbody(mother_row, child_row),
+                Tfoot(Tr(*tfoot_cells, cls="sp-totals-row")),
                 cls="split-preview-table",
             ),
             Button("Confirm", type="submit", cls="btn btn--primary btn--sm sp-confirm-btn"),
