@@ -350,21 +350,25 @@ def _run_migrations(db_url: str) -> None:
         alembic_cfg = _build_alembic_config()
 
         # --- Detect stale stamp: walk revisions newest-first, find last one whose
-        #     DDL changes are actually present in the DB, re-stamp there first. ---
+        #     DDL changes are actually present in the DB, re-stamp there first.
+        #
+        # The old code only handled two cases: "no stamp" and "stamp claims head
+        # but reset_token column missing". It did nothing for the common dev
+        # case "stamp is older than schema" (which happens every time you wipe
+        # the dev DB and let Base.metadata.create_all rebuild it from models).
+        # The new walker (celerp.migrations._auto_stamp) introspects the live
+        # schema and stamps past every revision whose DDL signature is
+        # already present. False negatives (saying "not applied" when it
+        # actually is) are safe — alembic will just retry and get a
+        # DuplicateColumn error that the auto-stamp helper below catches.
         sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://").replace("postgresql+psycopg2://", "postgresql://")
         engine = _sa.create_engine(sync_url, pool_pre_ping=True)
-        with engine.connect() as conn:
+        try:
             inspector = _sa.inspect(engine)
             existing_tables = set(inspector.get_table_names())
-            existing_cols = {
-                (t, c["name"])
-                for t in existing_tables
-                for c in inspector.get_columns(t)
-            }
-
-            # Check if alembic_version table exists and what it records
             if "alembic_version" in existing_tables:
-                stamped = conn.execute(_sa.text("SELECT version_num FROM alembic_version")).scalar()
+                with engine.connect() as conn:
+                    stamped = conn.execute(_sa.text("SELECT version_num FROM alembic_version")).scalar()
             else:
                 stamped = None
 
@@ -372,29 +376,43 @@ def _run_migrations(db_url: str) -> None:
             head_rev = script.get_current_head()
 
             if stamped is None and "companies" in existing_tables:
-                # Tables exist but no stamp — schema was applied outside alembic
-                # (e.g. after a non-root --force wipe that cleared alembic_version).
-                # Stamp directly to head so upgrade is a no-op.
+                # Fast path: no stamp but tables exist. Stamp to head so
+                # upgrade is a no-op. (Almost always the case for a fresh
+                # dev DB that was create_all'd from current models.)
                 click.echo("  · Schema present but unstamped — stamping to head...")
                 command.stamp(alembic_cfg, head_rev)
             elif stamped and stamped != head_rev:
-                # Stamp is set but not at head — normal partial migration, just upgrade
-                pass
-            elif stamped == head_rev:
-                # Stamp claims head — verify a key sentinel column exists
-                # Use reset_token as canary (added in d2e3f4a5b6c7, not in initial schema)
-                if ("users", "reset_token") not in existing_cols:
-                    # Stamp is lying — find the last revision whose changes are present
-                    safe_stamp = None
-                    for rev in script.walk_revisions():
-                        if rev.revision == "fd5de461e14e":
-                            if "users" in existing_tables:
-                                safe_stamp = rev.revision
-                            break
-                    click.echo("  · Detected stale alembic stamp — repairing...")
-                    command.stamp(alembic_cfg, safe_stamp or "base")
-
-        engine.dispose()
+                # Stamp is behind. Walk the revisions and stamp past any
+                # whose DDL is already in the live schema.
+                from celerp.migrations._auto_stamp import (
+                    extract_signatures, find_safe_stamp,
+                )
+                from pathlib import Path as _Path
+                versions_dir = _Path(alembic_cfg.get_main_option("script_location")) / "versions"
+                sigs_by_rev: dict = {}
+                for mig in versions_dir.glob("*.py"):
+                    if mig.name == "__init__.py":
+                        continue
+                    sigs = extract_signatures(mig)
+                    if sigs:
+                        sigs_by_rev[sigs[0].rev] = sigs
+                # Revisions newest-first matches script.walk_revisions()
+                revs_newest_first = list(script.walk_revisions())
+                safe = find_safe_stamp(revs_newest_first, sigs_by_rev, inspector)
+                if safe != "base" and safe != stamped:
+                    click.echo(
+                        f"  · Schema already contains changes from {safe} — "
+                        f"advancing stamp from {stamped} to {safe}..."
+                    )
+                    command.stamp(alembic_cfg, safe)
+                elif safe == stamped:
+                    pass  # stamp is already correct
+                elif safe == "base":
+                    # No signatures matched at all — schema is too far behind
+                    # the migrations. Let alembic upgrade run normally.
+                    pass
+        finally:
+            engine.dispose()
         _run_upgrade_with_auto_stamp(alembic_cfg, engine_url=sync_url)
     except Exception as e:
         click.echo(f"  ✗ Migration failed: {e}", err=True)
