@@ -230,10 +230,14 @@ async def import_backup(request: Request, file: UploadFile = File(...), session:
 
     if not result.ok:
         return _flash(f"Import failed: {result.error or 'Unknown error'}", "error")
-    return _flash(
+    msg = (
         f"Imported backup from {meta.company_name or 'unknown'}. "
         "Restart the application to apply changes."
     )
+    if result.warnings:
+        names = ", ".join(result.warnings)
+        msg += f" Note: {len(result.warnings)} module(s) enabled on the source are not installed on this server ({names})."
+    return _flash(msg)
 
 
 # ── Bootstrap import (public — no auth, only works before first user exists) ──
@@ -280,4 +284,8 @@ async def import_backup_bootstrap(
     if not result.ok:
         raise HTTPException(status_code=422, detail=result.error or "Import failed")
 
-    return {"ok": True, "company_name": meta.company_name}
+    return {
+        "ok": True,
+        "company_name": meta.company_name,
+        "warnings": result.warnings,
+    }

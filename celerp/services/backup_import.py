@@ -96,12 +96,120 @@ def validate_archive(path: Path) -> ImportMeta:
     return meta
 
 
+async def _safety_backup(label: str):
+    """Run a pre-import safety backup if the encryption key is configured.
+
+    Module-level helper so tests can stub it cleanly.
+    """
+    from celerp.config import settings
+    from celerp.services.backup import run_backup
+    if not settings.backup_encryption_key:
+        from celerp.services.backup import BackupResult
+        return BackupResult(ok=True, size_bytes=0)
+    return await run_backup(label=label)
+
+
+async def _dispose_engine() -> None:
+    """Dispose the SQLAlchemy engine connection pool before pg_restore."""
+    try:
+        from celerp.db import engine as _engine
+        await _engine.dispose()
+        log.info("Connection pool disposed before pg_restore")
+    except Exception as pool_exc:
+        log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
+
+
+async def _run_pg_restore(dump_bytes: bytes, database_url: str) -> None:
+    """Run pg_restore in a thread executor (blocking subprocess)."""
+    import asyncio
+    from celerp.services.backup import restore_database
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, lambda: restore_database(dump_bytes, database_url)
+    )
+
+
+async def _run_alembic() -> None:
+    """Reconcile schema after pg_restore via alembic upgrade head."""
+    try:
+        import asyncio
+        from celerp.alembic_config import build_alembic_config as _build_alembic_config
+        from alembic import command as _alembic_cmd
+        _cfg = _build_alembic_config()
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
+        log.info("Alembic upgrade head completed after pg_restore")
+    except Exception as alembic_exc:
+        log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
+
+
+async def _extract_files(path: Path) -> None:
+    """Extract attachments/ and ai_uploads/ from the archive into data_dir."""
+    from celerp.config import settings
+    _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/")
+    with tarfile.open(str(path), "r:gz") as tar:
+        for member in tar.getmembers():
+            if member.name in ("database.dump", "meta.json"):
+                continue
+            if member.name.startswith("/") or ".." in member.name:
+                continue
+            if not any(member.name.startswith(p) for p in _ALLOWED_PREFIXES):
+                continue
+            if member.isfile():
+                dest = (
+                    settings.data_dir / "static" / member.name
+                    if member.name.startswith("attachments/")
+                    else settings.data_dir / member.name
+                )
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                src = tar.extractfile(member)
+                if src:
+                    dest.write_bytes(src.read())
+
+
+async def _activate_modules(modules: list[str]) -> None:
+    """After a successful restore, update config.toml and request a restart.
+
+    The destination may not have the same set of enabled modules as the
+    source. We call celerp.config.set_enabled_modules() (idempotent) so
+    config.toml reflects what was enabled at export time, and we write
+    the .restart_requested sentinel so the celerp start process manager
+    respawns with the new module set. The loader will skip modules that
+    don't have on-disk packages; the missing-modules warning surfaces
+    those to the user.
+
+    No-op if modules is empty (backwards compat with old archives).
+    """
+    if not modules:
+        return
+    try:
+        from celerp.config import set_enabled_modules as _set_enabled_modules
+        _set_enabled_modules(modules)
+        log.info("config.toml updated with %d enabled modules: %s",
+                 len(modules), modules)
+    except Exception as exc:
+        log.warning("Failed to update config.toml with enabled modules: %s", exc)
+        return
+
+    # Request a restart so the loader picks up the new modules
+    try:
+        from celerp.routers.system import _restart_sentinel_path
+        sentinel = _restart_sentinel_path()
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        log.info("Restart sentinel written: %s", sentinel)
+    except Exception as exc:
+        log.warning("Failed to write restart sentinel: %s", exc)
+
+
 async def run_import(path: Path):
     """Import from .celerp-backup: safety backup + pg_restore + extract files.
 
-    Returns BackupResult.
+    Returns BackupResult with a `warnings` field listing modules the source
+    had enabled that aren't installed on the destination (read-only diff,
+    doesn't fail the import).
     """
-    from celerp.services.backup import BackupResult, run_backup, restore_database
+    from celerp.services.backup import BackupResult
     from celerp.config import settings
 
     try:
@@ -110,13 +218,11 @@ async def run_import(path: Path):
                  path, meta.company_name, meta.celerp_version)
 
         # Safety backup first (if encryption key is available)
-        if settings.backup_encryption_key:
-            safety = await run_backup(label="pre-import-safety")
-            if not safety.ok:
-                log.warning("Safety backup failed before import: %s", safety.error)
+        safety = await _safety_backup("pre-import-safety")
+        if not safety.ok:
+            log.warning("Safety backup failed before import: %s", safety.error)
 
         with tarfile.open(str(path), "r:gz") as tar:
-            # Extract database.dump
             dump_file = tar.extractfile("database.dump")
             if dump_file is None:
                 return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
@@ -124,55 +230,44 @@ async def run_import(path: Path):
 
         # Dispose connection pool BEFORE pg_restore so live connections don't
         # hold locks that block pg_restore from dropping/recreating tables.
-        try:
-            from celerp.db import engine as _engine
-            await _engine.dispose()
-            log.info("Connection pool disposed before pg_restore")
-        except Exception as pool_exc:
-            log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
+        await _dispose_engine()
 
         # Run pg_restore in a thread executor — it's a blocking subprocess call.
         # Running it directly in an async function blocks the uvicorn event loop,
         # which prevents the response from being sent back and causes HTTPX timeouts.
-        import asyncio
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, lambda: restore_database(dump_bytes, settings.database_url)
-        )
+        await _run_pg_restore(dump_bytes, settings.database_url)
 
         # Reconcile schema — run any missing migrations after pg_restore
-        try:
-            from celerp.alembic_config import build_alembic_config as _build_alembic_config
-            from alembic import command as _alembic_cmd
-            _cfg = _build_alembic_config()
-            await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
-            log.info("Alembic upgrade head completed after pg_restore")
-        except Exception as alembic_exc:
-            log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
+        await _run_alembic()
 
         # Extract files outside the tar context (already read dump above)
-        with tarfile.open(str(path), "r:gz") as tar:
-            from celerp.config import settings as _settings
-            _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/")
-            for member in tar.getmembers():
-                if member.name in ("database.dump", "meta.json"):
-                    continue
-                if member.name.startswith("/") or ".." in member.name:
-                    continue
-                if not any(member.name.startswith(p) for p in _ALLOWED_PREFIXES):
-                    continue
-                if member.isfile():
-                    dest = (
-                        _settings.data_dir / "static" / member.name
-                        if member.name.startswith("attachments/")
-                        else _settings.data_dir / member.name
-                    )
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    src = tar.extractfile(member)
-                    if src:
-                        dest.write_bytes(src.read())
+        await _extract_files(path)
 
-        return BackupResult(ok=True, size_bytes=len(dump_bytes))
+        # Activate pass: update config.toml with the source's enabled modules
+        # and request a restart so the loader picks them up. Server-side
+        # because we have no user token yet (bootstrap restore).
+        if meta.enabled_modules:
+            await _activate_modules(meta.enabled_modules)
+
+        # Audit pass: surface modules that were enabled on the source but
+        # have no on-disk package on the destination. Read-only — the import
+        # succeeds; the user just gets warned so the dashboard 404 is no
+        # longer a surprise.
+        warnings: list[str] = []
+        if meta.enabled_modules:
+            try:
+                from celerp.modules.audit import audit_missing_modules
+                warnings = audit_missing_modules(meta.enabled_modules)
+                if warnings:
+                    log.warning(
+                        "Imported backup enabled %d modules that are not "
+                        "installed on this server: %s",
+                        len(warnings), warnings,
+                    )
+            except Exception as audit_exc:
+                log.warning("Module audit failed (non-fatal): %s", audit_exc)
+
+        return BackupResult(ok=True, size_bytes=len(dump_bytes), warnings=warnings)
 
     except ValueError as exc:
         log.error("Backup import validation error: %s", exc)

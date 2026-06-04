@@ -117,6 +117,200 @@ class TestRunImportEnabledModules:
         assert "enabled_modules" in ImportMeta.__dataclass_fields__
 
 
+class TestBackupResultWarningsField:
+    """BackupResult must carry a warnings list (Layer 2 — the must-have)."""
+
+    def test_warnings_field_exists(self):
+        from celerp.services.backup import BackupResult
+        assert "warnings" in BackupResult.__dataclass_fields__
+
+    def test_warnings_defaults_to_empty_list(self):
+        from celerp.services.backup import BackupResult
+        r = BackupResult(ok=True, size_bytes=100)
+        assert r.warnings == []
+
+    def test_warnings_is_a_list_field(self):
+        """Warnings must be a list, not a string. The UI iterates over it."""
+        from celerp.services.backup import BackupResult
+        from dataclasses import fields
+        field_obj = next(f for f in fields(BackupResult) if f.name == "warnings")
+        assert field_obj.default_factory is not None
+
+
+class TestRunImportMissingModuleWarnings:
+    """run_import must populate BackupResult.warnings with missing module names.
+
+    The destination may not have all the modules the source had enabled.
+    A 15/15 success that silently fails to load 1 module is a bug from the
+    user's perspective. The warning lets the UI say 'X module is not
+    installed on this server' before the user clicks the broken link.
+    """
+
+    @pytest.mark.asyncio
+    async def test_warns_when_enabled_module_missing(self, monkeypatch, tmp_path):
+        """When meta.enabled_modules includes a name with no on-disk package,
+        run_import must record it in warnings."""
+        from celerp.services import backup_import
+        from celerp.services.backup import BackupResult
+
+        # Set up MODULE_DIR to a tmp dir that has SOME but not all modules
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        (modules_dir / "celerp-inventory").mkdir()
+        (modules_dir / "celerp-inventory" / "__init__.py").write_text("# x")
+        monkeypatch.setenv("MODULE_DIR", str(modules_dir))
+
+        # Build an archive that needs celerp-inventory (installed) and
+        # celerp-fictional (not installed)
+        archive = _make_archive(extra_meta={
+            "enabled_modules": ["celerp-inventory", "celerp-fictional"],
+        })
+        path = _write_archive_to_tmp(archive)
+        try:
+            # Stub out the heavy work so we only exercise the audit path
+            async def fake_restore_db(dump_bytes, db_url):
+                return None
+            monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore_db)
+
+            async def fake_dispose():
+                pass
+            monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
+
+            async def fake_alembic():
+                pass
+            monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+
+            async def fake_extract(path):
+                pass
+            monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
+
+            async def fake_activate(modules):
+                return None
+            monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
+
+            async def fake_safety(label):
+                return BackupResult(ok=True, size_bytes=0)
+            monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
+
+            # Run the real run_import
+            result = await backup_import.run_import(path)
+            assert result.ok
+            assert "celerp-fictional" in result.warnings
+            assert "celerp-inventory" not in result.warnings
+        finally:
+            path.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_no_warnings_when_all_modules_installed(self, monkeypatch, tmp_path):
+        """When all enabled modules have on-disk packages, warnings is empty."""
+        from celerp.services import backup_import
+        from celerp.services.backup import BackupResult
+
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        for name in ("celerp-inventory", "celerp-dashboard"):
+            (modules_dir / name).mkdir()
+            (modules_dir / name / "__init__.py").write_text("# x")
+        monkeypatch.setenv("MODULE_DIR", str(modules_dir))
+
+        archive = _make_archive(extra_meta={
+            "enabled_modules": ["celerp-inventory", "celerp-dashboard"],
+        })
+        path = _write_archive_to_tmp(archive)
+        try:
+            async def fake_restore(dump, url): return None
+            async def fake_dispose(): pass
+            async def fake_alembic(): pass
+            async def fake_extract(path): pass
+            async def fake_activate(m): return None
+            async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
+            monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
+            monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
+            monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+            monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
+            monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
+            monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
+
+            result = await backup_import.run_import(path)
+            assert result.ok
+            assert result.warnings == []
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class TestRunImportActivateModules:
+    """run_import must call set_enabled_modules to update config.toml.
+
+    After pg_restore, the destination's config.toml may not list the modules
+    the source had enabled. We write the .restart_requested sentinel so the
+    celerp start process manager picks them up on respawn.
+    """
+
+    @pytest.mark.asyncio
+    async def test_activate_modules_called_with_meta_list(self, monkeypatch, tmp_path):
+        """The activate helper receives the same list that was in meta.json."""
+        from celerp.services import backup_import
+        from celerp.services.backup import BackupResult
+
+        captured: dict = {}
+        modules_dir = tmp_path / "modules"
+        modules_dir.mkdir()
+        (modules_dir / "celerp-inventory").mkdir()
+        (modules_dir / "celerp-inventory" / "__init__.py").write_text("# x")
+        monkeypatch.setenv("MODULE_DIR", str(modules_dir))
+
+        async def fake_activate(modules):
+            captured["modules"] = list(modules)
+        async def fake_restore(dump, url): return None
+        async def fake_dispose(): pass
+        async def fake_alembic(): pass
+        async def fake_extract(path): pass
+        async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
+        monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
+        monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
+        monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
+        monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+        monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
+        monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
+
+        archive = _make_archive(extra_meta={"enabled_modules": ["celerp-inventory"]})
+        path = _write_archive_to_tmp(archive)
+        try:
+            await backup_import.run_import(path)
+            assert captured["modules"] == ["celerp-inventory"]
+        finally:
+            path.unlink(missing_ok=True)
+
+    @pytest.mark.asyncio
+    async def test_activate_skipped_when_no_modules(self, monkeypatch, tmp_path):
+        """No enabled_modules in meta → activate is not called."""
+        from celerp.services import backup_import
+        from celerp.services.backup import BackupResult
+
+        activate_called = {"v": False}
+        async def fake_activate(modules):
+            activate_called["v"] = True
+        async def fake_restore(dump, url): return None
+        async def fake_dispose(): pass
+        async def fake_alembic(): pass
+        async def fake_extract(path): pass
+        async def fake_safety(label): return BackupResult(ok=True, size_bytes=0)
+        monkeypatch.setattr(backup_import, "_activate_modules", fake_activate, raising=False)
+        monkeypatch.setattr(backup_import, "_run_pg_restore", fake_restore)
+        monkeypatch.setattr(backup_import, "_dispose_engine", fake_dispose, raising=False)
+        monkeypatch.setattr(backup_import, "_run_alembic", fake_alembic, raising=False)
+        monkeypatch.setattr(backup_import, "_extract_files", fake_extract, raising=False)
+        monkeypatch.setattr(backup_import, "_safety_backup", fake_safety, raising=False)
+
+        archive = _make_archive(extra_meta={})  # no enabled_modules
+        path = _write_archive_to_tmp(archive)
+        try:
+            await backup_import.run_import(path)
+            assert activate_called["v"] is False
+        finally:
+            path.unlink(missing_ok=True)
+
+
 class TestAlembicConfigHelperUsed:
     """Regression: backup_import must use celerp.alembic_config, not raw AlembicConfig.
 

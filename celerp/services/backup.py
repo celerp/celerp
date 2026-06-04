@@ -20,7 +20,7 @@ import io
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from celerp.config import settings
@@ -99,6 +99,10 @@ class BackupResult:
     ok: bool
     size_bytes: int
     error: str | None = None
+    # Non-fatal issues the user should be told about (e.g. modules enabled
+    # on the source that aren't installed on the destination). Distinct
+    # from `error` (which means the operation failed).
+    warnings: list[str] = field(default_factory=list)
 
 
 def _parse_key(b64_key: str) -> bytes:
