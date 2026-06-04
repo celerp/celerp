@@ -347,3 +347,39 @@ async def test_import_bootstrap_rejects_bad_archive(auth_client):
     )
     # 403 because DB is bootstrapped (users exist); proves route is registered and lockout works
     assert r.status_code in (400, 403)
+
+
+# ── GET /backup/export (regression: 500 on Mac when pg_dump missing) ─────────
+
+@pytest.mark.asyncio
+async def test_export_local_returns_422_when_pg_dump_fails(auth_client, monkeypatch):
+    """Regression: /backup/export used to bubble RuntimeError as 500.
+    Must now return 422 with the actual error message so the user sees what went wrong."""
+    from celerp.services.backup import BackupResult
+
+    def fake_export_full():
+        raise RuntimeError("pg_dump not found in PATH — cannot create backup")
+
+    monkeypatch.setattr(
+        "celerp.services.backup_export.export_full",
+        fake_export_full,
+    )
+    r = await auth_client.get("/backup/export")
+    # 422 is the contract: the route caught the error and surfaced a detail
+    assert r.status_code == 422
+    assert "pg_dump" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_export_cloud_returns_422_when_pg_dump_fails(auth_client, monkeypatch):
+    """Same regression for /backup/export/{id} (cloud download)."""
+    def fake_export_from_cloud(bid):
+        raise RuntimeError("pg_dump not found in PATH")
+
+    monkeypatch.setattr(
+        "celerp.services.backup_export.export_from_cloud",
+        fake_export_from_cloud,
+    )
+    r = await auth_client.get("/backup/export/abc-123")
+    assert r.status_code == 422
+    assert "pg_dump" in r.json()["detail"]

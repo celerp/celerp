@@ -187,7 +187,10 @@ async def restore_backup(backup_id: str):
 async def export_local() -> FileResponse:
     """Export full local backup as .celerp-backup download."""
     from celerp.services.backup_export import export_full
-    path = await export_full()
+    try:
+        path = await export_full()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     return FileResponse(path=str(path), filename=path.name, media_type="application/gzip")
 
 
@@ -195,7 +198,10 @@ async def export_local() -> FileResponse:
 async def export_cloud(backup_id: str) -> FileResponse:
     """Export a cloud backup as .celerp-backup download."""
     from celerp.services.backup_export import export_from_cloud
-    path = await export_from_cloud(backup_id)
+    try:
+        path = await export_from_cloud(backup_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     return FileResponse(path=str(path), filename=path.name, media_type="application/gzip")
 
 

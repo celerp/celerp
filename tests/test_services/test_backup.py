@@ -19,6 +19,7 @@ import base64
 import os
 import secrets
 import subprocess
+from pathlib import Path
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
@@ -274,3 +275,159 @@ async def test_run_backup_dump_failure(monkeypatch):
     result = await run_backup()
     assert not result.ok
     assert "pg_dump" in result.error
+
+
+# ── Mac PATH resolution (regression: backup 500 on Mac Electron) ─────────────
+
+def _make_fake_pg_bin(tmp_path, name: str = "pg_dump") -> Path:
+    """Create a fake pg_dump executable in a temp dir; return the dir."""
+    bin_dir = tmp_path / "fake_pg_bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    (bin_dir / name).write_text("#!/bin/sh\necho fake\n")
+    (bin_dir / name).chmod(0o755)
+    return bin_dir
+
+
+class TestResolvePgBinDir:
+    """Tests for celerp.services.backup._resolve_pg_bin_dir.
+
+    Regression: Mac GUI-launched Electron apps don't have /opt/homebrew/bin
+    or /usr/local/opt/postgresql@*/bin in PATH, so pg_dump / pg_restore
+    can't be found and backup fails with a 500.
+    """
+
+    def test_returns_empty_on_non_darwin(self, monkeypatch):
+        """Linux/Windows: no probing needed. Returns empty list (no-op)."""
+        import sys as _sys
+        from celerp.services.backup import _resolve_pg_bin_dir
+        monkeypatch.setattr(_sys, "platform", "linux")
+        result = _resolve_pg_bin_dir()
+        assert result == []
+
+    def test_finds_pg_dump_in_known_macos_location(self, monkeypatch, tmp_path):
+        """When pg_dump exists in /opt/homebrew/opt/postgresql@16/bin on darwin, return that dir."""
+        import sys as _sys
+        from celerp.services import backup as backup_mod
+        monkeypatch.setattr(_sys, "platform", "darwin")
+
+        # Create a fake /opt/homebrew/opt/postgresql@16/bin with pg_dump
+        fake_bin = tmp_path / "homebrew" / "opt" / "postgresql@16" / "bin"
+        fake_bin.mkdir(parents=True)
+        (fake_bin / "pg_dump").write_text("#!/bin/sh\n")
+        (fake_bin / "pg_dump").chmod(0o755)
+        (fake_bin / "pg_restore").write_text("#!/bin/sh\n")
+        (fake_bin / "pg_restore").chmod(0o755)
+
+        # Monkeypatch the list of candidate dirs the function probes
+        monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [fake_bin])
+        result = backup_mod._resolve_pg_bin_dir()
+        assert fake_bin in result
+
+    def test_skips_candidate_dir_without_pg_dump(self, monkeypatch, tmp_path):
+        """A dir that exists but lacks pg_dump is not returned."""
+        import sys as _sys
+        from celerp.services import backup as backup_mod
+        monkeypatch.setattr(_sys, "platform", "darwin")
+
+        empty_dir = tmp_path / "no_pg_here"
+        empty_dir.mkdir()
+        monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [empty_dir])
+        result = backup_mod._resolve_pg_bin_dir()
+        assert empty_dir not in result
+
+    def test_returns_deduped_dirs(self, monkeypatch, tmp_path):
+        """Same dir appearing twice in candidates returns once."""
+        import sys as _sys
+        from celerp.services import backup as backup_mod
+        monkeypatch.setattr(_sys, "platform", "darwin")
+
+        bin_dir = _make_fake_pg_bin(tmp_path)
+        monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [bin_dir, bin_dir])
+        result = backup_mod._resolve_pg_bin_dir()
+        assert result.count(bin_dir) == 1
+
+    def test_multiple_candidate_dirs_all_returned(self, monkeypatch, tmp_path):
+        """All valid candidate dirs are returned, in order."""
+        import sys as _sys
+        from celerp.services import backup as backup_mod
+        monkeypatch.setattr(_sys, "platform", "darwin")
+
+        b1 = _make_fake_pg_bin(tmp_path / "b1")
+        b2 = _make_fake_pg_bin(tmp_path / "b2")
+        monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [b1, b2])
+        result = backup_mod._resolve_pg_bin_dir()
+        assert b1 in result
+        assert b2 in result
+
+
+class TestDumpDatabaseUsesResolvedPath:
+    """dump_database must inject the resolved pg bin dir into the subprocess PATH."""
+
+    def test_subprocess_receives_augmented_path(self, monkeypatch, tmp_path):
+        """When pg_dump is not in the parent PATH but is in a known Mac location,
+        dump_database should find it via the resolved path."""
+        import sys as _sys
+        from celerp.services import backup as backup_mod
+        monkeypatch.setattr(_sys, "platform", "darwin")
+
+        # Create a fake pg_dump that succeeds and prints "FAKE"
+        bin_dir = tmp_path / "fake_pg"
+        bin_dir.mkdir()
+        pg_dump = bin_dir / "pg_dump"
+        pg_dump.write_text("#!/bin/sh\necho FAKE_DUMP\n")
+        pg_dump.chmod(0o755)
+
+        # Make the function think this is the only candidate, and clear PATH
+        # so subprocess.run only finds pg_dump via the augmented PATH.
+        monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [bin_dir])
+        monkeypatch.setenv("PATH", "")  # make sure no system pg_dump is reachable
+
+        # Also patch the env sanitizer: make sure our test PATH gets through
+        # (subprocess.run inherits the current process env by default)
+        result = dump_database("postgresql+asyncpg://u:p@localhost/db")
+        assert b"FAKE_DUMP" in result
+
+    def test_subprocess_falls_back_to_system_path_on_linux(self, monkeypatch, tmp_path):
+        """On non-darwin, we don't augment PATH; existing PATH behavior is preserved."""
+        import sys as _sys
+        from celerp.services import backup as backup_mod
+        monkeypatch.setattr(_sys, "platform", "linux")
+
+        # Create fake pg_dump
+        bin_dir = tmp_path / "fake_pg"
+        bin_dir.mkdir()
+        pg_dump = bin_dir / "pg_dump"
+        pg_dump.write_text("#!/bin/sh\necho FAKE_LINUX_DUMP\n")
+        pg_dump.chmod(0o755)
+
+        # Put it in PATH
+        monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+
+        result = dump_database("postgresql+asyncpg://u:p@localhost/db")
+        assert b"FAKE_LINUX_DUMP" in result
+
+
+class TestRestoreDatabaseUsesResolvedPath:
+    """restore_database must use the same PATH augmentation as dump_database."""
+
+    def test_restore_subprocess_receives_augmented_path_on_macos(self, monkeypatch, tmp_path):
+        import sys as _sys
+        from celerp.services import backup as backup_mod
+        monkeypatch.setattr(_sys, "platform", "darwin")
+
+        # _resolve_pg_bin_dir probes for pg_dump as the proxy for the whole bin dir
+        bin_dir = tmp_path / "fake_pg"
+        bin_dir.mkdir()
+        pg_dump = bin_dir / "pg_dump"
+        pg_dump.write_text("#!/bin/sh\nexit 0\n")
+        pg_dump.chmod(0o755)
+        pg_restore = bin_dir / "pg_restore"
+        pg_restore.write_text("#!/bin/sh\nexit 0\n")
+        pg_restore.chmod(0o755)
+
+        monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [bin_dir])
+        monkeypatch.setenv("PATH", "")
+
+        # Should not raise FileNotFoundError - the binary is found via the resolved path
+        restore_database(b"dump", "postgresql+asyncpg://u:p@localhost/db")
+

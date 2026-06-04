@@ -17,13 +17,81 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from celerp.config import settings
 from celerp.gateway.state import get_session_token, relay_http_url, relay_session_headers
 
 _NONCE_BYTES = 12
+
+# Known macOS Postgres install locations. macOS GUI-launched apps (Electron .app)
+# inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) and cannot find pg_dump
+# or pg_restore installed via Homebrew or Postgres.app. We probe these dirs at
+# runtime and inject the first one that contains pg_dump into the subprocess PATH.
+#
+# On non-darwin platforms this list is ignored (empty probing).
+_PG_CANDIDATE_DIRS: tuple[Path, ...] = (
+    # Homebrew (Apple Silicon)
+    Path("/opt/homebrew/opt/postgresql@17/bin"),
+    Path("/opt/homebrew/opt/postgresql@16/bin"),
+    Path("/opt/homebrew/opt/postgresql@15/bin"),
+    Path("/opt/homebrew/opt/postgresql@14/bin"),
+    # Homebrew (Intel)
+    Path("/usr/local/opt/postgresql@17/bin"),
+    Path("/usr/local/opt/postgresql@16/bin"),
+    Path("/usr/local/opt/postgresql@15/bin"),
+    Path("/usr/local/opt/postgresql@14/bin"),
+    # Postgres.app (standard install location)
+    Path("/Applications/Postgres.app/Contents/Versions/latest/bin"),
+    # EnterpriseDB / official installer
+    Path("/Library/PostgreSQL/17/bin"),
+    Path("/Library/PostgreSQL/16/bin"),
+    Path("/Library/PostgreSQL/15/bin"),
+    Path("/Library/PostgreSQL/14/bin"),
+)
+
+
+def _resolve_pg_bin_dir() -> list[Path]:
+    """Return dirs containing pg_dump that should be prepended to subprocess PATH.
+
+    Empty on non-darwin (Linux/Windows). On darwin, walks _PG_CANDIDATE_DIRS and
+    returns the ones that actually contain a pg_dump executable. Order is preserved
+    (Homebrew versions before Postgres.app), and duplicates are removed.
+    """
+    if sys.platform != "darwin":
+        return []
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for d in _PG_CANDIDATE_DIRS:
+        if d in seen:
+            continue
+        seen.add(d)
+        if not d.is_dir():
+            continue
+        if not (d / "pg_dump").is_file():
+            continue
+        found.append(d)
+    return found
+
+
+def _augmented_env() -> dict[str, str]:
+    """Return a copy of os.environ with resolved pg bin dirs prepended to PATH.
+
+    No-op on non-darwin. On darwin, prepends in the order returned by
+    _resolve_pg_bin_dir() so the most-preferred version wins.
+    """
+    env = os.environ.copy()
+    extra_dirs = _resolve_pg_bin_dir()
+    if not extra_dirs:
+        return env
+    existing = env.get("PATH", "")
+    extra = os.pathsep.join(str(d) for d in extra_dirs)
+    env["PATH"] = f"{extra}{os.pathsep}{existing}" if existing else extra
+    return env
 
 
 @dataclass
@@ -57,6 +125,7 @@ def dump_database(database_url: str) -> bytes:
             ["pg_dump", "--format=custom", "--no-password", pg_url],
             capture_output=True,
             timeout=300,
+            env=_augmented_env(),
         )
     except FileNotFoundError as exc:
         raise RuntimeError("pg_dump not found in PATH — cannot create backup") from exc
@@ -144,6 +213,7 @@ def restore_database(dump_bytes: bytes, database_url: str) -> None:
             input=dump_bytes,
             capture_output=True,
             timeout=600,
+            env=_augmented_env(),
         )
     except FileNotFoundError as exc:
         raise RuntimeError("pg_restore not found in PATH") from exc
