@@ -17,6 +17,90 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 
+def _parse_version(v: str | None) -> tuple[int, int, int, str]:
+    """Parse a celerp version string into a comparable tuple.
+
+    Returns (major, minor, patch, pre_release). Garbage / None / "unknown"
+    return (0, 0, 0, "") so the import proceeds (no false block on
+    legacy archives).
+
+    Accepts:
+      - "1.2.3"                       → (1, 2, 3, "")
+      - "1.1.19.dev158"                → (1, 1, 19, "dev158")   (setuptools_scm on dev)
+      - "0.1.dev1"                     → (0, 1, 0,  "dev1")     (setuptools_scm on CI, no tags)
+      - "1.0"                          → (1, 0, 0, "")
+      - "" / None / "unknown" / "abc"  → (0, 0, 0, "")
+
+    Tuple comparison is correct: (10, 0, 0, "") > (9, 0, 0, "") is True.
+    (String compare would say "10" < "9" lexicographically — that's the
+    old bug.)
+
+    The parser walks the dotted components. The first 1-3 components
+    that are pure integers become major/minor/patch. The first non-int
+    component (or anything after it) is captured as pre-release. If the
+    FIRST component isn't an int, the whole string is treated as
+    garbage (we return zeros) — the dev versions setuptools_scm emits
+    always start with a numeric major.
+    """
+    if not v or not isinstance(v, str):
+        return (0, 0, 0, "")
+
+    parts = v.split(".")
+
+    # First component must be a pure int for the version to be parseable.
+    try:
+        major = int(parts[0])
+    except (ValueError, IndexError):
+        return (0, 0, 0, "")
+
+    # Walk the rest, allowing up to 2 more numeric components before any
+    # non-numeric one starts the pre-release tail.
+    nums = [major]
+    pre_parts: list[str] = []
+    saw_non_int = False
+    for p in parts[1:]:
+        if not saw_non_int and len(nums) < 3:
+            try:
+                nums.append(int(p))
+            except ValueError:
+                saw_non_int = True
+                pre_parts.append(p)
+        else:
+            if not saw_non_int:
+                saw_non_int = True
+            pre_parts.append(p)
+
+    minor = nums[1] if len(nums) > 1 else 0
+    patch = nums[2] if len(nums) > 2 else 0
+    pre = ".".join(pre_parts)
+    return (major, minor, patch, pre)
+
+
+def _safe_test_version() -> str:
+    """Return a version string guaranteed to be <= the current install.
+
+    Used by tests that build .celerp-backup archives with a fixed
+    celerp_version. Deriving at runtime (instead of hardcoding "1.0.0")
+    means the test passes on:
+      - Local dev (setuptools_scm gives 1.1.11.dev20 with tags)
+      - CI (setuptools_scm gives 0.1.dev1 on a fresh checkout with no tags)
+      - Packaged install (setuptools gives the published version)
+
+    The returned version is one patch below the current major.minor so
+    it's unambiguously "older" — the version policy treats it as silent.
+    """
+    try:
+        from importlib.metadata import version
+        current = version("celerp")
+    except Exception:
+        return "0.0.0"
+    v = _parse_version(current)
+    if v == (0, 0, 0, ""):
+        return "0.0.0"
+    # Same major.minor, patch - 1. Guarantees <= current.
+    return f"{v[0]}.{v[1]}.{max(0, v[2] - 1)}"
+
+
 @dataclass
 class ImportMeta:
     celerp_version: str
@@ -70,28 +154,30 @@ def validate_archive(path: Path) -> ImportMeta:
     except Exception:
         current = "0.0.0"
 
-    backup_ver = meta.celerp_version if meta.celerp_version != "unknown" else "0.0.0"
-    backup_parts = backup_ver.split(".")
-    current_parts = current.split(".")
+    backup_v = _parse_version(meta.celerp_version)
+    current_v = _parse_version(current)
 
-    backup_major = backup_parts[0] if backup_parts else "0"
-    current_major = current_parts[0] if current_parts else "0"
-
-    if backup_major > current_major:
-        raise ValueError(
-            f"This backup is from a newer version ({meta.celerp_version}) "
-            f"than the current installation ({current}). "
-            "Update Celerp before importing."
+    if backup_v > current_v and backup_v[0] > current_v[0]:
+        # Backup is from a newer MAJOR version. The whole point of restore
+        # is recovery — don't block the user. Warn loudly so the UI can
+        # surface it, but proceed with the import. Schema migrations are
+        # additive so a newer-major backup is usually safe to restore.
+        log.warning(
+            "Backup is from a newer major version (%s) than the current "
+            "installation (%s). Restoring anyway — schema migrations are "
+            "additive. If the backup uses removed features, some data may "
+            "not round-trip cleanly.",
+            meta.celerp_version, current,
         )
-
-    backup_minor = int(backup_parts[1]) if len(backup_parts) > 1 else 0
-    current_minor = int(current_parts[1]) if len(current_parts) > 1 else 0
-    if backup_minor != current_minor:
+    elif backup_v[0] == current_v[0] and backup_v[1] != current_v[1]:
+        # Same major, different minor. Existing behaviour: warn, proceed.
         log.warning(
             "Backup version %s differs from current %s (minor version mismatch). "
             "Schema migrations will run automatically after restore.",
             meta.celerp_version, current,
         )
+    # else: same major, same or older minor (downgrade) → silent.
+    # Schema migrations are additive in both directions.
 
     return meta
 

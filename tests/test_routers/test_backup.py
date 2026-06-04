@@ -316,10 +316,11 @@ async def test_import_bootstrap_blocked_when_users_exist(auth_client):
     import io
     import tarfile
     import json as _json
+    from celerp.services.backup_import import _safe_test_version
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         meta = _json.dumps({
-            "celerp_version": "1.0.0", "pg_version": "16",
+            "celerp_version": _safe_test_version(), "pg_version": "16",
             "created_at": "2026-01-01T00:00:00Z", "company_name": "Test",
         }).encode()
         info = tarfile.TarInfo("meta.json")
@@ -388,10 +389,11 @@ async def test_import_returns_warnings_field(auth_client, monkeypatch):
     import io
     import tarfile
     import json as _json
+    from celerp.services.backup_import import _safe_test_version
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         meta = _json.dumps({
-            "celerp_version": "1.0.0", "pg_version": "16",
+            "celerp_version": _safe_test_version(), "pg_version": "16",
             "created_at": "2026-01-01T00:00:00Z", "company_name": "T",
             "enabled_modules": ["celerp-fictional"],
         }).encode()

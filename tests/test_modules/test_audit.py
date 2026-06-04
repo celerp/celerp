@@ -153,11 +153,11 @@ class TestBackupExportWritesEnabledModules:
         """End-to-end: build a real archive on disk with enabled_modules, then
         validate_archive must read it back."""
         import tarfile
-        from celerp.services.backup_import import validate_archive
+        from celerp.services.backup_import import validate_archive, _safe_test_version
 
         archive_path = tmp_path / "test.celerp-backup"
         meta = {
-            "celerp_version": "1.0.0",
+            "celerp_version": _safe_test_version(),
             "pg_version": "16",
             "created_at": "2026-06-04T00:00:00Z",
             "company_name": "Round-trip Co",
