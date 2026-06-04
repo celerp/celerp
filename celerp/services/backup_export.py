@@ -71,6 +71,39 @@ def _build_archive(dump: bytes, attachment_dirs: list[Path], meta: dict) -> Path
     return Path(tmp.name)
 
 
+async def _read_company_enabled_modules() -> list[str]:
+    """Read the first available company's enabled modules from the DB.
+
+    Returns [] if no company exists (fresh install exporting nothing useful)
+    or on any DB error (we never want a bad DB to fail the export).
+
+    This is a soft read: the export is allowed to proceed without the
+    modules list. The restore side will fall back to the company row it
+    just restored from the dump, so the worst case is "meta doesn't know
+    what was enabled" — same as the pre-fix behavior.
+    """
+    try:
+        from sqlalchemy import select
+        from celerp.db import get_session_factory, Company  # type: ignore
+        SessionLocal = get_session_factory()
+    except Exception:
+        return []
+
+    try:
+        async with SessionLocal() as session:
+            from celerp.models.company import Company as _Company
+            result = await session.execute(select(_Company).limit(1))
+            company = result.scalar_one_or_none()
+            if company is None:
+                return []
+            settings_dict = company.settings or {}
+            raw = settings_dict.get("enabled_modules") or []
+            return list(raw) if isinstance(raw, list) else []
+    except Exception as exc:
+        log.warning("Could not read enabled_modules for export: %s", exc)
+        return []
+
+
 async def export_full() -> Path:
     """Export pg_dump + all attachments + meta.json as .celerp-backup.
 
@@ -84,6 +117,7 @@ async def export_full() -> Path:
 
     cfg = read_config()
     company_name = cfg.get("company", {}).get("name", "unknown")
+    enabled_modules = await _read_company_enabled_modules()
 
     meta = {
         "celerp_version": _version(),
@@ -92,6 +126,7 @@ async def export_full() -> Path:
             __import__("datetime").timezone.utc
         ).isoformat(),
         "company_name": company_name,
+        "enabled_modules": enabled_modules,
     }
 
     return _build_archive(
@@ -102,7 +137,13 @@ async def export_full() -> Path:
 
 
 async def export_from_cloud(backup_id: str) -> Path:
-    """Download encrypted backup from relay, decrypt, repackage as .celerp-backup."""
+    """Download encrypted backup from relay, decrypt, repackage as .celerp-backup.
+
+    The decrypted blob is itself a complete .celerp-backup (built by
+    export_full when the cloud backup was first uploaded), so it already
+    carries the original meta.json with enabled_modules. We pass it through
+    unchanged — the import side reads meta.json directly.
+    """
     from celerp.config import settings
     from celerp.services.backup import _parse_key, decrypt, download_from_relay
 
