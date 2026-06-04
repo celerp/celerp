@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import tarfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -23,6 +23,10 @@ class ImportMeta:
     pg_version: str
     created_at: str
     company_name: str
+    # Modules the source system had enabled at export time. Empty for old
+    # backups (pre-2026-06-04). Used by the install pass to surface
+    # missing modules to the user before they reach a broken dashboard.
+    enabled_modules: list[str] = field(default_factory=list)
 
 
 def validate_archive(path: Path) -> ImportMeta:
@@ -56,6 +60,7 @@ def validate_archive(path: Path) -> ImportMeta:
         pg_version=meta_data.get("pg_version", "unknown"),
         created_at=meta_data.get("created_at", "unknown"),
         company_name=meta_data.get("company_name", "unknown"),
+        enabled_modules=list(meta_data.get("enabled_modules") or []),
     )
 
     # Version compatibility check
@@ -137,9 +142,9 @@ async def run_import(path: Path):
 
         # Reconcile schema — run any missing migrations after pg_restore
         try:
-            from alembic.config import Config as _AlembicConfig
+            from celerp.alembic_config import build_alembic_config as _build_alembic_config
             from alembic import command as _alembic_cmd
-            _cfg = _AlembicConfig("alembic.ini")
+            _cfg = _build_alembic_config()
             await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
             log.info("Alembic upgrade head completed after pg_restore")
         except Exception as alembic_exc:

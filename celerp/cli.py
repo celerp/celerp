@@ -341,22 +341,13 @@ def _run_migrations(db_url: str) -> None:
     _os.environ["DATABASE_URL"] = db_url
 
     from alembic import command
-    from alembic.config import Config
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
     import sqlalchemy as _sa
+    from celerp.alembic_config import build_alembic_config as _build_alembic_config
 
     try:
-        pkg_root = Path(__file__).parent.parent
-        ini_path = Path(__file__).parent / "alembic.ini"
-        if not ini_path.exists():
-            ini_path = pkg_root / "alembic.ini"
-        if not ini_path.exists():
-            ini_path = pkg_root.parent / "alembic.ini"
-        if not ini_path.exists():
-            raise FileNotFoundError(f"alembic.ini not found near {pkg_root}")
-
-        alembic_cfg = Config(str(ini_path))
+        alembic_cfg = _build_alembic_config()
 
         # --- Detect stale stamp: walk revisions newest-first, find last one whose
         #     DDL changes are actually present in the DB, re-stamp there first. ---
@@ -692,20 +683,14 @@ def status():
     if not err:
         # Check migration state
         try:
-            from alembic.config import Config
             from alembic.runtime.migration import MigrationContext
             from alembic.script import ScriptDirectory
             from sqlalchemy import create_engine
+            from celerp.alembic_config import build_alembic_config as _build_alembic_config
 
             sync_url = db_url.replace("postgresql+asyncpg://", "postgresql://")
-            pkg_root = Path(__file__).parent.parent
-            ini_path = Path(__file__).parent / "alembic.ini"
-            if not ini_path.exists():
-                ini_path = pkg_root / "alembic.ini"
-            if not ini_path.exists():
-                ini_path = pkg_root.parent / "alembic.ini"
 
-            alembic_cfg = Config(str(ini_path))
+            alembic_cfg = _build_alembic_config()
             script = ScriptDirectory.from_config(alembic_cfg)
             head = script.get_current_head()
 
