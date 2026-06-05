@@ -50,9 +50,9 @@ class TestAuditMissingModules:
     def test_one_missing_returns_sorted(self, monkeypatch, tmp_path):
         _set_module_dir(monkeypatch, tmp_path)
         _make_pkg(tmp_path, "celerp-inventory")
-        # celerp-dashboard is enabled but not on disk
-        missing = audit_missing_modules({"celerp-inventory", "celerp-dashboard"})
-        assert missing == ["celerp-dashboard"]
+        # celerp-fake is enabled but not on disk
+        missing = audit_missing_modules({"celerp-inventory", "celerp-fake"})
+        assert missing == ["celerp-fake"]
 
     def test_multiple_missing_returns_sorted(self, monkeypatch, tmp_path):
         _set_module_dir(monkeypatch, tmp_path)
@@ -65,26 +65,33 @@ class TestAuditMissingModules:
     def test_accepts_list_input(self, monkeypatch, tmp_path):
         _set_module_dir(monkeypatch, tmp_path)
         _make_pkg(tmp_path, "celerp-inventory")
-        # List input (same as set)
-        missing = audit_missing_modules(["celerp-inventory", "celerp-contacts"])
-        assert missing == ["celerp-contacts"]
+        # List input (same as set); celerp-fake is not on disk
+        missing = audit_missing_modules(["celerp-inventory", "celerp-fake"])
+        assert missing == ["celerp-fake"]
 
     def test_empty_enabled_returns_empty(self, monkeypatch, tmp_path):
         _set_module_dir(monkeypatch, tmp_path)
         assert audit_missing_modules(set()) == []
         assert audit_missing_modules([]) == []
 
-    def test_no_module_dir_env_returns_all_as_missing(self, monkeypatch):
+    def test_no_module_dir_env_still_finds_bundled(self, monkeypatch):
+        """Without MODULE_DIR, bundled default_modules/ is still scanned."""
         monkeypatch.delenv("MODULE_DIR", raising=False)
+        monkeypatch.delenv("CELERP_TRUSTED_MODULE_DIRS", raising=False)
+        # These exist in default_modules/ — should NOT be missing
         missing = audit_missing_modules({"celerp-inventory", "celerp-dashboard"})
-        assert missing == ["celerp-dashboard", "celerp-inventory"]
+        assert missing == []
 
-    def test_nonexistent_module_dir_returns_all_as_missing(self, monkeypatch, tmp_path):
-        """If the dir doesn't exist, every enabled name is missing."""
+    def test_nonexistent_module_dir_still_finds_bundled(self, monkeypatch, tmp_path):
+        """If MODULE_DIR is nonexistent, bundled default_modules/ is still scanned."""
         fake_path = tmp_path / "does_not_exist"
         _set_module_dir(monkeypatch, fake_path)
+        # celerp-inventory exists in default_modules/ — not missing
         missing = audit_missing_modules({"celerp-inventory"})
-        assert missing == ["celerp-inventory"]
+        assert missing == []
+        # But a fake module is missing
+        missing = audit_missing_modules({"celerp-fake"})
+        assert missing == ["celerp-fake"]
 
     def test_dir_without_init_py_not_counted(self, monkeypatch, tmp_path):
         """A dir without __init__.py is not a package, so the module is missing."""

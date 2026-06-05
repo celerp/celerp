@@ -21,10 +21,32 @@ from pathlib import Path
 def _module_dirs() -> list[Path]:
     """Return the list of module directories the loader will scan.
 
-    Mirrors the order from celerp.modules.loader.load_all().
+    Mirrors the resolution from celerp.modules.loader._resolve_bundled_dirs()
+    plus MODULE_DIR. The loader finds default_modules/ relative to the
+    package root; we must do the same so the audit agrees with the loader.
     """
+    dirs: list[Path] = []
+
+    # Bundled default_modules/ (same logic as loader.py _resolve_bundled_dirs)
+    pkg_root = Path(__file__).resolve().parent.parent.parent / "default_modules"
+    if pkg_root.is_dir():
+        dirs.append(pkg_root)
+
+    # Trusted dirs from env (Electron seeding)
+    extra_raw = os.environ.get("CELERP_TRUSTED_MODULE_DIRS", "")
+    for p in extra_raw.split(","):
+        p = p.strip()
+        if p:
+            dirs.append(Path(p).resolve())
+
+    # MODULE_DIR (comma-separated, user/CI override)
     raw = os.environ.get("MODULE_DIR", "")
-    return [Path(d.strip()) for d in raw.split(",") if d.strip()]
+    for p in raw.split(","):
+        p = p.strip()
+        if p:
+            dirs.append(Path(p).resolve())
+
+    return dirs
 
 
 def _installed_package_names() -> set[str]:
