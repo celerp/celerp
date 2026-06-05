@@ -28,24 +28,26 @@ from celerp.gateway.state import get_session_token, relay_http_url, relay_sessio
 
 _NONCE_BYTES = 12
 
-# Known macOS Postgres install locations. macOS GUI-launched apps (Electron .app)
-# inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) and cannot find pg_dump
-# or pg_restore installed via Homebrew or Postgres.app. We probe these dirs at
-# runtime and inject the first one that contains pg_dump into the subprocess PATH.
-#
-# On non-darwin platforms this list is ignored (empty probing).
+# macOS fallback dirs for .app builds whose PATH is stripped to /usr/bin:/bin:/usr/sbin:/sbin.
+# shutil.which() is tried first (handles terminal launches, asdf, nix, mise, etc.).
+# This list is only consulted when which() comes up empty.
 _PG_CANDIDATE_DIRS: tuple[Path, ...] = (
-    # Homebrew (Apple Silicon)
+    # Homebrew unversioned formula — symlinks land here on both architectures
+    Path("/opt/homebrew/bin"),              # Apple Silicon
+    Path("/usr/local/bin"),                 # Intel
+    # Homebrew versioned formulae (Apple Silicon)
     Path("/opt/homebrew/opt/postgresql@17/bin"),
     Path("/opt/homebrew/opt/postgresql@16/bin"),
     Path("/opt/homebrew/opt/postgresql@15/bin"),
     Path("/opt/homebrew/opt/postgresql@14/bin"),
-    # Homebrew (Intel)
+    Path("/opt/homebrew/opt/postgresql@13/bin"),
+    # Homebrew versioned formulae (Intel)
     Path("/usr/local/opt/postgresql@17/bin"),
     Path("/usr/local/opt/postgresql@16/bin"),
     Path("/usr/local/opt/postgresql@15/bin"),
     Path("/usr/local/opt/postgresql@14/bin"),
-    # Postgres.app (standard install location)
+    Path("/usr/local/opt/postgresql@13/bin"),
+    # Postgres.app
     Path("/Applications/Postgres.app/Contents/Versions/latest/bin"),
     # EnterpriseDB / official installer
     Path("/Library/PostgreSQL/17/bin"),
@@ -55,43 +57,30 @@ _PG_CANDIDATE_DIRS: tuple[Path, ...] = (
 )
 
 
-def _resolve_pg_bin_dir() -> list[Path]:
-    """Return dirs containing pg_dump that should be prepended to subprocess PATH.
+def _find_pg_tool(name: str) -> str:
+    """Return the full path to a PostgreSQL tool (pg_dump, pg_restore, …).
 
-    Empty on non-darwin (Linux/Windows). On darwin, walks _PG_CANDIDATE_DIRS and
-    returns the ones that actually contain a pg_dump executable. Order is preserved
-    (Homebrew versions before Postgres.app), and duplicates are removed.
+    Resolution order:
+      1. shutil.which() — respects the current process PATH; works for any
+         installation that correctly exports its bin dir (terminal, asdf, nix,
+         mise, MacPorts, unversioned Homebrew formula, …).
+      2. macOS candidate dirs — fallback for .app / Electron builds where the
+         OS strips PATH down to /usr/bin:/bin:/usr/sbin:/sbin.
+
+    Raises FileNotFoundError with a clear message if the tool cannot be found.
     """
-    if sys.platform != "darwin":
-        return []
-    found: list[Path] = []
-    seen: set[Path] = set()
-    for d in _PG_CANDIDATE_DIRS:
-        if d in seen:
-            continue
-        seen.add(d)
-        if not d.is_dir():
-            continue
-        if not (d / "pg_dump").is_file():
-            continue
-        found.append(d)
-    return found
-
-
-def _augmented_env() -> dict[str, str]:
-    """Return a copy of os.environ with resolved pg bin dirs prepended to PATH.
-
-    No-op on non-darwin. On darwin, prepends in the order returned by
-    _resolve_pg_bin_dir() so the most-preferred version wins.
-    """
-    env = os.environ.copy()
-    extra_dirs = _resolve_pg_bin_dir()
-    if not extra_dirs:
-        return env
-    existing = env.get("PATH", "")
-    extra = os.pathsep.join(str(d) for d in extra_dirs)
-    env["PATH"] = f"{extra}{os.pathsep}{existing}" if existing else extra
-    return env
+    import shutil
+    if found := shutil.which(name):
+        return found
+    if sys.platform == "darwin":
+        for d in _PG_CANDIDATE_DIRS:
+            candidate = d / name
+            if candidate.is_file():
+                return str(candidate)
+    raise FileNotFoundError(
+        f"{name} not found in PATH or known macOS install locations. "
+        "Install PostgreSQL client tools (e.g. brew install postgresql@16)."
+    )
 
 
 @dataclass
@@ -125,11 +114,11 @@ def dump_database(database_url: str) -> bytes:
     """
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     try:
+        pg_dump = _find_pg_tool("pg_dump")
         result = subprocess.run(
-            ["pg_dump", "--format=custom", "--no-password", pg_url],
+            [pg_dump, "--format=custom", "--no-password", pg_url],
             capture_output=True,
             timeout=300,
-            env=_augmented_env(),
         )
     except FileNotFoundError as exc:
         raise RuntimeError("pg_dump not found in PATH — cannot create backup") from exc
@@ -212,12 +201,12 @@ def restore_database(dump_bytes: bytes, database_url: str) -> None:
     """
     pg_url = database_url.replace("postgresql+asyncpg://", "postgresql://")
     try:
+        pg_restore = _find_pg_tool("pg_restore")
         result = subprocess.run(
-            ["pg_restore", "--clean", "--if-exists", "--no-password", "--no-privileges", "--no-owner", "-d", pg_url],
+            [pg_restore, "--clean", "--if-exists", "--no-password", "--no-privileges", "--no-owner", "-d", pg_url],
             input=dump_bytes,
             capture_output=True,
             timeout=600,
-            env=_augmented_env(),
         )
     except FileNotFoundError as exc:
         raise RuntimeError("pg_restore not found in PATH") from exc

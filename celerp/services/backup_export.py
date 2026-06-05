@@ -32,8 +32,9 @@ def _version() -> str:
 def _pg_version() -> str:
     """Return pg_dump --version output."""
     import subprocess
+    from celerp.services.backup import _find_pg_tool
     try:
-        result = subprocess.run(["pg_dump", "--version"], capture_output=True, timeout=5)
+        result = subprocess.run([_find_pg_tool("pg_dump"), "--version"], capture_output=True, timeout=5)
         return result.stdout.decode().strip()
     except Exception:
         return "unknown"
