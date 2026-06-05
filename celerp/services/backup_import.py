@@ -277,15 +277,21 @@ async def _activate_modules(modules: list[str]) -> None:
         log.warning("Failed to update config.toml with enabled modules: %s", exc)
         return
 
-    # Request a restart so the loader picks up the new modules
+    # Request a restart so the loader picks up the new modules.
+    # _send_sigterm writes the sentinel + sleeps 0.2s then SIGTERMs self.
+    # We schedule it via call_later so the HTTP response flushes first.
     try:
-        from celerp.routers.system import _restart_sentinel_path
+        import asyncio
+        from celerp.routers.system import _restart_sentinel_path, _send_sigterm
         sentinel = _restart_sentinel_path()
         sentinel.parent.mkdir(parents=True, exist_ok=True)
         sentinel.touch()
         log.info("Restart sentinel written: %s", sentinel)
+        loop = asyncio.get_event_loop()
+        loop.call_later(0.5, _send_sigterm)
+        log.info("Restart scheduled (SIGTERM in 0.5s)")
     except Exception as exc:
-        log.warning("Failed to write restart sentinel: %s", exc)
+        log.warning("Failed to schedule restart: %s", exc)
 
 
 async def run_import(path: Path):

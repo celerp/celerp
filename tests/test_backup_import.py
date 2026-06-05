@@ -355,3 +355,67 @@ class TestAlembicConfigHelperUsed:
         assert "build_alembic_config" in src, (
             "cli.py should use celerp.alembic_config.build_alembic_config() to share the lookup."
         )
+
+
+class TestActivateModulesRestarts:
+    """_activate_modules must trigger a process restart so the loader picks
+    up new enabled_modules.
+
+    Without a restart, the API keeps running with the old module set.
+    The sentinel is only checked when the subprocess exits. The /system/restart
+    endpoint uses _send_sigterm() — _activate_modules must do the same.
+    """
+
+    @pytest.mark.asyncio
+    async def test_activate_modules_triggers_restart(self, monkeypatch, tmp_path):
+        """When modules are provided, _activate_modules must schedule a restart."""
+        import asyncio
+        import signal
+        from celerp.services import backup_import
+
+        # Stub set_enabled_modules (it writes config.toml — we don't need that in this test)
+        monkeypatch.setattr(backup_import, "set_enabled_modules",
+                            lambda m: None, raising=False)
+
+        # Stub _restart_sentinel_path to a temp file
+        sentinel = tmp_path / ".restart_requested"
+        monkeypatch.setattr(
+            "celerp.routers.system._restart_sentinel_path",
+            lambda: sentinel,
+        )
+
+        # Track os.kill calls
+        kill_calls: list[tuple[int, int]] = []
+        monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+        # Stub time.sleep to avoid actual delay
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+        await backup_import._activate_modules(["celerp-inventory"])
+
+        # _send_sigterm is scheduled via call_later(0.5, ...). Yield to the
+        # event loop so it fires before we assert.
+        await asyncio.sleep(1)
+
+        assert len(kill_calls) == 1, (
+            "Expected exactly one os.kill(SIGTERM) call — "
+            f"got {len(kill_calls)}: {kill_calls}"
+        )
+        assert kill_calls[0][1] == signal.SIGTERM
+
+    @pytest.mark.asyncio
+    async def test_activate_modules_skips_restart_when_empty(self, monkeypatch):
+        """Empty module list → no restart, no config write."""
+        from celerp.services import backup_import
+
+        config_written: list[str] = []
+        monkeypatch.setattr(backup_import, "set_enabled_modules",
+                            lambda m: config_written.extend(m), raising=False)
+
+        kill_calls: list[tuple[int, int]] = []
+        monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+        await backup_import._activate_modules([])
+
+        assert config_written == [], "Empty list should not write config"
+        assert kill_calls == [], "Empty list should not trigger restart"
