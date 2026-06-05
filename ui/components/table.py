@@ -172,6 +172,7 @@ def searchable_select(
     placeholder: str = "Search or select...",
     cls_extra: str = "",
     allow_custom: bool = False,
+    search_url: str = "",
     **htmx_attrs,
 ) -> FT:
     """
@@ -181,6 +182,9 @@ def searchable_select(
 
     options: list of strings OR list of (value, label) tuples.
     allow_custom: if True, user can type a value not in the list (saved as-is).
+    search_url: if set, enables server-side search. The text input sends hx-get
+        requests to this URL with ?q=<typed>, replacing the option list via HTMX.
+        When q is empty the JS restores the original static options.
     htmx_attrs: HTMX attributes forwarded to the hidden input (hx_get, hx_target, etc.)
     """
     normalized = [
@@ -199,10 +203,21 @@ def searchable_select(
     wrap_attrs: dict = {"cls": "combobox-wrap"}
     if allow_custom:
         wrap_attrs["data_allow_custom"] = "true"
+    if search_url:
+        wrap_attrs["data_search_url"] = "1"
+        wrap_attrs["hx_get"] = search_url
+        wrap_attrs["hx_trigger"] = "input from:.combobox-input changed delay:300ms"
+        wrap_attrs["hx_target"] = "find .combobox-list"
+        wrap_attrs["hx_swap"] = "innerHTML"
+        wrap_attrs["hx_include"] = "find .combobox-input"
+
+    text_input_extra: dict = {}
+    if search_url:
+        text_input_extra["name"] = "q"
 
     return Div(
         Input(type="text", cls=f"combobox-input {cls_extra}".strip(),
-              value=display_label, placeholder=placeholder, autocomplete="off"),
+              value=display_label, placeholder=placeholder, autocomplete="off", **text_input_extra),
         Input(type="hidden", name=name, data_name=name, value=value, **htmx_attrs),
         Div(*opt_els, cls="combobox-list"),
         **wrap_attrs,

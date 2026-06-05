@@ -793,6 +793,60 @@ def setup_routes(app):
         contacts = sorted(contacts, key=lambda c: (0 if (c.get("name") or "").strip() == _placeholder else 1))
         return _contacts_page_shell("vendor", contacts, request, q, page, total, per_page, sort, sort_dir, currency)
 
+    # ── /contacts/search-options ──────────────────────────────────────────
+
+    @app.get("/contacts/search-options")
+    async def contacts_search_options(request: Request):
+        """HTMX: combobox option fragments for the contact picker server-side search.
+
+        Used by documents.py searchable_select (search_url= param).
+        Returns empty body when q is blank so JS can restore the static list.
+        When q is set, searches all contacts (no 500-cap) and returns option HTML.
+
+        Query params:
+          q            - search string
+          contact_type - 'customer' or 'vendor' (default: 'customer')
+          field        - 'contact_company_name' or anything else (default: contact_id behaviour)
+        """
+        from starlette.responses import Response as _R
+        token = _token(request)
+        if not token:
+            return _R(status_code=200, content="")
+        q = request.query_params.get("q", "").strip()
+        if not q:
+            return _R(status_code=200, content="")
+        contact_type = request.query_params.get("contact_type", "customer")
+        if contact_type not in ("customer", "vendor"):
+            contact_type = "customer"
+        field = request.query_params.get("field", "contact_id")
+        try:
+            resp = await api.list_contacts(token, {"q": q, "contact_type": contact_type})
+            contacts = resp.get("items", [])
+        except APIError:
+            contacts = []
+
+        if field == "contact_company_name":
+            opts = [
+                (c.get("entity_id") or c.get("id") or "", c.get("company_name") or c.get("name") or "")
+                for c in contacts if c.get("company_name")
+            ]
+        else:
+            opts = [
+                (c.get("entity_id") or c.get("id") or "", c.get("name") or c.get("entity_id") or c.get("id") or "")
+                for c in contacts
+            ]
+            opts.append(("__new__", "+ Add new contact"))
+
+        opt_els = [
+            Div(label, cls="combobox-option" + (" combobox-option--new" if val.startswith("__new__") else ""), data_value=val)
+            for val, label in opts
+        ]
+        has_real_contacts = any(not val.startswith("__new__") for val, _ in opts)
+        opt_els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty",
+                           style="display:none" if has_real_contacts else ""))
+        from fasthtml.common import to_xml
+        return _R(content="".join(to_xml(el) for el in opt_els), media_type="text/html")
+
     # ── /contacts/search ─────────────────────────────────────────────────
 
     @app.get("/contacts/search")

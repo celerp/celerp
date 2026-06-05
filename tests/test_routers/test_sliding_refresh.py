@@ -170,7 +170,7 @@ async def test_switch_company_updates_refresh_token():
     from httpx._transports.asgi import ASGITransport
     from celerp.services.auth import create_access_token, create_refresh_token
     from ui.app import app as ui_app
-    from tests.test_ui import _authed
+    from test_helpers import authed_cookies as _authed
 
     company_b_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
     new_access = create_access_token("user-1", company_b_id, "admin")[0]

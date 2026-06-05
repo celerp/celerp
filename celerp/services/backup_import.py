@@ -195,6 +195,30 @@ async def _safety_backup(label: str):
     return await run_backup(label=label)
 
 
+async def _read_modules_from_restored_db() -> list[str]:
+    """Read enabled_modules from the just-restored database.
+
+    Fallback for backups whose meta.json pre-dates the enabled_modules field.
+    After pg_restore the company row is present; we read its settings directly.
+    engine.dispose() was called before pg_restore but new connections are still
+    allowed, so this session open succeeds against the restored data.
+    """
+    try:
+        from sqlalchemy import select
+        from celerp.db import SessionLocal
+        from celerp.models.company import Company
+        async with SessionLocal() as session:
+            result = await session.execute(select(Company).limit(1))
+            company = result.scalar_one_or_none()
+            if company is None:
+                return []
+            raw = (company.settings or {}).get("enabled_modules") or []
+            return list(raw) if isinstance(raw, list) else []
+    except Exception as exc:
+        log.warning("Could not read enabled_modules from restored DB: %s", exc)
+        return []
+
+
 async def _dispose_engine() -> None:
     """Dispose the SQLAlchemy engine connection pool before pg_restore."""
     try:
@@ -338,18 +362,21 @@ async def run_import(path: Path):
         # Activate pass: update config.toml with the source's enabled modules
         # and request a restart so the loader picks them up. Server-side
         # because we have no user token yet (bootstrap restore).
-        if meta.enabled_modules:
-            await _activate_modules(meta.enabled_modules)
+        # meta.enabled_modules is the primary source (new backups); fall back
+        # to the restored DB row for old backups whose meta.json predates this field.
+        effective_modules = meta.enabled_modules or await _read_modules_from_restored_db()
+        if effective_modules:
+            await _activate_modules(effective_modules)
 
         # Audit pass: surface modules that were enabled on the source but
         # have no on-disk package on the destination. Read-only — the import
         # succeeds; the user just gets warned so the dashboard 404 is no
         # longer a surprise.
         warnings: list[str] = []
-        if meta.enabled_modules:
+        if effective_modules:
             try:
                 from celerp.modules.audit import audit_missing_modules
-                warnings = audit_missing_modules(meta.enabled_modules)
+                warnings = audit_missing_modules(effective_modules)
                 if warnings:
                     log.warning(
                         "Imported backup enabled %d modules that are not "

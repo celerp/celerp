@@ -84,8 +84,8 @@ async def _read_company_enabled_modules() -> list[str]:
     """
     try:
         from sqlalchemy import select
-        from celerp.db import get_session_factory, Company  # type: ignore
-        SessionLocal = get_session_factory()
+        from celerp.db import SessionLocal
+        from celerp.models.company import Company
     except Exception:
         return []
 

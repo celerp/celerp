@@ -1897,6 +1897,7 @@ celerpUpdateBulkAlloc();
                     hx_target="closest .editable-cell",
                     hx_swap="outerHTML",
                     hx_trigger="change",
+                    search_url=f"/contacts/search-options?contact_type={contact_filter}&field={field}",
                 ),
                 onkeydown=combobox_esc_js,
             )
@@ -5389,7 +5390,7 @@ function celerpLineTotalInput(input) {{
     const qty = parseFloat(row.querySelector('[data-name="quantity"]')?.value || 0);
     const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
     const factor = qty * (1 - discPct / 100);
-    if (factor === 0) return;
+    if (factor === 0) {{ celerpUpdateTotals(); return; }}
     const unitPriceEl = row.querySelector('[data-name="unit_price"]');
     if (unitPriceEl) unitPriceEl.value = (tot / factor).toFixed(2);
     celerpUpdateTotals();
@@ -5624,7 +5625,8 @@ function _celerpCollectLines() {{
         const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
         const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
         if (desc || sku || price) {{
-            const discounted = qty * price * (1 - discPct / 100);
+            const lineTotalEl = row.querySelector('.line-total');
+            const discounted = lineTotalEl ? (parseFloat(lineTotalEl.value) || 0) : qty * price * (1 - discPct / 100);
             const taxList = rate !== 0 ? [{{code: code, rate: rate, amount: 0, order: 0, is_compound: false, label: taxLabel}}] : [];
             lines.push({{description: desc || '', sku: sku || '', quantity: qty || 1, unit,
                          unit_price: price, discount_pct: discPct, tax_rate: rate, taxes: taxList,
