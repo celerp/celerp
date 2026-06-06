@@ -61,15 +61,22 @@ def _find_pg_tool(name: str) -> str:
     """Return the full path to a PostgreSQL tool (pg_dump, pg_restore, …).
 
     Resolution order:
-      1. shutil.which() — respects the current process PATH; works for any
+      1. settings.pg_bin_dir — explicit override; set by the Electron app via
+         CELERP_PG_BIN_DIR (points to bundled tools inside the .app bundle) or
+         by the user via config.toml [backup] pg_bin_dir.
+      2. shutil.which() — respects the current process PATH; works for any
          installation that correctly exports its bin dir (terminal, asdf, nix,
          mise, MacPorts, unversioned Homebrew formula, …).
-      2. macOS candidate dirs — fallback for .app / Electron builds where the
-         OS strips PATH down to /usr/bin:/bin:/usr/sbin:/sbin.
+      3. macOS candidate dirs — legacy fallback for .app / Electron builds that
+         predate the CELERP_PG_BIN_DIR injection (Homebrew, Postgres.app, EDB).
 
     Raises FileNotFoundError with a clear message if the tool cannot be found.
     """
     import shutil
+    if settings.pg_bin_dir:
+        candidate = Path(settings.pg_bin_dir) / name
+        if candidate.is_file():
+            return str(candidate)
     if found := shutil.which(name):
         return found
     if sys.platform == "darwin":
@@ -78,8 +85,7 @@ def _find_pg_tool(name: str) -> str:
             if candidate.is_file():
                 return str(candidate)
     raise FileNotFoundError(
-        f"{name} not found in PATH or known macOS install locations. "
-        "Install PostgreSQL client tools (e.g. brew install postgresql@16)."
+        f"{name} not found. Install PostgreSQL client tools or set CELERP_PG_BIN_DIR."
     )
 
 

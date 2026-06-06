@@ -60,6 +60,14 @@ class Settings(BaseSettings):
         default=Path("data"),
         validation_alias=AliasChoices("CELERP_DATA_DIR", "DATA_DIR", "data_dir"),
     )
+    # Directory containing pg_dump / pg_restore binaries.
+    # Set automatically by the Electron app (CELERP_PG_BIN_DIR → bundled tools).
+    # Self-hosted users can override via env var or config.toml [backup] pg_bin_dir.
+    # Empty = fall back to system PATH and macOS candidate dirs.
+    pg_bin_dir: str = Field(
+        default="",
+        validation_alias=AliasChoices("CELERP_PG_BIN_DIR", "pg_bin_dir"),
+    )
 
     # Cookie security — set True in prod (HTTPS); False allows HTTP in dev/CI
     cookie_secure: bool = False
@@ -137,6 +145,23 @@ def load_cloud_config() -> None:
     # Auto-enable secure cookies when relay-connected (HTTPS via Caddy/Cloudflare)
     if settings.gateway_token and not os.environ.get("COOKIE_SECURE"):
         settings.cookie_secure = True
+
+
+def load_backup_config() -> None:
+    """Load backup settings from config.toml into the Settings object.
+
+    Called at startup. Reads [backup] pg_bin_dir so self-hosted users can
+    point to their own pg_dump/pg_restore without setting env vars.
+    The env var (CELERP_PG_BIN_DIR) takes precedence — this only fills in
+    the setting when it hasn't been set by the environment already.
+    """
+    try:
+        cfg = read_config()
+    except Exception:
+        return
+    backup = cfg.get("backup", {})
+    if backup.get("pg_bin_dir") and not settings.pg_bin_dir:
+        settings.pg_bin_dir = backup["pg_bin_dir"]
 
 
 def assert_secure_jwt() -> None:
@@ -254,6 +279,10 @@ def write_config(cfg: dict) -> None:
             f's3_secret_key = {_str(sbak.get("s3_secret_key", ""))}',
             "",
         ]
+
+    if "backup" in cfg:
+        bak = cfg["backup"]
+        lines += ["[backup]", f'pg_bin_dir = {_str(bak.get("pg_bin_dir", ""))}', ""]
 
     if "modules" in cfg:
         enabled = cfg["modules"].get("enabled", [])

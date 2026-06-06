@@ -144,6 +144,21 @@ function waitForPort(port, attempts = 60, intervalMs = 500) {
   });
 }
 
+/** Return the directory containing bundled pg_dump / pg_restore binaries.
+ *  Empty string on non-Mac or when binaries cannot be located (caller falls
+ *  back to system PATH and macOS candidate-dir probing). */
+function pgBinDir() {
+  if (process.platform !== "darwin") return "";
+  try {
+    const rawPkg = require.resolve(
+      `@embedded-postgres/darwin-${process.arch}/package.json`
+    );
+    const binDir = path.join(rewriteAsarPath(path.dirname(rawPkg)), "native", "bin");
+    if (fs.existsSync(path.join(binDir, "pg_dump"))) return binDir;
+  } catch (_) {}
+  return "";
+}
+
 /** Resolve the Python binary — packaged apps bundle a standalone Python. */
 function pythonBin() {
   if (IS_DEV) {
@@ -310,6 +325,7 @@ function startApi(dbUrl, cfg) {
       CELERP_INSTALL_CHANNEL: "electron",
       CELERP_API_PORT: String(apiPort),
       CELERP_UI_PORT: String(uiPort),
+      CELERP_PG_BIN_DIR: pgBinDir(),
       ...resolveStorageEnv(cfg),
     };
     apiProcess = spawn(
@@ -351,6 +367,7 @@ function startUi(dbUrl, cfg) {
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
       CELERP_UI_PORT: String(uiPort),
       CELERP_API_PORT: String(apiPort),
+      CELERP_PG_BIN_DIR: pgBinDir(),
       ...resolveStorageEnv(cfg),
     };
     uiProcess = spawn(
