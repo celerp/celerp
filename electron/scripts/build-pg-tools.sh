@@ -58,11 +58,11 @@ echo "==> Building pg tools for $ARCH (PG $PG_VERSION, OpenSSL $OPENSSL_VERSION)
 
 # ── 1. Fetch + verify source tarballs ────────────────────────────────────────
 cd "$WORK"
-curl -fsSL -o openssl.tar.gz \
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o openssl.tar.gz \
   "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
 echo "${OPENSSL_SHA256}  openssl.tar.gz" | shasum -a 256 -c -
 
-curl -fsSL -o postgresql.tar.bz2 \
+curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o postgresql.tar.bz2 \
   "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2"
 echo "${PG_SHA256}  postgresql.tar.bz2" | shasum -a 256 -c -
 
