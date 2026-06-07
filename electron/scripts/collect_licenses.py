@@ -256,14 +256,21 @@ def collect_electron(node_modules: Path | None, out: Path) -> None:
 
 
 def embedded_postgres_roots(node_modules: Path) -> list[Path]:
-    roots: list[Path] = []
-    ep = node_modules / "embedded-postgres"
-    if ep.exists():
-        roots.append(ep.resolve())
+    """Packages that actually ship the PostgreSQL *server* binaries + native libs.
+
+    Only the @embedded-postgres/<platform> packages carry a `native/` payload. The
+    bare `embedded-postgres` wrapper is JS-only (handled by the generic npm pass)
+    and must NOT trigger native-lib attribution — otherwise Linux/Windows, which
+    install the wrapper but no native package, would be required to ship licenses
+    for server binaries they don't bundle.
+    """
     scope = node_modules / "@embedded-postgres"
-    if scope.is_dir():
-        roots += [d.resolve() for d in scope.iterdir() if d.is_dir()]
-    return roots
+    if not scope.is_dir():
+        return []
+    return [
+        d.resolve() for d in scope.iterdir()
+        if d.is_dir() and (d.resolve() / "native").is_dir()
+    ]
 
 
 def collect_embedded_postgres(node_modules: Path | None, out: Path, extra: str | None = None) -> None:
