@@ -18,6 +18,12 @@
 # Fails loudly if any binary still references a non-system, non-bundled path.
 
 set -euo pipefail
+# Print the failing line on any error (set -e deaths are otherwise silent).
+trap 'echo "build-pg-tools.sh: FAILED at line $LINENO (exit $?)" >&2' ERR
+
+# First match of a glob (or empty). Avoids `find ... | head -1`, which under
+# `pipefail` can SIGPIPE the producer and silently abort the script.
+first_glob() { local m=("$@"); [ -e "${m[0]}" ] && printf '%s\n' "${m[0]}" || true; }
 
 ARCH="${1:?usage: build-pg-tools.sh <arch> <out_dir>}"
 OUT_DIR="${2:?usage: build-pg-tools.sh <arch> <out_dir>}"
@@ -98,13 +104,13 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/bin" "$OUT_DIR/lib"
 cp src/bin/pg_dump/pg_dump    "$OUT_DIR/bin/"
 cp src/bin/pg_dump/pg_restore "$OUT_DIR/bin/"
-LIBPQ_SRC="$(find src/interfaces/libpq -maxdepth 1 -name 'libpq.*.dylib' | head -1)"
+LIBPQ_SRC="$(first_glob src/interfaces/libpq/libpq.*.dylib)"
 [ -n "$LIBPQ_SRC" ] || { echo "ERROR: libpq dylib not found after build" >&2; exit 1; }
 LIBPQ="$(basename "$LIBPQ_SRC")"
 cp "$LIBPQ_SRC" "$OUT_DIR/lib/"
 # Bundle the OpenSSL dylibs libpq dynamically links against (§2).
-LIBSSL_SRC="$(find "$OSSL_PREFIX/lib" -maxdepth 1 -name 'libssl.*.dylib' | head -1)"
-LIBCRYPTO_SRC="$(find "$OSSL_PREFIX/lib" -maxdepth 1 -name 'libcrypto.*.dylib' | head -1)"
+LIBSSL_SRC="$(first_glob "$OSSL_PREFIX"/lib/libssl.*.dylib)"
+LIBCRYPTO_SRC="$(first_glob "$OSSL_PREFIX"/lib/libcrypto.*.dylib)"
 [ -n "$LIBSSL_SRC" ] && [ -n "$LIBCRYPTO_SRC" ] || { echo "ERROR: OpenSSL dylibs not found in $OSSL_PREFIX/lib" >&2; exit 1; }
 LIBSSL="$(basename "$LIBSSL_SRC")"
 LIBCRYPTO="$(basename "$LIBCRYPTO_SRC")"
@@ -124,7 +130,8 @@ cp "$WORK/openssl-${OPENSSL_VERSION}/LICENSE.txt" "$LIC/openssl/LICENSE.txt"
 # let each file find the others in the bundled lib/ dir on any machine.
 repoint() {                     # repoint $1's dep matching regex $2 -> @rpath/$3
   local f="$1" old
-  old="$(otool -L "$f" | awk -v n="$2" '$1 ~ n {print $1; exit}')"
+  # awk must NOT early-exit: that SIGPIPEs otool and (under pipefail) aborts us.
+  old="$(otool -L "$f" | awk -v n="$2" '$1 ~ n && !seen {print $1; seen=1}')"
   [ -n "$old" ] && install_name_tool -change "$old" "@rpath/$3" "$f"
 }
 install_name_tool -id "@rpath/${LIBCRYPTO}" "$OUT_DIR/lib/${LIBCRYPTO}"
@@ -157,10 +164,12 @@ audit() {
 for f in "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore" \
          "$OUT_DIR/lib/${LIBPQ}" "$OUT_DIR/lib/${LIBSSL}" "$OUT_DIR/lib/${LIBCRYPTO}"; do
   audit "$f"
-  if ! lipo -archs "$f" | tr ' ' '\n' | grep -qx "$ARCH"; then
-    echo "ARCH FAIL: $f is not $ARCH (got: $(lipo -archs "$f"))" >&2
-    exit 1
-  fi
+  # No pipe to grep -q here: that would SIGPIPE lipo and (with pipefail) misfire.
+  archs="$(lipo -archs "$f")"
+  case " $archs " in
+    *" $ARCH "*) : ;;
+    *) echo "ARCH FAIL: $f is not $ARCH (got: $archs)" >&2; exit 1 ;;
+  esac
 done
 
 # ── 6b. Re-sign (ad-hoc) ─────────────────────────────────────────────────────
