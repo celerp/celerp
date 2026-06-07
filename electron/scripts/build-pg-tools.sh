@@ -132,7 +132,13 @@ repoint() {                     # repoint $1's dep matching regex $2 -> @rpath/$
   local f="$1" old
   # awk must NOT early-exit: that SIGPIPEs otool and (under pipefail) aborts us.
   old="$(otool -L "$f" | awk -v n="$2" '$1 ~ n && !seen {print $1; seen=1}')"
-  [ -n "$old" ] && install_name_tool -change "$old" "@rpath/$3" "$f"
+  # No match is legitimate (e.g. dead_strip_dylibs drops OpenSSL from the bins
+  # since only libpq uses it). Must return 0 then — but a real install_name_tool
+  # failure still aborts via set -e.
+  if [ -n "$old" ]; then
+    install_name_tool -change "$old" "@rpath/$3" "$f"
+  fi
+  return 0
 }
 install_name_tool -id "@rpath/${LIBCRYPTO}" "$OUT_DIR/lib/${LIBCRYPTO}"
 install_name_tool -id "@rpath/${LIBSSL}"    "$OUT_DIR/lib/${LIBSSL}"
