@@ -63,7 +63,8 @@ class Settings(BaseSettings):
     # Directory containing pg_dump / pg_restore binaries.
     # Set automatically by the Electron app (CELERP_PG_BIN_DIR → bundled tools).
     # Self-hosted users can override via env var or config.toml [backup] pg_bin_dir.
-    # Empty = fall back to system PATH and macOS candidate dirs.
+    # Empty = fall back to system PATH and macOS candidate dirs. When set, the
+    # tool MUST be found there — no PATH fallback (see backup._find_pg_tool).
     pg_bin_dir: str = Field(
         default="",
         validation_alias=AliasChoices("CELERP_PG_BIN_DIR", "pg_bin_dir"),

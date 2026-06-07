@@ -319,9 +319,10 @@ class TestFindPgTool:
         result = backup_mod._find_pg_tool("pg_dump")
         assert result == str(bin_dir / "pg_dump")
 
-    def test_pg_bin_dir_skipped_when_tool_missing(self, monkeypatch, tmp_path):
-        """If pg_bin_dir is set but the tool isn't there, fall through to PATH."""
-        import shutil
+    def test_pg_bin_dir_is_authoritative_no_path_fallback(self, monkeypatch, tmp_path):
+        """If pg_bin_dir is set but the tool isn't there, fail loudly — do NOT
+        fall back to PATH. A packaged build pointed at a missing bundle must not
+        silently use a system pg_dump of unknown version (plan §7.2)."""
         from celerp.services import backup as backup_mod
         from celerp.config import settings as cfg_settings
 
@@ -329,11 +330,12 @@ class TestFindPgTool:
         empty_dir.mkdir()
         monkeypatch.setattr(cfg_settings, "pg_bin_dir", str(empty_dir))
 
+        # A valid tool on PATH must be ignored when pg_bin_dir is set.
         bin_dir = _make_fake_pg_bin(tmp_path, "pg_dump")
         monkeypatch.setenv("PATH", str(bin_dir))
 
-        result = backup_mod._find_pg_tool("pg_dump")
-        assert result == str(bin_dir / "pg_dump")
+        with pytest.raises(FileNotFoundError, match="bundled PostgreSQL tools are missing"):
+            backup_mod._find_pg_tool("pg_dump")
 
     def test_finds_tool_via_which_when_in_path(self, monkeypatch, tmp_path):
         """shutil.which() is tried when pg_bin_dir is unset; full path is returned."""

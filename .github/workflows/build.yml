@@ -12,6 +12,13 @@ permissions:
 env:
   PBS_TAG: "20260414"
   PBS_PYTHON: "3.12.13"
+  # Bundled pg_dump/pg_restore, built from source (macOS). Pin version + SHA256
+  # for every tarball. pg_dump 17.x dumps the embedded server (17) and any
+  # external server <= 17.
+  PG_VERSION: "17.10"
+  PG_SHA256: "078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90"
+  OPENSSL_VERSION: "3.5.6"
+  OPENSSL_SHA256: "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736"
 
 jobs:
   # ── Prepare release (tag builds only) ────────────────────────────────────
@@ -115,32 +122,48 @@ jobs:
           PY
           echo "Electron package version set to $VERSION"
 
+      # Download + SHA256-verify (against the release's SHA256SUMS) before extract.
       - name: Download Python standalone (arm64)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
-          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
-          echo "Downloading arm64: $URL"
+          set -eo pipefail
+          F="cpython-${PBS_PYTHON}+${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
+          curl -fsSL -o "$F" "$BASE/$F"
+          curl -fsSL -o SHA256SUMS "$BASE/SHA256SUMS"
+          grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/mac-arm64"
-          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-arm64"
+          tar xz -f "$F" -C "electron/python-standalone/mac-arm64"
+          rm -f "$F"
 
       - name: Download Python standalone (x64)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
-          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
-          echo "Downloading x64: $URL"
+          set -eo pipefail
+          F="cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
+          curl -fsSL -o "$F" "$BASE/$F"
+          curl -fsSL -o SHA256SUMS "$BASE/SHA256SUMS"
+          grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/mac-x64"
-          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-x64"
+          tar xz -f "$F" -C "electron/python-standalone/mac-x64"
+          rm -f "$F"
 
       - name: Download Python standalone
         if: matrix.os != 'macos-latest'
         shell: bash
         run: |
-          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
-          echo "Downloading: $URL"
+          set -eo pipefail
+          F="cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
+          curl -fsSL -o "$F" "$BASE/$F"
+          curl -fsSL -o SHA256SUMS "$BASE/SHA256SUMS"
+          grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
-          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
+          tar xz -f "$F" -C "electron/python-standalone/${{ matrix.standalone_dir }}"
+          rm -f "$F"
 
       - name: Install Python deps into standalone (arm64)
         if: matrix.os == 'macos-latest'
@@ -173,6 +196,59 @@ jobs:
           fi
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
+
+      # ── Bundled pg_dump/pg_restore (macOS) ──────────────────────────────
+      # Built from source for both arches in this one arm64 job (x86_64 slice
+      # cross-compiled with Rosetta). Cached on version + script hash so normal
+      # builds skip the multi-minute compile.
+      - name: Cache pg-tools (macOS)
+        if: matrix.os == 'macos-latest'
+        id: pg-tools-cache
+        uses: actions/cache@v4
+        with:
+          path: electron/pg-tools
+          key: pg-tools-${{ runner.os }}-pg${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools.sh') }}
+
+      - name: Build bundled pg_dump/pg_restore (macOS, both arches)
+        if: matrix.os == 'macos-latest' && steps.pg-tools-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          bash electron/scripts/build-pg-tools.sh arm64  "$PWD/electron/pg-tools/mac-arm64"
+          bash electron/scripts/build-pg-tools.sh x86_64 "$PWD/electron/pg-tools/mac-x64"
+
+      - name: Collect + verify third-party licenses
+        shell: bash
+        run: |
+          set -eo pipefail
+          OS="${{ matrix.os }}"
+          PBS_BASE="electron/python-standalone"
+          PYVER="python3.$(echo "$PBS_PYTHON" | cut -d. -f2)"
+          ARGS=()
+          add_tree() {                       # $1 = standalone dir (e.g. mac-arm64)
+            ARGS+=(--pbs-root "$PBS_BASE/$1")
+            if [ "$OS" = "windows-latest" ]; then
+              ARGS+=(--site-packages "$PBS_BASE/$1/python/Lib/site-packages")
+            else
+              ARGS+=(--site-packages "$PBS_BASE/$1/python/lib/$PYVER/site-packages")
+            fi
+          }
+          if [ "$OS" = "macos-latest" ]; then
+            add_tree mac-arm64               # universal app bundles BOTH Python trees,
+            add_tree mac-x64                 # so collect/check both (audit-quality)
+            # PG/OpenSSL license texts are arch-independent; one tree suffices.
+            ARGS+=(--pg-licenses electron/pg-tools/mac-arm64/licenses)
+            PY="$PBS_BASE/mac-arm64/python/bin/python3"
+          elif [ "$OS" = "windows-latest" ]; then
+            add_tree "${{ matrix.standalone_dir }}"
+            PY="$PBS_BASE/${{ matrix.standalone_dir }}/python/python.exe"
+          else
+            add_tree "${{ matrix.standalone_dir }}"
+            PY="$PBS_BASE/${{ matrix.standalone_dir }}/python/bin/python3"
+          fi
+          "$PY" electron/scripts/collect_licenses.py --out licenses \
+            --node-modules electron/node_modules "${ARGS[@]}"
+          "$PY" electron/scripts/collect_licenses.py --check --out licenses \
+            --node-modules electron/node_modules "${ARGS[@]}"
 
       - name: Build macOS (production - signed + notarized)
         if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
@@ -210,6 +286,34 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
+
+      # Prove the licenses/ folder actually made it into the packaged artifact —
+      # the pre-build check only proves licenses/ existed before electron-builder
+      # ran, not that extraResources put it in the .app/.exe/.AppImage resources.
+      - name: Verify licenses landed in the packaged artifact
+        shell: bash
+        run: |
+          set -eo pipefail
+          OS="${{ matrix.os }}"
+          case "$OS" in
+            macos-latest)
+              RES="$(ls -d electron/dist/mac*/Celerp.app/Contents/Resources 2>/dev/null | head -1)" ;;
+            windows-latest)
+              RES="electron/dist/win-unpacked/resources" ;;
+            *)
+              RES="electron/dist/linux-unpacked/resources" ;;
+          esac
+          echo "Inspecting: $RES/licenses"
+          test -n "$RES" && test -d "$RES/licenses"
+          test -f "$RES/licenses/THIRD-PARTY-NOTICES.txt"
+          test -d "$RES/licenses/python"
+          test -d "$RES/licenses/electron"
+          test -d "$RES/licenses/chromium"
+          if [ "$OS" = "macos-latest" ]; then
+            test -d "$RES/licenses/postgresql"
+            test -d "$RES/licenses/openssl"
+          fi
+          echo "OK: third-party licenses present in packaged artifact"
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"

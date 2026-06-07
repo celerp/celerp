@@ -145,18 +145,15 @@ function waitForPort(port, attempts = 60, intervalMs = 500) {
 }
 
 /** Return the directory containing bundled pg_dump / pg_restore binaries.
- *  Empty string on non-Mac or when binaries cannot be located (caller falls
- *  back to system PATH and macOS candidate-dir probing). */
+ *  Dev and non-macOS return "" → the Python side falls back to system PATH.
+ *  Packaged macOS ALWAYS returns the bundle path, even if the binary is absent:
+ *  a packaged build that can't find its own bundled tools must fail loudly
+ *  (Python raises a clear error), not silently dump with a system pg_dump of
+ *  unknown version. */
 function pgBinDir() {
-  if (process.platform !== "darwin") return "";
-  try {
-    const rawPkg = require.resolve(
-      `@embedded-postgres/darwin-${process.arch}/package.json`
-    );
-    const binDir = path.join(rewriteAsarPath(path.dirname(rawPkg)), "native", "bin");
-    if (fs.existsSync(path.join(binDir, "pg_dump"))) return binDir;
-  } catch (_) {}
-  return "";
+  if (process.platform !== "darwin") return "";        // phase 2 for linux/win
+  if (IS_DEV) return "";                                // dev: fall back to PATH
+  return path.join(process.resourcesPath, `pg-${process.arch}`, "bin");
 }
 
 /** Resolve the Python binary — packaged apps bundle a standalone Python. */

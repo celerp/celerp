@@ -63,10 +63,15 @@ def _find_pg_tool(name: str) -> str:
     Resolution order:
       1. settings.pg_bin_dir — explicit override; set by the Electron app via
          CELERP_PG_BIN_DIR (points to bundled tools inside the .app bundle) or
-         by the user via config.toml [backup] pg_bin_dir.
+         by the user via config.toml [backup] pg_bin_dir. When set it is
+         AUTHORITATIVE: the tool must resolve here or we fail loudly — no PATH
+         fallback. A packaged build pointed at a missing bundle must not silently
+         dump with a system pg_dump of unknown version (incompatible/corrupt
+         backups).
       2. shutil.which() — respects the current process PATH; works for any
          installation that correctly exports its bin dir (terminal, asdf, nix,
-         mise, MacPorts, unversioned Homebrew formula, …).
+         mise, MacPorts, unversioned Homebrew formula, …). Only reached when
+         pg_bin_dir is unset (dev, self-hosted without an override).
       3. macOS candidate dirs — legacy fallback for .app / Electron builds that
          predate the CELERP_PG_BIN_DIR injection (Homebrew, Postgres.app, EDB).
 
@@ -77,6 +82,14 @@ def _find_pg_tool(name: str) -> str:
         candidate = Path(settings.pg_bin_dir) / name
         if candidate.is_file():
             return str(candidate)
+        # Explicit bundle dir given but the tool isn't in it: packaging error or
+        # a bad user override. Fail loudly rather than falling back to a system
+        # pg_dump of unknown version, which risks an incompatible/corrupt backup.
+        raise FileNotFoundError(
+            f"{name} not found in configured pg_bin_dir ({settings.pg_bin_dir}). "
+            "The bundled PostgreSQL tools are missing — reinstall the app, or set "
+            "CELERP_PG_BIN_DIR to a valid client-tools directory."
+        )
     if found := shutil.which(name):
         return found
     if sys.platform == "darwin":

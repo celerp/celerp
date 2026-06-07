@@ -54,6 +54,7 @@ htmlcov/
 docs/plans/
 docs/audits/
 docs/research/
+docs/*.md
 
 # Client-specific plugins (not for public repo)
 plugins/
@@ -65,6 +66,10 @@ premium_modules/
 electron/node_modules/
 electron/dist/
 electron/python-standalone/
+electron/pg-tools/
+
+# Generated third-party license bundle (assembled in CI from real artifacts).
+/licenses/
 
 # Runtime data (not code)
 context/
