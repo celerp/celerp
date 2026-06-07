@@ -135,10 +135,7 @@
           "to": "licenses"
         }
       ],
-      "x64ArchFiles": [
-        "Contents/Resources/python-*/**",
-        "Contents/Resources/pg-*/**"
-      ],
+      "x64ArchFiles": "Contents/Resources/{python,pg}-*/**",
       "mergeASARs": false
     },
     "dmg": {

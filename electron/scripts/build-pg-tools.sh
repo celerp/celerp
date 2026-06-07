@@ -60,10 +60,14 @@ curl -fsSL -o postgresql.tar.bz2 \
   "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2"
 echo "${PG_SHA256}  postgresql.tar.bz2" | shasum -a 256 -c -
 
-# ── 2. Build OpenSSL static (no shared dylibs to ship) ───────────────────────
+# ── 2. Build OpenSSL (shared) ────────────────────────────────────────────────
+# Dynamic, NOT static: a static libcrypto pulls _atexit/_pthread_exit into
+# libpq.5.dylib, which trips PostgreSQL's libpq-refs-stamp check ("libpq must not
+# call exit"). Dynamic linking leaves those as undefined refs (allowed); we ship
+# libssl/libcrypto next to libpq and rewrite their install names (§5).
 tar xzf openssl.tar.gz
 ( cd "openssl-${OPENSSL_VERSION}"
-  ./Configure "$OSSL_TARGET" no-shared no-tests no-docs \
+  ./Configure "$OSSL_TARGET" shared no-tests no-docs \
     --prefix="$OSSL_PREFIX" --openssldir="$OSSL_PREFIX/ssl"
   make -j"$JOBS"
   make install_sw )
@@ -98,6 +102,13 @@ LIBPQ_SRC="$(find src/interfaces/libpq -maxdepth 1 -name 'libpq.*.dylib' | head 
 [ -n "$LIBPQ_SRC" ] || { echo "ERROR: libpq dylib not found after build" >&2; exit 1; }
 LIBPQ="$(basename "$LIBPQ_SRC")"
 cp "$LIBPQ_SRC" "$OUT_DIR/lib/"
+# Bundle the OpenSSL dylibs libpq dynamically links against (§2).
+LIBSSL_SRC="$(find "$OSSL_PREFIX/lib" -maxdepth 1 -name 'libssl.*.dylib' | head -1)"
+LIBCRYPTO_SRC="$(find "$OSSL_PREFIX/lib" -maxdepth 1 -name 'libcrypto.*.dylib' | head -1)"
+[ -n "$LIBSSL_SRC" ] && [ -n "$LIBCRYPTO_SRC" ] || { echo "ERROR: OpenSSL dylibs not found in $OSSL_PREFIX/lib" >&2; exit 1; }
+LIBSSL="$(basename "$LIBSSL_SRC")"
+LIBCRYPTO="$(basename "$LIBCRYPTO_SRC")"
+cp "$LIBSSL_SRC" "$LIBCRYPTO_SRC" "$OUT_DIR/lib/"
 
 # ── 4b. Capture exact license texts from the built source (for licenses/) ────
 LIC="$OUT_DIR/licenses"
@@ -108,11 +119,27 @@ cp "$WORK/openssl-${OPENSSL_VERSION}/LICENSE.txt" "$LIC/openssl/LICENSE.txt"
   && cp "$WORK/openssl-${OPENSSL_VERSION}/NOTICE.txt" "$LIC/openssl/NOTICE.txt" || true
 
 # ── 5. Make relocatable: @rpath instead of build-machine paths ───────────────
+# Set each dylib's own install name and repoint every inter-dependency
+# (libpq->ssl/crypto, ssl->crypto, bins->libpq) at @rpath. @loader_path rpaths
+# let each file find the others in the bundled lib/ dir on any machine.
+repoint() {                     # repoint $1's dep matching regex $2 -> @rpath/$3
+  local f="$1" old
+  old="$(otool -L "$f" | awk -v n="$2" '$1 ~ n {print $1; exit}')"
+  [ -n "$old" ] && install_name_tool -change "$old" "@rpath/$3" "$f"
+}
+install_name_tool -id "@rpath/${LIBCRYPTO}" "$OUT_DIR/lib/${LIBCRYPTO}"
+install_name_tool -id "@rpath/${LIBSSL}"    "$OUT_DIR/lib/${LIBSSL}"
+repoint "$OUT_DIR/lib/${LIBSSL}" 'libcrypto\.' "$LIBCRYPTO"
+install_name_tool -add_rpath "@loader_path" "$OUT_DIR/lib/${LIBSSL}"
 install_name_tool -id "@rpath/${LIBPQ}" "$OUT_DIR/lib/${LIBPQ}"
+repoint "$OUT_DIR/lib/${LIBPQ}" 'libssl\.'    "$LIBSSL"
+repoint "$OUT_DIR/lib/${LIBPQ}" 'libcrypto\.' "$LIBCRYPTO"
+install_name_tool -add_rpath "@loader_path" "$OUT_DIR/lib/${LIBPQ}"
 for b in pg_dump pg_restore; do
   bin="$OUT_DIR/bin/$b"
-  old="$(otool -L "$bin" | awk '/libpq\./{print $1; exit}')"
-  [ -n "$old" ] && install_name_tool -change "$old" "@rpath/${LIBPQ}" "$bin"
+  repoint "$bin" 'libpq\.'     "$LIBPQ"
+  repoint "$bin" 'libssl\.'    "$LIBSSL"
+  repoint "$bin" 'libcrypto\.' "$LIBCRYPTO"
   install_name_tool -add_rpath "@loader_path/../lib" "$bin"
 done
 
@@ -127,12 +154,25 @@ audit() {
     exit 1
   fi
 }
-for f in "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore" "$OUT_DIR/lib/${LIBPQ}"; do
+for f in "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore" \
+         "$OUT_DIR/lib/${LIBPQ}" "$OUT_DIR/lib/${LIBSSL}" "$OUT_DIR/lib/${LIBCRYPTO}"; do
   audit "$f"
   if ! lipo -archs "$f" | tr ' ' '\n' | grep -qx "$ARCH"; then
     echo "ARCH FAIL: $f is not $ARCH (got: $(lipo -archs "$f"))" >&2
     exit 1
   fi
+done
+
+# ── 6b. Re-sign (ad-hoc) ─────────────────────────────────────────────────────
+# install_name_tool invalidated the linker-applied signatures, and arm64 macOS
+# refuses to run Mach-O with a broken/absent signature (the smoke test below
+# would be "Killed: 9"). electron-builder re-signs with the real Developer ID at
+# packaging time; this ad-hoc pass just makes them runnable here. Sign dylibs
+# before the binaries that load them.
+for f in "$OUT_DIR/lib/${LIBCRYPTO}" "$OUT_DIR/lib/${LIBSSL}" "$OUT_DIR/lib/${LIBPQ}" \
+         "$OUT_DIR/bin/pg_dump" "$OUT_DIR/bin/pg_restore"; do
+  codesign --remove-signature "$f" >/dev/null 2>&1 || true
+  codesign -s - -f "$f"
 done
 
 # ── 7. Smoke test (x86_64 binary runs under Rosetta on the arm64 runner) ─────
