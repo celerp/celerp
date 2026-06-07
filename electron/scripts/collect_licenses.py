@@ -266,19 +266,25 @@ def embedded_postgres_roots(node_modules: Path) -> list[Path]:
     return roots
 
 
-def collect_embedded_postgres(node_modules: Path | None, out: Path) -> None:
-    """@embedded-postgres ships the actual PostgreSQL *server* binaries, whose
-    own COPYRIGHT/LICENSE files live deeper than the wrapper package root. Copy
-    them recursively so the bundled server is attributed — not just the wrapper's
-    package.json license (which the generic npm pass already handles)."""
+def collect_embedded_postgres(node_modules: Path | None, out: Path, extra: str | None = None) -> None:
+    """@embedded-postgres ships the actual PostgreSQL *server* binaries plus the
+    native libs they link, but only its own wrapper LICENSE.md. Copy that, then
+    add the curated upstream license texts for the bundled native libs (ICU,
+    Kerberos, libiconv/gettext LGPL, lz4, zstd, libxml2, libedit, libuuid, zlib)
+    which are NOT present in the package. Only runs when the server is actually
+    bundled (darwin), so non-macOS builds get no embedded-postgres/ folder."""
     if not node_modules:
         return
+    roots = embedded_postgres_roots(node_modules)
+    if not roots:
+        return
     files: list[Path] = []
-    for r in embedded_postgres_roots(node_modules):
+    for r in roots:
         if r.is_dir():
             files += [p for p in r.rglob("*") if p.is_file() and is_license_name(p.name)]
-    if files:
-        copy_dedup(out / "embedded-postgres", files)
+    copy_dedup(out / "embedded-postgres", files)
+    if extra and Path(extra).is_dir():
+        copy_dedup(out / "embedded-postgres", [p for p in Path(extra).iterdir() if p.is_file()])
 
 
 # ── modes ────────────────────────────────────────────────────────────────────
@@ -300,7 +306,7 @@ def do_collect(a: argparse.Namespace) -> int:
     collect_pip_packages(a.site_packages or [], out)
     collect_electron(Path(a.node_modules) if a.node_modules else None, out)
     collect_npm(Path(a.node_modules) if a.node_modules else None, out)
-    collect_embedded_postgres(Path(a.node_modules) if a.node_modules else None, out)
+    collect_embedded_postgres(Path(a.node_modules) if a.node_modules else None, out, a.extra_embedded_postgres)
 
     summary = [
         f"python-packages : {_count(out, 'python-packages')}",
@@ -342,9 +348,14 @@ def do_check(a: argparse.Namespace) -> int:
             seen.add(key)
             if not non_empty_dir(out / "npm-packages" / key):
                 missing.append(f"npm package '{name}@{ver}' has no license file or declared license")
-        # @embedded-postgres ships PostgreSQL server binaries — require their texts.
-        if embedded_postgres_roots(nm) and not non_empty_dir(out / "embedded-postgres"):
-            missing.append("embedded-postgres (bundled PostgreSQL server binaries) has no license text")
+        # @embedded-postgres ships PostgreSQL server binaries + native libs.
+        if embedded_postgres_roots(nm):
+            if not non_empty_dir(out / "embedded-postgres"):
+                missing.append("embedded-postgres (bundled PostgreSQL server binaries) has no license text")
+            # The curated upstream texts for the bundled native libs must land too
+            # (LGPL-2.1 is the sentinel; its absence means --extra wiring is broken).
+            elif not (out / "embedded-postgres" / "LGPL-2.1.txt").is_file():
+                missing.append("embedded-postgres native-lib license texts missing (expected LGPL-2.1.txt etc.)")
 
     seen_py: set[str] = set()
     for spd in (a.site_packages or []):
@@ -375,6 +386,7 @@ def main() -> int:
     p.add_argument("--site-packages", action="append", help="repeatable")
     p.add_argument("--pbs-root", action="append", help="python-build-standalone tree; repeatable")
     p.add_argument("--pg-licenses", help="dir with postgresql/ openssl/ license subdirs (macOS)")
+    p.add_argument("--extra-embedded-postgres", help="curated upstream license texts for the embedded server's bundled native libs")
     p.add_argument("--package-json", help="(unused; kept for compatibility)")
     p.add_argument("--check", action="store_true", help="verify instead of collect")
     a = p.parse_args()
