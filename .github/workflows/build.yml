@@ -216,21 +216,9 @@ jobs:
           bash electron/scripts/build-pg-tools.sh arm64  "$PWD/electron/pg-tools/mac-arm64"
           bash electron/scripts/build-pg-tools.sh x86_64 "$PWD/electron/pg-tools/mac-x64"
 
-      # Drop the StackBuilder GUI DLLs (wxWidgets + libcurl) that the Windows
-      # embedded-postgres package vendors. postgres.exe does not link them
-      # (verified via PE imports), so removing them shrinks the build and the
-      # attribution surface (no wxWindows Licence to ship).
-      - name: Prune unused StackBuilder DLLs from embedded Postgres (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: bash
-        run: |
-          set -eo pipefail
-          D="electron/node_modules/@embedded-postgres/windows-x64/native/bin"
-          rm -f "$D"/wx*329u_*.dll "$D"/libcurl.dll
-          if ls "$D"/wx*.dll "$D"/libcurl.dll >/dev/null 2>&1; then
-            echo "ERROR: StackBuilder DLLs still present after prune" >&2; exit 1
-          fi
-          echo "Pruned wxWidgets + libcurl from embedded Postgres."
+      # Note: the StackBuilder GUI DLLs (wxWidgets + libcurl) the Windows
+      # embedded-postgres package vendors are pruned in electron/after-pack.js
+      # (reliable on the real packaged tree) and verified by the post-build step.
 
       - name: Collect + verify third-party licenses
         shell: bash
@@ -339,6 +327,17 @@ jobs:
           if [ "$OS" = "macos-latest" ]; then
             test -d "$RES/licenses/postgresql"   # from the bundled pg_dump tools
             test -d "$RES/licenses/openssl"
+          fi
+          # Windows: the StackBuilder DLLs (wxWidgets + libcurl) must have been
+          # pruned by afterPack — fail loudly if any leaked into the package
+          # (otherwise we'd ship the wxWindows-licensed DLLs without attribution).
+          if [ "$OS" = "windows-latest" ]; then
+            BIN="$RES/app.asar.unpacked/node_modules/@embedded-postgres/windows-x64/native/bin"
+            if ls "$BIN"/wx*.dll "$BIN"/libcurl.dll >/dev/null 2>&1; then
+              echo "ERROR: StackBuilder DLLs leaked into the Windows package" >&2
+              ls "$BIN"/wx*.dll "$BIN"/libcurl.dll 2>/dev/null >&2
+              exit 1
+            fi
           fi
           echo "OK: third-party licenses present in packaged artifact"
 
