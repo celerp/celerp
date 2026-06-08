@@ -216,6 +216,9 @@ async function startPostgres(dbPort) {
 function runMigrations(dbUrl) {
   const env = {
     ...process.env,
+    // Force UTF-8 file I/O — Windows defaults to cp1252, which crashes on the
+    // app's UTF-8 data files (locales, config). Harmless on macOS/Linux.
+    PYTHONUTF8: "1",
     DATABASE_URL: dbUrl,
     PYTHONPATH: APP_DIR,
     ALEMBIC_VERSION_LOCATIONS: _moduleAlembicLocations(),
@@ -263,7 +266,7 @@ function runModuleSetup() {
   try {
     execFileSync(pythonBin(), [setupScript, "--data-dir", DATA_DIR], {
       cwd: APP_DIR,
-      env: { ...process.env, PYTHONPATH: APP_DIR },
+      env: { ...process.env, PYTHONUTF8: "1", PYTHONPATH: APP_DIR },
       stdio: "pipe",
     });
     console.log("[modules] module_setup.py complete");
@@ -309,6 +312,7 @@ function startApi(dbUrl, cfg) {
       VIRTUAL_ENV: undefined,
       CONDA_PREFIX: undefined,
       CONDA_DEFAULT_ENV: undefined,
+      PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
       DATABASE_URL: dbUrl,
       JWT_SECRET: getOrCreateJwtSecret(),
       PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
@@ -358,6 +362,7 @@ function startUi(dbUrl, cfg) {
       CONDA_PREFIX: undefined,
       CONDA_DEFAULT_ENV: undefined,
       API_URL: `http://127.0.0.1:${apiPort}`,
+      PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
       DATABASE_URL: dbUrl,
       JWT_SECRET: getOrCreateJwtSecret(),
       PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
