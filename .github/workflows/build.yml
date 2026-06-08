@@ -19,6 +19,10 @@ env:
   PG_SHA256: "078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90"
   OPENSSL_VERSION: "3.5.6"
   OPENSSL_SHA256: "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736"
+  # Windows pg_dump/pg_restore: extracted from the official PostgreSQL (EDB)
+  # Windows binaries. The embedded server has no pg_dump, so backup needs these.
+  PG_WIN_VERSION: "17.10-1"
+  PG_WIN_SHA256: "f9aafca58e7026a1ef2caeee711acf761671e57904d430adc85f468374f5a821"
 
 jobs:
   # ── Prepare release (tag builds only) ────────────────────────────────────
@@ -216,6 +220,38 @@ jobs:
           bash electron/scripts/build-pg-tools.sh arm64  "$PWD/electron/pg-tools/mac-arm64"
           bash electron/scripts/build-pg-tools.sh x86_64 "$PWD/electron/pg-tools/mac-x64"
 
+      # ── Bundled pg_dump/pg_restore (Windows) ────────────────────────────
+      # The @embedded-postgres Windows package ships no pg_dump, so extract it +
+      # its transitive DLL closure from the official PostgreSQL (EDB) binaries.
+      - name: Cache pg-tools (Windows)
+        if: matrix.os == 'windows-latest'
+        id: pg-tools-win-cache
+        uses: actions/cache@v4
+        with:
+          path: electron/pg-tools/win
+          key: pg-tools-win-${{ env.PG_WIN_VERSION }}-${{ env.PG_WIN_SHA256 }}
+
+      - name: Fetch bundled pg_dump/pg_restore (Windows)
+        if: matrix.os == 'windows-latest' && steps.pg-tools-win-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -eo pipefail
+          URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_WIN_VERSION}-windows-x64-binaries.zip"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o pg-win.zip "$URL"
+          echo "${PG_WIN_SHA256} *pg-win.zip" | sha256sum -c -
+          DEST="electron/pg-tools/win/bin"
+          mkdir -p "$DEST"
+          # pg_dump/pg_restore + their transitive DLL closure (resolved via objdump):
+          # libpq, OpenSSL (crypto/ssl), gettext+iconv (LGPL), lz4, zstd, mingw winpthreads.
+          7z e pg-win.zip -o"$DEST" -y \
+            "pgsql/bin/pg_dump.exe" "pgsql/bin/pg_restore.exe" \
+            "pgsql/bin/libpq.dll" "pgsql/bin/libcrypto-3-x64.dll" "pgsql/bin/libssl-3-x64.dll" \
+            "pgsql/bin/libintl-9.dll" "pgsql/bin/libiconv-2.dll" "pgsql/bin/libwinpthread-1.dll" \
+            "pgsql/bin/liblz4.dll" "pgsql/bin/libzstd.dll" >/dev/null
+          rm -f pg-win.zip
+          ls "$DEST"
+          "$DEST/pg_dump.exe" --version   # smoke test (runs with the bundled DLLs)
+
       # Note: the StackBuilder GUI DLLs (wxWidgets + libcurl) the Windows
       # embedded-postgres package vendors are pruned in electron/after-pack.js
       # (reliable on the real packaged tree) and verified by the post-build step.
@@ -240,6 +276,9 @@ jobs:
           # @embedded-postgres/<platform> package installs via the wrapper's
           # optional deps), so each passes its own curated native-lib license set.
           EP="electron/licenses-extra"
+          # Bundled Python interpreter's native-lib licenses (stripped from the
+          # install_only archive); same set on every platform.
+          ARGS+=(--extra-python "$EP/python-standalone")
           if [ "$OS" = "macos-latest" ]; then
             add_tree mac-arm64               # universal app bundles BOTH Python trees,
             add_tree mac-x64                 # so collect/check both (audit-quality)
@@ -338,12 +377,13 @@ jobs:
           test -n "$RES" && test -d "$RES/licenses"
           test -f "$RES/licenses/THIRD-PARTY-NOTICES.txt"
           test -d "$RES/licenses/python"
+          test -f "$RES/licenses/python/LICENSE.openssl-3.txt"   # bundled-lib set landed
           test -d "$RES/licenses/electron"
           test -d "$RES/licenses/chromium"
           # embedded PostgreSQL server is bundled on every platform -> its
           # curated native-lib attribution must be present.
           test -d "$RES/licenses/embedded-postgres"
-          test -f "$RES/licenses/embedded-postgres/NOTICE.txt"
+          test -f "$RES/licenses/embedded-postgres/zlib-LICENSE.txt"
           if [ "$OS" = "macos-latest" ]; then
             test -d "$RES/licenses/postgresql"   # from the bundled pg_dump tools
             test -d "$RES/licenses/openssl"
@@ -358,6 +398,9 @@ jobs:
               ls "$BIN"/wx*.dll "$BIN"/libcurl.dll 2>/dev/null >&2
               exit 1
             fi
+            # bundled pg_dump (for backup) + libpq must be packaged
+            test -f "$RES/pg-win/bin/pg_dump.exe"
+            test -f "$RES/pg-win/bin/libpq.dll"
           fi
           echo "OK: third-party licenses present in packaged artifact"
 

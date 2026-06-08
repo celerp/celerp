@@ -1,29 +1,3 @@
-THIRD-PARTY NOTICES - embedded PostgreSQL server (@embedded-postgres)
-====================================================================
-
-The @embedded-postgres npm package ships a prebuilt PostgreSQL server
-(postgres, initdb, pg_ctl, libpq) plus the native libraries it links against,
-but includes only its own wrapper license (MIT, see LICENSE.md). The upstream
-license texts for the bundled native libraries are NOT in the package, so they
-are reproduced here (sourced from each project upstream).
-
-Bundled native library -> license -> text in this distribution:
-
-  PostgreSQL (postgres, initdb, pg_ctl, libpq)  PostgreSQL License   ../postgresql/COPYRIGHT
-  OpenSSL (libssl, libcrypto)                   Apache-2.0           ../openssl/LICENSE.txt
-  ICU (libicudata, libicui18n, libicuuc)        Unicode/ICU License  icu-LICENSE.txt
-  GNU libiconv (libiconv)                       LGPL-2.1-or-later    LGPL-2.1.txt
-  GNU gettext runtime (libintl)                 LGPL-2.1-or-later    LGPL-2.1.txt
-  MIT Kerberos (libkrb5, libgssapi_krb5,
-    libk5crypto, libkrb5support, libcom_err)    MIT (krb5)           kerberos-NOTICE.txt
-  lz4 (liblz4)                                  BSD-2-Clause         lz4-LICENSE.txt
-  Zstandard (libzstd)                           BSD-3-Clause         zstd-LICENSE.txt
-  libxml2 (libxml2)                             MIT                  libxml2-LICENSE.txt
-  NetBSD libedit (libedit)                      BSD-3-Clause         libedit-LICENSE.txt
-  util-linux libuuid (libuuid)                  BSD-3-Clause         libuuid-BSD-3-Clause.txt
-  zlib (libz)                                   zlib License         zlib-LICENSE.txt
-
-LGPL note: libiconv and the gettext runtime (libintl) are licensed under
-LGPL-2.1-or-later. They are linked dynamically as separate .dylib files, so a
-recipient may replace them with a compatible build of their own. The complete
-LGPL-2.1 text is in LGPL-2.1.txt.
+This software dynamically links GNU libiconv and the GNU gettext runtime library
+(libintl), licensed under the GNU Lesser General Public License, version 2.1.
+Full text: LGPL-2.1.txt.

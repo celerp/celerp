@@ -187,7 +187,7 @@ def collect_pg(pg_licenses: Path | None, out: Path) -> None:
             copy_dedup(out / comp, license_files(src))
 
 
-def collect_python(pbs_roots: list[str], out: Path) -> None:
+def collect_python(pbs_roots: list[str], out: Path, extra: str | None = None) -> None:
     for root in pbs_roots:
         base = Path(root)
         if not base.is_dir():
@@ -200,6 +200,11 @@ def collect_python(pbs_roots: list[str], out: Path) -> None:
             and ".dist-info" not in str(p)
         ]
         copy_dedup(out / "python", found)
+    # The install_only python-build-standalone archive strips the licenses for the
+    # libraries it compiles in (OpenSSL, SQLite, libffi, ncurses, xz, ...), which we
+    # still redistribute inside the extension modules. Ship the curated set.
+    if extra and Path(extra).is_dir():
+        copy_dedup(out / "python", [p for p in Path(extra).iterdir() if p.is_file()])
 
 
 def collect_pip_packages(site_packages: list[str], out: Path) -> None:
@@ -309,7 +314,7 @@ def do_collect(a: argparse.Namespace) -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     collect_pg(Path(a.pg_licenses) if a.pg_licenses else None, out)
-    collect_python(a.pbs_root or [], out)
+    collect_python(a.pbs_root or [], out, a.extra_python)
     collect_pip_packages(a.site_packages or [], out)
     collect_electron(Path(a.node_modules) if a.node_modules else None, out)
     collect_npm(Path(a.node_modules) if a.node_modules else None, out)
@@ -345,6 +350,10 @@ def do_check(a: argparse.Namespace) -> int:
         if not non_empty_dir(out / comp):
             missing.append(f"required component '{comp}' has no license text")
 
+    # The interpreter's bundled-lib license set must land too (openssl-3 sentinel).
+    if a.extra_python and not (out / "python" / "LICENSE.openssl-3.txt").is_file():
+        missing.append("python bundled-lib license texts missing (curated set absent)")
+
     seen: set[str] = set()
     if a.node_modules:
         nm = Path(a.node_modules)
@@ -360,11 +369,11 @@ def do_check(a: argparse.Namespace) -> int:
             if not non_empty_dir(out / "embedded-postgres"):
                 missing.append("embedded-postgres (bundled PostgreSQL server binaries) has no license text")
             # The curated upstream texts for the bundled native libs must land too.
-            # NOTICE.txt is the sentinel (every curated set has one; the bare
-            # @embedded-postgres package ships only LICENSE.md). Its absence means
-            # the --extra-embedded-postgres wiring is broken for this platform.
-            elif not (out / "embedded-postgres" / "NOTICE.txt").is_file():
-                missing.append("embedded-postgres native-lib license texts missing (curated NOTICE.txt absent)")
+            # zlib-LICENSE.txt is the sentinel (present in every curated set; the
+            # bare @embedded-postgres package ships only LICENSE.md). Its absence
+            # means the --extra-embedded-postgres wiring is broken for this platform.
+            elif not (out / "embedded-postgres" / "zlib-LICENSE.txt").is_file():
+                missing.append("embedded-postgres native-lib license texts missing (curated set absent)")
 
     seen_py: set[str] = set()
     for spd in (a.site_packages or []):
@@ -394,6 +403,7 @@ def main() -> int:
     p.add_argument("--node-modules")
     p.add_argument("--site-packages", action="append", help="repeatable")
     p.add_argument("--pbs-root", action="append", help="python-build-standalone tree; repeatable")
+    p.add_argument("--extra-python", help="curated license texts for the interpreter's bundled native libs")
     p.add_argument("--pg-licenses", help="dir with postgresql/ openssl/ license subdirs (macOS)")
     p.add_argument("--extra-embedded-postgres", help="curated upstream license texts for the embedded server's bundled native libs")
     p.add_argument("--package-json", help="(unused; kept for compatibility)")

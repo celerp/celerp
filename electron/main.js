@@ -151,9 +151,14 @@ function waitForPort(port, attempts = 60, intervalMs = 500) {
  *  (Python raises a clear error), not silently dump with a system pg_dump of
  *  unknown version. */
 function pgBinDir() {
-  if (process.platform !== "darwin") return "";        // phase 2 for linux/win
   if (IS_DEV) return "";                                // dev: fall back to PATH
-  return path.join(process.resourcesPath, `pg-${process.arch}`, "bin");
+  if (process.platform === "darwin") {
+    return path.join(process.resourcesPath, `pg-${process.arch}`, "bin");
+  }
+  if (process.platform === "win32") {
+    return path.join(process.resourcesPath, "pg-win", "bin");
+  }
+  return "";                                            // linux: pg_dump not yet bundled
 }
 
 /** Resolve the Python binary — packaged apps bundle a standalone Python. */

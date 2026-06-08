@@ -87,6 +87,10 @@
           "to": "python-x64"
         },
         {
+          "from": "pg-tools/win",
+          "to": "pg-win"
+        },
+        {
           "from": "../licenses",
           "to": "licenses"
         }

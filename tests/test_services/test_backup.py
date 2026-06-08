@@ -318,6 +318,19 @@ class TestFindPgTool:
         result = backup_mod._find_pg_tool("pg_dump")
         assert result == str(bin_dir / "pg_dump")
 
+    def test_pg_bin_dir_finds_exe_on_windows(self, monkeypatch, tmp_path):
+        """On Windows the bundled tool is pg_dump.exe; resolution must find it."""
+        import sys as _sys
+        from celerp.services import backup as backup_mod
+        monkeypatch.setattr(_sys, "platform", "win32")
+        bin_dir = tmp_path / "pgwin"
+        bin_dir.mkdir()
+        (bin_dir / "pg_dump.exe").write_text("")
+        monkeypatch.setattr(backup_mod.settings, "pg_bin_dir", str(bin_dir))
+
+        result = backup_mod._find_pg_tool("pg_dump")
+        assert result == str(bin_dir / "pg_dump.exe")
+
     def test_pg_bin_dir_is_authoritative_no_path_fallback(self, monkeypatch, tmp_path):
         """If pg_bin_dir is set but the tool isn't there, fail loudly — do NOT
         fall back to PATH. A packaged build pointed at a missing bundle must not

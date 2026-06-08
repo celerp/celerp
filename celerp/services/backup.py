@@ -78,10 +78,13 @@ def _find_pg_tool(name: str) -> str:
     Raises FileNotFoundError with a clear message if the tool cannot be found.
     """
     import shutil
+    # On Windows the tools are pg_dump.exe / pg_restore.exe.
+    names = [name, f"{name}.exe"] if sys.platform == "win32" else [name]
     if settings.pg_bin_dir:
-        candidate = Path(settings.pg_bin_dir) / name
-        if candidate.is_file():
-            return str(candidate)
+        for n in names:
+            candidate = Path(settings.pg_bin_dir) / n
+            if candidate.is_file():
+                return str(candidate)
         # Explicit bundle dir given but the tool isn't in it: packaging error or
         # a bad user override. Fail loudly rather than falling back to a system
         # pg_dump of unknown version, which risks an incompatible/corrupt backup.
