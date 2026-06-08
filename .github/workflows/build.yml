@@ -286,17 +286,37 @@ jobs:
       - name: Build (Windows / Linux - release tag)
         if: matrix.os != 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ${{ matrix.build_cmd }} -- --publish always
+        # Retry: electron-builder downloads its toolchain (NSIS, winCodeSign,
+        # AppImage tools) from electron-builder-binaries on GitHub, which 504s
+        # intermittently. Already-downloaded tools are cached between attempts.
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            ${{ matrix.build_cmd }} -- --publish always && exit 0
+            echo "::warning::electron-builder attempt $attempt failed (often a transient toolchain download); retrying in 15s"
+            sleep 15
+          done
+          echo "electron-builder failed after 3 attempts" >&2; exit 1
 
       - name: Build (Windows / Linux - dev build)
         if: matrix.os != 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
+        # Retry transient electron-builder toolchain downloads (see release step).
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never && exit 0
+            echo "::warning::electron-builder attempt $attempt failed (often a transient toolchain download); retrying in 15s"
+            sleep 15
+          done
+          echo "electron-builder failed after 3 attempts" >&2; exit 1
 
       # Prove the licenses/ folder actually made it into the packaged artifact —
       # the pre-build check only proves licenses/ existed before electron-builder
