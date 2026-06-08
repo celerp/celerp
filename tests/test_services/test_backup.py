@@ -308,13 +308,12 @@ class TestFindPgTool:
         """settings.pg_bin_dir is checked before PATH and candidate dirs."""
         import sys as _sys
         from celerp.services import backup as backup_mod
-        from celerp.config import settings as cfg_settings
         monkeypatch.setattr(_sys, "platform", "linux")
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [])
 
         bin_dir = _make_fake_pg_bin(tmp_path, "pg_dump")
-        monkeypatch.setattr(cfg_settings, "pg_bin_dir", str(bin_dir))
+        monkeypatch.setattr(backup_mod.settings, "pg_bin_dir", str(bin_dir))
 
         result = backup_mod._find_pg_tool("pg_dump")
         assert result == str(bin_dir / "pg_dump")
@@ -324,11 +323,10 @@ class TestFindPgTool:
         fall back to PATH. A packaged build pointed at a missing bundle must not
         silently use a system pg_dump of unknown version (plan §7.2)."""
         from celerp.services import backup as backup_mod
-        from celerp.config import settings as cfg_settings
 
         empty_dir = tmp_path / "empty_override"
         empty_dir.mkdir()
-        monkeypatch.setattr(cfg_settings, "pg_bin_dir", str(empty_dir))
+        monkeypatch.setattr(backup_mod.settings, "pg_bin_dir", str(empty_dir))
 
         # A valid tool on PATH must be ignored when pg_bin_dir is set.
         bin_dir = _make_fake_pg_bin(tmp_path, "pg_dump")
@@ -341,8 +339,7 @@ class TestFindPgTool:
         """shutil.which() is tried when pg_bin_dir is unset; full path is returned."""
         import shutil
         from celerp.services import backup as backup_mod
-        from celerp.config import settings as cfg_settings
-        monkeypatch.setattr(cfg_settings, "pg_bin_dir", "")
+        monkeypatch.setattr(backup_mod.settings, "pg_bin_dir", "")
         bin_dir = _make_fake_pg_bin(tmp_path, "pg_dump")
         monkeypatch.setenv("PATH", str(bin_dir))
         assert shutil.which("pg_dump", path=str(bin_dir)) is not None
@@ -353,10 +350,9 @@ class TestFindPgTool:
         """On macOS with empty PATH and no pg_bin_dir, candidate dirs are probed."""
         import sys as _sys
         from celerp.services import backup as backup_mod
-        from celerp.config import settings as cfg_settings
         monkeypatch.setattr(_sys, "platform", "darwin")
         monkeypatch.setenv("PATH", "")
-        monkeypatch.setattr(cfg_settings, "pg_bin_dir", "")
+        monkeypatch.setattr(backup_mod.settings, "pg_bin_dir", "")
 
         bin_dir = _make_fake_pg_bin(tmp_path, "pg_restore")
         monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [bin_dir])
@@ -368,11 +364,10 @@ class TestFindPgTool:
         """On Linux/Windows with no pg_bin_dir, raises FileNotFoundError when missing."""
         import sys as _sys
         from celerp.services import backup as backup_mod
-        from celerp.config import settings as cfg_settings
         monkeypatch.setattr(_sys, "platform", "linux")
         monkeypatch.setenv("PATH", "")
         monkeypatch.setattr(backup_mod, "_PG_CANDIDATE_DIRS", [])
-        monkeypatch.setattr(cfg_settings, "pg_bin_dir", "")
+        monkeypatch.setattr(backup_mod.settings, "pg_bin_dir", "")
 
         with pytest.raises(FileNotFoundError, match="pg_restore not found"):
             backup_mod._find_pg_tool("pg_restore")
@@ -381,10 +376,9 @@ class TestFindPgTool:
         """A candidate dir that exists but lacks the tool is not used."""
         import sys as _sys
         from celerp.services import backup as backup_mod
-        from celerp.config import settings as cfg_settings
         monkeypatch.setattr(_sys, "platform", "darwin")
         monkeypatch.setenv("PATH", "")
-        monkeypatch.setattr(cfg_settings, "pg_bin_dir", "")
+        monkeypatch.setattr(backup_mod.settings, "pg_bin_dir", "")
 
         empty_dir = tmp_path / "no_pg_here"
         empty_dir.mkdir()
@@ -397,10 +391,9 @@ class TestFindPgTool:
         """First matching candidate dir wins (order preserved)."""
         import sys as _sys
         from celerp.services import backup as backup_mod
-        from celerp.config import settings as cfg_settings
         monkeypatch.setattr(_sys, "platform", "darwin")
         monkeypatch.setenv("PATH", "")
-        monkeypatch.setattr(cfg_settings, "pg_bin_dir", "")
+        monkeypatch.setattr(backup_mod.settings, "pg_bin_dir", "")
 
         b1 = _make_fake_pg_bin(tmp_path / "b1", "pg_dump")
         b2 = _make_fake_pg_bin(tmp_path / "b2", "pg_dump")
