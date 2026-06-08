@@ -130,8 +130,8 @@ jobs:
           set -eo pipefail
           F="cpython-${PBS_PYTHON}+${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
           BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o "$F" "$BASE/$F"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o SHA256SUMS "$BASE/SHA256SUMS"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o "$F" "$BASE/$F"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o SHA256SUMS "$BASE/SHA256SUMS"
           grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/mac-arm64"
           tar xz -f "$F" -C "electron/python-standalone/mac-arm64"
@@ -144,8 +144,8 @@ jobs:
           set -eo pipefail
           F="cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
           BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o "$F" "$BASE/$F"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o SHA256SUMS "$BASE/SHA256SUMS"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o "$F" "$BASE/$F"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o SHA256SUMS "$BASE/SHA256SUMS"
           grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/mac-x64"
           tar xz -f "$F" -C "electron/python-standalone/mac-x64"
@@ -158,8 +158,8 @@ jobs:
           set -eo pipefail
           F="cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
           BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o "$F" "$BASE/$F"
-          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 -o SHA256SUMS "$BASE/SHA256SUMS"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o "$F" "$BASE/$F"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o SHA256SUMS "$BASE/SHA256SUMS"
           grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
           tar xz -f "$F" -C "electron/python-standalone/${{ matrix.standalone_dir }}"
