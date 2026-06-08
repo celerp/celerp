@@ -279,6 +279,8 @@ jobs:
           # Bundled Python interpreter's native-lib licenses (stripped from the
           # install_only archive); same set on every platform.
           ARGS+=(--extra-python "$EP/python-standalone")
+          # psycopg2-binary vendors libpq + native deps without their licenses.
+          ARGS+=(--extra-psycopg2 "$EP/psycopg2")
           if [ "$OS" = "macos-latest" ]; then
             add_tree mac-arm64               # universal app bundles BOTH Python trees,
             add_tree mac-x64                 # so collect/check both (audit-quality)
@@ -378,6 +380,7 @@ jobs:
           test -f "$RES/licenses/THIRD-PARTY-NOTICES.txt"
           test -d "$RES/licenses/python"
           test -f "$RES/licenses/python/LICENSE.openssl-3.txt"   # bundled-lib set landed
+          test -f "$RES/licenses/psycopg2/LGPL-3.0.txt"          # psycopg2 vendored-lib set landed
           test -d "$RES/licenses/electron"
           test -d "$RES/licenses/chromium"
           # embedded PostgreSQL server is bundled on every platform -> its

@@ -1,0 +1,5 @@
+psycopg2 is licensed under the GNU LGPL v3 (LGPL-3.0.txt) and is linked
+dynamically. It bundles libpq and its dependencies; the upstream texts for the
+ones not already shipped elsewhere are in this folder (Kerberos, OpenLDAP, Cyrus
+SASL, libselinux). On Linux it also bundles libxcrypt and keyutils, which are
+under the GNU LGPL v2.1 (LGPL-2.1.txt).

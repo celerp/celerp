@@ -249,6 +249,14 @@ def collect_npm(node_modules: Path | None, out: Path) -> None:
         # else: no file and nothing declared -> no entry -> --check fails.
 
 
+def collect_psycopg2(extra: str | None, out: Path) -> None:
+    """psycopg2-binary vendors libpq + its native deps (Kerberos, OpenLDAP, SASL,
+    libxcrypt, keyutils, ...) inside the wheel but ships only its own LGPL-3
+    license. Ship the curated upstream texts for the vendored libs."""
+    if extra and Path(extra).is_dir():
+        copy_dedup(out / "psycopg2", [p for p in Path(extra).iterdir() if p.is_file()])
+
+
 def collect_electron(node_modules: Path | None, out: Path) -> None:
     if not node_modules:
         return
@@ -315,6 +323,7 @@ def do_collect(a: argparse.Namespace) -> int:
 
     collect_pg(Path(a.pg_licenses) if a.pg_licenses else None, out)
     collect_python(a.pbs_root or [], out, a.extra_python)
+    collect_psycopg2(a.extra_psycopg2, out)
     collect_pip_packages(a.site_packages or [], out)
     collect_electron(Path(a.node_modules) if a.node_modules else None, out)
     collect_npm(Path(a.node_modules) if a.node_modules else None, out)
@@ -353,6 +362,10 @@ def do_check(a: argparse.Namespace) -> int:
     # The interpreter's bundled-lib license set must land too (openssl-3 sentinel).
     if a.extra_python and not (out / "python" / "LICENSE.openssl-3.txt").is_file():
         missing.append("python bundled-lib license texts missing (curated set absent)")
+
+    # psycopg2-binary's vendored-lib license set (LGPL-3.0 sentinel).
+    if a.extra_psycopg2 and not (out / "psycopg2" / "LGPL-3.0.txt").is_file():
+        missing.append("psycopg2 vendored-lib license texts missing (curated set absent)")
 
     seen: set[str] = set()
     if a.node_modules:
@@ -404,6 +417,7 @@ def main() -> int:
     p.add_argument("--site-packages", action="append", help="repeatable")
     p.add_argument("--pbs-root", action="append", help="python-build-standalone tree; repeatable")
     p.add_argument("--extra-python", help="curated license texts for the interpreter's bundled native libs")
+    p.add_argument("--extra-psycopg2", help="curated license texts for psycopg2-binary's vendored libs")
     p.add_argument("--pg-licenses", help="dir with postgresql/ openssl/ license subdirs (macOS)")
     p.add_argument("--extra-embedded-postgres", help="curated upstream license texts for the embedded server's bundled native libs")
     p.add_argument("--package-json", help="(unused; kept for compatibility)")
