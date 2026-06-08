@@ -1,0 +1,37 @@
+THIRD-PARTY NOTICES - embedded PostgreSQL server, Windows (@embedded-postgres/windows-x64)
+==========================================================================================
+
+The @embedded-postgres/windows-x64 package ships a prebuilt PostgreSQL server
+(postgres.exe, initdb.exe, pg_ctl.exe) plus the native DLLs it links, but only
+its own MIT wrapper license (LICENSE.md). The upstream license texts for the
+bundled native libraries are reproduced here (sourced from each project
+upstream). Unlike the macOS build, there is no separate postgresql/ or openssl/
+folder on Windows, so those texts are included here too.
+
+Bundled DLL -> license -> text in this folder:
+
+  postgres.exe, initdb.exe, pg_ctl.exe, libpq.dll, libecpg*, libpgtypes,
+    testplug.dll, and all *.dll extensions    PostgreSQL License   postgresql-COPYRIGHT.txt
+  libcrypto-3-x64.dll, libssl-3-x64.dll       OpenSSL (Apache-2.0) openssl-LICENSE.txt
+  icudt67 / icuin67 / icuio67 / icutu67 /
+    icuuc67.dll                               Unicode/ICU License  icu-LICENSE.txt
+  libiconv-2.dll                              LGPL-2.1-or-later    LGPL-2.1.txt
+  libintl-9.dll (gettext runtime)             LGPL-2.1-or-later    LGPL-2.1.txt
+  liblz4.dll                                  BSD-2-Clause         lz4-LICENSE.txt
+  libzstd.dll                                 BSD-3-Clause         zstd-LICENSE.txt
+  libxml2.dll                                 MIT                  libxml2-LICENSE.txt
+  libxslt.dll                                 MIT                  libxslt-LICENSE.txt
+  zlib1.dll                                   zlib License         zlib-LICENSE.txt
+  libwinpthread-1.dll (mingw-w64 runtime)     mingw-w64 / permissive  mingw-w64-winpthreads-COPYING.txt
+
+LGPL note: libiconv-2.dll and the gettext runtime libintl-9.dll are
+LGPL-2.1-or-later. postgres.exe links them dynamically (separate DLLs that a
+recipient may replace with a compatible build). They are mandatory: the prebuilt
+server is compiled with NLS, so postgres.exe directly imports libintl-9.dll,
+which in turn imports libiconv-2.dll. The full LGPL-2.1 text is in LGPL-2.1.txt.
+
+Not redistributed (excluded from our build): the StackBuilder GUI dependencies
+wxWidgets (wx*_vc_x64_custom.dll) and libcurl.dll, which postgres.exe does not
+link, are pruned before packaging. Microsoft's Visual C++ runtime
+(VCRUNTIME140.dll, api-ms-win-crt-*) is a system/redistributable component
+provided by Windows, not bundled here.

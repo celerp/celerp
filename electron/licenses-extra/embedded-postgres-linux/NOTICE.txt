@@ -1,0 +1,29 @@
+THIRD-PARTY NOTICES - embedded PostgreSQL server, Linux (@embedded-postgres/linux-x64)
+======================================================================================
+
+The @embedded-postgres/linux-x64 package ships a prebuilt PostgreSQL server
+(postgres, initdb, pg_ctl) plus the native shared libraries it links, but only
+its own MIT wrapper license (LICENSE.md). The upstream license texts for the
+bundled native libraries are reproduced here (sourced from each project
+upstream). Unlike the macOS build there is no separate postgresql/ or openssl/
+folder on Linux, so those texts are included here too.
+
+Note: the Linux build links OpenSSL 1.1 (libcrypto.so.1.1 / libssl.so.1.1),
+which is under the OpenSSL + SSLeay dual license, NOT the Apache-2.0 license used
+by OpenSSL 3.x on macOS/Windows. It also bundles NO LGPL libraries (no libiconv,
+no gettext, no Kerberos).
+
+Bundled native library -> license -> text in this folder:
+
+  postgres, initdb, pg_ctl, libpq, libecpg*, libpgtypes, and all *.so
+    extensions                            PostgreSQL License        postgresql-COPYRIGHT.txt
+  libcrypto.so.1.1, libssl.so.1.1         OpenSSL + SSLeay (dual)   openssl-1.1-LICENSE.txt
+  libicudata/i18n/uc.so.60                Unicode/ICU License       icu-LICENSE.txt
+  libxml2.so.2                            MIT                       libxml2-LICENSE.txt
+  libxslt.so.1                            MIT                       libxslt-LICENSE.txt
+  liblzma.so.5 (XZ Utils)                 0BSD                      liblzma-LICENSE.txt
+  libossp-uuid.so.16 (OSSP uuid)          MIT-style                 ossp-uuid-LICENSE.txt
+  libz.so.1                               zlib License              zlib-LICENSE.txt
+
+System libraries linked by postgres but NOT bundled (provided by the OS, not
+redistributed here): glibc (libc, libdl, libm, libpthread, librt).

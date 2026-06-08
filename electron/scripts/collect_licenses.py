@@ -359,10 +359,12 @@ def do_check(a: argparse.Namespace) -> int:
         if embedded_postgres_roots(nm):
             if not non_empty_dir(out / "embedded-postgres"):
                 missing.append("embedded-postgres (bundled PostgreSQL server binaries) has no license text")
-            # The curated upstream texts for the bundled native libs must land too
-            # (LGPL-2.1 is the sentinel; its absence means --extra wiring is broken).
-            elif not (out / "embedded-postgres" / "LGPL-2.1.txt").is_file():
-                missing.append("embedded-postgres native-lib license texts missing (expected LGPL-2.1.txt etc.)")
+            # The curated upstream texts for the bundled native libs must land too.
+            # NOTICE.txt is the sentinel (every curated set has one; the bare
+            # @embedded-postgres package ships only LICENSE.md). Its absence means
+            # the --extra-embedded-postgres wiring is broken for this platform.
+            elif not (out / "embedded-postgres" / "NOTICE.txt").is_file():
+                missing.append("embedded-postgres native-lib license texts missing (curated NOTICE.txt absent)")
 
     seen_py: set[str] = set()
     for spd in (a.site_packages or []):

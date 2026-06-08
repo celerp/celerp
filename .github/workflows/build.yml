@@ -216,6 +216,22 @@ jobs:
           bash electron/scripts/build-pg-tools.sh arm64  "$PWD/electron/pg-tools/mac-arm64"
           bash electron/scripts/build-pg-tools.sh x86_64 "$PWD/electron/pg-tools/mac-x64"
 
+      # Drop the StackBuilder GUI DLLs (wxWidgets + libcurl) that the Windows
+      # embedded-postgres package vendors. postgres.exe does not link them
+      # (verified via PE imports), so removing them shrinks the build and the
+      # attribution surface (no wxWindows Licence to ship).
+      - name: Prune unused StackBuilder DLLs from embedded Postgres (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          set -eo pipefail
+          D="electron/node_modules/@embedded-postgres/windows-x64/native/bin"
+          rm -f "$D"/wx*329u_*.dll "$D"/libcurl.dll
+          if ls "$D"/wx*.dll "$D"/libcurl.dll >/dev/null 2>&1; then
+            echo "ERROR: StackBuilder DLLs still present after prune" >&2; exit 1
+          fi
+          echo "Pruned wxWidgets + libcurl from embedded Postgres."
+
       - name: Collect + verify third-party licenses
         shell: bash
         run: |
@@ -232,19 +248,24 @@ jobs:
               ARGS+=(--site-packages "$PBS_BASE/$1/python/lib/$PYVER/site-packages")
             fi
           }
+          # The embedded PostgreSQL server is bundled on every platform (the
+          # @embedded-postgres/<platform> package installs via the wrapper's
+          # optional deps), so each passes its own curated native-lib license set.
+          EP="electron/licenses-extra"
           if [ "$OS" = "macos-latest" ]; then
             add_tree mac-arm64               # universal app bundles BOTH Python trees,
             add_tree mac-x64                 # so collect/check both (audit-quality)
             # PG/OpenSSL license texts are arch-independent; one tree suffices.
             ARGS+=(--pg-licenses electron/pg-tools/mac-arm64/licenses)
-            # Curated upstream texts for the embedded server's bundled native libs.
-            ARGS+=(--extra-embedded-postgres electron/licenses-extra/embedded-postgres)
+            ARGS+=(--extra-embedded-postgres "$EP/embedded-postgres-darwin")
             PY="$PBS_BASE/mac-arm64/python/bin/python3"
           elif [ "$OS" = "windows-latest" ]; then
             add_tree "${{ matrix.standalone_dir }}"
+            ARGS+=(--extra-embedded-postgres "$EP/embedded-postgres-win")
             PY="$PBS_BASE/${{ matrix.standalone_dir }}/python/python.exe"
           else
             add_tree "${{ matrix.standalone_dir }}"
+            ARGS+=(--extra-embedded-postgres "$EP/embedded-postgres-linux")
             PY="$PBS_BASE/${{ matrix.standalone_dir }}/python/bin/python3"
           fi
           "$PY" electron/scripts/collect_licenses.py --out licenses \
@@ -311,8 +332,12 @@ jobs:
           test -d "$RES/licenses/python"
           test -d "$RES/licenses/electron"
           test -d "$RES/licenses/chromium"
+          # embedded PostgreSQL server is bundled on every platform -> its
+          # curated native-lib attribution must be present.
+          test -d "$RES/licenses/embedded-postgres"
+          test -f "$RES/licenses/embedded-postgres/NOTICE.txt"
           if [ "$OS" = "macos-latest" ]; then
-            test -d "$RES/licenses/postgresql"
+            test -d "$RES/licenses/postgresql"   # from the bundled pg_dump tools
             test -d "$RES/licenses/openssl"
           fi
           echo "OK: third-party licenses present in packaged artifact"
