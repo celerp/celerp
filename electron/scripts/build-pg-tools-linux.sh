@@ -55,6 +55,11 @@ tar xzf openssl.tar.gz
   make -j"$JOBS"
   make install_sw )
 OSSL_LIB="$(dirname "$(find "$OSSL_PREFIX" -name 'libssl.so.3' | head -1)")"
+# PG's configure compiles AND runs probe programs that link our just-built
+# OpenSSL; they'd fail with "could not execute a simple test program" unless the
+# loader can find libssl/libcrypto. Unset again before the smoke test so that
+# still validates the bundled $ORIGIN rpath rather than this path.
+export LD_LIBRARY_PATH="$OSSL_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
 # ── 3. libpq + pg_dump/pg_restore (client only; no server, no psql) ──────────
 tar xjf postgresql.tar.bz2
@@ -102,7 +107,8 @@ for f in "$OUT_DIR"/bin/pg_dump "$OUT_DIR"/bin/pg_restore "$OUT_DIR"/lib/*; do
   if [ -n "$rp" ]; then echo "AUDIT FAIL: $f has a non-\$ORIGIN RPATH:" >&2; echo "$rp" >&2; exit 1; fi
 done
 
-# ── 7. Smoke test ────────────────────────────────────────────────────────────
+# ── 7. Smoke test (no LD_LIBRARY_PATH: prove the bundled $ORIGIN rpath works) ──
+unset LD_LIBRARY_PATH
 "$OUT_DIR/bin/pg_dump" --version
 "$OUT_DIR/bin/pg_restore" --version
 echo "==> OK: linux tree at $OUT_DIR"
