@@ -70,11 +70,11 @@ def splittable_weight_item(api):
 
 def _find_and_check_item(page, ui_server, item_id: str) -> None:
     """Navigate to inventory, locate the item row, check its checkbox."""
-    page.goto(f"{ui_server}/inventory", wait_until="networkidle")
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
     _assert_no_crash(page, "inventory list")
     checkbox = page.locator(f"input.row-select[data-entity-id='{item_id}']")
     if checkbox.count() == 0:
-        page.goto(f"{ui_server}/inventory?status=all", wait_until="networkidle")
+        page.goto(f"{ui_server}/inventory?status=all", wait_until="domcontentloaded")
         checkbox = page.locator(f"input.row-select[data-entity-id='{item_id}']")
     assert checkbox.count() > 0, f"Row for item {item_id} not found"
     checkbox.check()
@@ -121,7 +121,7 @@ def test_ghost_col_01_no_ghost_cols_after_split(page, ui_server, api, splittable
 
     page.locator("#bulk-split-preview form button[type='submit']").click()
     page.wait_for_selector("#inventory-content", timeout=8000)
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     page.wait_for_timeout(600)
 
     _assert_no_crash(page, "after split")
@@ -164,7 +164,7 @@ def test_ghost_col_02_no_ghost_cols_after_transform(page, ui_server, api, splitt
 
     page.locator("#bulk-transform-preview-form button[type='submit']").click()
     page.wait_for_selector("#inventory-content", timeout=8000)
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     page.wait_for_timeout(600)
 
     _assert_no_crash(page, "after transform")

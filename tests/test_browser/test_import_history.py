@@ -194,7 +194,7 @@ def test_import_history_via_browser_upload(page, ui_server, import_location):
     ).first
     if upload_btn.count() > 0:
         upload_btn.click()
-        page.wait_for_load_state("networkidle", timeout=10000)
+        page.wait_for_load_state("load", timeout=10000)
 
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body, "Import preview step crashed"
@@ -206,7 +206,7 @@ def test_import_history_via_browser_upload(page, ui_server, import_location):
     ).first
     if confirm_btn.count() > 0:
         confirm_btn.click()
-        page.wait_for_load_state("networkidle", timeout=10000)
+        page.wait_for_load_state("load", timeout=10000)
         body = page.locator("body").inner_text()
         assert "Internal Server Error" not in body, "Import confirm step crashed"
 

@@ -66,14 +66,14 @@ def split_item_ct(api):
 
 def _open_split_panel(page, ui_server, item_id: str) -> None:
     """Navigate to inventory, check the item row, open split panel."""
-    page.goto(f"{ui_server}/inventory", wait_until="networkidle")
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
     _assert_no_crash(page, "inventory list")
 
     # Check the row for this item
     checkbox = page.locator(f"input.row-select[data-entity-id='{item_id}']")
     if checkbox.count() == 0:
         # May be on a different page; try searching
-        page.goto(f"{ui_server}/inventory?search=SPLIT-UX", wait_until="networkidle")
+        page.goto(f"{ui_server}/inventory?search=SPLIT-UX", wait_until="domcontentloaded")
         checkbox = page.locator(f"input.row-select[data-entity-id='{item_id}']")
 
     assert checkbox.count() > 0, f"Row checkbox not found for item {item_id}"

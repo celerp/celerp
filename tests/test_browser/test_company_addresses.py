@@ -62,7 +62,7 @@ def test_add_address_and_set_default(page, ui_server, api):
     add_btn.click()
 
     # Wait for HTMX to refresh the section
-    page.wait_for_load_state("networkidle", timeout=5000)
+    page.wait_for_load_state("load", timeout=5000)
 
     # The section should now have a form with a name input
     body_after = page.content()
@@ -103,7 +103,7 @@ def test_add_address_and_set_default(page, ui_server, api):
 
     # Reload settings page — the section should show the location
     page.goto(f"{ui_server}/settings/general?tab=company", wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle", timeout=5000)
+    page.wait_for_load_state("load", timeout=5000)
     body_with_loc = page.content()
     assert "company-addresses-section" in body_with_loc
     # The location name or address text should be visible
@@ -132,7 +132,7 @@ def test_invoice_from_section_has_address_picker(page, ui_server, draft_invoice_
         })
 
     page.goto(f"{ui_server}/docs/{draft_invoice_id}", wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle", timeout=5000)
+    page.wait_for_load_state("load", timeout=5000)
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body
     assert "Traceback" not in body
@@ -165,7 +165,7 @@ def test_invoice_address_picker_select(page, ui_server, draft_invoice_id, api):
         })
 
     page.goto(f"{ui_server}/docs/{draft_invoice_id}", wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle", timeout=5000)
+    page.wait_for_load_state("load", timeout=5000)
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body
 
@@ -180,7 +180,7 @@ def test_invoice_address_picker_select(page, ui_server, draft_invoice_id, api):
         pytest.skip("Select not rendered")
 
     sel.select_option(value=_addr_text)
-    page.wait_for_load_state("networkidle", timeout=5000)
+    page.wait_for_load_state("load", timeout=5000)
 
     # Verify no crash
     body_after = page.locator("body").inner_text()

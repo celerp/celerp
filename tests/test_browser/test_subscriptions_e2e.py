@@ -37,7 +37,7 @@ def _no_crash(page, ctx: str = "") -> None:
 def test_sub_list_sales(page, ui_server):
     """SUB-E2E-01: Sales subscriptions list renders without crash."""
     page.goto(f"{ui_server}/subscriptions?direction=sales")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     _save(page, "01-list-sales")
     _no_crash(page, "list-sales")
     assert "Subscription" in page.title() or "Subscription" in page.locator("h1,h2").first.inner_text()
@@ -46,7 +46,7 @@ def test_sub_list_sales(page, ui_server):
 def test_sub_list_purchasing(page, ui_server):
     """SUB-E2E-02: Purchasing subscriptions list renders without crash."""
     page.goto(f"{ui_server}/subscriptions?direction=purchasing")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     _save(page, "02-list-purchasing")
     _no_crash(page, "list-purchasing")
 
@@ -54,7 +54,7 @@ def test_sub_list_purchasing(page, ui_server):
 def test_sub_new_form_loads(page, ui_server):
     """SUB-E2E-03: New subscription form loads all fields without crash."""
     page.goto(f"{ui_server}/subscriptions/new?direction=sales")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     _save(page, "03-new-form")
     _no_crash(page, "new-form")
     # Verify key fields present
@@ -67,7 +67,7 @@ def test_sub_new_form_loads(page, ui_server):
 def test_sub_create_and_detail(page, ui_server, api):
     """SUB-E2E-04+05+06: Create subscription, verify redirect to detail, check fields."""
     page.goto(f"{ui_server}/subscriptions/new?direction=sales")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     _save(page, "04-form-before-fill")
     _no_crash(page, "new-form-before-fill")
 
@@ -84,7 +84,7 @@ def test_sub_create_and_detail(page, ui_server, api):
 
     # Submit form
     page.click("button[type='submit']")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     _save(page, "06-after-submit")
     _no_crash(page, "after-submit")
 

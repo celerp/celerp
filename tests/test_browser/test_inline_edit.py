@@ -45,7 +45,7 @@ def test_inline_edit_item_name(page, ui_server, item_id):
         page.wait_for_selector("input", timeout=3000)
         page.locator("input").first.fill("Edit Test Item Renamed")
         page.keyboard.press("Enter")
-        page.wait_for_load_state("networkidle", timeout=5000)
+        page.wait_for_load_state("load", timeout=5000)
     except Exception:
         pass  # Edit form may not appear for all cell types
 
@@ -71,7 +71,7 @@ def test_inline_edit_item_category(page, ui_server, item_id):
         if inp.count() > 0:
             inp.fill("Browser Test Category")
             page.keyboard.press("Enter")
-            page.wait_for_load_state("networkidle", timeout=5000)
+            page.wait_for_load_state("load", timeout=5000)
     except Exception:
         pass  # Some cells use select dropdowns; non-fatal if input form doesn't appear
 
@@ -95,7 +95,7 @@ def test_inline_edit_contact_name(page, ui_server, contact_id):
         page.wait_for_selector("input", timeout=2000)
         page.locator("input").first.fill("Edited Contact Name")
         page.keyboard.press("Enter")
-        page.wait_for_load_state("networkidle", timeout=5000)
+        page.wait_for_load_state("load", timeout=5000)
     except Exception:
         pass
     body = page.locator("body").inner_text()

@@ -216,7 +216,7 @@ def test_create_bom(page, ui_server, api):
             comp_input.fill(comp_sku_a)
 
         page.locator("button[type='submit'], input[type='submit']").first.click()
-        page.wait_for_load_state("networkidle", timeout=10000)
+        page.wait_for_load_state("load", timeout=10000)
         _assert_no_crash(page, "after BOM submit")
 
         # Assert in DB

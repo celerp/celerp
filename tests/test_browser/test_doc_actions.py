@@ -58,7 +58,7 @@ def test_doc_finalize_button(page, ui_server, api, draft_invoice_id):
         pytest.skip("No finalize button found on doc detail page")
 
     finalize_btn.click()
-    page.wait_for_load_state("networkidle", timeout=8000)
+    page.wait_for_load_state("load", timeout=8000)
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body
     # Either "finalized" or status badge changed
@@ -91,7 +91,7 @@ def test_doc_share_button(page, ui_server, api):
         pytest.skip("No share button found")
 
     share_btn.click()
-    page.wait_for_load_state("networkidle", timeout=5000)
+    page.wait_for_load_state("load", timeout=5000)
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body
     # Either a share link appeared or the share dialog is visible

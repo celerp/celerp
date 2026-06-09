@@ -37,7 +37,7 @@ def test_import_upload_reaches_preview(page, ui_server, label, route, csv_bytes)
     ).first
     if upload_btn.count() > 0:
         upload_btn.click()
-        page.wait_for_load_state("networkidle", timeout=10000)
+        page.wait_for_load_state("load", timeout=10000)
 
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body, f"{label} import: Internal Server Error"
@@ -70,7 +70,7 @@ def test_import_without_location_col_blocked(page, ui_server, api):
     ).first
     if upload_btn.count() > 0:
         upload_btn.click()
-        page.wait_for_load_state("networkidle", timeout=10000)
+        page.wait_for_load_state("load", timeout=10000)
 
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body, "Import without location: Internal Server Error"

@@ -122,7 +122,7 @@ def test_item_detail_inline_edit_name(page, ui_server, test_item):
         inp = page.locator("input").first
         inp.fill("Audit Item Renamed")
         inp.press("Tab")
-        page.wait_for_load_state("networkidle", timeout=5000)
+        page.wait_for_load_state("load", timeout=5000)
     except Exception:
         pass
     _assert_no_crash(page, "after inline edit")
