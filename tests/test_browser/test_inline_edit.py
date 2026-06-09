@@ -136,11 +136,14 @@ def test_inline_edit_doc_status(page, ui_server, api):
 
 def test_inline_edit_subscription(page, ui_server, api):
     """EDIT-05: Subscription detail loads — no crash."""
-    r = api.post("/subscriptions", json={
-        "name": f"Edit Test Sub {uuid.uuid4().hex[:6]}",
-        "doc_type": "invoice",
+    # Subscriptions are documents: created via POST /docs with a subscription doc_type.
+    r = api.post("/docs", json={
+        "doc_type": "subscription_invoice",
         "frequency": "monthly",
         "start_date": "2026-01-01",
+        "status": "active",
+        "next_run_date": "2026-02-01",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
     })
     assert r.status_code in {200, 201}, f"Could not create subscription: {r.text}"
     sub_id = r.json()["id"]
