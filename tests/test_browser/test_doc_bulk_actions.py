@@ -110,13 +110,11 @@ def test_bulk_delete_removes_draft(page, ui_server, api):
     page.locator("#doc-bulk-select").select_option("doc-delete")
     page.wait_for_selector("#doc-bulk-delete-btn:not([style*='none'])", timeout=2000)
 
-    # Handle confirm dialog
+    # Accept the hx-confirm dialog; the delete runs via htmx and returns
+    # HX-Refresh, so the page reloads only once the docs are actually gone.
     page.once("dialog", lambda d: d.accept())
-    page.locator("#doc-bulk-delete-btn").click()
-
-    # Page reloads after delete
-    page.wait_for_load_state("load", timeout=8000)
-    _save(page, "05-after-delete")
+    with page.expect_navigation(wait_until="load", timeout=8000):
+        page.locator("#doc-bulk-delete-btn").click()
     _no_crash(page, "BULK-DOC-03")
 
     # Verify the doc is gone from API
@@ -145,11 +143,10 @@ def test_select_all_then_delete(page, ui_server, api):
     page.locator("#doc-bulk-select").select_option("doc-delete")
     page.wait_for_selector("#doc-bulk-delete-btn:not([style*='none'])", timeout=2000)
 
+    # htmx delete + HX-Refresh: the page reloads only after the docs are gone.
     page.once("dialog", lambda d: d.accept())
-    page.locator("#doc-bulk-delete-btn").click()
-
-    page.wait_for_load_state("load", timeout=8000)
-    _save(page, "07-after-delete-all")
+    with page.expect_navigation(wait_until="load", timeout=8000):
+        page.locator("#doc-bulk-delete-btn").click()
     _no_crash(page, "BULK-DOC-03b")
 
     # Both docs deleted

@@ -2707,8 +2707,11 @@ celerpUpdateBulkAlloc();
         from starlette.responses import Response as _R
         token = _token(request)
         if not token:
-            return _R("", status_code=401)
-        doc_ids_raw = request.query_params.get("doc_ids", "")
+            return _R("", status_code=401, headers={"HX-Redirect": "/login"})
+        # htmx sends the included #doc-bulk-ids in the request body for DELETE;
+        # fall back to the query param for direct/legacy callers.
+        form = await request.form()
+        doc_ids_raw = str(form.get("doc_ids") or request.query_params.get("doc_ids", ""))
         doc_ids = [d.strip() for d in doc_ids_raw.split(",") if d.strip()]
         if not doc_ids:
             return _action_error("No documents selected.")
@@ -2716,7 +2719,8 @@ celerpUpdateBulkAlloc();
             await api.delete_bulk_drafts(token, doc_ids)
         except APIError as e:
             return _action_error(str(e.detail))
-        return _R("", status_code=204)
+        # Reload once the docs are actually gone (htmx triggers a full refresh).
+        return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
     @app.post("/docs/bulk-payment")
     async def bulk_payment_route(request: Request):
@@ -3762,15 +3766,27 @@ def _doc_table(
             Span(t("doc.0_selected"), id="doc-bulk-count", cls="bulk-count"),
             Select(*_action_opts, id="doc-bulk-select", cls="form-input form-input--sm",
                    onchange="docBulkActionSelected(this.value)"),
-            # Confirm buttons - shown after action selected
-            Button(t("btn.delete_selected"), type="button", id="doc-bulk-delete-btn",
-                   cls="btn btn--danger btn--sm", style="display:none",
-                   onclick="docBulkDeleteConfirmed()"),
+            # Confirm buttons - shown after action selected. Delete runs via htmx
+            # so the button shows an inline spinner + is disabled during the request
+            # (immediate feedback), and the route returns HX-Refresh to reload once
+            # the docs are actually gone.
+            Button(
+                Span(cls="spinner htmx-indicator",
+                     style="display:inline-block;width:12px;height:12px;margin-right:6px;vertical-align:middle;"),
+                t("btn.delete_selected"),
+                type="button", id="doc-bulk-delete-btn",
+                cls="btn btn--danger btn--sm", style="display:none",
+                hx_delete="/docs/bulk-draft",
+                hx_include="#doc-bulk-ids",
+                hx_confirm="Delete selected drafts? This cannot be undone.",
+                hx_disabled_elt="this",
+                hx_swap="none",
+            ),
             Button(t("btn.record_payment"), type="button", id="doc-bulk-pay-btn",
                    cls="btn btn--primary btn--sm", style="display:none",
                    onclick="docBulkPayConfirmed()"),
             Div(id="bulk-payment-panel"),
-            Input(type="hidden", id="doc-bulk-ids", value=""),
+            Input(type="hidden", id="doc-bulk-ids", name="doc_ids", value=""),
         ]
         bulk_bar = Div(*_bulk_children, cls="bulk-toolbar", id="doc-bulk-bar")
 
@@ -3805,13 +3821,9 @@ def _doc_table(
         if (delBtn) delBtn.style.display = action === 'doc-delete' ? '' : 'none';
         if (payBtn) payBtn.style.display = action === 'doc-pay' ? '' : 'none';
     }};
-    window.docBulkDeleteConfirmed = function() {{
-        var ids = idsInput ? idsInput.value : '';
-        if (!ids) return;
-        if (!confirm("Delete selected drafts? This cannot be undone.")) return;
-        fetch('/docs/bulk-draft?doc_ids=' + encodeURIComponent(ids), {{method: 'DELETE'}})
-            .then(function(r) {{ if (r.ok) window.location.reload(); else r.text().then(function(t) {{ alert('Delete failed: ' + t); }}); }});
-    }};
+    // Bulk delete now runs via htmx on the button (hx-delete + HX-Refresh); the
+    // updateBar()/docBulkActionSelected() logic still populates #doc-bulk-ids and
+    // toggles the button's visibility.
     window.docBulkPayConfirmed = function() {{
         var ids = idsInput ? idsInput.value : '';
         if (!ids) return;
