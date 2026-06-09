@@ -163,6 +163,10 @@
           "to": "python-x64"
         },
         {
+          "from": "pg-tools/linux",
+          "to": "pg-linux"
+        },
+        {
           "from": "../licenses",
           "to": "licenses"
         }

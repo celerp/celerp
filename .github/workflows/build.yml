@@ -252,6 +252,27 @@ jobs:
           ls "$DEST"
           "$DEST/pg_dump.exe" --version   # smoke test (runs with the bundled DLLs)
 
+      # ── Bundled pg_dump/pg_restore (Linux) ──────────────────────────────
+      # No portable prebuilt exists (theseus-rs needs system OpenSSL-3; musl needs
+      # the musl loader), so build from source in a manylinux_2_28 container
+      # (glibc 2.28) for portability matching the rest of the AppImage.
+      - name: Cache pg-tools (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        id: pg-tools-linux-cache
+        uses: actions/cache@v4
+        with:
+          path: electron/pg-tools/linux
+          key: pg-tools-linux-${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools-linux.sh') }}
+
+      - name: Build bundled pg_dump/pg_restore (Linux, manylinux)
+        if: matrix.os == 'ubuntu-latest' && steps.pg-tools-linux-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/io" -w /io \
+            -e PG_VERSION -e PG_SHA256 -e OPENSSL_VERSION -e OPENSSL_SHA256 \
+            quay.io/pypa/manylinux_2_28_x86_64 \
+            bash electron/scripts/build-pg-tools-linux.sh /io/electron/pg-tools/linux
+
       # Note: the StackBuilder GUI DLLs (wxWidgets + libcurl) the Windows
       # embedded-postgres package vendors are pruned in electron/after-pack.js
       # (reliable on the real packaged tree) and verified by the post-build step.
@@ -294,6 +315,7 @@ jobs:
             PY="$PBS_BASE/${{ matrix.standalone_dir }}/python/python.exe"
           else
             add_tree "${{ matrix.standalone_dir }}"
+            ARGS+=(--pg-licenses electron/pg-tools/linux/licenses)   # built-from-source pg_dump
             ARGS+=(--extra-embedded-postgres "$EP/embedded-postgres-linux")
             PY="$PBS_BASE/${{ matrix.standalone_dir }}/python/bin/python3"
           fi
@@ -387,9 +409,12 @@ jobs:
           # curated native-lib attribution must be present.
           test -d "$RES/licenses/embedded-postgres"
           test -f "$RES/licenses/embedded-postgres/zlib-LICENSE.txt"
-          if [ "$OS" = "macos-latest" ]; then
-            test -d "$RES/licenses/postgresql"   # from the bundled pg_dump tools
+          if [ "$OS" = "macos-latest" ] || [ "$OS" = "ubuntu-latest" ]; then
+            test -d "$RES/licenses/postgresql"   # from the built-from-source pg_dump tools
             test -d "$RES/licenses/openssl"
+          fi
+          if [ "$OS" = "ubuntu-latest" ]; then
+            test -f "$RES/pg-linux/bin/pg_dump"  # backup pg_dump bundled
           fi
           # Windows: the StackBuilder DLLs (wxWidgets + libcurl) must have been
           # pruned by afterPack — fail loudly if any leaked into the package

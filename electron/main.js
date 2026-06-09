@@ -158,7 +158,10 @@ function pgBinDir() {
   if (process.platform === "win32") {
     return path.join(process.resourcesPath, "pg-win", "bin");
   }
-  return "";                                            // linux: pg_dump not yet bundled
+  if (process.platform === "linux") {
+    return path.join(process.resourcesPath, "pg-linux", "bin");
+  }
+  return "";
 }
 
 /** Resolve the Python binary — packaged apps bundle a standalone Python. */
