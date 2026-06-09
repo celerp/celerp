@@ -193,6 +193,28 @@ def setup_routes(app):
                 else:
                     detail = r.text[:300] or "Import failed."
                 return auth_shell(_setup_import_form(error=detail), title="Restore from backup - Celerp")
+            # Success — surface missing-module warnings (if any) on the form
+            warnings: list[str] = []
+            try:
+                warnings = list(r.json().get("warnings") or [])
+            except Exception:
+                warnings = []
+            if warnings:
+                # Show a non-blocking warning page with "Continue anyway" link
+                names = ", ".join(warnings)
+                warn_msg = (
+                    f"Restore complete, but {len(warnings)} module(s) enabled on the "
+                    f"source are not installed on this server: {names}. "
+                    f"Install the missing module packages, or continue to login "
+                    f"(those features will be unavailable until installed)."
+                )
+                return auth_shell(
+                    _setup_import_form(
+                        warning=warn_msg,
+                        continue_to="/login?imported=1",
+                    ),
+                    title="Restore from backup - Celerp",
+                )
         except httpx.TimeoutException:
             return auth_shell(_setup_import_form(error="Import timed out. The file may be too large or the server is busy."), title="Restore from backup - Celerp")
         except Exception as exc:
@@ -535,7 +557,37 @@ def _setup_form(
     )
 
 
-def _setup_import_form(error: str | None = None) -> FT:
+def _setup_import_form(
+    error: str | None = None,
+    warning: str | None = None,
+    continue_to: str | None = None,
+) -> FT:
+    # When a warning is present, show a non-blocking "Continue" button instead
+    # of re-rendering the form. The user can decide to proceed (GDR — never
+    # restrict the UI; warn-and-continue is the rule).
+    if warning:
+        return Div(
+            Div(
+                Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),
+                H1("Restore complete", cls="auth-title"),
+                P(warning, cls="auth-subtitle"),
+                cls="auth-header",
+            ),
+            Div(
+                A(
+                    "Continue to login",
+                    href=continue_to or "/login?imported=1",
+                    cls="btn btn--primary btn--full",
+                ),
+                A(
+                    "Cancel",
+                    href="/setup",
+                    cls="btn btn--secondary btn--full mt-sm",
+                ),
+                cls="auth-actions",
+            ),
+            cls="auth-card",
+        )
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),

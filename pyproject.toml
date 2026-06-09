@@ -44,6 +44,9 @@ dependencies = [
     "Pillow>=10.0",
     "pypdf>=4.0",
     "psycopg2-binary>=2.9",
+    # IANA timezone database for zoneinfo. Windows ships no system tz database, so
+    # zoneinfo.ZoneInfo() fails there without this; also protects minimal Linux.
+    "tzdata>=2024.1",
 ]
 
 [project.urls]

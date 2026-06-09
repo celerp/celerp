@@ -137,10 +137,14 @@ class ShopifyConnector(ConnectorBase):
                         result.created += 1
                     else:
                         result.skipped += 1
-                    # Pull product images after upsert (idempotent)
-                    await self._pull_product_images(ctx, product, sku)
                 except Exception as exc:
                     errors.append(f"SKU {sku}: {exc}")
+                    continue
+                # Pull product images after upsert (idempotent, best-effort)
+                try:
+                    await self._pull_product_images(ctx, product, sku)
+                except Exception as img_exc:
+                    log.warning("shopify image pull failed for SKU %s: %s", sku, img_exc)
 
         result.errors = errors or None
         log.info(
@@ -151,7 +155,7 @@ class ShopifyConnector(ConnectorBase):
 
     async def _pull_product_images(self, ctx: ConnectorContext, product: dict[str, Any], sku: str) -> None:
         """Pull images from a Shopify product and store as item files."""
-        from celerp.db import get_async_session
+        from celerp.db import get_session_ctx as get_async_session
         from celerp.models.projections import Projection
         from celerp.connectors.images import download_and_emit_file
         from sqlalchemy import select

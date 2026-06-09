@@ -85,6 +85,14 @@
         {
           "from": "python-standalone/win-x64",
           "to": "python-x64"
+        },
+        {
+          "from": "pg-tools/win",
+          "to": "pg-win"
+        },
+        {
+          "from": "../licenses",
+          "to": "licenses"
         }
       ]
     },
@@ -117,9 +125,21 @@
         {
           "from": "python-standalone/mac-x64",
           "to": "python-x64"
+        },
+        {
+          "from": "pg-tools/mac-arm64",
+          "to": "pg-arm64"
+        },
+        {
+          "from": "pg-tools/mac-x64",
+          "to": "pg-x64"
+        },
+        {
+          "from": "../licenses",
+          "to": "licenses"
         }
       ],
-      "x64ArchFiles": "Contents/Resources/python-*/**",
+      "x64ArchFiles": "Contents/Resources/{python,pg}-*/**",
       "mergeASARs": false
     },
     "dmg": {
@@ -141,6 +161,14 @@
         {
           "from": "python-standalone/linux-x64",
           "to": "python-x64"
+        },
+        {
+          "from": "pg-tools/linux",
+          "to": "pg-linux"
+        },
+        {
+          "from": "../licenses",
+          "to": "licenses"
         }
       ]
     },

@@ -1,25 +1,40 @@
-NOTICE — Celerp Multi-License Distribution
+NOTICE - Celerp Multi-License Distribution
 
-This application bundles components under multiple licenses.
-Each component's license governs its use independently.
+This repository and packaged application contain components under different
+licenses. Each component is governed by the applicable LICENSE file.
 
-Component Licenses
-------------------
+First-party components:
 
-  electron/              BSL-1.1         See /LICENSE
-  celerp/                BSL-1.1         See /LICENSE
-  default_modules/       BSL-1.1         See /LICENSE
-    celerp-manufacturing MIT             See default_modules/celerp-manufacturing/LICENSE
-    celerp-labels        MIT             See default_modules/celerp-labels/LICENSE
-  ui/                    Proprietary     See ui/LICENSE
-  alembic/               BSL-1.1         See /LICENSE
+  /                       Business Source License 1.1
+                          See: LICENSE
 
-The root LICENSE (BSL-1.1) applies to all files not covered by a more
-specific LICENSE file in a subdirectory. When a subdirectory contains its
-own LICENSE file, that file governs all files within it.
+  celerp/                 Business Source License 1.1
+                          See: LICENSE
 
-The "Powered by Celerp" attribution requirement described in both /LICENSE
-and ui/LICENSE applies to all distributions of this software, including
-modified versions and derivative works.
+  electron/               Business Source License 1.1
+                          See: LICENSE
+
+  ui/                     Proprietary / source-available
+                          See: ui/LICENSE
+
+  default_modules/        Business Source License 1.1, except where a
+                          more specific LICENSE file appears in a module
+                          subdirectory.
+
+  default_modules/celerp-labels/
+                          MIT License
+                          See: default_modules/celerp-labels/LICENSE
+
+  default_modules/celerp-manufacturing/
+                          MIT License
+                          See: default_modules/celerp-manufacturing/LICENSE
+
+The root LICENSE applies to files that are not covered by a more specific
+LICENSE file.
+
+Third-party components included in packaged desktop builds are governed by
+their own license files included with those builds. See:
+
+  licenses/
 
 For commercial licensing or white-label inquiries: https://celerp.com

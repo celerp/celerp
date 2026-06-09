@@ -196,8 +196,10 @@ function initCombobox(wrap) {
   // Guard: don't double-init
   if (wrap._comboboxInit) return;
   wrap._comboboxInit = true;
-  var opts = Array.from(list.querySelectorAll('.combobox-option'));
   var allowCustom = wrap.dataset.allowCustom === 'true';
+  // Server-search mode: HTMX swaps the list innerHTML; we save original for restore.
+  var isServerSearch = wrap.dataset.searchUrl === '1';
+  var originalListHTML = isServerSearch ? list.innerHTML : null;
 
   // position:fixed on the list so overflow:hidden/auto ancestors can't clip it.
   // We set top/left/width inline on open so it tracks the input position.
@@ -212,16 +214,82 @@ function initCombobox(wrap) {
     list.style.width = 'auto';
   }
 
+  // Lazy — always queries the live DOM so HTMX-swapped options are included.
+  function currentOpts() {
+    return Array.from(list.querySelectorAll('.combobox-option'));
+  }
+
+  function filterOpts(q) {
+    var lower = q.toLowerCase();
+    var visible = 0;
+    currentOpts().forEach(function(opt) {
+      // Search data-search if present (includes UTC offset aliases), else textContent
+      var haystack = (opt.dataset.search || opt.textContent).toLowerCase();
+      var match = haystack.includes(lower);
+      opt.style.display = match ? '' : 'none';
+      if (match) visible++;
+    });
+    var empty = list.querySelector('.combobox-option--empty');
+    if (empty) empty.style.display = visible === 0 ? '' : 'none';
+  }
+  function moveFocus(dir) {
+    var opts = currentOpts().filter(function(o) {
+      return o.style.display !== 'none' && !o.classList.contains('combobox-option--empty');
+    });
+    var cur = opts.findIndex(function(o) { return o.classList.contains('focused'); });
+    currentOpts().forEach(function(o) { o.classList.remove('focused'); });
+    var next = cur + dir;
+    if (next < 0) next = opts.length - 1;
+    if (next >= opts.length) next = 0;
+    if (opts[next]) opts[next].classList.add('focused');
+  }
+  function selectOpt(opt) {
+    var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
+    var label = opt.textContent.trim();
+    // __new__:URL values trigger a redirect instead of a form submission
+    if (val.indexOf('__new__:') === 0) {
+      window.location = val.slice('__new__:'.length);
+      return;
+    }
+    // Show human-readable label in the visible input; store actual value in hidden
+    input.value = label;
+    if (hidden) hidden.value = val;
+    list.classList.remove('open');
+    currentOpts().forEach(function(o) { o.classList.remove('focused'); });
+    // Use htmx.trigger() — synthetic dispatchEvent is ignored by HTMX 2.x
+    if (hidden && typeof htmx !== 'undefined') {
+      htmx.trigger(hidden, 'change');
+    } else if (hidden) {
+      hidden.dispatchEvent(new Event('change', {bubbles: true}));
+    }
+  }
+
   input.addEventListener('focus', function() {
+    // Restore original static options so user sees full list on re-focus after a search
+    if (isServerSearch && originalListHTML) {
+      list.innerHTML = originalListHTML;
+    }
     filterOpts('');
     positionList();
     list.classList.add('open');
   });
   input.addEventListener('input', function() {
-    filterOpts(input.value);
-    positionList();
-    list.classList.add('open');
-    if (hidden) hidden.value = allowCustom ? input.value : '';
+    if (isServerSearch) {
+      if (!input.value) {
+        // User cleared the search — restore static options and show all
+        list.innerHTML = originalListHTML;
+        filterOpts('');
+      }
+      // Non-empty: HTMX fires the server request and swaps results into the list
+      positionList();
+      list.classList.add('open');
+      if (hidden) hidden.value = '';
+    } else {
+      filterOpts(input.value);
+      positionList();
+      list.classList.add('open');
+      if (hidden) hidden.value = allowCustom ? input.value : '';
+    }
   });
   input.addEventListener('blur', function() {
     // Allow mousedown on option to fire first
@@ -247,54 +315,23 @@ function initCombobox(wrap) {
       // Do NOT preventDefault — let event bubble to parent for display restore
     }
   });
-  opts.forEach(function(opt) {
-    opt.addEventListener('mousedown', function(e) {
+
+  // Event delegation for mousedown — handles both static and HTMX-swapped options
+  list.addEventListener('mousedown', function(e) {
+    var opt = e.target.closest('.combobox-option');
+    if (opt && !opt.classList.contains('combobox-option--empty')) {
       e.preventDefault();
       selectOpt(opt);
-    });
+    }
   });
 
-  function filterOpts(q) {
-    var lower = q.toLowerCase();
-    var visible = 0;
-    opts.forEach(function(opt) {
-      // Search data-search if present (includes UTC offset aliases), else textContent
-      var haystack = (opt.dataset.search || opt.textContent).toLowerCase();
-      var match = haystack.includes(lower);
-      opt.style.display = match ? '' : 'none';
-      if (match) visible++;
+  // Cancel HTMX search request when input is empty (JS restores static options instead)
+  if (isServerSearch) {
+    wrap.addEventListener('htmx:configRequest', function(e) {
+      if (!input.value.trim()) {
+        e.preventDefault();
+      }
     });
-    var empty = list.querySelector('.combobox-option--empty');
-    if (empty) empty.style.display = visible === 0 ? '' : 'none';
-  }
-  function moveFocus(dir) {
-    var visible = opts.filter(function(o) { return o.style.display !== 'none'; });
-    var cur = visible.findIndex(function(o) { return o.classList.contains('focused'); });
-    opts.forEach(function(o) { o.classList.remove('focused'); });
-    var next = cur + dir;
-    if (next < 0) next = visible.length - 1;
-    if (next >= visible.length) next = 0;
-    if (visible[next]) visible[next].classList.add('focused');
-  }
-  function selectOpt(opt) {
-    var val = opt.dataset.value !== undefined ? opt.dataset.value : opt.textContent.trim();
-    var label = opt.textContent.trim();
-    // __new__:URL values trigger a redirect instead of a form submission
-    if (val.indexOf('__new__:') === 0) {
-      window.location = val.slice('__new__:'.length);
-      return;
-    }
-    // Show human-readable label in the visible input; store actual value in hidden
-    input.value = label;
-    if (hidden) hidden.value = val;
-    list.classList.remove('open');
-    opts.forEach(function(o) { o.classList.remove('focused'); });
-    // Use htmx.trigger() — synthetic dispatchEvent is ignored by HTMX 2.x
-    if (hidden && typeof htmx !== 'undefined') {
-      htmx.trigger(hidden, 'change');
-    } else if (hidden) {
-      hidden.dispatchEvent(new Event('change', {bubbles: true}));
-    }
   }
 }
 document.addEventListener('DOMContentLoaded', function() {

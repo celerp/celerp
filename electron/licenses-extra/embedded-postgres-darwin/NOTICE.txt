@@ -1,0 +1,3 @@
+This software dynamically links GNU libiconv and the GNU gettext runtime library
+(libintl), licensed under the GNU Lesser General Public License, version 2.1.
+Full text: LGPL-2.1.txt.

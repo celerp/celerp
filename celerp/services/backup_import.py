@@ -11,10 +11,100 @@ from __future__ import annotations
 import json
 import logging
 import tarfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+def _parse_version(v: str | None) -> tuple[int, int, int, str]:
+    """Parse a celerp version string into a comparable tuple.
+
+    Returns (major, minor, patch, pre_release). Garbage / None / "unknown"
+    return (0, 0, 0, "") so the import proceeds (no false block on
+    legacy archives).
+
+    Accepts:
+      - "1.2.3"                       → (1, 2, 3, "")
+      - "1.1.19.dev158"                → (1, 1, 19, "dev158")   (setuptools_scm on dev)
+      - "0.1.dev1"                     → (0, 1, 0,  "dev1")     (setuptools_scm on CI, no tags)
+      - "1.0"                          → (1, 0, 0, "")
+      - "" / None / "unknown" / "abc"  → (0, 0, 0, "")
+
+    Tuple comparison is correct for major/minor/patch: (10, 0, 0, "") >
+    (9, 0, 0, "") is True. (String compare would say "10" < "9"
+    lexicographically — that's the old bug.)
+
+    NOTE: the 4th element (pre_release) is informational only and is NOT
+    PEP 440-ordered — a final release sorts *below* its own dev pre-release
+    ("" < "dev1" as strings). The version policy never orders on it (it only
+    reads major/minor), so this is harmless; do not rely on the pre field for
+    ordering decisions elsewhere.
+
+    The parser walks the dotted components. The first 1-3 components
+    that are pure integers become major/minor/patch. The first non-int
+    component (or anything after it) is captured as pre-release. If the
+    FIRST component isn't an int, the whole string is treated as
+    garbage (we return zeros) — the dev versions setuptools_scm emits
+    always start with a numeric major.
+    """
+    if not v or not isinstance(v, str):
+        return (0, 0, 0, "")
+
+    parts = v.split(".")
+
+    # First component must be a pure int for the version to be parseable.
+    try:
+        major = int(parts[0])
+    except (ValueError, IndexError):
+        return (0, 0, 0, "")
+
+    # Walk the rest, allowing up to 2 more numeric components before any
+    # non-numeric one starts the pre-release tail.
+    nums = [major]
+    pre_parts: list[str] = []
+    saw_non_int = False
+    for p in parts[1:]:
+        if not saw_non_int and len(nums) < 3:
+            try:
+                nums.append(int(p))
+            except ValueError:
+                saw_non_int = True
+                pre_parts.append(p)
+        else:
+            if not saw_non_int:
+                saw_non_int = True
+            pre_parts.append(p)
+
+    minor = nums[1] if len(nums) > 1 else 0
+    patch = nums[2] if len(nums) > 2 else 0
+    pre = ".".join(pre_parts)
+    return (major, minor, patch, pre)
+
+
+def _safe_test_version() -> str:
+    """Return a version string guaranteed to be <= the current install.
+
+    Used by tests that build .celerp-backup archives with a fixed
+    celerp_version. Deriving at runtime (instead of hardcoding "1.0.0")
+    means the test passes on:
+      - Local dev (setuptools_scm gives 1.1.11.dev20 with tags)
+      - CI (setuptools_scm gives 0.1.dev1 on a fresh checkout with no tags)
+      - Packaged install (setuptools gives the published version)
+
+    The returned version is one patch below the current major.minor so
+    it's unambiguously "older" — the version policy treats it as silent.
+    """
+    try:
+        from importlib.metadata import version
+        current = version("celerp")
+    except Exception:
+        return "0.0.0"
+    v = _parse_version(current)
+    if v == (0, 0, 0, ""):
+        return "0.0.0"
+    # Same major.minor, patch - 1. Guarantees <= current.
+    return f"{v[0]}.{v[1]}.{max(0, v[2] - 1)}"
 
 
 @dataclass
@@ -23,6 +113,10 @@ class ImportMeta:
     pg_version: str
     created_at: str
     company_name: str
+    # Modules the source system had enabled at export time. Empty for old
+    # backups (pre-2026-06-04). Used by the install pass to surface
+    # missing modules to the user before they reach a broken dashboard.
+    enabled_modules: list[str] = field(default_factory=list)
 
 
 def validate_archive(path: Path) -> ImportMeta:
@@ -56,6 +150,7 @@ def validate_archive(path: Path) -> ImportMeta:
         pg_version=meta_data.get("pg_version", "unknown"),
         created_at=meta_data.get("created_at", "unknown"),
         company_name=meta_data.get("company_name", "unknown"),
+        enabled_modules=list(meta_data.get("enabled_modules") or []),
     )
 
     # Version compatibility check
@@ -65,38 +160,183 @@ def validate_archive(path: Path) -> ImportMeta:
     except Exception:
         current = "0.0.0"
 
-    backup_ver = meta.celerp_version if meta.celerp_version != "unknown" else "0.0.0"
-    backup_parts = backup_ver.split(".")
-    current_parts = current.split(".")
+    backup_v = _parse_version(meta.celerp_version)
+    current_v = _parse_version(current)
 
-    backup_major = backup_parts[0] if backup_parts else "0"
-    current_major = current_parts[0] if current_parts else "0"
-
-    if backup_major > current_major:
-        raise ValueError(
-            f"This backup is from a newer version ({meta.celerp_version}) "
-            f"than the current installation ({current}). "
-            "Update Celerp before importing."
+    if backup_v[0] > current_v[0]:
+        # Backup is from a newer MAJOR version. The whole point of restore
+        # is recovery — don't block the user. Warn loudly so the UI can
+        # surface it, but proceed with the import. Schema migrations are
+        # additive so a newer-major backup is usually safe to restore.
+        log.warning(
+            "Backup is from a newer major version (%s) than the current "
+            "installation (%s). Restoring anyway — schema migrations are "
+            "additive. If the backup uses removed features, some data may "
+            "not round-trip cleanly.",
+            meta.celerp_version, current,
         )
-
-    backup_minor = int(backup_parts[1]) if len(backup_parts) > 1 else 0
-    current_minor = int(current_parts[1]) if len(current_parts) > 1 else 0
-    if backup_minor != current_minor:
+    elif backup_v[0] == current_v[0] and backup_v[1] != current_v[1]:
+        # Same major, different minor. Existing behaviour: warn, proceed.
         log.warning(
             "Backup version %s differs from current %s (minor version mismatch). "
             "Schema migrations will run automatically after restore.",
             meta.celerp_version, current,
         )
+    # else: same major, same or older minor (downgrade) → silent.
+    # Schema migrations are additive in both directions.
 
     return meta
+
+
+async def _safety_backup(label: str):
+    """Run a pre-import safety backup if the encryption key is configured.
+
+    Module-level helper so tests can stub it cleanly.
+    """
+    from celerp.config import settings
+    from celerp.services.backup import run_backup
+    if not settings.backup_encryption_key:
+        from celerp.services.backup import BackupResult
+        return BackupResult(ok=True, size_bytes=0)
+    return await run_backup(label=label)
+
+
+async def _read_modules_from_restored_db() -> list[str]:
+    """Read enabled_modules from the just-restored database.
+
+    Fallback for backups whose meta.json pre-dates the enabled_modules field.
+    After pg_restore the company row is present; we read its settings directly.
+    engine.dispose() was called before pg_restore but new connections are still
+    allowed, so this session open succeeds against the restored data.
+    """
+    try:
+        from sqlalchemy import select
+        from celerp.db import SessionLocal
+        from celerp.models.company import Company
+        async with SessionLocal() as session:
+            result = await session.execute(select(Company).limit(1))
+            company = result.scalar_one_or_none()
+            if company is None:
+                return []
+            raw = (company.settings or {}).get("enabled_modules") or []
+            return list(raw) if isinstance(raw, list) else []
+    except Exception as exc:
+        log.warning("Could not read enabled_modules from restored DB: %s", exc)
+        return []
+
+
+async def _dispose_engine() -> None:
+    """Dispose the SQLAlchemy engine connection pool before pg_restore."""
+    try:
+        from celerp.db import engine as _engine
+        await _engine.dispose()
+        log.info("Connection pool disposed before pg_restore")
+    except Exception as pool_exc:
+        log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
+
+
+async def _run_pg_restore(dump_bytes: bytes, database_url: str) -> None:
+    """Run pg_restore in a thread executor (blocking subprocess)."""
+    import asyncio
+    from celerp.services.backup import restore_database
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, lambda: restore_database(dump_bytes, database_url)
+    )
+
+
+async def _run_alembic() -> None:
+    """Reconcile schema after pg_restore via alembic upgrade head."""
+    try:
+        import asyncio
+        from celerp.alembic_config import build_alembic_config as _build_alembic_config
+        from alembic import command as _alembic_cmd
+        _cfg = _build_alembic_config()
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
+        log.info("Alembic upgrade head completed after pg_restore")
+    except Exception as alembic_exc:
+        log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
+
+
+async def _extract_files(path: Path) -> None:
+    """Extract attachments/ and ai_uploads/ from the archive into data_dir."""
+    from celerp.config import settings
+    _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/")
+    with tarfile.open(str(path), "r:gz") as tar:
+        for member in tar.getmembers():
+            if member.name in ("database.dump", "meta.json"):
+                continue
+            if member.name.startswith("/") or ".." in member.name:
+                continue
+            if not any(member.name.startswith(p) for p in _ALLOWED_PREFIXES):
+                continue
+            if member.isfile():
+                dest = (
+                    settings.data_dir / "static" / member.name
+                    if member.name.startswith("attachments/")
+                    else settings.data_dir / member.name
+                )
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                src = tar.extractfile(member)
+                if src:
+                    dest.write_bytes(src.read())
+
+
+async def _activate_modules(modules: list[str]) -> None:
+    """After a successful restore, update config.toml and request a restart.
+
+    The destination may not have the same set of enabled modules as the
+    source. We call celerp.config.set_enabled_modules() (idempotent) so
+    config.toml reflects what was enabled at export time. Only when that
+    actually adds modules do we write the .restart_requested sentinel so the
+    celerp start process manager respawns with the new module set — when the
+    destination already had them all, the loaded code is identical and a
+    restart is pointless churn. The loader will skip modules that don't have
+    on-disk packages; the missing-modules warning surfaces those to the user.
+
+    No-op if modules is empty (backwards compat with old archives).
+    """
+    if not modules:
+        return
+    try:
+        from celerp.config import set_enabled_modules as _set_enabled_modules
+        changed = _set_enabled_modules(modules)
+        log.info("config.toml updated with %d enabled modules: %s",
+                 len(modules), modules)
+    except Exception as exc:
+        log.warning("Failed to update config.toml with enabled modules: %s", exc)
+        return
+
+    if not changed:
+        log.info("Enabled modules unchanged — skipping restart")
+        return
+
+    # Request a restart so the loader picks up the new modules.
+    # _send_sigterm writes the sentinel + sleeps 0.2s then SIGTERMs self.
+    # We schedule it via call_later so the HTTP response flushes first.
+    try:
+        import asyncio
+        from celerp.routers.system import _restart_sentinel_path, _send_sigterm
+        sentinel = _restart_sentinel_path()
+        sentinel.parent.mkdir(parents=True, exist_ok=True)
+        sentinel.touch()
+        log.info("Restart sentinel written: %s", sentinel)
+        loop = asyncio.get_event_loop()
+        loop.call_later(0.5, _send_sigterm)
+        log.info("Restart scheduled (SIGTERM in 0.5s)")
+    except Exception as exc:
+        log.warning("Failed to schedule restart: %s", exc)
 
 
 async def run_import(path: Path):
     """Import from .celerp-backup: safety backup + pg_restore + extract files.
 
-    Returns BackupResult.
+    Returns BackupResult with a `warnings` field listing modules the source
+    had enabled that aren't installed on the destination (read-only diff,
+    doesn't fail the import).
     """
-    from celerp.services.backup import BackupResult, run_backup, restore_database
+    from celerp.services.backup import BackupResult
     from celerp.config import settings
 
     try:
@@ -105,13 +345,11 @@ async def run_import(path: Path):
                  path, meta.company_name, meta.celerp_version)
 
         # Safety backup first (if encryption key is available)
-        if settings.backup_encryption_key:
-            safety = await run_backup(label="pre-import-safety")
-            if not safety.ok:
-                log.warning("Safety backup failed before import: %s", safety.error)
+        safety = await _safety_backup("pre-import-safety")
+        if not safety.ok:
+            log.warning("Safety backup failed before import: %s", safety.error)
 
         with tarfile.open(str(path), "r:gz") as tar:
-            # Extract database.dump
             dump_file = tar.extractfile("database.dump")
             if dump_file is None:
                 return BackupResult(ok=False, size_bytes=0, error="Cannot read database.dump")
@@ -119,55 +357,47 @@ async def run_import(path: Path):
 
         # Dispose connection pool BEFORE pg_restore so live connections don't
         # hold locks that block pg_restore from dropping/recreating tables.
-        try:
-            from celerp.db import engine as _engine
-            await _engine.dispose()
-            log.info("Connection pool disposed before pg_restore")
-        except Exception as pool_exc:
-            log.warning("Pool dispose failed (non-fatal): %s", pool_exc)
+        await _dispose_engine()
 
         # Run pg_restore in a thread executor — it's a blocking subprocess call.
         # Running it directly in an async function blocks the uvicorn event loop,
         # which prevents the response from being sent back and causes HTTPX timeouts.
-        import asyncio
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, lambda: restore_database(dump_bytes, settings.database_url)
-        )
+        await _run_pg_restore(dump_bytes, settings.database_url)
 
         # Reconcile schema — run any missing migrations after pg_restore
-        try:
-            from alembic.config import Config as _AlembicConfig
-            from alembic import command as _alembic_cmd
-            _cfg = _AlembicConfig("alembic.ini")
-            await loop.run_in_executor(None, lambda: _alembic_cmd.upgrade(_cfg, "head"))
-            log.info("Alembic upgrade head completed after pg_restore")
-        except Exception as alembic_exc:
-            log.warning("Alembic upgrade after pg_restore failed (non-fatal): %s", alembic_exc)
+        await _run_alembic()
 
         # Extract files outside the tar context (already read dump above)
-        with tarfile.open(str(path), "r:gz") as tar:
-            from celerp.config import settings as _settings
-            _ALLOWED_PREFIXES = ("attachments/", "ai_uploads/")
-            for member in tar.getmembers():
-                if member.name in ("database.dump", "meta.json"):
-                    continue
-                if member.name.startswith("/") or ".." in member.name:
-                    continue
-                if not any(member.name.startswith(p) for p in _ALLOWED_PREFIXES):
-                    continue
-                if member.isfile():
-                    dest = (
-                        _settings.data_dir / "static" / member.name
-                        if member.name.startswith("attachments/")
-                        else _settings.data_dir / member.name
-                    )
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    src = tar.extractfile(member)
-                    if src:
-                        dest.write_bytes(src.read())
+        await _extract_files(path)
 
-        return BackupResult(ok=True, size_bytes=len(dump_bytes))
+        # Activate pass: update config.toml with the source's enabled modules
+        # and request a restart so the loader picks them up. Server-side
+        # because we have no user token yet (bootstrap restore).
+        # meta.enabled_modules is the primary source (new backups); fall back
+        # to the restored DB row for old backups whose meta.json predates this field.
+        effective_modules = meta.enabled_modules or await _read_modules_from_restored_db()
+        if effective_modules:
+            await _activate_modules(effective_modules)
+
+        # Audit pass: surface modules that were enabled on the source but
+        # have no on-disk package on the destination. Read-only — the import
+        # succeeds; the user just gets warned so the dashboard 404 is no
+        # longer a surprise.
+        warnings: list[str] = []
+        if effective_modules:
+            try:
+                from celerp.modules.audit import audit_missing_modules
+                warnings = audit_missing_modules(effective_modules)
+                if warnings:
+                    log.warning(
+                        "Imported backup enabled %d modules that are not "
+                        "installed on this server: %s",
+                        len(warnings), warnings,
+                    )
+            except Exception as audit_exc:
+                log.warning("Module audit failed (non-fatal): %s", audit_exc)
+
+        return BackupResult(ok=True, size_bytes=len(dump_bytes), warnings=warnings)
 
     except ValueError as exc:
         log.error("Backup import validation error: %s", exc)

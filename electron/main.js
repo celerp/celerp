@@ -144,6 +144,26 @@ function waitForPort(port, attempts = 60, intervalMs = 500) {
   });
 }
 
+/** Return the directory containing bundled pg_dump / pg_restore binaries.
+ *  Dev and non-macOS return "" → the Python side falls back to system PATH.
+ *  Packaged macOS ALWAYS returns the bundle path, even if the binary is absent:
+ *  a packaged build that can't find its own bundled tools must fail loudly
+ *  (Python raises a clear error), not silently dump with a system pg_dump of
+ *  unknown version. */
+function pgBinDir() {
+  if (IS_DEV) return "";                                // dev: fall back to PATH
+  if (process.platform === "darwin") {
+    return path.join(process.resourcesPath, `pg-${process.arch}`, "bin");
+  }
+  if (process.platform === "win32") {
+    return path.join(process.resourcesPath, "pg-win", "bin");
+  }
+  if (process.platform === "linux") {
+    return path.join(process.resourcesPath, "pg-linux", "bin");
+  }
+  return "";
+}
+
 /** Resolve the Python binary — packaged apps bundle a standalone Python. */
 function pythonBin() {
   if (IS_DEV) {
@@ -204,6 +224,9 @@ async function startPostgres(dbPort) {
 function runMigrations(dbUrl) {
   const env = {
     ...process.env,
+    // Force UTF-8 file I/O — Windows defaults to cp1252, which crashes on the
+    // app's UTF-8 data files (locales, config). Harmless on macOS/Linux.
+    PYTHONUTF8: "1",
     DATABASE_URL: dbUrl,
     PYTHONPATH: APP_DIR,
     ALEMBIC_VERSION_LOCATIONS: _moduleAlembicLocations(),
@@ -251,7 +274,7 @@ function runModuleSetup() {
   try {
     execFileSync(pythonBin(), [setupScript, "--data-dir", DATA_DIR], {
       cwd: APP_DIR,
-      env: { ...process.env, PYTHONPATH: APP_DIR },
+      env: { ...process.env, PYTHONUTF8: "1", PYTHONPATH: APP_DIR },
       stdio: "pipe",
     });
     console.log("[modules] module_setup.py complete");
@@ -297,9 +320,10 @@ function startApi(dbUrl, cfg) {
       VIRTUAL_ENV: undefined,
       CONDA_PREFIX: undefined,
       CONDA_DEFAULT_ENV: undefined,
+      PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
       DATABASE_URL: dbUrl,
       JWT_SECRET: getOrCreateJwtSecret(),
-      PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
+      PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
       MODULE_DIR: MODULE_DIR,
       // Tell the Python module loader that DEFAULT_MODULES_SRC is first-party trusted.
       // Seeded copies in MODULE_DIR inherit trust; without this the loader's BSL AST
@@ -310,6 +334,7 @@ function startApi(dbUrl, cfg) {
       CELERP_INSTALL_CHANNEL: "electron",
       CELERP_API_PORT: String(apiPort),
       CELERP_UI_PORT: String(uiPort),
+      CELERP_PG_BIN_DIR: pgBinDir(),
       ...resolveStorageEnv(cfg),
     };
     apiProcess = spawn(
@@ -317,15 +342,17 @@ function startApi(dbUrl, cfg) {
       ["-m", "uvicorn", "celerp.main:app", "--host", "127.0.0.1", "--port", String(apiPort), "--timeout-graceful-shutdown", "3"],
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
+    const apiLog = openProcessLog("api.log");
+    const logFile = path.join(LOG_DIR, "api.log");
     let stderr = "";
-    apiProcess.stderr.on("data", (d) => { stderr += d.toString(); });
-    apiProcess.stdout.on("data", (d) => { stderr += d.toString(); });
+    apiProcess.stderr.on("data", (d) => { stderr += d.toString(); apiLog?.write(d); });
+    apiProcess.stdout.on("data", (d) => { stderr += d.toString(); apiLog?.write(d); });
     apiProcess.on("error", reject);
     apiProcess.on("exit", (code) => {
-      if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}):\n${stderr.slice(-2000)}`));
+      if (code !== 0 && code !== null) reject(new Error(`API process exited (code ${code}). Full log: ${logFile}\n${stderr.slice(-3000)}`));
     });
     waitForPort(apiPort).then(resolve).catch(() =>
-      reject(new Error(`API port ${apiPort} never opened:\n${stderr.slice(-2000)}`))
+      reject(new Error(`API port ${apiPort} never opened. Full log: ${logFile}\n${stderr.slice(-3000)}`))
     );
   });
 }
@@ -343,14 +370,16 @@ function startUi(dbUrl, cfg) {
       CONDA_PREFIX: undefined,
       CONDA_DEFAULT_ENV: undefined,
       API_URL: `http://127.0.0.1:${apiPort}`,
+      PYTHONUTF8: "1",  // UTF-8 file I/O on Windows (cp1252 default crashes on UTF-8 data)
       DATABASE_URL: dbUrl,
       JWT_SECRET: getOrCreateJwtSecret(),
-      PYTHONPATH: `${APP_DIR}:${MODULE_DIR}`,
+      PYTHONPATH: `${APP_DIR}${path.delimiter}${MODULE_DIR}`,
       MODULE_DIR: MODULE_DIR,
       CELERP_TRUSTED_MODULE_DIRS: DEFAULT_MODULES_SRC,
       CELERP_CONFIG: PYTHON_CONFIG_PATH,
       CELERP_UI_PORT: String(uiPort),
       CELERP_API_PORT: String(apiPort),
+      CELERP_PG_BIN_DIR: pgBinDir(),
       ...resolveStorageEnv(cfg),
     };
     uiProcess = spawn(
@@ -358,17 +387,34 @@ function startUi(dbUrl, cfg) {
       ["-m", "uvicorn", "ui.app:app", "--host", "127.0.0.1", "--port", String(uiPort), "--timeout-graceful-shutdown", "3"],
       { cwd: APP_DIR, env, stdio: "pipe" }
     );
+    const uiLog = openProcessLog("ui.log");
+    const logFile = path.join(LOG_DIR, "ui.log");
     let stderr = "";
-    uiProcess.stderr.on("data", (d) => { stderr += d.toString(); });
-    uiProcess.stdout.on("data", (d) => { stderr += d.toString(); });
+    uiProcess.stderr.on("data", (d) => { stderr += d.toString(); uiLog?.write(d); });
+    uiProcess.stdout.on("data", (d) => { stderr += d.toString(); uiLog?.write(d); });
     uiProcess.on("error", reject);
     uiProcess.on("exit", (code) => {
-      if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}):\n${stderr.slice(-2000)}`));
+      if (code !== 0 && code !== null) reject(new Error(`UI process exited (code ${code}). Full log: ${logFile}\n${stderr.slice(-3000)}`));
     });
     waitForPort(uiPort).then(resolve).catch(() =>
-      reject(new Error(`UI port ${uiPort} never opened:\n${stderr.slice(-2000)}`))
+      reject(new Error(`UI port ${uiPort} never opened. Full log: ${logFile}\n${stderr.slice(-3000)}`))
     );
   });
+}
+
+/** Open a truncating write stream for a child-process log (api.log / ui.log),
+ *  so the real Python traceback is always recoverable even if the error dialog
+ *  fails to surface it. Returns null if the log can't be opened. */
+function openProcessLog(name) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const s = fs.createWriteStream(path.join(LOG_DIR, name), { flags: "w" });
+    s.write(`=== ${name} — ${new Date().toISOString()} ===\n`);
+    return s;
+  } catch (e) {
+    console.warn(`Could not open log ${name}: ${e.message}`);
+    return null;
+  }
 }
 
 /** Read or generate a persistent JWT secret stored in userData. */
@@ -660,11 +706,16 @@ async function _doUninstallDeleteData() {
  * the native showErrorBox (which clips on macOS with no scroll).
  */
 function showError(title, rawMessage) {
+  // Never render a blank / "undefined" dialog — fall back to pointing at the logs.
+  let raw = rawMessage == null ? "" : String(rawMessage);
+  if (raw.trim() === "") {
+    raw = `Celerp could not start and no error detail was captured.\n\nCheck the logs in:\n${LOG_DIR}`;
+  }
   // Strip alembic INFO/DEBUG lines — keep WARNING/ERROR and anything after them.
-  const lines = String(rawMessage).split("\n");
+  const lines = raw.split("\n");
   const filtered = lines.filter((l) => !/^\s*(INFO|DEBUG)\s+\[/.test(l));
   // If filtering left nothing meaningful, fall back to raw (avoid blank dialog).
-  const message = filtered.join("\n").trim() || rawMessage;
+  const message = filtered.join("\n").trim() || raw;
 
   // Short messages: native box is fine (no clipping risk).
   if (message.length < 400 && !message.includes("\n")) {

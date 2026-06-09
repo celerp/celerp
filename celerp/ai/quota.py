@@ -22,6 +22,15 @@ from celerp.gateway.state import (
     relay_subscribe_url,
 )
 
+# Private aliases so tests (and any internal callers) can import these from
+# this module rather than reaching into celerp.gateway.state directly.
+_relay_http_url = relay_http_url
+
+
+def _subscribe_url() -> str:
+    """Return the celerp.com subscribe URL anchored to the AI section."""
+    return relay_subscribe_url(anchor="ai")
+
 log = logging.getLogger(__name__)
 
 # Quota bypass monitoring: count consecutive relay failures

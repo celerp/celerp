@@ -12,6 +12,17 @@ permissions:
 env:
   PBS_TAG: "20260414"
   PBS_PYTHON: "3.12.13"
+  # Bundled pg_dump/pg_restore, built from source (macOS). Pin version + SHA256
+  # for every tarball. pg_dump 17.x dumps the embedded server (17) and any
+  # external server <= 17.
+  PG_VERSION: "17.10"
+  PG_SHA256: "078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90"
+  OPENSSL_VERSION: "3.5.6"
+  OPENSSL_SHA256: "deae7c80cba99c4b4f940ecadb3c3338b13cb77418409238e57d7f31f2a3b736"
+  # Windows pg_dump/pg_restore: extracted from the official PostgreSQL (EDB)
+  # Windows binaries. The embedded server has no pg_dump, so backup needs these.
+  PG_WIN_VERSION: "17.10-1"
+  PG_WIN_SHA256: "f9aafca58e7026a1ef2caeee711acf761671e57904d430adc85f468374f5a821"
 
 jobs:
   # ── Prepare release (tag builds only) ────────────────────────────────────
@@ -115,32 +126,48 @@ jobs:
           PY
           echo "Electron package version set to $VERSION"
 
+      # Download + SHA256-verify (against the release's SHA256SUMS) before extract.
       - name: Download Python standalone (arm64)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
-          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
-          echo "Downloading arm64: $URL"
+          set -eo pipefail
+          F="cpython-${PBS_PYTHON}+${PBS_TAG}-aarch64-apple-darwin-install_only_stripped.tar.gz"
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o "$F" "$BASE/$F"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o SHA256SUMS "$BASE/SHA256SUMS"
+          grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/mac-arm64"
-          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-arm64"
+          tar xz -f "$F" -C "electron/python-standalone/mac-arm64"
+          rm -f "$F"
 
       - name: Download Python standalone (x64)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
-          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
-          echo "Downloading x64: $URL"
+          set -eo pipefail
+          F="cpython-${PBS_PYTHON}+${PBS_TAG}-x86_64-apple-darwin-install_only_stripped.tar.gz"
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o "$F" "$BASE/$F"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o SHA256SUMS "$BASE/SHA256SUMS"
+          grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/mac-x64"
-          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/mac-x64"
+          tar xz -f "$F" -C "electron/python-standalone/mac-x64"
+          rm -f "$F"
 
       - name: Download Python standalone
         if: matrix.os != 'macos-latest'
         shell: bash
         run: |
-          URL="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG/cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
-          echo "Downloading: $URL"
+          set -eo pipefail
+          F="cpython-${PBS_PYTHON}+${PBS_TAG}-${{ matrix.pbs_triple }}-install_only_stripped.tar.gz"
+          BASE="https://github.com/astral-sh/python-build-standalone/releases/download/$PBS_TAG"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o "$F" "$BASE/$F"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o SHA256SUMS "$BASE/SHA256SUMS"
+          grep " $F\$" SHA256SUMS | { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
           mkdir -p "electron/python-standalone/${{ matrix.standalone_dir }}"
-          curl -fsSL "$URL" | tar xz -C "electron/python-standalone/${{ matrix.standalone_dir }}"
+          tar xz -f "$F" -C "electron/python-standalone/${{ matrix.standalone_dir }}"
+          rm -f "$F"
 
       - name: Install Python deps into standalone (arm64)
         if: matrix.os == 'macos-latest'
@@ -174,6 +201,133 @@ jobs:
           "$PY" -m pip install --upgrade pip
           "$PY" -m pip install .
 
+      # ── Bundled pg_dump/pg_restore (macOS) ──────────────────────────────
+      # Built from source for both arches in this one arm64 job (x86_64 slice
+      # cross-compiled with Rosetta). Cached on version + script hash so normal
+      # builds skip the multi-minute compile.
+      - name: Cache pg-tools (macOS)
+        if: matrix.os == 'macos-latest'
+        id: pg-tools-cache
+        uses: actions/cache@v4
+        with:
+          path: electron/pg-tools
+          key: pg-tools-${{ runner.os }}-pg${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools.sh') }}
+
+      - name: Build bundled pg_dump/pg_restore (macOS, both arches)
+        if: matrix.os == 'macos-latest' && steps.pg-tools-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          bash electron/scripts/build-pg-tools.sh arm64  "$PWD/electron/pg-tools/mac-arm64"
+          bash electron/scripts/build-pg-tools.sh x86_64 "$PWD/electron/pg-tools/mac-x64"
+
+      # ── Bundled pg_dump/pg_restore (Windows) ────────────────────────────
+      # The @embedded-postgres Windows package ships no pg_dump, so extract it +
+      # its transitive DLL closure from the official PostgreSQL (EDB) binaries.
+      - name: Cache pg-tools (Windows)
+        if: matrix.os == 'windows-latest'
+        id: pg-tools-win-cache
+        uses: actions/cache@v4
+        with:
+          path: electron/pg-tools/win
+          key: pg-tools-win-${{ env.PG_WIN_VERSION }}-${{ env.PG_WIN_SHA256 }}
+
+      - name: Fetch bundled pg_dump/pg_restore (Windows)
+        if: matrix.os == 'windows-latest' && steps.pg-tools-win-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -eo pipefail
+          URL="https://get.enterprisedb.com/postgresql/postgresql-${PG_WIN_VERSION}-windows-x64-binaries.zip"
+          curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o pg-win.zip "$URL"
+          echo "${PG_WIN_SHA256} *pg-win.zip" | sha256sum -c -
+          DEST="electron/pg-tools/win/bin"
+          mkdir -p "$DEST"
+          # pg_dump/pg_restore + their transitive DLL closure (resolved via objdump):
+          # libpq, OpenSSL (crypto/ssl), gettext+iconv (LGPL), lz4, zstd, mingw winpthreads.
+          7z e pg-win.zip -o"$DEST" -y \
+            "pgsql/bin/pg_dump.exe" "pgsql/bin/pg_restore.exe" \
+            "pgsql/bin/libpq.dll" "pgsql/bin/libcrypto-3-x64.dll" "pgsql/bin/libssl-3-x64.dll" \
+            "pgsql/bin/libintl-9.dll" "pgsql/bin/libiconv-2.dll" "pgsql/bin/libwinpthread-1.dll" \
+            "pgsql/bin/liblz4.dll" "pgsql/bin/libzstd.dll" >/dev/null
+          rm -f pg-win.zip
+          ls "$DEST"
+          "$DEST/pg_dump.exe" --version   # smoke test (runs with the bundled DLLs)
+
+      # ── Bundled pg_dump/pg_restore (Linux) ──────────────────────────────
+      # No portable prebuilt exists (theseus-rs needs system OpenSSL-3; musl needs
+      # the musl loader), so build from source in a manylinux_2_28 container
+      # (glibc 2.28) for portability matching the rest of the AppImage.
+      - name: Cache pg-tools (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        id: pg-tools-linux-cache
+        uses: actions/cache@v4
+        with:
+          path: electron/pg-tools/linux
+          key: pg-tools-linux-${{ env.PG_VERSION }}-ossl${{ env.OPENSSL_VERSION }}-${{ hashFiles('electron/scripts/build-pg-tools-linux.sh') }}
+
+      - name: Build bundled pg_dump/pg_restore (Linux, manylinux)
+        if: matrix.os == 'ubuntu-latest' && steps.pg-tools-linux-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          docker run --rm -v "$PWD:/io" -w /io \
+            -e PG_VERSION -e PG_SHA256 -e OPENSSL_VERSION -e OPENSSL_SHA256 \
+            quay.io/pypa/manylinux_2_28_x86_64 \
+            bash electron/scripts/build-pg-tools-linux.sh /io/electron/pg-tools/linux
+          # The container runs as root, so the output is root-owned; chown it back
+          # to the runner user, else electron-builder's hardlink copy hits EPERM
+          # (protected_hardlinks blocks linking to files the user doesn't own).
+          sudo chown -R "$(id -u):$(id -g)" electron/pg-tools/linux
+
+      # Note: the StackBuilder GUI DLLs (wxWidgets + libcurl) the Windows
+      # embedded-postgres package vendors are pruned in electron/after-pack.js
+      # (reliable on the real packaged tree) and verified by the post-build step.
+
+      - name: Collect + verify third-party licenses
+        shell: bash
+        run: |
+          set -eo pipefail
+          OS="${{ matrix.os }}"
+          PBS_BASE="electron/python-standalone"
+          PYVER="python3.$(echo "$PBS_PYTHON" | cut -d. -f2)"
+          ARGS=()
+          add_tree() {                       # $1 = standalone dir (e.g. mac-arm64)
+            ARGS+=(--pbs-root "$PBS_BASE/$1")
+            if [ "$OS" = "windows-latest" ]; then
+              ARGS+=(--site-packages "$PBS_BASE/$1/python/Lib/site-packages")
+            else
+              ARGS+=(--site-packages "$PBS_BASE/$1/python/lib/$PYVER/site-packages")
+            fi
+          }
+          # The embedded PostgreSQL server is bundled on every platform (the
+          # @embedded-postgres/<platform> package installs via the wrapper's
+          # optional deps), so each passes its own curated native-lib license set.
+          EP="electron/licenses-extra"
+          # Bundled Python interpreter's native-lib licenses (stripped from the
+          # install_only archive); same set on every platform.
+          ARGS+=(--extra-python "$EP/python-standalone")
+          # psycopg2-binary vendors libpq + native deps without their licenses.
+          ARGS+=(--extra-psycopg2 "$EP/psycopg2")
+          if [ "$OS" = "macos-latest" ]; then
+            add_tree mac-arm64               # universal app bundles BOTH Python trees,
+            add_tree mac-x64                 # so collect/check both (audit-quality)
+            # PG/OpenSSL license texts are arch-independent; one tree suffices.
+            ARGS+=(--pg-licenses electron/pg-tools/mac-arm64/licenses)
+            ARGS+=(--extra-embedded-postgres "$EP/embedded-postgres-darwin")
+            PY="$PBS_BASE/mac-arm64/python/bin/python3"
+          elif [ "$OS" = "windows-latest" ]; then
+            add_tree "${{ matrix.standalone_dir }}"
+            ARGS+=(--extra-embedded-postgres "$EP/embedded-postgres-win")
+            PY="$PBS_BASE/${{ matrix.standalone_dir }}/python/python.exe"
+          else
+            add_tree "${{ matrix.standalone_dir }}"
+            ARGS+=(--pg-licenses electron/pg-tools/linux/licenses)   # built-from-source pg_dump
+            ARGS+=(--extra-embedded-postgres "$EP/embedded-postgres-linux")
+            PY="$PBS_BASE/${{ matrix.standalone_dir }}/python/bin/python3"
+          fi
+          "$PY" electron/scripts/collect_licenses.py --out licenses \
+            --node-modules electron/node_modules "${ARGS[@]}"
+          "$PY" electron/scripts/collect_licenses.py --check --out licenses \
+            --node-modules electron/node_modules "${ARGS[@]}"
+
       - name: Build macOS (production - signed + notarized)
         if: matrix.os == 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 130
@@ -199,17 +353,88 @@ jobs:
       - name: Build (Windows / Linux - release tag)
         if: matrix.os != 'macos-latest' && startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ${{ matrix.build_cmd }} -- --publish always
+        # Retry: electron-builder downloads its toolchain (NSIS, winCodeSign,
+        # AppImage tools) from electron-builder-binaries on GitHub, which 504s
+        # intermittently. Already-downloaded tools are cached between attempts.
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            ${{ matrix.build_cmd }} -- --publish always && exit 0
+            echo "::warning::electron-builder attempt $attempt failed (often a transient toolchain download); retrying in 15s"
+            sleep 15
+          done
+          echo "electron-builder failed after 3 attempts" >&2; exit 1
 
       - name: Build (Windows / Linux - dev build)
         if: matrix.os != 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
         working-directory: electron
+        shell: bash
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
+        # Retry transient electron-builder toolchain downloads (see release step).
+        run: |
+          set +e
+          for attempt in 1 2 3; do
+            pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never && exit 0
+            echo "::warning::electron-builder attempt $attempt failed (often a transient toolchain download); retrying in 15s"
+            sleep 15
+          done
+          echo "electron-builder failed after 3 attempts" >&2; exit 1
+
+      # Prove the licenses/ folder actually made it into the packaged artifact —
+      # the pre-build check only proves licenses/ existed before electron-builder
+      # ran, not that extraResources put it in the .app/.exe/.AppImage resources.
+      - name: Verify licenses landed in the packaged artifact
+        shell: bash
+        run: |
+          set -eo pipefail
+          OS="${{ matrix.os }}"
+          case "$OS" in
+            macos-latest)
+              RES="$(ls -d electron/dist/mac*/Celerp.app/Contents/Resources 2>/dev/null | head -1)" ;;
+            windows-latest)
+              RES="electron/dist/win-unpacked/resources" ;;
+            *)
+              RES="electron/dist/linux-unpacked/resources" ;;
+          esac
+          echo "Inspecting: $RES/licenses"
+          test -n "$RES" && test -d "$RES/licenses"
+          test -f "$RES/licenses/THIRD-PARTY-NOTICES.txt"
+          test -d "$RES/licenses/python"
+          test -f "$RES/licenses/python/LICENSE.openssl-3.txt"   # bundled-lib set landed
+          test -f "$RES/licenses/psycopg2/LGPL-3.0.txt"          # psycopg2 vendored-lib set landed
+          test -d "$RES/licenses/electron"
+          test -d "$RES/licenses/chromium"
+          # embedded PostgreSQL server is bundled on every platform -> its
+          # curated native-lib attribution must be present.
+          test -d "$RES/licenses/embedded-postgres"
+          test -f "$RES/licenses/embedded-postgres/zlib-LICENSE.txt"
+          if [ "$OS" = "macos-latest" ] || [ "$OS" = "ubuntu-latest" ]; then
+            test -d "$RES/licenses/postgresql"   # from the built-from-source pg_dump tools
+            test -d "$RES/licenses/openssl"
+          fi
+          if [ "$OS" = "ubuntu-latest" ]; then
+            test -f "$RES/pg-linux/bin/pg_dump"  # backup pg_dump bundled
+          fi
+          # Windows: the StackBuilder DLLs (wxWidgets + libcurl) must have been
+          # pruned by afterPack — fail loudly if any leaked into the package
+          # (otherwise we'd ship the wxWindows-licensed DLLs without attribution).
+          if [ "$OS" = "windows-latest" ]; then
+            BIN="$RES/app.asar.unpacked/node_modules/@embedded-postgres/windows-x64/native/bin"
+            if ls "$BIN"/wx*.dll "$BIN"/libcurl.dll >/dev/null 2>&1; then
+              echo "ERROR: StackBuilder DLLs leaked into the Windows package" >&2
+              ls "$BIN"/wx*.dll "$BIN"/libcurl.dll 2>/dev/null >&2
+              exit 1
+            fi
+            # bundled pg_dump (for backup) + libpq must be packaged
+            test -f "$RES/pg-win/bin/pg_dump.exe"
+            test -f "$RES/pg-win/bin/libpq.dll"
+          fi
+          echo "OK: third-party licenses present in packaged artifact"
 
       - name: Verify YML artifact names
         if: "!startsWith(github.ref, 'refs/tags/v')"
