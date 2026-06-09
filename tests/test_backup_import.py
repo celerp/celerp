@@ -373,9 +373,10 @@ class TestActivateModulesRestarts:
         import signal
         from celerp.services import backup_import
 
-        # Stub set_enabled_modules (it writes config.toml — we don't need that in this test)
-        monkeypatch.setattr(backup_import, "set_enabled_modules",
-                            lambda m: None, raising=False)
+        # Stub set_enabled_modules at its source (_activate_modules imports it
+        # function-locally from celerp.config). Return True to signal the
+        # enabled set actually changed, which is what gates the restart.
+        monkeypatch.setattr("celerp.config.set_enabled_modules", lambda m: True)
 
         # Stub _restart_sentinel_path to a temp file
         sentinel = tmp_path / ".restart_requested"
@@ -402,6 +403,23 @@ class TestActivateModulesRestarts:
             f"got {len(kill_calls)}: {kill_calls}"
         )
         assert kill_calls[0][1] == signal.SIGTERM
+
+    @pytest.mark.asyncio
+    async def test_activate_modules_skips_restart_when_unchanged(self, monkeypatch):
+        """When the enabled set didn't change, no restart is scheduled."""
+        import asyncio
+        from celerp.services import backup_import
+
+        # set_enabled_modules returns False => destination already had them all.
+        monkeypatch.setattr("celerp.config.set_enabled_modules", lambda m: False)
+
+        kill_calls: list[tuple[int, int]] = []
+        monkeypatch.setattr("os.kill", lambda pid, sig: kill_calls.append((pid, sig)))
+
+        await backup_import._activate_modules(["celerp-inventory"])
+        await asyncio.sleep(0.1)
+
+        assert kill_calls == [], "Unchanged module set must not trigger a restart"
 
     @pytest.mark.asyncio
     async def test_activate_modules_skips_restart_when_empty(self, monkeypatch):

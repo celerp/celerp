@@ -345,13 +345,17 @@ def resolve_install_order(names: list[str], module_dir: Path) -> list[str]:
     return ordered
 
 
-def set_enabled_modules(names: list[str]) -> None:
+def set_enabled_modules(names: list[str]) -> bool:
     """Idempotently add modules to the config file's enabled list.
 
     Resolves transitive dependencies and writes the updated config to disk.
     Works even when config.toml does not yet exist (e.g. Electron binary on
     first boot before 'celerp init' is run). write_config() handles missing
     sections with empty defaults so the file is always well-formed.
+
+    Returns True if the enabled set changed (config was written), False if
+    every requested module was already enabled (no-op). Callers can use this
+    to skip follow-up work like a process restart when nothing changed.
     """
     cfg = read_config()
     _pkg_root = Path(__file__).parent.parent
@@ -359,11 +363,12 @@ def set_enabled_modules(names: list[str]) -> None:
     currently_enabled: list[str] = cfg.get("modules", {}).get("enabled", [])
     to_add = [n for n in names if n not in currently_enabled]
     if not to_add:
-        return
+        return False
     install_order = resolve_install_order(list(to_add), module_dir)
     new_modules = [n for n in install_order if n not in currently_enabled]
     if "modules" not in cfg:
         cfg["modules"] = {}
     cfg["modules"]["enabled"] = currently_enabled + new_modules
     write_config(cfg)
+    return True
 

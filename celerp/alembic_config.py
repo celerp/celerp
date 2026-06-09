@@ -20,10 +20,9 @@ def find_alembic_ini() -> Path:
     """Return the path to alembic.ini, searching well-known locations.
 
     Lookup order:
-      1. celerp/alembic.ini         (source repo: cli.py runs from celerp/)
-      2. alembic.ini                (repo root: dev mode, pytest)
-      3. parent of celerp/alembic.ini (installed site-packages layout)
-      4. cwd-relative alembic.ini   (last-resort fallback)
+      1. celerp/alembic.ini   (package dir: cli.py + installed site-packages)
+      2. ../alembic.ini       (repo root: dev mode, pytest)
+      3. ./alembic.ini        (cwd-relative last-resort fallback)
 
     Raises FileNotFoundError with a clear message if no candidate exists.
     """

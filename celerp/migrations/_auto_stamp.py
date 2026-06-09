@@ -65,13 +65,6 @@ def _str_arg(node: ast.AST) -> str | None:
     return None
 
 
-def _arg_by_index(call: ast.Call, idx: int) -> ast.AST | None:
-    """Return the positional argument at idx, or the first kwarg by position."""
-    if idx < len(call.args):
-        return call.args[idx]
-    return None
-
-
 def _first_string_arg(call: ast.Call) -> str | None:
     """Return the value of the first string-literal positional argument."""
     for arg in call.args:
@@ -106,14 +99,21 @@ def extract_signatures(migration_file: Path) -> list[RevisionSignature]:
         return []
 
     rev_id: str | None = None
-    in_upgrade = False
     upgrade_funcs: list[ast.FunctionDef] = []
     for node in ast.walk(tree):
+        # Alembic templates emit either `revision = "abc"` (Assign) or, on newer
+        # templates, `revision: str = "abc"` (AnnAssign). Handle both — missing
+        # the annotated form silently drops every signature in that migration,
+        # which would make find_safe_stamp advance past it unverified.
         if isinstance(node, ast.Assign):
             for t in node.targets:
                 if isinstance(t, ast.Name) and t.id == "revision":
                     rev_id = _str_arg(node.value)
                     break
+        elif isinstance(node, ast.AnnAssign):
+            if (isinstance(node.target, ast.Name) and node.target.id == "revision"
+                    and node.value is not None):
+                rev_id = _str_arg(node.value)
         if isinstance(node, ast.FunctionDef) and node.name == "upgrade":
             upgrade_funcs.append(node)
 

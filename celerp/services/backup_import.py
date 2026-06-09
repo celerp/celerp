@@ -31,9 +31,15 @@ def _parse_version(v: str | None) -> tuple[int, int, int, str]:
       - "1.0"                          → (1, 0, 0, "")
       - "" / None / "unknown" / "abc"  → (0, 0, 0, "")
 
-    Tuple comparison is correct: (10, 0, 0, "") > (9, 0, 0, "") is True.
-    (String compare would say "10" < "9" lexicographically — that's the
-    old bug.)
+    Tuple comparison is correct for major/minor/patch: (10, 0, 0, "") >
+    (9, 0, 0, "") is True. (String compare would say "10" < "9"
+    lexicographically — that's the old bug.)
+
+    NOTE: the 4th element (pre_release) is informational only and is NOT
+    PEP 440-ordered — a final release sorts *below* its own dev pre-release
+    ("" < "dev1" as strings). The version policy never orders on it (it only
+    reads major/minor), so this is harmless; do not rely on the pre field for
+    ordering decisions elsewhere.
 
     The parser walks the dotted components. The first 1-3 components
     that are pure integers become major/minor/patch. The first non-int
@@ -157,7 +163,7 @@ def validate_archive(path: Path) -> ImportMeta:
     backup_v = _parse_version(meta.celerp_version)
     current_v = _parse_version(current)
 
-    if backup_v > current_v and backup_v[0] > current_v[0]:
+    if backup_v[0] > current_v[0]:
         # Backup is from a newer MAJOR version. The whole point of restore
         # is recovery — don't block the user. Warn loudly so the UI can
         # surface it, but proceed with the import. Schema migrations are
@@ -282,11 +288,12 @@ async def _activate_modules(modules: list[str]) -> None:
 
     The destination may not have the same set of enabled modules as the
     source. We call celerp.config.set_enabled_modules() (idempotent) so
-    config.toml reflects what was enabled at export time, and we write
-    the .restart_requested sentinel so the celerp start process manager
-    respawns with the new module set. The loader will skip modules that
-    don't have on-disk packages; the missing-modules warning surfaces
-    those to the user.
+    config.toml reflects what was enabled at export time. Only when that
+    actually adds modules do we write the .restart_requested sentinel so the
+    celerp start process manager respawns with the new module set — when the
+    destination already had them all, the loaded code is identical and a
+    restart is pointless churn. The loader will skip modules that don't have
+    on-disk packages; the missing-modules warning surfaces those to the user.
 
     No-op if modules is empty (backwards compat with old archives).
     """
@@ -294,11 +301,15 @@ async def _activate_modules(modules: list[str]) -> None:
         return
     try:
         from celerp.config import set_enabled_modules as _set_enabled_modules
-        _set_enabled_modules(modules)
+        changed = _set_enabled_modules(modules)
         log.info("config.toml updated with %d enabled modules: %s",
                  len(modules), modules)
     except Exception as exc:
         log.warning("Failed to update config.toml with enabled modules: %s", exc)
+        return
+
+    if not changed:
+        log.info("Enabled modules unchanged — skipping restart")
         return
 
     # Request a restart so the loader picks up the new modules.

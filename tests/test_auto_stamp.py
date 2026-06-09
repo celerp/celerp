@@ -72,6 +72,24 @@ def downgrade():
         assert RevisionSignature(rev="abc123", kind="add_column",
                                  table="users", column="email") in sigs
 
+    def test_extracts_from_annotated_revision(self, tmp_path):
+        """Newer alembic templates emit `revision: str = "..."` (AnnAssign).
+        Signatures must still be extracted — otherwise find_safe_stamp would
+        advance past such a revision unverified (e.g. our initial_schema)."""
+        mig_dir = tmp_path / "migrations" / "versions"
+        mig_dir.mkdir(parents=True)
+        mig = mig_dir / "ann001_initial.py"
+        mig.write_text('''
+revision: str = "ann001"
+down_revision: str | None = None
+
+def upgrade():
+    op.create_table("foo", sa.Column("id", sa.Integer, primary_key=True))
+''')
+        sigs = extract_signatures(mig)
+        assert RevisionSignature(rev="ann001", kind="create_table",
+                                 table="foo", column=None) in sigs
+
     def test_extracts_create_table(self, tmp_path):
         mig_dir = tmp_path / "migrations" / "versions"
         mig_dir.mkdir(parents=True)
