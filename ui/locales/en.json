@@ -411,6 +411,7 @@
   "doc.receive_payment": "Receive payment",
   "doc.received": "Received",
   "doc.receiver": "Receiver:",
+  "doc.ref_draft_tooltip": "A new document number is issued when the document is marked finalized (so that final invoice numbers are contiguous). If you want to manually override that number, you can once the document is finalized.",
   "doc.reference": "Reference:",
   "doc.revert_to_draft": "Revert to Draft",
   "doc.send_multiple_hint": "Separate multiple addresses with a comma (,)",

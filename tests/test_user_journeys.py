@@ -425,6 +425,37 @@ class TestCRUDRead:
         assert r.status_code == 200
 
     @pytest.mark.asyncio
+    async def test_draft_doc_number_is_readonly(self, ui):
+        """A draft's document number must be non-editable — a new contiguous
+        number is issued on finalize — so the cell renders locked, with the
+        explanatory tooltip, and WITHOUT the inline click-to-edit endpoint."""
+        draft = {**_DOC_INV, "status": "draft"}
+        with _Patches({"ui.api_client.get_doc": AsyncMock(return_value=draft),
+                       "ui.api_client.list_contacts": AsyncMock(return_value={"items": [_CONTACT], "total": 1})}):
+            r = await ui.get("/docs/doc:inv1", cookies=_c())
+        assert r.status_code == 200
+        html = r.text
+        assert "editable-cell--locked" in html, "draft doc number should render locked"
+        assert "/docs/doc:inv1/field/ref_id/edit" not in html, \
+            "draft doc number must not expose the inline edit endpoint"
+        assert "new document number is issued" in html, "tooltip text should be present"
+
+    @pytest.mark.asyncio
+    async def test_finalized_doc_number_is_editable(self, ui):
+        """Once finalized, the number can be manually overridden, so the inline
+        edit cell (→ renumber) stays available and is not locked."""
+        final = {**_DOC_QUOT, "status": "sent"}
+        with _Patches({"ui.api_client.get_doc": AsyncMock(return_value=final),
+                       "ui.api_client.list_contacts": AsyncMock(return_value={"items": [_CONTACT], "total": 1})}):
+            r = await ui.get("/docs/doc:quo1", cookies=_c())
+        assert r.status_code == 200
+        html = r.text
+        assert "/docs/doc:quo1/field/ref_id/edit" in html, \
+            "finalized doc number should remain editable (manual override)"
+        assert "editable-cell--locked" not in html, \
+            "finalized doc number must not be locked"
+
+    @pytest.mark.asyncio
     async def test_contact_list(self, ui):
         with _Patches(_crm_mocks()):
             r = await ui.get("/contacts/customers", cookies=_c())

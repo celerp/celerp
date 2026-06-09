@@ -6093,7 +6093,15 @@ async function celerpCsvImport(input, entityId) {{
         # Metadata bar: Doc ID | Reference | Issue date | Due date
         # For subscription templates: show Frequency + Next Issue Date instead of Issue/Due date
         Div(
-            Div(Div(t("doc.doc"), cls="meta-label"), _cell("ref_id", ref), cls="meta-cell"),
+            Div(Div(t("doc.doc"), cls="meta-label"),
+                # Draft numbers are provisional — a new contiguous number is
+                # assigned on finalize — so they are read-only with an
+                # explanatory tooltip. Once finalized, the number is editable
+                # (manual override), so keep the normal click-to-edit cell.
+                Div(format_value(ref, "text"), title=t("doc.ref_draft_tooltip"),
+                    cls="editable-cell editable-cell--locked") if is_draft
+                else _cell("ref_id", ref),
+                cls="meta-cell"),
             Div(Div(t("doc.reference"), cls="meta-label"), _cell("reference", doc.get("reference")), cls="meta-cell"),
             Div(Div("Frequency" if _is_sub_template else t("doc.issue_date"), cls="meta-label"),
                 _cell("frequency", doc.get("frequency", "").capitalize()) if _is_sub_template else _cell("issue_date", issue_date_value),
