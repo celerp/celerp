@@ -293,7 +293,12 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         raise HTTPException(status_code=404, detail="Not found")
     if payload.name is not None:
         company.name = payload.name.strip()
-    company.settings = payload.settings
+    # Merge (PATCH semantics): a partial settings payload must not wipe other
+    # keys. Replacing wholesale erased e.g. the numbering `sequences`, currency,
+    # and category_schemas whenever a caller sent only one field (the UI happens
+    # to pre-merge, but partial callers — and a name-only patch — must be safe).
+    if payload.settings:
+        company.settings = {**(company.settings or {}), **payload.settings}
     await session.commit()
     return {"ok": True}
 
