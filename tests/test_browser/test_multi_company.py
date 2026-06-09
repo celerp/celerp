@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 """Group 14: Multi-company — create second company, switch to it, verify context changes."""
+import uuid
+
 import pytest
 
 pytestmark = pytest.mark.browser
@@ -19,18 +21,23 @@ def test_create_second_company_via_api(api):
 
 
 def test_switch_company_picker_shows_multiple(page, ui_server, api):
-    """MC-02: With 2 companies, switch-company panel lists both."""
-    # Ensure second company exists
-    api.post("/companies", json={"name": "Browser Test Co 2"})
+    """MC-02: a user belonging to 2 companies sees both in the company switcher.
 
-    page.goto(f"{ui_server}/switch-company", wait_until="domcontentloaded")
-    assert "Internal Server Error" not in page.locator("body").inner_text()
-    assert "Traceback" not in page.locator("body").inner_text()
+    The switcher is the /settings/company/companies-list fragment (a <select>
+    of the user's companies) — there is no standalone /switch-company picker
+    page. A unique company name keeps this independent of other tests' data.
+    """
+    name2 = f"Browser Switch Co {uuid.uuid4().hex[:8]}"
+    r = api.post("/companies", json={"name": name2})
+    assert r.status_code in {200, 201}, f"create 2nd company failed: {r.status_code} {r.text}"
 
-    # Panel should list company names — at minimum the seeded company
+    page.goto(f"{ui_server}/settings/company/companies-list", wait_until="domcontentloaded")
     body = page.locator("body").inner_text()
-    assert "Browser Test Co" in body, \
-        f"Original company not shown in switch panel. Body: {body[:300]}"
+    assert "Internal Server Error" not in body
+    assert "Traceback" not in body
+    # Both the seeded company and the freshly-created one must be listed.
+    assert "Browser Test Co" in body, f"Seeded company not in switcher. Body: {body[:300]}"
+    assert name2 in body, f"New company '{name2}' not in switcher. Body: {body[:300]}"
 
 
 def test_switch_company_changes_context(playwright, ui_server, api_server, seeded_user, api):
