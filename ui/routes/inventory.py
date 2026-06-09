@@ -4648,7 +4648,7 @@ def _item_detail_tabs(
     price_lists: list[dict] | None = None,
     cell_renderers: dict | None = None,
 ) -> FT:
-    """GemCloud-style tabbed item detail: Details | Pricing | Activity."""
+    """Tabbed item detail: Details | Pricing | Activity."""
     tabs = [("details", "Details"), ("pricing", "Pricing"), ("activity", "Activity")]
     tab_bar = Div(
         *[

@@ -1311,8 +1311,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .activating-module--pending { color: var(--c-text2); background: var(--c-bg2); }
 .activating-module--error { color: #c0392b; background: rgba(192,57,43,0.08); }
 
-/* ── GemCloud-style document detail layout (doc-detail--gc) ── */
-.doc-detail--gc { display: flex; flex-direction: column; gap: 0; max-width: 1100px; }
+/* ── Document detail layout (doc-detail--gc) ── */
+.doc-detail--gc { display: flex; flex-direction: column; gap: 0; }
 
 .doc-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 12px 0 16px; }
 .doc-actions-left { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }

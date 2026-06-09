@@ -14,9 +14,8 @@ These tests verify:
 3. weight_unit is independent of weight (can be None when weight is None)
 4. cost_per_unit is independent of weight_unit
 5. Importer serialises weight/weight_unit/cost_per_unit correctly into HTTP payloads
-6. gemcloud_adapter.py correctly maps GemCloud fields to the new schema
-7. ItemCreate router model carries weight_unit and sell_by
-8. Round-trip: CIFItem → manifest JSON → re-parse preserves all fields
+6. ItemCreate router model carries weight_unit and sell_by
+7. Round-trip: CIFItem → manifest JSON → re-parse preserves all fields
 """
 
 from __future__ import annotations

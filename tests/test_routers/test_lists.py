@@ -426,7 +426,7 @@ class TestListImport:
                 "line_items": [{"name": "Gem", "quantity": 1, "unit_price": 500, "line_total": 500}],
                 "subtotal": 500, "total": 500, "status": "draft",
             },
-            "source": "gemcloud",
+            "source": "old_system",
             "idempotency_key": "imp-key-001",
         })
         assert r.status_code == 200
@@ -443,7 +443,7 @@ class TestListImport:
             "entity_id": "list:IMP-002",
             "event_type": "list.created",
             "data": {"ref_id": "IMP-002", "status": "draft", "line_items": []},
-            "source": "gemcloud",
+            "source": "old_system",
             "idempotency_key": "imp-key-002",
         }
         r1 = await client.post("/lists/import", headers=_h(token), json=payload)
@@ -459,12 +459,12 @@ class TestListImport:
         await client.post("/lists/import", headers=_h(token), json={
             "entity_id": "list:IMP-003", "event_type": "list.created",
             "data": {"ref_id": "IMP-003", "status": "draft", "line_items": []},
-            "source": "gemcloud", "idempotency_key": "key-a",
+            "source": "old_system", "idempotency_key": "key-a",
         })
         r = await client.post("/lists/import", headers=_h(token), json={
             "entity_id": "list:IMP-003", "event_type": "list.created",
             "data": {"ref_id": "IMP-003", "status": "draft", "line_items": []},
-            "source": "gemcloud", "idempotency_key": "key-b",
+            "source": "old_system", "idempotency_key": "key-b",
         })
         assert r.status_code == 409
 
@@ -474,12 +474,12 @@ class TestListImport:
         await client.post("/lists/import", headers=_h(token), json={
             "entity_id": "list:IMP-004", "event_type": "list.created",
             "data": {"ref_id": "IMP-004", "status": "draft", "line_items": []},
-            "source": "gemcloud", "idempotency_key": "key-create-004",
+            "source": "old_system", "idempotency_key": "key-create-004",
         })
         r = await client.post("/lists/import", headers=_h(token), json={
             "entity_id": "list:IMP-004", "event_type": "list.sent",
             "data": {"sent_via": "email"},
-            "source": "gemcloud", "idempotency_key": "key-send-004",
+            "source": "old_system", "idempotency_key": "key-send-004",
         })
         assert r.status_code == 200
         detail = (await client.get("/lists/list:IMP-004", headers=_h(token))).json()
@@ -494,7 +494,7 @@ class TestListImport:
                 "event_type": "list.created",
                 "data": {"ref_id": f"BATCH-{i:03d}", "status": "draft", "line_items": [],
                          "customer_name": f"Customer {i}"},
-                "source": "gemcloud",
+                "source": "old_system",
                 "idempotency_key": f"batch-key-{i:03d}",
             }
             for i in range(5)
@@ -517,7 +517,7 @@ class TestListImport:
             "entity_id": "list:BATCH-DUP",
             "event_type": "list.created",
             "data": {"ref_id": "BATCH-DUP", "status": "draft", "line_items": []},
-            "source": "gemcloud",
+            "source": "old_system",
             "idempotency_key": "batch-dup-key",
         }
         # first import
