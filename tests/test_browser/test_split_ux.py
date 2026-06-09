@@ -51,14 +51,16 @@ def split_item_piece(api):
 
 @pytest.fixture(scope="module")
 def split_item_ct(api):
-    """Create a sell_by=ct item with weight for split tests."""
+    """Create a sell_by=carat item for fractional-split tests.
+
+    New format: a carat item tracks its weight *as* the quantity (in carats) —
+    there's no separate weight/weight_unit, and the quantity accepts fractions.
+    """
     r = api.post("/items", json={
         "sku": "SPLIT-UX-CT-001",
         "name": "Split UX CT Item",
         "sell_by": "carat",
         "quantity": 10.0,
-        "weight": 5.0,
-        "weight_unit": "gram",
     })
     assert r.status_code in {200, 201}, f"Failed to create ct item: {r.text}"
     return r.json()
@@ -230,33 +232,26 @@ def test_split_ui_05_weight_clamped_on_blur_not_on_input(page, ui_server, split_
 
 
 def test_split_ui_06_ct_item_fractional_weight_end_to_end(page, ui_server, api, split_item_ct):
-    """SPLIT-UI-06: sell_by=ct item accepts fractional child_weight; child is created correctly."""
+    """SPLIT-UI-06: a sell_by=carat item accepts a *fractional* split quantity.
+
+    For weight-tracked (carat) items the quantity IS the carat weight, so there
+    is no separate child_weight field — the fractional value goes in child_qty.
+    """
     _open_split_panel(page, ui_server, split_item_ct["id"])
 
     qty_input = page.locator('input[name="child_qty"]')
-    weight_input = page.locator('input[name="child_weight"]')
     sku_input = page.locator('input[name="child_sku"]')
-
     assert qty_input.count() > 0, "child_qty input not found"
 
-    qty_input.fill("3")
-    qty_input.dispatch_event("change")
+    # Type the fractional carat weight character-by-character to catch a rewrite.
+    qty_input.click()
+    qty_input.fill("")
+    qty_input.type("1.5")
+    assert qty_input.input_value() == "1.5", (
+        f"child_qty shows '{qty_input.input_value()}' instead of '1.5'"
+    )
+    qty_input.dispatch_event("blur")
     page.wait_for_timeout(200)
-
-    if weight_input.count() > 0:
-        # Type fractional weight character by character
-        weight_input.click()
-        weight_input.fill("")
-        weight_input.type("1")
-        weight_input.type(".")
-        weight_input.type("5")
-        # Confirm it wasn't rewritten
-        assert weight_input.input_value() == "1.5", (
-            f"Field shows '{weight_input.input_value()}' instead of '1.5' before blur"
-        )
-        # Blur to clamp/finalize
-        weight_input.dispatch_event("blur")
-        page.wait_for_timeout(200)
 
     # Set a unique child SKU
     sku_input.fill("SPLIT-UX-CT-001-CHILD")
@@ -268,19 +263,18 @@ def test_split_ui_06_ct_item_fractional_weight_end_to_end(page, ui_server, api, 
 
     _assert_no_crash(page, "after split submit")
 
-    # No error flash
-    flash = page.locator(".flash--warning, .flash--error")
-    if flash.count() > 0:
-        pytest.fail(f"Split returned error: {flash.inner_text()}")
+    # No error flash. Match on actual text — the page can carry an empty
+    # placeholder .flash--error container that is not a real error.
+    errors = [t.strip() for t in
+              page.locator(".flash--warning, .flash--error").all_inner_texts() if t.strip()]
+    assert not errors, f"Split returned error: {errors}"
 
-    # Verify via API: child item exists with correct weight
-    if weight_input.count() > 0:
-        r = api.get("/items", params={"search": "SPLIT-UX-CT-001-CHILD"})
-        assert r.status_code == 200
-        items = r.json().get("items", [])
-        assert len(items) > 0, "Child item not found after split"
-        child = items[0]
-        child_weight = float(child.get("weight") or 0)
-        assert abs(child_weight - 1.5) < 0.01, (
-            f"Child weight={child_weight}, expected 1.5"
-        )
+    # Verify via API: the child exists with the fractional carat quantity.
+    r = api.get("/items", params={"search": "SPLIT-UX-CT-001-CHILD"})
+    assert r.status_code == 200
+    items = r.json().get("items", [])
+    child = next((it for it in items if it.get("sku") == "SPLIT-UX-CT-001-CHILD"), None)
+    assert child is not None, "Child item not found after split"
+    assert abs(float(child.get("quantity") or 0) - 1.5) < 0.01, (
+        f"Child quantity={child.get('quantity')}, expected 1.5"
+    )
