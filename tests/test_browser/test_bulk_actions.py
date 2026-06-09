@@ -73,10 +73,10 @@ def test_bulk_transfer_modal(page, ui_server, bulk_item_ids):
     assert "Internal Server Error" not in body
     assert "Traceback" not in body
 
-    # Action dropdown is present with Transfer, Delete options
+    # Action dropdown is present with the inventory bulk actions
     action_select = page.locator("#bulk-action-select")
     assert action_select.count() > 0, "No action select dropdown in bulk toolbar"
-    # "Transfer" is an option
     options_text = page.locator("#bulk-action-select option").all_inner_texts()
     assert "Transfer" in options_text, f"Transfer option not found. Got: {options_text}"
-    assert "Delete" in options_text, f"Delete option not found. Got: {options_text}"
+    # Inventory items are archived/disposed rather than hard-deleted.
+    assert "Archive / Dispose" in options_text, f"Archive/Dispose option not found. Got: {options_text}"
