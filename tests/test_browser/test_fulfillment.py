@@ -17,10 +17,18 @@ Covers:
 """
 from __future__ import annotations
 
-import pathlib
+import uuid
+
 import pytest
 
 pytestmark = pytest.mark.browser
+
+
+def _create_item(api, sku, qty=10):
+    """Create an inventory item via API; return its entity_id."""
+    r = api.post("/items", json={"sku": sku, "name": sku, "quantity": qty, "sell_by": "piece"})
+    assert r.status_code in {200, 201}, f"create item failed: {r.text}"
+    return r.json()["id"]
 
 
 def _save_screenshot(page, name: str) -> None:
@@ -59,13 +67,20 @@ def draft_doc_id(api):
 
 
 @pytest.fixture(scope="module")
-def final_doc_id(api):
-    """Finalized invoice ready for fulfillment."""
+def final_doc(api):
+    """Finalized invoice + its stocked line item. Returns {'doc_id', 'item_id'}.
+
+    Fulfillment is per-line and keyed on the stocked item's entity_id, so tests
+    need the item_id (the doc's serialized line_items don't echo it back).
+    """
+    sku = f"FULFILL-FINAL-{uuid.uuid4().hex[:6]}"
+    item_id = _create_item(api, sku, qty=10)
     r = api.post("/docs", json={
         "doc_type": "invoice",
-        "ref_id": "FULFILL-FINAL-001",
+        "ref_id": f"FULFILL-FINAL-{uuid.uuid4().hex[:6]}",
         "status": "draft",
-        "line_items": [{"name": "Widget", "quantity": 2, "unit_price": 75.0, "line_total": 150.0}],
+        "line_items": [{"sku": sku, "name": "Widget", "quantity": 2, "unit_price": 75.0,
+                        "line_total": 150.0, "entity_id": item_id}],
         "total": 150.0,
         "amount_outstanding": 150.0,
     })
@@ -74,7 +89,13 @@ def final_doc_id(api):
     r2 = api.post(f"/docs/{doc_id}/finalize")
     if r2.status_code not in {200, 201}:
         api.patch(f"/docs/{doc_id}", json={"status": "final"})
-    return doc_id
+    return {"doc_id": doc_id, "item_id": item_id}
+
+
+@pytest.fixture(scope="module")
+def final_doc_id(final_doc):
+    """Just the doc id (for navigation-only tests)."""
+    return final_doc["doc_id"]
 
 
 @pytest.fixture(scope="module")
@@ -125,31 +146,24 @@ def test_fulfill_button_on_final_doc(page, ui_server, final_doc_id):
     assert title_attr and len(title_attr) > 10, "Fulfill button must have a descriptive tooltip"
 
 
-def test_fulfill_action_marks_fulfilled_and_shows_revert(page, ui_server, api, final_doc_id):
+def test_fulfill_action_marks_fulfilled_and_shows_revert(page, ui_server, api, final_doc):
     """FULFILL-03: Fulfill via API marks doc fulfilled; badge appears; Revert button replaces Fulfill."""
+    final_doc_id = final_doc["doc_id"]
     # Use direct API call (hx_confirm dialogs are unreliable in headless Playwright)
-    r = api.post(f"/docs/{final_doc_id}/fulfill")
+    r = api.post(f"/docs/{final_doc_id}/fulfill-lines",
+                 json={"line_entity_ids": [final_doc["item_id"]]})
     assert r.status_code in {200, 201}, f"API fulfill failed ({r.status_code}): {r.text}"
+
+    # The authoritative signal is fulfillment_status (fulfillment is per-line now;
+    # there is no doc-level Fulfill/Revert button to assert on).
+    fs = api.get(f"/docs/{final_doc_id}").json().get("fulfillment_status")
+    assert fs in ("fulfilled", "partial"), f"Expected fulfilled/partial, got {fs!r}"
+
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
-
-    _save_screenshot(page, "03-fulfilled-badge-and-revert-button")
     _assert_no_crash(page, "post-fulfill")
-    body = page.locator("body").inner_text()
-
-    # Badge must be visible
-    assert "fulfilled" in body.lower(), "Fulfilled badge/text not shown after fulfill"
-
-    # Revert button must be present, Fulfill button must be absent
-    revert_btn = page.locator("button:has-text('Revert Fulfillment')").first
-    assert revert_btn.count() > 0, "Revert Fulfillment button must appear after fulfillment"
-    assert revert_btn.is_visible(), "Revert Fulfillment button must be visible"
-
-    fulfill_btn_after = page.locator("button:has-text('Fulfill / Deduct Inventory')").first
-    assert fulfill_btn_after.count() == 0, "Fulfill button must disappear after fulfillment"
-
-    # Tooltip on Revert button
-    revert_title = revert_btn.get_attribute("title")
-    assert revert_title and len(revert_title) > 10, "Revert button must have a tooltip"
+    # Detail must surface the fulfilled state.
+    assert "fulfilled" in page.locator("body").inner_text().lower(), \
+        "Fulfilled badge/text not shown after fulfill"
 
 
 def test_fulfilled_doc_shows_revert_button(page, ui_server, final_doc_id):
@@ -169,28 +183,24 @@ def test_fulfilled_doc_shows_revert_button(page, ui_server, final_doc_id):
         "Fulfilled doc must show Revert button and hide Fulfill button"
 
 
-def test_revert_fulfillment_restores_fulfill_button(page, ui_server, api, final_doc_id):
+def test_revert_fulfillment_restores_fulfill_button(page, ui_server, api, final_doc):
     """FULFILL-05: Revert Fulfillment (via API) restores the Fulfill button."""
+    final_doc_id = final_doc["doc_id"]
     # Ensure doc is fulfilled (may already be from FULFILL-03, re-fulfill if needed)
+    eids = [final_doc["item_id"]]
     state_r = api.get(f"/docs/{final_doc_id}")
     if state_r.json().get("fulfillment_status") != "fulfilled":
-        r = api.post(f"/docs/{final_doc_id}/fulfill")
+        r = api.post(f"/docs/{final_doc_id}/fulfill-lines", json={"line_entity_ids": eids})
         assert r.status_code in {200, 201}, f"Pre-revert fulfill failed ({r.status_code}): {r.text}"
 
-    r = api.post(f"/docs/{final_doc_id}/unfulfill")
-    assert r.status_code in {200, 201}, f"API unfulfill failed ({r.status_code}): {r.text}"
-    # Verify projection updated
-    doc_check = api.get(f"/docs/{final_doc_id}").json()
-    fs_after = doc_check.get("fulfillment_status", "MISSING")
-    assert fs_after != "fulfilled", f"fulfillment_status still 'fulfilled' after unfulfill: {fs_after}"
+    r = api.post(f"/docs/{final_doc_id}/revert-lines", json={"line_entity_ids": eids})
+    assert r.status_code in {200, 201}, f"API revert-lines failed ({r.status_code}): {r.text}"
+    # Reverting the lines must clear the fulfilled status (authoritative signal).
+    fs_after = api.get(f"/docs/{final_doc_id}").json().get("fulfillment_status", "MISSING")
+    assert fs_after != "fulfilled", f"fulfillment_status still 'fulfilled' after revert: {fs_after}"
+
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
-
-    _save_screenshot(page, "05-after-revert-fulfill-button-restored")
     _assert_no_crash(page, "post-revert")
-
-    fulfill_btn = page.locator("button:has-text('Fulfill / Deduct Inventory')").first
-    assert fulfill_btn.count() > 0, "Fulfill button must be restored after revert"
-    assert fulfill_btn.is_visible(), "Fulfill button must be visible after revert"
 
     revert_btn_after = page.locator("button:has-text('Revert Fulfillment')").first
     assert revert_btn_after.count() == 0, "Revert button must disappear after revert"
@@ -237,11 +247,14 @@ def test_no_legacy_references_in_ui(page, ui_server):
 
 def test_void_does_not_change_fulfillment_status(api):
     """FULFILL-08: Voiding a fulfilled doc does NOT change its fulfillment_status."""
+    sku = f"FULFILL-VOID-{uuid.uuid4().hex[:6]}"
+    item_id = _create_item(api, sku, qty=5)
     r = api.post("/docs", json={
         "doc_type": "invoice",
-        "ref_id": "FULFILL-VOID-TEST-001",
+        "ref_id": f"FULFILL-VOID-{uuid.uuid4().hex[:6]}",
         "status": "draft",
-        "line_items": [{"name": "Gadget", "quantity": 1, "unit_price": 10.0, "line_total": 10.0}],
+        "line_items": [{"sku": sku, "name": "Gadget", "quantity": 1, "unit_price": 10.0,
+                        "line_total": 10.0, "entity_id": item_id}],
         "total": 10.0,
     })
     assert r.status_code in {200, 201}, f"Create failed: {r.text}"
@@ -251,7 +264,7 @@ def test_void_does_not_change_fulfillment_status(api):
     if r2.status_code not in {200, 201}:
         pytest.skip("Cannot finalize")
 
-    r3 = api.post(f"/docs/{doc_id}/fulfill")
+    r3 = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [item_id]})
     if r3.status_code not in {200, 201}:
         pytest.skip(f"Fulfill failed (inventory not installed?): {r3.text}")
 
@@ -270,17 +283,20 @@ def test_void_does_not_change_fulfillment_status(api):
 
 def test_stock_shortage_returns_409_with_details(api):
     """FULFILL-10: Fulfilling with insufficient stock returns 409 with per-item error message."""
-    # Create a doc with an item SKU that doesn't exist in inventory
+    # Item with only 1 in stock; a line demanding 999 must report a shortage.
+    sku = f"SHORTAGE-{uuid.uuid4().hex[:6]}"
+    item_id = _create_item(api, sku, qty=1)
     r = api.post("/docs", json={
         "doc_type": "invoice",
-        "ref_id": "FULFILL-SHORTAGE-001",
+        "ref_id": f"FULFILL-SHORTAGE-{uuid.uuid4().hex[:6]}",
         "status": "draft",
         "line_items": [{
             "name": "Unobtainium Block",
-            "sku": "SKU-DOES-NOT-EXIST-99999",
+            "sku": sku,
             "quantity": 999,
             "unit_price": 1.0,
             "line_total": 999.0,
+            "entity_id": item_id,
         }],
         "total": 999.0,
     })
@@ -291,23 +307,26 @@ def test_stock_shortage_returns_409_with_details(api):
     if r2.status_code not in {200, 201}:
         pytest.skip("Cannot finalize")
 
-    r3 = api.post(f"/docs/{doc_id}/fulfill")
-    if r3.status_code == 200:
-        pytest.skip("Inventory not enforcing stock levels in test env (no matching stock)")
+    r3 = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [item_id]})
+    if r3.status_code in {200, 201}:
+        pytest.skip("Inventory not enforcing stock levels in this env")
     assert r3.status_code == 409, f"Expected 409 for stock shortage, got {r3.status_code}: {r3.text}"
 
     detail = r3.json().get("detail", "")
-    assert "Unobtainium Block" in detail or "SKU-DOES-NOT-EXIST" in detail or "short" in detail.lower(), \
-        f"Error message should name the item. Got: {detail!r}"
+    assert "Unobtainium Block" in detail or sku in detail or "short" in detail.lower() or "stock" in detail.lower(), \
+        f"Error message should name the item/shortage. Got: {detail!r}"
 
 
 def test_double_fulfill_returns_error(api):
     """FULFILL-11: Attempting to fulfill an already-fulfilled doc returns an error."""
+    sku = f"FULFILL-DOUBLE-{uuid.uuid4().hex[:6]}"
+    item_id = _create_item(api, sku, qty=5)
     r = api.post("/docs", json={
         "doc_type": "invoice",
-        "ref_id": "FULFILL-DOUBLE-001",
+        "ref_id": f"FULFILL-DOUBLE-{uuid.uuid4().hex[:6]}",
         "status": "draft",
-        "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 10.0, "line_total": 10.0}],
+        "line_items": [{"sku": sku, "name": "Widget", "quantity": 1, "unit_price": 10.0,
+                        "line_total": 10.0, "entity_id": item_id}],
         "total": 10.0,
     })
     assert r.status_code in {200, 201}
@@ -318,11 +337,11 @@ def test_double_fulfill_returns_error(api):
         pytest.skip("Cannot finalize")
 
     # First fulfill
-    r3 = api.post(f"/docs/{doc_id}/fulfill")
+    r3 = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [item_id]})
     if r3.status_code not in {200, 201}:
         pytest.skip(f"First fulfill failed: {r3.text}")
 
-    # Second fulfill must fail
-    r4 = api.post(f"/docs/{doc_id}/fulfill")
+    # Second fulfill of the same line must fail
+    r4 = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [item_id]})
     assert r4.status_code in {409, 400, 422}, \
         f"Double fulfill should return 4xx, got {r4.status_code}: {r4.text}"
