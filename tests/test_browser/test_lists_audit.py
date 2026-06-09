@@ -94,13 +94,26 @@ def test_status_cards_present(page: Page, ui_server: str, api):
 
 # ── LA-04: New List button ────────────────────────────────────────────────────
 
-def test_new_list_button_redirects_to_detail(page: Page, ui_server: str, api):
-    """LA-04: Clicking New List creates a draft and redirects to /lists/{id}."""
-    page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
-    new_btn = page.locator("button:has-text('New List')")
-    expect(new_btn).to_be_visible()
-    new_btn.click()
-    page.wait_for_url("**/lists/**", timeout=5000)
+def test_new_list_empty_state_shows_two_buttons(page: Page, ui_server: str, api):
+    """LA-04a: When the Lists table is empty, there are two 'New List' controls —
+    the toolbar button and the empty-state CTA (both legitimate). Force the empty
+    render with a no-match search so this is deterministic regardless of session."""
+    page.goto(f"{ui_server}/lists?q=zzz-no-such-list-zzz", wait_until="domcontentloaded")
+    expect(page.locator("#list-table .empty-state-cta-btn")).to_be_visible()
+    assert page.locator("button:has-text('New List')").count() == 2, \
+        "Empty Lists page should show the toolbar + empty-state 'New List' buttons"
+
+
+def test_new_list_button_creates_and_redirects(page: Page, ui_server: str, api):
+    """LA-04b: With a list present, only the toolbar 'New List' button shows;
+    clicking it creates a draft and redirects to the detail page."""
+    _create_list(api)  # ensure the (drafts) view is populated -> single button
+    page.goto(f"{ui_server}/lists?view=drafts", wait_until="domcontentloaded")
+    new_btns = page.locator("button:has-text('New List')")
+    assert new_btns.count() == 1, \
+        f"Populated Lists page should show 1 'New List' button, got {new_btns.count()}"
+    new_btns.first.click()
+    page.wait_for_url(lambda url: "/lists/" in url, timeout=10000)
     assert "/lists/" in page.url, f"Expected redirect to /lists/{{id}}, got {page.url}"
     _no_crash(page, "post-new-list")
 
