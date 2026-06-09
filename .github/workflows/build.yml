@@ -272,6 +272,10 @@ jobs:
             -e PG_VERSION -e PG_SHA256 -e OPENSSL_VERSION -e OPENSSL_SHA256 \
             quay.io/pypa/manylinux_2_28_x86_64 \
             bash electron/scripts/build-pg-tools-linux.sh /io/electron/pg-tools/linux
+          # The container runs as root, so the output is root-owned; chown it back
+          # to the runner user, else electron-builder's hardlink copy hits EPERM
+          # (protected_hardlinks blocks linking to files the user doesn't own).
+          sudo chown -R "$(id -u):$(id -g)" electron/pg-tools/linux
 
       # Note: the StackBuilder GUI DLLs (wxWidgets + libcurl) the Windows
       # embedded-postgres package vendors are pruned in electron/after-pack.js
