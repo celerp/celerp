@@ -23,7 +23,7 @@ OUT_DIR="${1:?usage: build-pg-tools-linux.sh <out_dir>}"
 : "${OPENSSL_SHA256:?OPENSSL_SHA256 not set}"
 
 # manylinux base lacks flex/bison (PG build) and some perl modules (OpenSSL build).
-PKGS="bison flex zlib-devel perl-IPC-Cmd perl-Data-Dumper perl-Pod-Usage"
+PKGS="bison flex zlib-devel perl-IPC-Cmd perl-Data-Dumper perl-Pod-Usage perl-Time-Piece perl-FindBin"
 if ! command -v bison >/dev/null 2>&1 || ! command -v flex >/dev/null 2>&1; then
   (yum install -y -q $PKGS || dnf install -y -q $PKGS) >/dev/null 2>&1 || true
 fi
