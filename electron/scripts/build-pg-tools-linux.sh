@@ -37,10 +37,12 @@ echo "==> Building Linux pg tools (PG $PG_VERSION, OpenSSL $OPENSSL_VERSION; $(l
 
 # ── 1. Fetch + verify ────────────────────────────────────────────────────────
 cd "$WORK"
-curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o openssl.tar.gz \
+# NB: manylinux_2_28's curl (7.61) predates --retry-all-errors (7.71); use only
+# flags it supports. --retry-connrefused (7.52) covers the flaky-connect case.
+curl -fsSL --retry 10 --retry-connrefused --retry-delay 15 -o openssl.tar.gz \
   "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
 echo "${OPENSSL_SHA256}  openssl.tar.gz" | sha256c
-curl -fsSL --retry 10 --retry-all-errors --retry-delay 15 -o postgresql.tar.bz2 \
+curl -fsSL --retry 10 --retry-connrefused --retry-delay 15 -o postgresql.tar.bz2 \
   "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2"
 echo "${PG_SHA256}  postgresql.tar.bz2" | sha256c
 
