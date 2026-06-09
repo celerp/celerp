@@ -15,12 +15,12 @@ import pytest
 
 pytestmark = pytest.mark.browser
 
-_SCREENSHOT_DIR = pathlib.Path("/mnt/storage/agent_storage/celerp/screenshots/split-regression")
-
 
 def _save_screenshot(page, name: str) -> None:
-    _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(_SCREENSHOT_DIR / f"{name}.png"), full_page=True)
+    # Debug screenshots disabled — the hardcoded /mnt/storage path is not portable.
+    # _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    # page.screenshot(path=str(_SCREENSHOT_DIR / f"{name}.png"), full_page=True)
+    pass
 
 
 def _assert_no_crash(page, ctx: str = "") -> None:

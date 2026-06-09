@@ -10,11 +10,18 @@ import pytest
 
 pytestmark = pytest.mark.browser
 
-SCREENSHOT_DIR = Path("/mnt/storage/agent_storage/celerp/screenshots/updater-ui")
+# Debug screenshots are opt-in: set CELERP_SCREENSHOT_DIR to capture them.
+# Unset / empty (the default) skips capture so the tests depend on no fixed path.
+SCREENSHOT_DIR = os.environ.get("CELERP_SCREENSHOT_DIR", "")
 
 
-def _ensure_screenshot_dir():
-    SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+def _capture(page, name: str) -> None:
+    """Save a debug screenshot of the notifications panel, if a dir is configured."""
+    if not SCREENSHOT_DIR:
+        return
+    d = Path(SCREENSHOT_DIR)
+    d.mkdir(parents=True, exist_ok=True)
+    page.locator("#notif-panel").screenshot(path=str(d / f"{name}.png"))
 
 
 def test_update_card_renders_in_notifications_panel(page, ui_server):
@@ -30,8 +37,6 @@ def test_update_card_renders_in_notifications_panel(page, ui_server):
 
 def test_update_card_pypi_mode_screenshot(page, ui_server):
     """Screenshot: PyPI mode (no window.celerp). Shows version from /health."""
-    _ensure_screenshot_dir()
-
     # window.celerp is not defined in the browser test context (not Electron)
     # so the card should enter the PyPI path automatically.
     page.goto(f"{ui_server}/", wait_until="domcontentloaded")
@@ -40,15 +45,13 @@ def test_update_card_pypi_mode_screenshot(page, ui_server):
     # Give the async fetch calls a moment to settle
     page.wait_for_timeout(2000)
 
-    path = SCREENSHOT_DIR / "pypi-mode.png"
-    page.locator("#notif-panel").screenshot(path=str(path))
-    assert path.exists(), "PyPI-mode screenshot was not saved"
+    # Panel must be present (implicit assertion via the wait above); capture is opt-in.
+    assert page.locator("#update-status-card").count() == 1, "update card missing in PyPI mode"
+    _capture(page, "pypi-mode")
 
 
 def test_update_card_electron_mode_screenshot(page, ui_server):
     """Screenshot: Electron mode stub (window.celerp injected via JS)."""
-    _ensure_screenshot_dir()
-
     page.goto(f"{ui_server}/", wait_until="domcontentloaded")
 
     # Inject a minimal window.celerp stub to simulate the Electron preload
@@ -90,9 +93,9 @@ def test_update_card_electron_mode_screenshot(page, ui_server):
     page.wait_for_selector("#notif-panel", state="visible")
     page.wait_for_timeout(500)
 
-    path = SCREENSHOT_DIR / "electron-mode.png"
-    page.locator("#notif-panel").screenshot(path=str(path))
-    assert path.exists(), "Electron-mode screenshot was not saved"
+    # Panel must render with the injected Electron stub; capture is opt-in.
+    assert page.locator("#update-status-card").count() == 1, "update card missing in Electron mode"
+    _capture(page, "electron-mode")
 
 
 def test_update_card_releases_url(page, ui_server):
