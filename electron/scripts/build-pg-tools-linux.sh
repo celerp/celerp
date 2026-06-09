@@ -22,11 +22,12 @@ OUT_DIR="${1:?usage: build-pg-tools-linux.sh <out_dir>}"
 : "${OPENSSL_VERSION:?OPENSSL_VERSION not set}"
 : "${OPENSSL_SHA256:?OPENSSL_SHA256 not set}"
 
-# manylinux base lacks flex/bison (PG build) and some perl modules (OpenSSL build).
-PKGS="bison flex zlib-devel perl-IPC-Cmd perl-Data-Dumper perl-Pod-Usage perl-Time-Piece perl-FindBin"
-if ! command -v bison >/dev/null 2>&1 || ! command -v flex >/dev/null 2>&1; then
-  (yum install -y -q $PKGS || dnf install -y -q $PKGS) >/dev/null 2>&1 || true
-fi
+# manylinux base lacks flex/bison (PG build) and several perl modules (OpenSSL
+# build). Install loudly and fatally: a missing/typo'd package name must fail the
+# build here, not silently skip and surface as a cryptic perl @INC error later.
+# (All names below are valid in the AlmaLinux 8 BaseOS/AppStream repos.)
+PKGS="bison flex zlib-devel perl-IPC-Cmd perl-Data-Dumper perl-Pod-Usage perl-Time-Piece"
+yum install -y $PKGS
 
 sha256c() { command -v sha256sum >/dev/null && sha256sum -c - || shasum -a 256 -c -; }
 JOBS="$(nproc 2>/dev/null || echo 4)"
