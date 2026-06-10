@@ -40,59 +40,33 @@ depends_on = None
 
 def upgrade() -> None:
     conn = op.get_bind()
-    dialect = conn.dialect.name
 
-    if dialect == "postgresql":
-        # Promote every key ending in _price from attributes to top-level,
-        # only when the top-level key doesn't already exist.
-        conn.execute(sa.text("""
-            UPDATE projections
-            SET state = (
-                SELECT jsonb_object_agg(key, value)
-                FROM (
-                    -- Start with all existing top-level keys
-                    SELECT key, value FROM jsonb_each(state::jsonb)
-                    UNION ALL
-                    -- Add any _price keys from attributes that aren't already top-level
-                    SELECT attr_key, attr_val
-                    FROM jsonb_each((state::jsonb)->'attributes') AS t(attr_key, attr_val)
-                    WHERE attr_key LIKE '%_price'
-                      AND (state::jsonb)->attr_key IS NULL
-                ) AS merged
-            )
-            WHERE entity_type = 'item'
-              AND state->'attributes' IS NOT NULL
-              AND EXISTS (
-                  SELECT 1
-                  FROM jsonb_each((state::jsonb)->'attributes') AS t(k, v)
-                  WHERE k LIKE '%_price'
-                    AND (state::jsonb)->k IS NULL
-              )
-        """))
-    else:
-        # SQLite / test environments: Python-level update
-        import json
-        rows = conn.execute(sa.text("""
-            SELECT company_id, entity_id, state
-            FROM projections
-            WHERE entity_type = 'item'
-        """)).fetchall()
-        for company_id, entity_id, raw_state in rows:
-            state = json.loads(raw_state) if isinstance(raw_state, str) else raw_state
-            if not state:
-                continue
-            attrs = state.get("attributes") or {}
-            promoted = False
-            for k, v in attrs.items():
-                if k.endswith("_price") and state.get(k) is None and v is not None:
-                    state[k] = float(v)
-                    promoted = True
-            if promoted:
-                conn.execute(sa.text("""
-                    UPDATE projections
-                    SET state = :state
-                    WHERE company_id = :company_id AND entity_id = :entity_id
-                """), {"state": json.dumps(state), "company_id": company_id, "entity_id": entity_id})
+    # Promote every key ending in _price from attributes to top-level,
+    # only when the top-level key doesn't already exist.
+    conn.execute(sa.text("""
+        UPDATE projections
+        SET state = (
+            SELECT jsonb_object_agg(key, value)
+            FROM (
+                -- Start with all existing top-level keys
+                SELECT key, value FROM jsonb_each(state::jsonb)
+                UNION ALL
+                -- Add any _price keys from attributes that aren't already top-level
+                SELECT attr_key, attr_val
+                FROM jsonb_each((state::jsonb)->'attributes') AS t(attr_key, attr_val)
+                WHERE attr_key LIKE '%_price'
+                  AND (state::jsonb)->attr_key IS NULL
+            ) AS merged
+        )
+        WHERE entity_type = 'item'
+          AND state->'attributes' IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM jsonb_each((state::jsonb)->'attributes') AS t(k, v)
+              WHERE k LIKE '%_price'
+                AND (state::jsonb)->k IS NULL
+          )
+    """))
 
 
 def downgrade() -> None:
