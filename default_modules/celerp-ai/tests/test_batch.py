@@ -13,7 +13,6 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import pytest
 import pytest_asyncio
@@ -31,16 +30,32 @@ from celerp.ai.batch import (
     run_batch,
 )
 
-_DB_URL = "sqlite+aiosqlite:///:memory:"
-
-
 @pytest_asyncio.fixture
 async def engine():
-    eng = create_async_engine(_DB_URL)
+    """Async Postgres engine on a fresh isolated schema. run_batch opens its own
+    sessions via db_factory, so it needs a real multi-session engine rather than
+    the rollback-isolated root session."""
+    import uuid as _uuid
+    from sqlalchemy import text as _text
+
+    base_url = os.environ["DATABASE_URL"]
+    schema = f"aibatch_{_uuid.uuid4().hex[:8]}"
+
+    admin = create_async_engine(base_url)
+    async with admin.begin() as c:
+        await c.execute(_text(f'CREATE SCHEMA "{schema}"'))
+    await admin.dispose()
+
+    eng = create_async_engine(base_url, connect_args={"server_settings": {"search_path": schema}})
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield eng
     await eng.dispose()
+
+    admin = create_async_engine(base_url)
+    async with admin.begin() as c:
+        await c.execute(_text(f'DROP SCHEMA "{schema}" CASCADE'))
+    await admin.dispose()
 
 
 @pytest_asyncio.fixture

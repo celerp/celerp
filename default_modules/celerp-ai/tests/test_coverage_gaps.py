@@ -29,31 +29,19 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
-from celerp.models.base import Base
 from celerp.models.company import Company
 from celerp.models.projections import Projection
 
 
-_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    engine = create_async_engine(_DB_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as sess:
-        yield sess
-    await engine.dispose()
+# `session` (Postgres, rollback-isolated) comes from the root conftest.
 
 
 @pytest_asyncio.fixture
@@ -529,6 +517,7 @@ async def test_quota_unconfirmed_counter():
 @pytest_asyncio.fixture
 async def tool_session(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     session.add(Projection(
         entity_id=str(uuid.uuid4()), company_id=cid, entity_type="contact",
         state={"name": "Acme", "contact_type": "vendor"}, version=1,
@@ -591,6 +580,7 @@ async def test_pending_pos(tool_session):
 async def test_pending_pos_empty(session):
     from celerp.ai.tools import execute_tool
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     result = await execute_tool("pending_pos", {}, session, cid)
     assert result["total_count"] == 0
 

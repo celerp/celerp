@@ -17,32 +17,21 @@ import os
 import uuid
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from datetime import datetime, timezone
 
-from celerp.models.base import Base
 from celerp.models.projections import Projection
+from celerp.models.company import Company
 from celerp.ai.tools import TOOLS, execute_tool
 
-_DB_URL = "sqlite+aiosqlite:///:memory:"
 _NOW = datetime.now(timezone.utc)
 
 
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    engine = create_async_engine(_DB_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as sess:
-        yield sess
-    await engine.dispose()
+# `session` (Postgres, rollback-isolated) comes from the root conftest.
 
 
 def _proj(company_id: uuid.UUID, entity_type: str, state: dict) -> Projection:
@@ -60,6 +49,7 @@ def _proj(company_id: uuid.UUID, entity_type: str, state: dict) -> Projection:
 async def populated_session(session) -> tuple[AsyncSession, uuid.UUID]:
     """Session with a mix of items, docs, deals for a single company."""
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
 
     # Items: one with stock, two with zero/negative
     session.add(_proj(cid, "item", {"sku": "A1", "name": "Widget", "quantity": 10, "total_cost": 500.0, "retail_price": 700.0}))
@@ -96,6 +86,7 @@ async def test_dashboard_kpis_populated(populated_session):
 @pytest.mark.asyncio
 async def test_dashboard_kpis_empty(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     result = await execute_tool("dashboard_kpis", {}, session, cid)
     assert result == {"total_items": 0, "inventory_value": 0.0, "low_stock_items": 0, "ar_outstanding": 0.0, "active_deals": 0}
 
@@ -123,6 +114,7 @@ async def test_low_stock_items_limit(populated_session):
 @pytest.mark.asyncio
 async def test_low_stock_items_empty(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     result = await execute_tool("low_stock_items", {}, session, cid)
     assert result["total_count"] == 0
     assert result["items"] == []
@@ -149,6 +141,7 @@ async def test_outstanding_invoices_limit(populated_session):
 @pytest.mark.asyncio
 async def test_outstanding_invoices_empty(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     result = await execute_tool("outstanding_invoices", {}, session, cid)
     assert result["total_count"] == 0
 
@@ -173,6 +166,7 @@ async def test_top_items_by_value_limit(populated_session):
 @pytest.mark.asyncio
 async def test_top_items_by_value_empty(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     result = await execute_tool("top_items_by_value", {}, session, cid)
     assert result["items"] == []
 
@@ -193,6 +187,7 @@ async def test_active_deals_summary(populated_session):
 @pytest.mark.asyncio
 async def test_active_deals_summary_empty(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     result = await execute_tool("active_deals_summary", {}, session, cid)
     assert result["stages"] == []
 
@@ -201,6 +196,7 @@ async def test_active_deals_summary_empty(session):
 async def test_active_deals_summary_no_stage_field(session):
     """Deal with no 'stage' key falls back to status."""
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     session.add(_proj(cid, "deal", {"status": "open", "value": 100.0}))
     await session.commit()
     result = await execute_tool("active_deals_summary", {}, session, cid)
@@ -227,6 +223,7 @@ def test_tools_registry_has_all_names():
 async def test_dormant_contacts_all_dormant(session):
     """Contacts with no docs are all dormant."""
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     session.add(_proj(cid, "contact", {"name": "Acme", "contact_type": "vendor"}))
     session.add(_proj(cid, "contact", {"name": "Beta", "contact_type": "customer"}))
     await session.commit()
@@ -242,6 +239,7 @@ async def test_dormant_contacts_active_contact_excluded(session):
     from datetime import datetime, timezone, timedelta
 
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     contact_id = str(uuid.uuid4())
     session.add(Projection(
         entity_id=contact_id,
@@ -272,6 +270,7 @@ async def test_dormant_contacts_active_contact_excluded(session):
 @pytest.mark.asyncio
 async def test_dormant_contacts_empty(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     result = await execute_tool("dormant_contacts", {}, session, cid)
     assert result["total_count"] == 0
     assert result["dormant_contacts"] == []
@@ -280,6 +279,7 @@ async def test_dormant_contacts_empty(session):
 @pytest.mark.asyncio
 async def test_dormant_contacts_limit(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     for i in range(5):
         session.add(_proj(cid, "contact", {"name": f"Vendor {i}", "contact_type": "vendor"}))
     await session.commit()
@@ -294,6 +294,7 @@ async def test_dormant_contacts_limit(session):
 async def test_top_sellers_aggregates_invoice_lines(session):
     """Top sellers are ranked by qty sold across invoices."""
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     # Invoice with 2 line items
     session.add(_proj(cid, "doc", {
         "doc_type": "invoice",
@@ -323,6 +324,7 @@ async def test_top_sellers_aggregates_invoice_lines(session):
 async def test_top_sellers_ignores_non_invoices(session):
     """Bills and POs don't count toward top sellers."""
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     session.add(_proj(cid, "doc", {
         "doc_type": "bill",
         "line_items": [{"item_id": "item-X", "sku": "SKU-X", "quantity": 100, "line_total": 1000.0}],
@@ -335,6 +337,7 @@ async def test_top_sellers_ignores_non_invoices(session):
 @pytest.mark.asyncio
 async def test_top_sellers_empty(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     result = await execute_tool("top_sellers", {}, session, cid)
     assert result["total_count"] == 0
     assert result["top_sellers"] == []
@@ -343,6 +346,7 @@ async def test_top_sellers_empty(session):
 @pytest.mark.asyncio
 async def test_top_sellers_limit(session):
     cid = uuid.uuid4()
+    session.add(Company(id=cid, name="AICo", slug=f"aico-{cid.hex[:8]}"))
     items = [{"item_id": f"item-{i}", "sku": f"SKU-{i}", "description": f"Item {i}", "quantity": i + 1, "line_total": float(i + 1)} for i in range(5)]
     session.add(_proj(cid, "doc", {"doc_type": "invoice", "line_items": items}))
     await session.commit()
