@@ -50,97 +50,43 @@ depends_on = None
 def upgrade() -> None:
     conn = op.get_bind()
 
-    # ------------------------------------------------------------------
-    # 1. Backfill doc.payment.received ledger events missing payment_date.
-    #    Set data->>'payment_date' = DATE(ledger.ts) for each row where
-    #    the field is absent or empty.
-    # ------------------------------------------------------------------
-    dialect = conn.dialect.name
+    # 1. Backfill doc.payment.received ledger events missing payment_date:
+    #    set data->>'payment_date' = DATE(ledger.ts) where the field is absent.
+    conn.execute(sa.text("""
+        UPDATE ledger
+        SET data = jsonb_set(
+            data::jsonb,
+            '{payment_date}',
+            to_jsonb(TO_CHAR(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')),
+            true
+        )
+        WHERE event_type = 'doc.payment.received'
+          AND (
+            data->>'payment_date' IS NULL
+            OR data->>'payment_date' = ''
+          )
+    """))
 
-    if dialect == "postgresql":
-        conn.execute(sa.text("""
-            UPDATE ledger
-            SET data = jsonb_set(
-                data::jsonb,
-                '{payment_date}',
-                to_jsonb(TO_CHAR(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')),
-                true
-            )
-            WHERE event_type = 'doc.payment.received'
-              AND (
-                data->>'payment_date' IS NULL
-                OR data->>'payment_date' = ''
-              )
-        """))
-    else:
-        # SQLite / test environments: use Python-level update
-        rows = conn.execute(sa.text("""
-            SELECT id, ts
-            FROM ledger
-            WHERE event_type = 'doc.payment.received'
-        """)).fetchall()
-        import json
-        for row_id, ts in rows:
-            # ts is a string in SQLite: "YYYY-MM-DD HH:MM:SS.ffffff"
-            date_str = str(ts)[:10]
-            conn.execute(sa.text("""
-                UPDATE ledger
-                SET data = json_set(data, '$.payment_date', :date_str)
-                WHERE id = :row_id
-                  AND (
-                    json_extract(data, '$.payment_date') IS NULL
-                    OR json_extract(data, '$.payment_date') = ''
-                  )
-            """), {"date_str": date_str, "row_id": row_id})
-
-    # ------------------------------------------------------------------
-    # 2. Backfill JE projections for payment JEs missing state.ts.
-    #    entity_id pattern: je:auto:*:pay:*
-    #    Use DATE(l.ts) from the acc.journal_entry.created ledger event
-    #    for each JE entity_id.
-    # ------------------------------------------------------------------
-    if dialect == "postgresql":
-        conn.execute(sa.text("""
-            UPDATE projections AS p
-            SET state = jsonb_set(
-                p.state::jsonb,
-                '{ts}',
-                to_jsonb(TO_CHAR(l.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')),
-                true
-            )
-            FROM ledger l
-            WHERE p.entity_id LIKE 'je:auto:%:pay:%'
-              AND (
-                p.state->>'ts' IS NULL
-                OR p.state->>'ts' = ''
-              )
-              AND l.entity_id = p.entity_id
-              AND l.event_type = 'acc.journal_entry.created'
-              AND l.company_id = p.company_id
-        """))
-    else:
-        rows = conn.execute(sa.text("""
-            SELECT p.entity_id, p.company_id, l.ts
-            FROM projections p
-            JOIN ledger l
-              ON l.entity_id = p.entity_id
-             AND l.company_id = p.company_id
-             AND l.event_type = 'acc.journal_entry.created'
-            WHERE p.entity_id LIKE 'je:auto:%:pay:%'
-        """)).fetchall()
-        import json
-        for entity_id, company_id, ts in rows:
-            date_str = str(ts)[:10]
-            conn.execute(sa.text("""
-                UPDATE projections
-                SET state = json_set(state, '$.ts', :date_str)
-                WHERE entity_id = :entity_id
-                  AND company_id = :company_id
-                  AND (
-                    json_extract(state, '$.ts') IS NULL
-                    OR json_extract(state, '$.ts') = ''
-                  )
-            """), {"date_str": date_str, "entity_id": entity_id, "company_id": str(company_id)})
+    # 2. Backfill JE projections for payment JEs (je:auto:*:pay:*) missing
+    #    state.ts, using DATE(l.ts) from the acc.journal_entry.created event.
+    conn.execute(sa.text("""
+        UPDATE projections AS p
+        SET state = jsonb_set(
+            p.state::jsonb,
+            '{ts}',
+            to_jsonb(TO_CHAR(l.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD')),
+            true
+        )
+        FROM ledger l
+        WHERE p.entity_id LIKE 'je:auto:%:pay:%'
+          AND (
+            p.state->>'ts' IS NULL
+            OR p.state->>'ts' = ''
+          )
+          AND l.entity_id = p.entity_id
+          AND l.event_type = 'acc.journal_entry.created'
+          AND l.company_id = p.company_id
+    """))
 
 
 # ---------------------------------------------------------------------------
