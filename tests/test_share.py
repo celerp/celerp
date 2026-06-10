@@ -49,7 +49,7 @@ async def _create_doc(client: AsyncClient, tok: str, doc_type: str = "invoice") 
 # Share link generation (authenticated)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_share_link(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -60,7 +60,7 @@ async def test_create_share_link(client: AsyncClient):
     assert len(data["token"]) >= 20
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_share_link_idempotent(client: AsyncClient):
     """Calling share twice returns the same token."""
     tok = await _token(client)
@@ -72,7 +72,7 @@ async def test_create_share_link_idempotent(client: AsyncClient):
     assert r1.json()["token"] == r2.json()["token"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_share_link_requires_auth(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -80,7 +80,7 @@ async def test_create_share_link_requires_auth(client: AsyncClient):
     assert r.status_code in (401, 403)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_share_link_not_found(client: AsyncClient):
     tok = await _token(client)
     r = await client.post("/docs/nonexistent-doc-id/share", headers=_h(tok))
@@ -91,7 +91,7 @@ async def test_create_share_link_not_found(client: AsyncClient):
 # Public share view
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_public_share_view_returns_html(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -106,7 +106,7 @@ async def test_public_share_view_returns_html(client: AsyncClient):
     assert "WGT-001" in body
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_public_share_view_contains_branding(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -117,7 +117,7 @@ async def test_public_share_view_contains_branding(client: AsyncClient):
     assert "celerp.com" in r.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_public_share_view_contains_accept_cta(client: AsyncClient):
     """Invoice share pages must have the Accept & import CTA."""
     tok = await _token(client)
@@ -129,7 +129,7 @@ async def test_public_share_view_contains_accept_cta(client: AsyncClient):
     assert f"/accept?token={token}" in r.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_public_share_view_no_accept_cta_for_memo(client: AsyncClient):
     """Memos have no Accept CTA."""
     tok = await _token(client)
@@ -141,14 +141,14 @@ async def test_public_share_view_no_accept_cta_for_memo(client: AsyncClient):
     assert "Accept this" not in r.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_public_share_invalid_token_returns_404(client: AsyncClient):
     r = await client.get("/share/totally-invalid-token-xyz")
     assert r.status_code == 404
     assert "celerp.com" in r.text  # always shows helpful content, never a raw error
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_public_share_no_auth_required(client: AsyncClient):
     """Public share view works without any auth headers."""
     tok = await _token(client)
@@ -164,7 +164,7 @@ async def test_public_share_no_auth_required(client: AsyncClient):
 # Revoke
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_revoke_share_link(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -184,7 +184,7 @@ async def test_revoke_share_link(client: AsyncClient):
     assert r2.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_revoke_nonexistent_share_returns_404(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -192,7 +192,7 @@ async def test_revoke_nonexistent_share_returns_404(client: AsyncClient):
     assert r.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_after_revoke_new_share_generates_new_token(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -206,7 +206,7 @@ async def test_after_revoke_new_share_generates_new_token(client: AsyncClient):
 # Share URL includes full accept link
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_share_link_returns_url(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -221,7 +221,7 @@ async def test_create_share_link_returns_url(client: AsyncClient):
 # Bundle download
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_bundle_download_returns_json(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -237,7 +237,7 @@ async def test_bundle_download_returns_json(client: AsyncClient):
     assert bundle["doc"].get("contact_name") == "ACME Corp"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_bundle_download_has_cors_header(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -247,13 +247,13 @@ async def test_bundle_download_has_cors_header(client: AsyncClient):
     assert r.headers.get("access-control-allow-origin") == "*"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_bundle_download_invalid_token_404(client: AsyncClient):
     r = await client.get("/share/invalid-token-xyz/bundle")
     assert r.status_code == 404
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_share_view_has_cors_header(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -263,7 +263,7 @@ async def test_share_view_has_cors_header(client: AsyncClient):
     assert r.headers.get("access-control-allow-origin") == "*"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_bundle_download_sets_filename(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_doc(client, tok)
@@ -298,7 +298,7 @@ async def _create_list(client: AsyncClient, tok: str) -> str:
     return r.json()["id"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_share_link_created(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_list(client, tok)
@@ -309,7 +309,7 @@ async def test_list_share_link_created(client: AsyncClient):
     assert "url" in data
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_public_view_renders_html(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_list(client, tok)
@@ -323,7 +323,7 @@ async def test_list_public_view_renders_html(client: AsyncClient):
     assert "DIA-001" in body
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_public_view_has_accept_cta(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_list(client, tok)
@@ -334,7 +334,7 @@ async def test_list_public_view_has_accept_cta(client: AsyncClient):
     assert "Powered by Celerp" in r.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_bundle_download(client: AsyncClient):
     tok = await _token(client)
     entity_id = await _create_list(client, tok)
@@ -351,7 +351,7 @@ async def test_list_bundle_download(client: AsyncClient):
 # Bundle import endpoint (POST /docs/import-bundle)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_import_bundle_json_body(client: AsyncClient):
     """POST /docs/import-bundle with JSON body imports a received doc."""
     tok = await _token(client)
@@ -385,7 +385,7 @@ async def test_import_bundle_json_body(client: AsyncClient):
     assert doc["contact_name"] == "Sender Corp"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_import_bundle_missing_doc_returns_422(client: AsyncClient):
     tok = await _token(client)
     r = await client.post(
@@ -397,7 +397,7 @@ async def test_import_bundle_missing_doc_returns_422(client: AsyncClient):
     assert r.status_code == 422
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_import_bundle_invalid_json_returns_422(client: AsyncClient):
     tok = await _token(client)
     r = await client.post(
@@ -409,14 +409,14 @@ async def test_import_bundle_invalid_json_returns_422(client: AsyncClient):
     assert r.status_code == 422
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_import_bundle_requires_auth(client: AsyncClient):
     bundle = {"version": 1, "doc": {"doc_type": "invoice", "total": 100.0}}
     r = await client.post("/docs/import-bundle", json=bundle, follow_redirects=False)
     assert r.status_code == 401
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_import_bundle_sets_status_received(client: AsyncClient):
     """Even if the sender doc has status=paid, imported doc is always status=received."""
     tok = await _token(client)

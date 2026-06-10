@@ -7,12 +7,85 @@ import os
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+
+# ── Postgres for the whole test suite ──────────────────────────────────────────
+# Both production targets (the server and the Electron embedded-postgres build)
+# run Postgres, so the tests run on Postgres too. A pre-set DATABASE_URL (e.g. a
+# CI services container) is honored; otherwise we start a throwaway Postgres via
+# testcontainers (Docker), tuned for throwaway speed (fsync/synchronous_commit/
+# full_page_writes off — safe because the data is discarded). Each pytest-xdist
+# worker gets its own database. MUST run before celerp.db / test_helpers import.
+_PG_CONTAINER = None
+
+
+def _provision_test_database() -> None:
+    url = os.environ.get("DATABASE_URL", "")
+    if url.startswith("postgresql"):
+        worker = os.environ.get("PYTEST_XDIST_WORKER")
+        if worker:
+            url = _create_worker_db(url, worker)
+    else:
+        from testcontainers.postgres import PostgresContainer
+        global _PG_CONTAINER
+        # Throwaway DB → turn off durability guards for speed (data is discarded).
+        _PG_CONTAINER = PostgresContainer("postgres:16-alpine").with_command(
+            "-c fsync=off -c synchronous_commit=off -c full_page_writes=off")
+        _PG_CONTAINER.start()
+        host = _PG_CONTAINER.get_container_host_ip()
+        port = _PG_CONTAINER.get_exposed_port(5432)
+        url = (f"postgresql+asyncpg://{_PG_CONTAINER.username}:{_PG_CONTAINER.password}"
+               f"@{host}:{port}/{_PG_CONTAINER.dbname}")
+    os.environ["DATABASE_URL"] = url
+    if url.startswith("postgresql"):
+        # Make the app's own engine (celerp.db.engine) use NullPool too: a pooled
+        # asyncpg connection is bound to the event loop that created it, but
+        # pytest-asyncio gives each test a fresh loop — so a pooled connection
+        # reused/closed in a later test's loop raises "attached to a different
+        # loop" / "Event loop is closed". NullPool opens+closes a connection per
+        # use within the current loop, sidestepping it entirely.
+        os.environ["CELERP_TEST_NULLPOOL"] = "1"
+
+
+def _create_worker_db(url: str, worker: str) -> str:
+    """CREATE DATABASE <base>_<worker> on the shared server; return its asyncpg URL."""
+    import re
+    from urllib.parse import urlsplit, urlunsplit
+    import psycopg2
+
+    parts = urlsplit(url.replace("+asyncpg", ""))
+    base_db = parts.path.lstrip("/") or "postgres"
+    worker_db = f"{base_db}_{re.sub(r'[^a-zA-Z0-9]', '', worker)}"
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                            password=parts.password, dbname=base_db)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (worker_db,))
+            if not cur.fetchone():
+                cur.execute(f'CREATE DATABASE "{worker_db}"')
+    finally:
+        conn.close()
+    return urlunsplit(parts._replace(path=f"/{worker_db}")).replace(
+        "postgresql://", "postgresql+asyncpg://")
+
+
+_provision_test_database()
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
+
+
+def pytest_unconfigure(config):
+    """Stop the throwaway Postgres container at the end of the session."""
+    global _PG_CONTAINER
+    if _PG_CONTAINER is not None:
+        try:
+            _PG_CONTAINER.stop()
+        finally:
+            _PG_CONTAINER = None
 
 from celerp.db import get_session
 from celerp.main import app
@@ -318,32 +391,58 @@ def _mock_get_modules_default():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_loaded_modules():
+    """Reset the loader's in-process registry between tests. A test that calls
+    load_all() populates celerp.modules.loader._loaded; without this reset that
+    leaks into later tests in the same worker (e.g. a module shows running=True),
+    which surfaces under xdist's test distribution."""
+    from celerp.modules.loader import _loaded
+    _loaded.clear()
+    yield
+    _loaded.clear()
+
+
 from celerp.models.base import Base
 
 # Session-scoped engine: created once, shared across all tests to avoid OOM from
 # 1000+ engine create/dispose cycles when test_ui.py + test_routers/ run together.
 @pytest_asyncio.fixture(scope="session")
 async def _db_engine():
-    engine = create_async_engine(DATABASE_URL)
+    # NullPool: a fresh asyncpg connection per use, so the session-scoped engine
+    # can be driven from each test's own (function-scoped) event loop without
+    # cross-loop "another operation in progress" errors.
+    from sqlalchemy.pool import NullPool
+    # lock_timeout: if a test ever poisons a connection and leaves a lock, the
+    # per-test TRUNCATE fails fast instead of hanging for the whole pytest timeout.
+    engine = create_async_engine(
+        DATABASE_URL, poolclass=NullPool,
+        connect_args={"server_settings": {"lock_timeout": "10000"}})
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 
 @pytest_asyncio.fixture
 async def session(_db_engine) -> AsyncSession:
-    """Per-test session. Schema is reset (drop_all/create_all) between tests to
-    ensure full isolation while reusing the same engine connection pool."""
-    async with _db_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    factory = sessionmaker(_db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as sess:
+    """Per-test isolation by transaction rollback — nothing commits to disk. The
+    test runs inside an outer transaction; the app's session.commit() calls become
+    SAVEPOINT releases (join_transaction_mode='create_savepoint'); the outer
+    transaction is rolled back at teardown."""
+    conn = await _db_engine.connect()
+    trans = await conn.begin()
+    factory = async_sessionmaker(
+        bind=conn, class_=AsyncSession, expire_on_commit=False,
+        join_transaction_mode="create_savepoint")
+    sess = factory()
+    try:
         yield sess
+    finally:
+        await sess.close()
+        if trans.is_active:
+            await trans.rollback()
+        await conn.close()
 
 
 @pytest_asyncio.fixture

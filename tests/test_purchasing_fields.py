@@ -22,7 +22,7 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_item_with_purchasing_fields(client):
     token = await _register(client)
     resp = await client.post(
@@ -54,7 +54,7 @@ async def test_create_item_with_purchasing_fields(client):
     assert item.get("purchase_conversion_factor") == 24.0
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_patch_purchasing_fields(client):
     token = await _register(client)
     resp = await client.post(
@@ -85,7 +85,7 @@ async def test_patch_purchasing_fields(client):
     assert item.get("purchase_conversion_factor") == 12
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_item_without_purchasing_fields(client):
     """Purchasing fields are optional - items without them work fine."""
     token = await _register(client)

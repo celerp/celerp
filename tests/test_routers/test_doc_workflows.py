@@ -236,7 +236,7 @@ async def test_po_receive_quotation_convert_and_credit_note_adjustment(client, s
     assert (await client.get(f"/docs/{inv}", headers=_h(token))).json()["amount_outstanding"] == 70
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_doc_with_custom_ref_id(client, session):
     """User should be able to set a custom document number on creation."""
     token = await _register(client)
@@ -250,7 +250,7 @@ async def test_create_doc_with_custom_ref_id(client, session):
     assert doc.json()["ref_id"] == "MY-001"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_edit_ref_id_on_draft(client, session):
     """Draft docs should allow editing the document number via inline patch."""
     token = await _register(client)
@@ -264,7 +264,7 @@ async def test_edit_ref_id_on_draft(client, session):
     assert doc.json()["ref_id"] == "CUSTOM-42"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_edit_ref_id_uniqueness(client, session):
     """Editing ref_id to an existing doc number should be rejected."""
     token = await _register(client)
@@ -283,7 +283,7 @@ async def test_edit_ref_id_uniqueness(client, session):
     assert "already exists" in r.json()["detail"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_edit_ref_id_allowed_on_non_draft(client, session):
     """ref_id is in the finalized-editable allowlist and should be patchable on finalized docs."""
     token = await _register(client)
@@ -296,7 +296,7 @@ async def test_edit_ref_id_allowed_on_non_draft(client, session):
     assert r.status_code == 200
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_get_sequences(client, session):
     """GET /docs/sequences returns all doc type configs."""
     token = await _register(client)
@@ -312,7 +312,7 @@ async def test_get_sequences(client, session):
         assert "next" in s
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_patch_sequence_prefix(client, session):
     """PATCH /docs/sequences/invoice updates prefix."""
     token = await _register(client)
@@ -321,7 +321,7 @@ async def test_patch_sequence_prefix(client, session):
     assert r.json()["prefix"] == "FAK"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_patch_sequence_pattern(client, session):
     """PATCH /docs/sequences/invoice updates pattern."""
     token = await _register(client)
@@ -330,7 +330,7 @@ async def test_patch_sequence_pattern(client, session):
     assert r.json()["pattern"] == "{PREFIX}-{YYYY}-{####}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_patch_sequence_invalid_pattern(client, session):
     """PATCH rejects pattern without sequence token."""
     token = await _register(client)
@@ -338,7 +338,7 @@ async def test_patch_sequence_invalid_pattern(client, session):
     assert r.status_code == 422
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_patch_sequence_reset_next(client, session):
     """PATCH next=1 resets counter."""
     token = await _register(client)
@@ -350,7 +350,7 @@ async def test_patch_sequence_reset_next(client, session):
     assert r.json()["next"] == 1
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_new_doc_uses_configured_pattern(client, session):
     """Creating a draft invoice uses the configured proforma pattern (PF-); INV- assigned on finalize."""
     token = await _register(client)
@@ -367,7 +367,7 @@ async def test_new_doc_uses_configured_pattern(client, session):
 # issue_date defaults + editability
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_new_doc_gets_issue_date_today(client, session):
     """Creating a new doc sets issue_date to today (ISO format)."""
     from datetime import date
@@ -382,7 +382,7 @@ async def test_new_doc_gets_issue_date_today(client, session):
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_finalized_doc_rejects_all_edits_with_clear_message(client, session):
     """Patching any field on a finalized doc returns 409 with a message explaining how to proceed."""
     from datetime import date, timedelta
@@ -401,7 +401,7 @@ async def test_finalized_doc_rejects_all_edits_with_clear_message(client, sessio
     assert "revert" in detail.lower(), f"Error must tell user to revert: {detail!r}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_non_editable_field_rejected_on_issued_doc(client, session):
     """Patching any field on an issued doc returns 409 with an actionable message."""
     token = await _register(client)
@@ -416,7 +416,7 @@ async def test_non_editable_field_rejected_on_issued_doc(client, session):
     assert "draft" in r.json()["detail"].lower()
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_docs_date_filter_uses_issue_date(client, session):
     """list_docs date filter includes docs whose issue_date falls in range."""
     from datetime import date
@@ -436,7 +436,7 @@ async def test_list_docs_date_filter_uses_issue_date(client, session):
 # Invoice counter / status card correctness
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_summary_awaiting_payment_counts_finalized(client, session):
     """Summary awaiting_payment_count includes finalized (non-draft, non-paid) invoices."""
     token = await _register(client)
@@ -450,7 +450,7 @@ async def test_summary_awaiting_payment_counts_finalized(client, session):
     assert data["all_issued_count"] >= 1
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_summary_excludes_draft_from_all_issued(client, session):
     """Summary all_issued_count does not count draft invoices."""
     token = await _register(client)
@@ -463,7 +463,7 @@ async def test_summary_excludes_draft_from_all_issued(client, session):
     assert data["awaiting_payment_count"] == 0
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_docs_status_in_filter(client, session):
     """status_in param returns docs matching any of the listed statuses."""
     token = await _register(client)
@@ -478,7 +478,7 @@ async def test_list_docs_status_in_filter(client, session):
         assert item.get("status") in ("final", "sent", "awaiting_payment"), f"Unexpected status: {item.get('status')}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_docs_overdue_only_filter(client, session):
     """overdue_only=1 returns only docs with due_date before today."""
     from datetime import date, timedelta
@@ -495,7 +495,7 @@ async def test_list_docs_overdue_only_filter(client, session):
         assert item.get("due_date", "9999") < today, f"Overdue filter returned non-overdue doc: {item}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_docs_due_from_due_to_filter(client, session):
     """due_from/due_to filter on due_date (not issue_date)."""
     from datetime import date, timedelta
@@ -546,7 +546,7 @@ async def test_list_docs_due_from_due_to_filter(client, session):
     assert doc_b not in ids3
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_amount_outstanding_recalculated_after_line_items_added(client, session):
     """Regression: adding line items after creation must update amount_outstanding.
 
@@ -567,7 +567,7 @@ async def test_amount_outstanding_recalculated_after_line_items_added(client, se
     assert float(state["amount_outstanding"]) > 0, "outstanding must be > 0 for an unpaid invoice"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_amount_outstanding_after_patch_line_items(client, session):
     """Regression: patching line_items (or total) must keep amount_outstanding in sync."""
     token = await _register(client)
@@ -589,7 +589,7 @@ async def test_amount_outstanding_after_patch_line_items(client, session):
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_invoice_status_cards_include_proforma(client, session):
     """Regression: Pro-forma card must appear in invoice status card set alongside All Issued."""
     from ui.routes.documents import _doc_status_cards
@@ -604,7 +604,7 @@ async def test_invoice_status_cards_include_proforma(client, session):
     assert "All Issued" in html or "all_issued" in html.lower(), "All Issued card missing from invoice status cards"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_summary_partial_invoice_in_awaiting_not_paid(client, session):
     """Regression: partial-paid invoices must appear in awaiting_payment_count, not paid.
 
@@ -627,7 +627,7 @@ async def test_summary_partial_invoice_in_awaiting_not_paid(client, session):
     assert data.get("awaiting_payment_count", 0) >= 1, "partial-paid invoice must be in awaiting_payment_count"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_summary_all_count_not_doubled(client, session):
     """Regression: all_issued_count must not double-count invoices.
 
@@ -648,7 +648,7 @@ async def test_summary_all_count_not_doubled(client, session):
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_summary_awaiting_payment_total_is_outstanding(client, session):
     """awaiting_payment_total must equal the outstanding balance, not the invoice face value."""
     token = await _register(client)
@@ -689,7 +689,7 @@ async def _invoice(client, token: str, total: float) -> str:
     return doc_id
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_summary_counters_and_totals_comprehensive(client, session):
     """Comprehensive regression: summary counts and totals across all invoice lifecycle states.
 
@@ -761,7 +761,7 @@ async def test_summary_counters_and_totals_comprehensive(client, session):
     assert abs(s["void_total"] - 6000.0) < 0.01, f"void_total: {s['void_total']}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_summary_sent_total_is_outstanding_not_face_value(client, session):
     """sent_total must be the outstanding balance on sent invoices, not their face value.
 
@@ -784,7 +784,7 @@ async def test_summary_sent_total_is_outstanding_not_face_value(client, session)
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_summary_all_card_count_equals_all_issued_not_sum_of_cards(client, session):
     """Regression: the All card count must equal all_issued_count, not sum of sub-cards.
 
@@ -806,7 +806,7 @@ async def test_summary_all_card_count_equals_all_issued_not_sum_of_cards(client,
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_credit_note_can_be_created_without_original_doc_id(client, session):
     """Regression: creating a credit_note without original_doc_id is now allowed (link can be added later)."""
     token = await _register(client)
@@ -818,7 +818,7 @@ async def test_credit_note_can_be_created_without_original_doc_id(client, sessio
     assert r.status_code == 200, r.text
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_return_on_credit_note(client, session):
     """Regression: receive-return on a credit note creates inventory items and records the event.
 
@@ -860,7 +860,7 @@ async def test_receive_return_on_credit_note(client, session):
     assert len(cn_state.get("return_received_items", [])) == 1
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_return_rejected_on_non_credit_note(client, session):
     """Regression: receive-return must be rejected on non-credit-note doc types."""
     token = await _register(client)
@@ -873,7 +873,7 @@ async def test_receive_return_rejected_on_non_credit_note(client, session):
     assert r.status_code == 409
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_create_credit_note_from_invoice_pre_populates_fields(client, session):
     """create-credit-note action: CN gets original_doc_id, contact_id, and line items from invoice."""
     token = await _register(client)
@@ -910,7 +910,7 @@ async def test_create_credit_note_from_invoice_pre_populates_fields(client, sess
     assert inv_state["amount_outstanding"] == pytest.approx(0.0)  # already paid; CN total deducted further (clamps at 0)
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_doc_return_received_projection(client, session):
     """doc.return_received projection: return_received_items appended, CN status unchanged."""
     token = await _register(client)
@@ -956,7 +956,7 @@ async def test_doc_return_received_projection(client, session):
     assert after["status"] == before["status"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_return_no_sold_inventory(client, session):
     """receive-return must succeed even when no sold inventory records exist for the SKU.
 
@@ -994,7 +994,7 @@ async def test_receive_return_no_sold_inventory(client, session):
     assert len(data["received_items"]) == 1
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_return_fails_loudly_when_no_data_resolvable(client, session):
     """receive-return must 422 with a clear message when neither sold inventory nor
     invoice line items can supply name/sell_by for the requested SKU.
@@ -1020,7 +1020,7 @@ async def test_receive_return_fails_loudly_when_no_data_resolvable(client, sessi
     assert "name" in r.json()["detail"] or "sell_by" in r.json()["detail"]
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_return_draft_cn_rejected(client, session):
     """receive-return must be rejected on draft credit notes."""
     token = await _register(client)
@@ -1040,7 +1040,7 @@ async def test_receive_return_draft_cn_rejected(client, session):
     assert r.status_code == 409
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_undo_receive_return_removes_items_from_inventory(client, session):
     """Regression: Revert Return Stock must archive returned items so they no longer appear in inventory.
 
@@ -1094,7 +1094,7 @@ async def test_undo_receive_return_removes_items_from_inventory(client, session)
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_undo_receive_return_blocked_if_item_resold(client, session):
     """Revert Return Stock must return 409 with actionable message if a returned item was re-sold."""
     token = await _register(client)
@@ -1133,7 +1133,7 @@ async def test_undo_receive_return_blocked_if_item_resold(client, session):
     )
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_bill_receive_goods_without_po_line_index(client, session):
     """Regression: one-click 'Receive Goods' on bills must succeed without po_line_index.
 
@@ -1167,7 +1167,7 @@ async def test_bill_receive_goods_without_po_line_index(client, session):
     assert receive_r.status_code == 200, f"Expected 200, got {receive_r.status_code}: {receive_r.text}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_revert_goods_received_removes_items_from_inventory(client, session):
     """Revert Goods Received must archive all inventory items created by the receive."""
     token = await _register(client)
@@ -1211,7 +1211,7 @@ async def test_revert_goods_received_removes_items_from_inventory(client, sessio
     assert "RG-001" not in available_skus, "Disposed item must not appear in inventory"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_revert_goods_received_blocked_if_item_resold(client, session):
     """Revert Goods Received must 409 if any created item has been sold."""
     token = await _register(client)
@@ -1247,7 +1247,7 @@ async def test_revert_goods_received_blocked_if_item_resold(client, session):
     assert "sold" in detail.lower() or "RG-002" in detail, f"Error must identify the blocked item. Got: {detail}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_goods_inherits_sku_attributes(client, session):
     """Receive Goods must copy category, sell_by, prices, and dynamic attributes from existing item with same SKU.
     Barcode must NOT be copied (unique per physical item).
@@ -1297,7 +1297,7 @@ async def test_receive_goods_inherits_sku_attributes(client, session):
     assert not new_item.get("barcode"), f"barcode must not be inherited, got: {new_item.get('barcode')}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_goods_works_after_revert(client, session):
     """Receive Goods button must work again after Revert Goods Received (idempotency key must be unique per receive)."""
     token = await _register(client)
@@ -1336,7 +1336,7 @@ async def test_receive_goods_works_after_revert(client, session):
     assert bill_state.get("received_item_ids"), "received_item_ids must be repopulated after second receive"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_as_expense_skips_inventory_creation(client, session):
     """Expense lines must not create inventory items; stock lines must."""
     token = await _register(client)
@@ -1369,7 +1369,7 @@ async def test_receive_as_expense_skips_inventory_creation(client, session):
     assert len(created_ids) == 1, f"Expected 1 inventory item (stock line only), got {len(created_ids)}: {created_ids}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_as_stock_creates_inventory(client, session):
     """Explicit receive_as=stock must create an inventory item."""
     token = await _register(client)
@@ -1397,7 +1397,7 @@ async def test_receive_as_stock_creates_inventory(client, session):
     assert len(created_ids) == 1, f"Expected 1 inventory item for stock line, got {len(created_ids)}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_as_defaults_to_stock(client, session):
     """When receive_as is omitted, it defaults to stock behavior (inventory item created)."""
     token = await _register(client)
@@ -1425,7 +1425,7 @@ async def test_receive_as_defaults_to_stock(client, session):
     assert len(created_ids) == 1, f"Expected 1 inventory item (default stock), got {len(created_ids)}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_bill_category_and_receive_as_preserved_after_finalize(client, session):
     """category and receive_as on line items must survive patch_doc (autosave) and finalize.
 
@@ -1487,7 +1487,7 @@ async def test_bill_category_and_receive_as_preserved_after_finalize(client, ses
     assert line.get("receive_as") == "stock", f"receive_as lost after finalize: {line}"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_receive_goods_uses_bill_line_category_and_attributes(client, session):
     """Receive Goods must copy category and attributes from the bill line item.
 

@@ -69,6 +69,7 @@ dev = [
     "pytest-playwright>=0.5",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
+    "testcontainers[postgres]>=4.0",
 ]
 prod = [
     "gunicorn>=22.0",

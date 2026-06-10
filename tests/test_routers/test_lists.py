@@ -762,7 +762,7 @@ async def test_list_totals_correct_after_patch_with_per_line_tax(client):
 # Revert sent list to draft
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_revert_sent_to_draft(client):
     """Sent list can be reverted to draft."""
     token = await _register(client)
@@ -778,7 +778,7 @@ async def test_list_revert_sent_to_draft(client):
     assert detail["status"] == "draft"
 
 
-@pytest.mark.anyio
+@pytest.mark.asyncio
 async def test_list_revert_only_from_sent(client):
     """Reverting a draft or completed list returns 409."""
     token = await _register(client)
