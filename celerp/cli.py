@@ -283,13 +283,12 @@ def _run_upgrade_with_auto_stamp(alembic_cfg, engine_url: str) -> None:
             return  # success
         except Exception as exc:
             msg = str(exc)
-            # Detect DDL-already-exists errors from Postgres and SQLite.
+            # Detect DDL-already-exists errors from Postgres.
             _ALREADY_EXISTS = (
                 "DuplicateTable",
                 "DuplicateObject",
                 "DuplicateColumn",
                 "already exists",
-                "UNIQUE constraint failed: alembic_version",
             )
             if not any(tok in msg for tok in _ALREADY_EXISTS):
                 raise  # unrelated error - propagate

@@ -254,10 +254,8 @@ async def clear(session: AsyncSession) -> None:
 async def run_jti_cleanup_loop() -> None:
     """Background task: delete expired JTI rows hourly.
 
-    On Postgres, uses ``pg_try_advisory_xact_lock`` so only one of N workers
-    runs the cleanup.  On SQLite (dev/test) the advisory lock call fails and
-    falls through to direct deletion - this is safe because SQLite is
-    single-process only.
+    Uses ``pg_try_advisory_xact_lock`` so that with N workers only one runs the
+    cleanup each cycle; the others skip it.
     """
     import asyncio
     # SessionLocal imported at module level
@@ -269,18 +267,11 @@ async def run_jti_cleanup_loop() -> None:
             return
         try:
             async with SessionLocal() as s:
-                skip = False
-                try:
-                    # Advisory lock: 0x43454C5250 = b"CELERP" as int
-                    # Only one of N workers acquires the lock; others skip cleanup.
-                    from sqlalchemy import text as _text
-                    result = await s.execute(_text("SELECT pg_try_advisory_xact_lock(0x43454C5250)"))
-                    lock_acquired = result.scalar()
-                    if lock_acquired is False:  # False = lock held by another worker; None = SQLite
-                        skip = True
-                except Exception:
-                    pass  # SQLite: pg function unavailable - run anyway (single worker)
-                if not skip:
+                # Advisory lock (0x43454C5250 = b"CELERP"): only one of N workers
+                # acquires it; the others skip this cleanup cycle.
+                from sqlalchemy import text as _text
+                result = await s.execute(_text("SELECT pg_try_advisory_xact_lock(0x43454C5250)"))
+                if result.scalar():
                     now = datetime.now(timezone.utc)
                     await s.execute(delete(SessionRegistry).where(SessionRegistry.expiry < now))
                     await s.commit()

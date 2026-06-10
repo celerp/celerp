@@ -72,10 +72,9 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
 
     await ProjectionEngine.apply_event(session, entry)
 
-    # Postgres-only notification (skipped for SQLite tests).
+    # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:
-        if session.bind and session.bind.dialect.name == "postgresql":
-            await session.execute(text("SELECT pg_notify('events', :payload)"), {"payload": str(entry.id)})
+        await session.execute(text("SELECT pg_notify('events', :payload)"), {"payload": str(entry.id)})
     except Exception:
         # Deterministic: do not fail event emission due to notification issues.
         pass
