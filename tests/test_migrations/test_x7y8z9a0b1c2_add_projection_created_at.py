@@ -5,45 +5,44 @@
 
 from __future__ import annotations
 
+import os
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import create_engine, inspect, text
 
 
 @pytest.fixture()
-def sync_db(tmp_path):
-    """Minimal SQLite DB with projections + ledger (real schema) pre-migration state."""
-    db_path = tmp_path / "migration_test.db"
-    engine = create_engine(f"sqlite:///{db_path}")
+def sync_db():
+    """Fresh, isolated Postgres schema in the pre-migration state (projections
+    without created_at). alembic op.get_bind() is sync, so use a sync engine."""
+    base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+    schema = f"migtest_{uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+
+    engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
     with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE companies (
-                id TEXT PRIMARY KEY
-            )
-        """))
-        conn.execute(text("""
-            CREATE TABLE locations (
-                id TEXT PRIMARY KEY,
-                company_id TEXT NOT NULL
-            )
-        """))
+        conn.execute(text("CREATE TABLE companies (id TEXT PRIMARY KEY)"))
+        conn.execute(text("CREATE TABLE locations (id TEXT PRIMARY KEY, company_id TEXT NOT NULL)"))
         # Real ledger table: uses `ts` column (not `created_at`).
         conn.execute(text("""
             CREATE TABLE ledger (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id BIGSERIAL PRIMARY KEY,
                 entity_id TEXT NOT NULL,
                 company_id TEXT NOT NULL,
                 entity_type TEXT NOT NULL,
                 event_type TEXT NOT NULL,
-                data TEXT NOT NULL DEFAULT '{}',
+                data JSONB NOT NULL DEFAULT '{}',
                 source TEXT NOT NULL DEFAULT 'test',
                 idempotency_key TEXT,
                 actor_id TEXT,
                 location_id TEXT,
-                metadata_ TEXT,
-                ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                metadata_ JSONB,
+                ts TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """))
         # projections WITHOUT created_at (pre-migration state)
@@ -52,21 +51,27 @@ def sync_db(tmp_path):
                 entity_id TEXT NOT NULL,
                 company_id TEXT NOT NULL,
                 entity_type TEXT NOT NULL DEFAULT 'item',
-                state TEXT NOT NULL DEFAULT '{}',
+                state JSONB NOT NULL DEFAULT '{}',
                 version INTEGER NOT NULL DEFAULT 0,
                 location_id TEXT,
-                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                is_available INTEGER,
-                is_on_memo INTEGER,
-                is_on_marketplace INTEGER,
-                is_in_production INTEGER,
-                is_expired INTEGER,
-                expires_at TIMESTAMP,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                is_available BOOLEAN,
+                is_on_memo BOOLEAN,
+                is_on_marketplace BOOLEAN,
+                is_in_production BOOLEAN,
+                is_expired BOOLEAN,
+                expires_at TIMESTAMPTZ,
                 consignment_flag TEXT,
                 PRIMARY KEY (company_id, entity_id)
             )
         """))
-    return engine
+    yield engine
+    engine.dispose()
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+    admin.dispose()
 
 
 def test_migration_adds_created_at_column(sync_db):
