@@ -241,7 +241,7 @@ def test_start_respawns_api_on_sentinel(tmp_path):
 
     cfg = {
         "server": {"api_port": 8000, "ui_port": 8080},
-        "database": {"url": "sqlite+aiosqlite:///test.db"},
+        "database": {"url": "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp"},
         "auth": {"jwt_secret": "test"},
         "modules": {"enabled": []},
     }
@@ -292,7 +292,7 @@ def test_start_exits_without_sentinel(tmp_path):
 
     cfg = {
         "server": {"api_port": 8000, "ui_port": 8080},
-        "database": {"url": "sqlite+aiosqlite:///test.db"},
+        "database": {"url": "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp"},
         "auth": {"jwt_secret": "test"},
         "modules": {"enabled": []},
     }
