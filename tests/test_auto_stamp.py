@@ -38,12 +38,47 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 import pytest
 
+import contextlib
+
 from celerp.alembic_config import build_alembic_config
 from celerp.migrations._auto_stamp import (
     RevisionSignature,
     extract_signatures,
     find_safe_stamp,
 )
+
+
+@contextlib.contextmanager
+def _pg_inspector_for_models():
+    """create_all the full model schema into an isolated Postgres schema and
+    yield an inspector over it. Mirrors the production dev-startup path
+    (create_all on Postgres), so the stamp walker is tested against real
+    Postgres introspection rather than SQLite's."""
+    import uuid
+
+    from sqlalchemy import create_engine, inspect, text
+
+    from celerp.models.base import Base
+    import celerp.models  # noqa: F401 — register all models on Base.metadata
+
+    base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+    schema = f"stamptest_{uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+
+    engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
+    try:
+        Base.metadata.create_all(engine)
+        yield inspect(engine)
+    finally:
+        engine.dispose()
+        admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+        with admin.connect() as c:
+            c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin.dispose()
 
 
 # ── extract_signatures ────────────────────────────────────────────────────────
@@ -333,28 +368,9 @@ class TestRealMigrationsVsSchema:
     walker should consider the migration applied.
     """
 
-    @pytest.mark.asyncio
-    async def test_walker_against_fresh_schema_stamps_to_head(self):
+    def test_walker_against_fresh_schema_stamps_to_head(self):
         """When the schema is at head (all model columns present), the walker
         should stamp every DDL migration as applied."""
-        from unittest.mock import MagicMock
-        from celerp.models.base import Base
-        import celerp.models  # noqa: F401 — register all models
-
-        # Fresh file-based SQLite (so sync inspector can read it)
-        import tempfile
-        tmp_db = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-        tmp_db.close()
-        db_url = f"sqlite:///{tmp_db.name}"
-
-        from sqlalchemy import create_engine
-        sync_engine = create_engine(db_url)
-        Base.metadata.create_all(sync_engine)
-
-        from sqlalchemy import inspect
-        inspector = inspect(sync_engine)
-
-        from celerp.alembic_config import build_alembic_config
         cfg = build_alembic_config()
         from alembic.script import ScriptDirectory
         script = ScriptDirectory.from_config(cfg)
@@ -369,9 +385,8 @@ class TestRealMigrationsVsSchema:
             if sigs:
                 sigs_by_rev[sigs[0].rev] = sigs
 
-        result = find_safe_stamp(revs, sigs_by_rev, inspector)
-        # Clean up the temp DB
-        Path(tmp_db.name).unlink(missing_ok=True)
+        with _pg_inspector_for_models() as inspector:
+            result = find_safe_stamp(revs, sigs_by_rev, inspector)
 
         # Result should be the latest revision (i.e. head) or close to it.
         # We don't assert exact equality because model vs migration drift
@@ -404,49 +419,36 @@ class TestCliStampsBehindOnDevSchema:
     def test_walker_handles_dev_db_just_create_all_ed(self):
         """The whole point: a freshly-create_all'd DB → walker stamps to
         (or near) head, not stuck at 'base'."""
-        from celerp.models.base import Base
-        import celerp.models  # noqa: F401
+        from alembic.script import ScriptDirectory
+        cfg = build_alembic_config()
+        script = ScriptDirectory.from_config(cfg)
+        revs = list(script.walk_revisions())
+        versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
+        sigs_by_rev = {}
+        for mig in versions_dir.glob("*.py"):
+            if mig.name == "__init__.py":
+                continue
+            sigs = extract_signatures(mig)
+            if sigs:
+                sigs_by_rev[sigs[0].rev] = sigs
 
-        import tempfile
-        tmp = tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False)
-        tmp.close()
-        try:
-            from sqlalchemy import create_engine, inspect
-            eng = create_engine(f"sqlite:///{tmp.name}")
-            Base.metadata.create_all(eng)
-            ins = inspect(eng)
-
-            from celerp.alembic_config import build_alembic_config
-            from alembic.script import ScriptDirectory
-            cfg = build_alembic_config()
-            script = ScriptDirectory.from_config(cfg)
-            revs = list(script.walk_revisions())
-            versions_dir = Path(cfg.get_main_option("script_location")) / "versions"
-            sigs_by_rev = {}
-            for mig in versions_dir.glob("*.py"):
-                if mig.name == "__init__.py":
-                    continue
-                sigs = extract_signatures(mig)
-                if sigs:
-                    sigs_by_rev[sigs[0].rev] = sigs
-
+        with _pg_inspector_for_models() as ins:
             result = find_safe_stamp(revs, sigs_by_rev, ins)
-            head = script.get_current_head()
-            # Result should be head, OR a recent revision if some columns
-            # haven't been added to models yet. Either way: not "base".
-            assert result != "base", f"Walker returned 'base' on a fresh dev DB"
-            # And it should be at or close to head (within 3 revisions)
-            head_idx = next(i for i, r in enumerate(revs) if r.revision == head)
-            result_idx = next(
-                (i for i, r in enumerate(revs) if r.revision == result),
-                len(revs),
-            )
-            # Lower index = newer. We expect result_idx to be at most 3
-            # positions behind head (so within the last 3 revisions).
-            assert head_idx - result_idx <= 3, (
-                f"Walker returned {result} which is {head_idx - result_idx} "
-                f"revisions behind head {head}. The dev schema should be "
-                f"near head, not far behind."
-            )
-        finally:
-            Path(tmp.name).unlink(missing_ok=True)
+
+        head = script.get_current_head()
+        # Result should be head, OR a recent revision if some columns
+        # haven't been added to models yet. Either way: not "base".
+        assert result != "base", f"Walker returned 'base' on a fresh dev DB"
+        # And it should be at or close to head (within 3 revisions)
+        head_idx = next(i for i, r in enumerate(revs) if r.revision == head)
+        result_idx = next(
+            (i for i, r in enumerate(revs) if r.revision == result),
+            len(revs),
+        )
+        # Lower index = newer. We expect result_idx to be at most 3
+        # positions behind head (so within the last 3 revisions).
+        assert head_idx - result_idx <= 3, (
+            f"Walker returned {result} which is {head_idx - result_idx} "
+            f"revisions behind head {head}. The dev schema should be "
+            f"near head, not far behind."
+        )
