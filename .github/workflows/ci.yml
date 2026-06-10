@@ -49,4 +49,3 @@ jobs:
           --timeout=30
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
-          --ignore=tests/integration
