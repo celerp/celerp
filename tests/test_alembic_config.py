@@ -16,7 +16,6 @@ import sys
 from pathlib import Path
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import pytest
 

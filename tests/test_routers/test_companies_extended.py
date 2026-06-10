@@ -12,7 +12,6 @@ import os
 import uuid as _uuid
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import pytest
 
