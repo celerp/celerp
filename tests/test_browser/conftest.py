@@ -19,8 +19,9 @@ import time
 import httpx
 import pytest
 
-# Must set env vars BEFORE importing any celerp modules (they read on import)
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///test_browser.db")
+# Must set env vars BEFORE importing any celerp modules (they read on import).
+# DATABASE_URL is provided by the root conftest (Postgres via testcontainers or a
+# preset URL); the browser servers run against that same database.
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 os.environ.setdefault("MODULE_DIR", "default_modules,premium_modules")
 _ALL_MODULES = (
@@ -60,21 +61,36 @@ def _is_port_free(port: int) -> bool:
         return True
 
 
+def _reset_pg_database() -> None:
+    """Drop + recreate the public schema so the browser session starts clean.
+    The app rebuilds all tables via create_all when the server boots."""
+    import psycopg2
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                            password=parts.password, dbname=parts.path.lstrip("/"))
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    finally:
+        conn.close()
+
+
 # ── Server fixtures ───────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
 def api_server():
-    """Start FastAPI on port 18000 with in-memory-ish SQLite."""
+    """Start FastAPI on port 18000 against the (Postgres) test database."""
     if not _is_port_free(_API_PORT):
         # Already running (e.g. re-run within same process) - skip restart
         yield _API_BASE
         return
 
     import uvicorn
-    # Drop and recreate the test DB file to ensure clean state
-    db_path = "test_browser.db"
-    if os.path.exists(db_path):
-        os.unlink(db_path)
+    # Start from a clean schema; the app rebuilds tables on startup (create_all).
+    _reset_pg_database()
 
     from celerp.main import app
     config = uvicorn.Config(app, host="127.0.0.1", port=_API_PORT, log_level="error")
