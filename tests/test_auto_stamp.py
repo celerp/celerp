@@ -361,7 +361,7 @@ class TestFindSafeStamp:
 
 class TestRealMigrationsVsSchema:
     """Integration: run the walker against every real migration in the repo
-    against a fresh SQLite DB that Base.metadata.create_all has populated.
+    against a fresh Postgres schema that Base.metadata.create_all has populated.
 
     This is the test that would have caught the original bug: if a migration
     has a column-add signature, and create_all produced that column, the

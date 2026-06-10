@@ -348,8 +348,8 @@ def _reset_hot_path_caches():
     """Bust the in-process nonce and drain caches before each test.
 
     These module-level caches are correct at runtime (single process, explicit
-    bust on mutation).  In tests, each test gets a fresh SQLite schema so the
-    cache must be cleared to avoid leaking state between tests.
+    bust on mutation).  In tests, each test rolls back its database changes, so
+    the cache must be cleared to avoid leaking state between tests.
     """
     from celerp.services.session_tracker import _nonce_cache_bust_all
     from celerp.services.runtime_state import _drain_cache_bust
