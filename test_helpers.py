@@ -19,7 +19,9 @@ from pathlib import Path
 # Repo root: this file lives at repo root, so parent == repo root.
 REPO_ROOT = Path(__file__).resolve().parent
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+# The root conftest always sets DATABASE_URL to the test Postgres before this is
+# imported; the default is just a sane placeholder for the Postgres-only app.
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp")
 
 _crm_src = os.path.join(os.path.dirname(__file__), "..", "premium_modules", "celerp-sales-funnel")
 _crm_available = os.path.isfile(os.path.join(_crm_src, "celerp_sales_funnel", "__init__.py"))
