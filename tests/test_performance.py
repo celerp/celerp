@@ -81,7 +81,9 @@ def _capture_projection_sql(db_engine):
 
     def _listener(conn, cursor, statement, parameters, context, executemany):
         if "projections" in statement.lower():
-            statements.append(statement)
+            # Include bound parameters: Postgres passes the JSON key (e.g.
+            # 'doc_type') as a parameter rather than inlining it in the SQL text.
+            statements.append(f"{statement} -- params: {parameters!r}")
 
     event.listen(db_engine.sync_engine, "before_cursor_execute", _listener)
     try:

@@ -751,6 +751,8 @@ class TestHotPathQueryCount:
         from celerp.models.auth import UserAuthState
         import uuid as _u
         uid = _u.UUID(user_id)
+        from test_helpers import ensure_user
+        await ensure_user(session, uid)
         session.add(UserAuthState(user_id=uid, nonce="test-nonce-abc"))
         await session.commit()
 
@@ -818,6 +820,8 @@ class TestHotPathQueryCount:
 
         user_id = str(_u.uuid4())
         uid = _u.UUID(user_id)
+        from test_helpers import ensure_user
+        await ensure_user(session, uid)
         session.add(UserAuthState(user_id=uid, nonce="old-nonce"))
         await session.commit()
 

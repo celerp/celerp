@@ -165,8 +165,17 @@ async def test_change_password_requires_auth(client):
 # ---------------------------------------------------------------------------
 
 async def _seed_foreign_session(session, user_id: str, expiry_offset_s: float = 900.0) -> None:
-    """Directly insert a JTI for *user_id* into the DB tracker (test helper)."""
+    """Directly insert a JTI for *user_id* into the DB tracker (test helper).
+
+    Ensures a real users row exists first: Postgres enforces the
+    session_registry.user_id foreign key (SQLite did not).
+    """
+    from celerp.models.company import User
     from celerp.services.session_tracker import register_token as _reg
+    uid = _uuid.UUID(str(user_id))
+    if await session.get(User, uid) is None:
+        session.add(User(id=uid, email=f"foreign-{uid}@test.local", name="Foreign User"))
+        await session.flush()
     expiry = datetime.now(timezone.utc) + timedelta(seconds=expiry_offset_s)
     await _reg(session, str(_uuid.uuid4()), user_id, expiry)
 
@@ -267,8 +276,7 @@ async def test_gate_opens_when_all_jtis_expired(client, session):
     await _clear_tracker(session)
 
     # Register an already-expired JTI for a foreign user
-    expired = datetime.now(timezone.utc) - timedelta(seconds=1)
-    await _reg(session, str(_uuid.uuid4()), "00000000-0000-0000-0000-000000000099", expired)
+    await _seed_foreign_session(session, "00000000-0000-0000-0000-000000000099", expiry_offset_s=-1)
 
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r = await client.post("/auth/login", json={"email": "idle@test.com", "password": "longpass123"})

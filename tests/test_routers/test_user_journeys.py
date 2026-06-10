@@ -646,7 +646,8 @@ async def test_crud_item_transfer(client):
     token = await _reg(client)
     h = _h(token)
     eid = await _item(client, token)
-    loc_id = str(uuid.uuid4())
+    from test_helpers import create_location
+    loc_id = await create_location(client, h, name="Transfer Dest")
     r = await client.post(f"/items/{eid}/transfer", headers=h, json={"to_location_id": loc_id})
     assert r.status_code == 200
 

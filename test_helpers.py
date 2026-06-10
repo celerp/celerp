@@ -47,3 +47,39 @@ def make_test_token(
 def authed_cookies(role: str = "owner") -> dict:
     """Return cookies dict with a properly-formed test token for the given role."""
     return {"celerp_token": make_test_token(role=role)}
+
+
+async def ensure_user(session, user_id) -> None:
+    """Insert a minimal users row if absent.
+
+    Postgres enforces foreign keys (e.g. session_registry.user_id → users) that
+    SQLite silently ignored, so tests that reference a synthetic user id must
+    materialize it first.
+    """
+    import uuid as _uuid
+    from celerp.models.company import User
+    uid = _uuid.UUID(str(user_id))
+    if await session.get(User, uid) is None:
+        session.add(User(id=uid, email=f"u-{uid}@test.local", name="Test User"))
+        await session.flush()
+
+
+async def default_location_id(client, headers: dict) -> str:
+    """Return the company's real default (or first) location id.
+
+    Postgres enforces ledger.location_id → locations, so tests must use a real
+    location rather than a random UUID. Registration seeds a 'Head Office'.
+    """
+    r = await client.get("/companies/me/locations", headers=headers)
+    items = r.json().get("items", [])
+    for it in items:
+        if it.get("is_default"):
+            return it["id"]
+    return items[0]["id"]
+
+
+async def create_location(client, headers: dict, name: str = "Warehouse 2") -> str:
+    """Create a real location and return its id (for transfer-target tests)."""
+    r = await client.post("/companies/me/locations", headers=headers,
+                          json={"name": name, "type": "warehouse"})
+    return r.json()["id"]

@@ -105,10 +105,14 @@ async def test_truncate_resets_bootstrap(client, session):
     status_before = await client.get("/auth/bootstrap-status")
     assert status_before.json()["bootstrapped"] is True
 
-    # Truncate via _truncate_all_tables (SQLite in-memory: use session directly)
-    # For the SQLite test DB we truncate by deleting all rows and resetting stamps.
-    await session.execute(text("DELETE FROM users"))
-    await session.execute(text("DELETE FROM companies"))
+    # Wipe users + companies. Postgres enforces FKs, so CASCADE the dependents
+    # (user_companies, ledger, …); SQLite doesn't enforce them, so a plain DELETE
+    # is enough (and it has no TRUNCATE … CASCADE).
+    if session.bind.dialect.name == "postgresql":
+        await session.execute(text("TRUNCATE users, companies CASCADE"))
+    else:
+        await session.execute(text("DELETE FROM users"))
+        await session.execute(text("DELETE FROM companies"))
     await session.commit()
 
     status_after = await client.get("/auth/bootstrap-status")

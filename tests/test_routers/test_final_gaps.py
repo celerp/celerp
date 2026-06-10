@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from test_helpers import default_location_id
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,8 +100,9 @@ async def test_receive_po_legacy_zero_total(client):
     assert r.status_code == 200
     po_id = r.json()["id"]
 
+    loc = await default_location_id(client, _h(tok))
     r2 = await client.post(f"/docs/{po_id}/receive", headers=_h(tok), json={
-        "location_id": str(uuid.uuid4()),
+        "location_id": loc,
         "received_items": [],
     })
     assert r2.status_code == 200
@@ -123,8 +126,9 @@ async def test_receive_po_create_item_from_sku_name(client):
     })
     po_id = r.json()["id"]
 
+    loc = await default_location_id(client, _h(tok))
     r2 = await client.post(f"/docs/{po_id}/receive", headers=_h(tok), json={
-        "location_id": str(uuid.uuid4()),
+        "location_id": loc,
         "received_items": [{"po_line_index": 0, "sku": "SKU-NEW", "name": "New Widget", "quantity_received": 5}],
     })
     assert r2.status_code == 200

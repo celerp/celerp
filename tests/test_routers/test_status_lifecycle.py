@@ -119,8 +119,10 @@ async def test_revert_blocked_when_items_received(client):
     await client.post(f"/docs/{po}/finalize", headers=_h(token))
 
     # Receive items (status -> received)
+    from test_helpers import default_location_id
+    _loc = await default_location_id(client, _h(token))
     await client.post(f"/docs/{po}/receive", headers=_h(token), json={
-        "location_id": str(uuid.uuid4()),
+        "location_id": _loc,
         "received_items": [{"po_line_index": 0, "quantity_received": 1, "sku": "P1", "name": "Part"}],
     })
 
