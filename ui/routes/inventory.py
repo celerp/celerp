@@ -1354,11 +1354,17 @@ function celerpPrintLabel(entityId, templateId) {
         structural = {"add_component", "add_labor", "add_overhead",
                       "remove_component", "remove_labor", "remove_overhead", "clear"}
         if action == "add_component":
-            rows["components"].append({"item_id": "", "quantity": "1"})
+            new_id = str(form.get("comp_new", "")).strip()
+            if new_id:
+                rows["components"].append({"item_id": new_id, "quantity": "1"})
         elif action == "add_labor":
-            rows["labor"].append({"operation": "", "kind": "hourly", "hours": "", "rate": "", "amount": ""})
+            new_op = str(form.get("labor_new_op", "")).strip()
+            if new_op:
+                rows["labor"].append({"operation": new_op, "kind": "hourly", "hours": "", "rate": "", "amount": ""})
         elif action == "add_overhead":
-            rows["overhead"].append({"description": "", "amount": ""})
+            new_desc = str(form.get("oh_new_desc", "")).strip()
+            if new_desc:
+                rows["overhead"].append({"description": new_desc, "amount": ""})
         elif action == "remove_component" and 0 <= index < len(rows["components"]):
             rows["components"].pop(index)
         elif action == "remove_labor" and 0 <= index < len(rows["labor"]):
@@ -5025,24 +5031,43 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         )
 
     cur_label = f" ({currency})" if currency else ""
+
+    # Permanent "add" row at the bottom of each table — committing on first input creates a real,
+    # persisted row (then a fresh add-row appears). No orphan blank rows to lose on navigation.
+    _add = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML"}
+    comp_add_row = Tr(
+        Td(searchable_select("comp_new", comp_opts, value="", placeholder="Search to add a component…",
+                             hx_post=f"{sec}?action=add_component", hx_trigger="change", **_add)),
+        Td("", cls="cell--number"), Td(""), Td("", cls="cell--actions"),
+        cls="recipe-add-row",
+    )
+    labor_add_row = Tr(
+        Td(Input(type="text", name="labor_new_op", value="", placeholder="Add an operation…",
+                 hx_post=f"{sec}?action=add_labor", hx_trigger="change", **_add)),
+        Td(""), Td("", cls="cell--number"), Td("", cls="cell--number"), Td("", cls="cell--number"), Td("", cls="cell--actions"),
+        cls="recipe-add-row",
+    )
+    oh_add_row = Tr(
+        Td(Input(type="text", name="oh_new_desc", value="", placeholder="Add a cost…",
+                 hx_post=f"{sec}?action=add_overhead", hx_trigger="change", **_add)),
+        Td("", cls="cell--number"), Td("", cls="cell--actions"),
+        cls="recipe-add-row",
+    )
     materials = Table(
         Thead(Tr(Th("Component SKU"), Th("Quantity", cls="cell--number"), Th("Unit"), Th("", cls="cell--actions"))),
-        Tbody(*[_comp_row(i, r) for i, r in enumerate(rows["components"])]
-              or [Tr(Td("No components yet — add the SKUs this item is built from.", colspan="4", cls="empty-row"))]),
+        Tbody(*[_comp_row(i, r) for i, r in enumerate(rows["components"])], comp_add_row),
         cls="data-table",
     )
     labor = Table(
         Thead(Tr(Th("Operation"), Th("Type"), Th("Hours", cls="cell--number"),
                  Th(f"Rate / hr{cur_label}", cls="cell--number"), Th(f"Fixed amount{cur_label}", cls="cell--number"),
                  Th("", cls="cell--actions"))),
-        Tbody(*[_labor_row(i, r) for i, r in enumerate(rows["labor"])]
-              or [Tr(Td("No labor yet.", colspan="6", cls="empty-row"))]),
+        Tbody(*[_labor_row(i, r) for i, r in enumerate(rows["labor"])], labor_add_row),
         cls="data-table",
     )
     overhead = Table(
         Thead(Tr(Th("Description"), Th(f"Amount{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
-        Tbody(*[_oh_row(i, r) for i, r in enumerate(rows["overhead"])]
-              or [Tr(Td("No overhead yet.", colspan="3", cls="empty-row"))]),
+        Tbody(*[_oh_row(i, r) for i, r in enumerate(rows["overhead"])], oh_add_row),
         cls="data-table",
     )
 
@@ -5108,18 +5133,9 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                 P("Unit cost = total recipe cost ÷ this quantity.", cls="hint"),
                 cls="detail-card recipe-block",
             ),
-            Div(H3("Materials", cls="section-title"), showall_toggle, materials,
-                Button("+ Add component", type="button", cls="btn btn--secondary btn--xs",
-                       hx_post=f"{sec}?action=add_component", **_htmx),
-                cls="detail-card recipe-block"),
-            Div(H3("Labor", cls="section-title"), labor,
-                Button("+ Add operation", type="button", cls="btn btn--secondary btn--xs",
-                       hx_post=f"{sec}?action=add_labor", **_htmx),
-                cls="detail-card recipe-block"),
-            Div(H3("Overhead", cls="section-title"), overhead,
-                Button("+ Add cost", type="button", cls="btn btn--secondary btn--xs",
-                       hx_post=f"{sec}?action=add_overhead", **_htmx),
-                cls="detail-card recipe-block"),
+            Div(H3("Materials", cls="section-title"), showall_toggle, materials, cls="detail-card recipe-block"),
+            Div(H3("Labor", cls="section-title"), labor, cls="detail-card recipe-block"),
+            Div(H3("Overhead", cls="section-title"), overhead, cls="detail-card recipe-block"),
             clear_action,
             id="recipe-form",
         ),

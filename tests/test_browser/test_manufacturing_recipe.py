@@ -43,9 +43,7 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, recipe_item):
     _open_tab(page, ui_server, item_id)
     page.screenshot(path=str(SHOTS / "01-empty.png"), full_page=True)
 
-    # Add a component and pick the raw via the searchable SKU picker.
-    page.click("button:has-text('+ Add component')")
-    page.wait_for_selector("input[name=comp_qty_0]", timeout=5000)
+    # Add a component via the ghost "add" row — picking a SKU commits a real row (no Add button).
     box = page.locator("#recipe-form .combobox-input").last
     box.click()
     box.fill(raw_sku)
@@ -53,21 +51,24 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, recipe_item):
     opt = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first
     opt.wait_for(state="visible", timeout=3000)
     opt.click()
+    page.wait_for_selector("input[name=comp_qty_0]", timeout=8000)  # real row materialized
     page.fill("input[name=comp_qty_0]", "5")
+    page.locator("input[name=comp_qty_0]").blur()
 
-    # Add a labor operation.
-    page.click("button:has-text('+ Add operation')")
-    page.wait_for_selector("input[name=labor_op_0]", timeout=5000)
-    page.fill("input[name=labor_op_0]", "Setting")
+    # Add a labor operation via the ghost row.
+    page.fill("input[name=labor_new_op]", "Setting")
+    page.locator("input[name=labor_new_op]").blur()
+    page.wait_for_selector("input[name=labor_op_0]", timeout=8000)
     page.fill("input[name=labor_hours_0]", "2")
     page.fill("input[name=labor_rate_0]", "50")
+    page.locator("input[name=labor_rate_0]").blur()
 
-    # Add an overhead line.
-    page.click("button:has-text('+ Add cost')")
-    page.wait_for_selector("input[name=oh_desc_0]", timeout=5000)
-    page.fill("input[name=oh_desc_0]", "Polishing & box")
+    # Add an overhead line via the ghost row.
+    page.fill("input[name=oh_new_desc]", "Polishing & box")
+    page.locator("input[name=oh_new_desc]").blur()
+    page.wait_for_selector("input[name=oh_amount_0]", timeout=8000)
     page.fill("input[name=oh_amount_0]", "15")
-    page.locator("input[name=oh_amount_0]").blur()  # blur → auto-save (no Save button)
+    page.locator("input[name=oh_amount_0]").blur()
     page.screenshot(path=str(SHOTS / "02-filled.png"), full_page=True)
 
     # Auto-save rolls up: 5*80 materials + 100 labor + 15 overhead = 515 (cost card updates OOB).
@@ -89,19 +90,20 @@ def test_fixed_labor_and_derived_unit(page, ui_server, api):
     page.goto(f"{ui_server}/inventory/{fg}?tab=manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#recipe-form", timeout=10000)
 
-    page.click("button:has-text('+ Add component')")
-    page.wait_for_selector("input[name=comp_qty_0]", timeout=5000)
     box = page.locator("#recipe-form .combobox-input").last
     box.click(); box.fill("FL-GOLD")
     page.wait_for_selector(".combobox-list.open", timeout=3000)
     page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first.click()
+    page.wait_for_selector("input[name=comp_qty_0]", timeout=8000)
     page.fill("input[name=comp_qty_0]", "2")
+    page.locator("input[name=comp_qty_0]").blur()
     # The unit cell shows the component's sell unit (gram), live, with no unit input.
     page.wait_for_selector('.comp-unit[data-for="comp_item_0"]:has-text("gram")', timeout=3000)
     assert page.locator("input[name=comp_unit_0]").count() == 0
 
-    page.click("button:has-text('+ Add operation')")
-    page.fill("input[name=labor_op_0]", "Bench fee")
+    page.fill("input[name=labor_new_op]", "Bench fee")
+    page.locator("input[name=labor_new_op]").blur()
+    page.wait_for_selector("select[name=labor_kind_0]", timeout=8000)
     page.select_option("select[name=labor_kind_0]", "fixed")
     # Switching to Fixed disables hours/rate and enables the amount field.
     assert page.locator("input[name=labor_hours_0]").is_disabled()
