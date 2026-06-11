@@ -194,6 +194,10 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["quantity"] = max(0.0, float(current.get("quantity", 0)) - float(data["quantity_consumed"]))
     elif event_type == "item.produced":
         current["quantity"] = float(current.get("quantity", 0)) + float(data["quantity_produced"])
+    elif event_type == "item.recipe.set":
+        # Dumb full-replace: inventory stores the recipe verbatim; all interpretation
+        # (validation, cost roll-up) lives in celerp-manufacturing.
+        current["recipe"] = data["recipe"]
     elif event_type == "item.reserved":
         current["reserved_quantity"] = float(current.get("reserved_quantity", 0)) + float(data["quantity"])
     elif event_type == "item.unreserved":

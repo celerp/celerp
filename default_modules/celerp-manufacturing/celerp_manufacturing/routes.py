@@ -8,6 +8,7 @@ loader's register_api_routes calling setup_api_routes with the app directly).
 """
 from __future__ import annotations
 
+import hashlib
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -18,9 +19,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
+from celerp.events.schemas import RecipeSpec
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.auth import get_current_company_id, get_current_user
+
+from .costing import RecipeError, roll_up_cost, where_used
+from .expansion import expand_recipe, explode_demand, is_manufacturable, mfg_idem_key
+from .labor import apply_labor_providers
 
 router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user)], tags=["manufacturing"])
 
@@ -44,7 +50,6 @@ class MfgOutput(BaseModel):
 class MfgOrderCreate(BaseModel):
     description: str
     order_type: str = "assembly"
-    bom_id: str | None = None
     inputs: list[MfgInput] = Field(default_factory=list)
     expected_outputs: list[MfgOutput] = Field(default_factory=list)
     location_id: str | None = None
@@ -101,37 +106,9 @@ class BatchImportResult(BaseModel):
     errors: list[str]
 
 
-class BOMComponent(BaseModel):
-    item_id: str | None = None
-    sku: str
-    qty: float
-    unit: str = "pieces"
-
-
-class BOMCreate(BaseModel):
-    name: str
-    output_item_id: str | None = None
-    output_qty: float = 1.0
-    components: list[BOMComponent] = Field(default_factory=list)
-
-
-class BOMUpdate(BaseModel):
-    name: str | None = None
-    output_item_id: str | None = None
-    output_qty: float | None = None
-    components: list[BOMComponent] | None = None
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-async def _get_bom(session: AsyncSession, company_id, bom_id: str) -> Projection:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": bom_id})
-    if row is None or row.entity_type != "bom" or row.state.get("deleted"):
-        raise HTTPException(status_code=404, detail="BOM not found")
-    return row
-
 
 async def _get_order(session: AsyncSession, company_id, order_id: str) -> Projection:
     row = await session.get(Projection, {"company_id": company_id, "entity_id": order_id})
@@ -140,114 +117,334 @@ async def _get_order(session: AsyncSession, company_id, order_id: str) -> Projec
     return row
 
 
+async def _load_recipe_graph(session: AsyncSession, company_id, root_id: str, root_state: dict) -> tuple[dict[str, dict], list[str]]:
+    """Load every item referenced (transitively) by ``root_state``'s recipe into a
+    lookup dict, so the pure cost roll-up can resolve nested sub-assemblies offline.
+
+    Returns ``(graph, missing)`` where graph maps entity_id -> item state (the root is
+    keyed by root_id with its *new* recipe already overlaid) and missing lists any
+    referenced item_id that does not resolve to an item in this company.
+    """
+    graph: dict[str, dict] = {root_id: root_state}
+    missing: list[str] = []
+    seen: set[str] = {root_id}
+    queue: list[str] = [c.get("item_id") for c in (root_state.get("recipe") or {}).get("components", [])]
+    while queue:
+        cid = queue.pop()
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": cid})
+        if row is None or row.entity_type != "item":
+            missing.append(cid)
+            continue
+        graph[cid] = row.state
+        queue.extend(c.get("item_id") for c in (row.state.get("recipe") or {}).get("components", []))
+    return graph, missing
+
+
 # ---------------------------------------------------------------------------
-# BOM endpoints
+# Recipe endpoints (the manufacturing recipe attached to an inventory item)
 # ---------------------------------------------------------------------------
 
-@router.get("/boms")
-async def list_boms(
+@router.put("/items/{item_id}/recipe")
+async def set_item_recipe(
+    item_id: str,
+    payload: RecipeSpec,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    rows = (
-        await session.execute(
-            select(Projection).where(
-                Projection.company_id == company_id,
-                Projection.entity_type == "bom",
-            )
+    """Set (full-replace) the manufacturing recipe on an inventory item.
+
+    Validates components, rolls the standard cost up from current component costs,
+    and emits ``item.recipe.set``. Hard errors (422) on self-reference, unknown
+    component SKUs, and recipe cycles — per GDR, validation lives at the function level.
+    """
+    item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    if item is None or item.entity_type != "item":
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    recipe = payload.model_dump()
+    if any(c.get("item_id") == item_id for c in recipe["components"]):
+        raise HTTPException(status_code=422, detail="An item cannot be a component of itself")
+
+    # Merge any auto-labor from registered providers (the future-module seam; no-op in v1).
+    recipe["labor"] = apply_labor_providers(recipe["components"], recipe.get("labor", []))
+
+    root_state = {**item.state, "recipe": recipe}
+    graph, missing = await _load_recipe_graph(session, company_id, item_id, root_state)
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Component item(s) not found: {', '.join(sorted(set(missing)))}")
+
+    try:
+        breakdown = roll_up_cost(recipe, graph.get, _path=frozenset({item_id}))
+    except RecipeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    recipe.update(breakdown)
+
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=item_id,
+        entity_type="item",
+        event_type="item.recipe.set",
+        data={"recipe": recipe},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, "recipe": recipe}
+
+
+class BuildBody(BaseModel):
+    quantity: float = 1.0
+    idempotency_key: str | None = None
+
+
+@router.post("/items/{item_id}/build")
+async def build_item(
+    item_id: str,
+    payload: BuildBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a manufacturing order to build N of a manufacturable item — inputs expand from its recipe."""
+    item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    if item is None or item.entity_type != "item":
+        raise HTTPException(status_code=404, detail="Item not found")
+    if not is_manufacturable(item.state):
+        raise HTTPException(status_code=422, detail="Item has no recipe to build from")
+    if payload.quantity <= 0:
+        raise HTTPException(status_code=422, detail="Build quantity must be greater than zero")
+    inputs, outputs = expand_recipe(item.state, payload.quantity)
+    order_id = f"mfg:{uuid.uuid4()}"
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.created",
+        data={
+            "description": f"Build {payload.quantity:g} x {item.state.get('sku', '')}",
+            "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
+        },
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, "id": order_id}
+
+
+async def _all_item_states(session: AsyncSession, company_id) -> dict[str, dict]:
+    """Load every item's projection state for this company, keyed by entity_id."""
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
+    )).scalars().all()
+    return {r.entity_id: r.state for r in rows}
+
+
+def _deps_from_states(states: dict[str, dict]) -> dict[str, set[str]]:
+    """item_id -> set of component item_ids it directly uses (for where_used)."""
+    return {
+        iid: {c.get("item_id") for c in (st.get("recipe") or {}).get("components", []) if c.get("item_id")}
+        for iid, st in states.items()
+    }
+
+
+async def _recost_one(session: AsyncSession, company_id, user, item_id: str, states: dict[str, dict]) -> dict | None:
+    """Re-roll a manufactured item's recipe from current component costs and persist it.
+
+    Returns the fresh recipe, or None if the item has no recipe. roll_up_cost recomputes the
+    whole subtree live from current leaf costs, so re-costing order does not affect correctness.
+    """
+    st = states.get(item_id) or {}
+    recipe = st.get("recipe")
+    if not recipe or not recipe.get("components"):
+        return None
+    breakdown = roll_up_cost(recipe, states.get, _path=frozenset({item_id}))
+    new_recipe = {**recipe, **breakdown}
+    await emit_event(
+        session, company_id=company_id, entity_id=item_id, entity_type="item",
+        event_type="item.recipe.set", data={"recipe": new_recipe}, actor_id=user.id,
+        location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={"recosted": True},
+    )
+    states[item_id] = {**st, "recipe": new_recipe}
+    return new_recipe
+
+
+@router.post("/items/{item_id}/recalculate")
+async def recalculate_item_cost(
+    item_id: str,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Re-roll this item's recipe cost from the current cost of its components (mark-to-market)."""
+    states = await _all_item_states(session, company_id)
+    if item_id not in states:
+        raise HTTPException(status_code=404, detail="Item not found")
+    new = await _recost_one(session, company_id, user, item_id, states)
+    if new is None:
+        raise HTTPException(status_code=422, detail="Item has no recipe to recalculate")
+    await session.commit()
+    return {"recipe": new}
+
+
+@router.post("/items/{item_id}/apply-cost")
+async def apply_recipe_cost(
+    item_id: str,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Copy the recipe's rolled standard unit cost into the item's cost price (explicit, GDR §2d).
+
+    Standard cost (recipe.unit_cost) and actual lot cost (cost_price) are kept separate by
+    default; this is the user-initiated bridge between them.
+    """
+    item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    if item is None or item.entity_type != "item":
+        raise HTTPException(status_code=404, detail="Item not found")
+    recipe = item.state.get("recipe") or {}
+    unit_cost = recipe.get("unit_cost")
+    if not recipe.get("components") or unit_cost is None:
+        raise HTTPException(status_code=422, detail="Item has no rolled recipe cost to apply")
+    # Set cost_price directly (not via cost_total) so the standard cost persists even when
+    # the manufactured item has no stock yet — a produced good carries no purchase-lot cost.
+    await emit_event(
+        session, company_id=company_id, entity_id=item_id, entity_type="item",
+        event_type="item.pricing.set", data={"price_type": "cost_price", "new_price": unit_cost},
+        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"cost_price": unit_cost}
+
+
+@router.post("/items/{item_id}/recost-dependents")
+async def recost_dependents(
+    item_id: str,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Re-cost every item whose recipe uses this one (directly or transitively) — mark-to-market.
+
+    Use after changing a frequently-repriced raw material's cost (e.g. gold) to propagate the
+    new cost into all manufactured items that depend on it, in one action.
+    """
+    states = await _all_item_states(session, company_id)
+    if item_id not in states:
+        raise HTTPException(status_code=404, detail="Item not found")
+    targets = where_used(item_id, _deps_from_states(states))
+    recosted = [tid for tid in targets if await _recost_one(session, company_id, user, tid, states) is not None]
+    await session.commit()
+    return {"recosted": recosted, "count": len(recosted)}
+
+
+# ---------------------------------------------------------------------------
+# Manufacture-from-document endpoints (List / Pro Forma / Invoice → orders)
+# ---------------------------------------------------------------------------
+
+def _order_id_for(doc_id: str, line_id: str, cycle: int) -> str:
+    """Deterministic order entity_id for a (document, line, fulfill-cycle) — idempotent re-runs."""
+    h = hashlib.sha1(f"{doc_id}|{line_id}|{cycle}".encode()).hexdigest()[:20]
+    return f"mfg:{h}"
+
+
+def _doc_lines(doc_state: dict) -> list[tuple[int, str | None, str, float, str]]:
+    """Normalize a document's line_items to (index, item_id, line_id, qty, label)."""
+    out = []
+    for idx, li in enumerate(doc_state.get("line_items", [])):
+        item_id = li.get("entity_id") or li.get("item_id")
+        line_id = str(li.get("id") or li.get("line_id") or idx)
+        qty = float(li.get("quantity") or 0)
+        label = li.get("sku") or li.get("name") or item_id or f"line {idx + 1}"
+        out.append((idx, item_id, line_id, qty, label))
+    return out
+
+
+async def _get_document(session: AsyncSession, company_id, doc_id: str) -> Projection:
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
+    if row is None or row.entity_type not in ("doc", "list"):
+        raise HTTPException(status_code=404, detail="Document not found")
+    return row
+
+
+@router.post("/documents/{doc_id}/orders")
+async def create_orders_from_document(
+    doc_id: str,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create one manufacturing order per document line whose item has a recipe.
+
+    Inputs auto-expand from the item's recipe (component qty x line qty). Idempotent: a
+    deterministic order id per (doc, line, fulfill-cycle) means re-invoking never double-creates.
+    Lines with no recipe are reported back explicitly — never silently dropped (GDR §2e).
+    """
+    doc = await _get_document(session, company_id, doc_id)
+    states = await _all_item_states(session, company_id)
+    cycle = int(doc.state.get("fulfill_cycle", 0) or 0)
+    ref = doc.state.get("ref_id") or doc_id
+    created: list[dict] = []
+    skipped: list[dict] = []
+
+    for idx, item_id, line_id, qty, label in _doc_lines(doc.state):
+        st = states.get(item_id) if item_id else None
+        if not item_id:
+            skipped.append({"label": label, "reason": "line has no inventory item"})
+            continue
+        if qty <= 0:
+            skipped.append({"label": label, "reason": "zero quantity"})
+            continue
+        if not is_manufacturable(st):
+            skipped.append({"label": label, "reason": "no recipe defined"})
+            continue
+        order_id = _order_id_for(doc_id, line_id, cycle)
+        if await session.get(Projection, {"company_id": company_id, "entity_id": order_id}) is not None:
+            skipped.append({"label": label, "reason": "order already created"})
+            continue
+        inputs, outputs = expand_recipe(st, qty)
+        await emit_event(
+            session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+            event_type="mfg.order.created",
+            data={
+                "description": f"Build {qty:g} x {st.get('sku', '')} (from {ref})",
+                "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
+                "source_doc_id": doc_id, "source_doc_type": doc.entity_type, "source_line_id": line_id,
+            },
+            actor_id=user.id, location_id=None, source="api",
+            idempotency_key=mfg_idem_key(doc_id, line_id, cycle), metadata_={},
         )
-    ).scalars().all()
-    items = [r.state | {"bom_id": r.entity_id} for r in rows]
-    return {"items": items, "total": len(items)}
+        created.append({"order_id": order_id, "label": label})
 
-
-@router.post("/boms")
-async def create_bom(
-    payload: BOMCreate,
-    company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    if not payload.name.strip():
-        raise HTTPException(status_code=422, detail="BOM name is required")
-    bom_id = f"bom:{uuid.uuid4()}"
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=bom_id,
-        entity_type="bom",
-        event_type="bom.created",
-        data=payload.model_dump(),
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
     await session.commit()
-    return {"event_id": entry.id, "bom_id": bom_id}
+    return {"created": created, "skipped": skipped, "created_count": len(created), "skipped_count": len(skipped)}
 
 
-@router.get("/boms/{bom_id}")
-async def get_bom(
-    bom_id: str,
+@router.get("/documents/{doc_id}/components-summary")
+async def document_components_summary(
+    doc_id: str,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    row = await _get_bom(session, company_id, bom_id)
-    return row.state | {"bom_id": row.entity_id}
+    """Aggregated, recursively-exploded component demand across all manufacturable lines (JIT)."""
+    doc = await _get_document(session, company_id, doc_id)
+    states = await _all_item_states(session, company_id)
+    lines = [(item_id, qty) for _, item_id, _, qty, _ in _doc_lines(doc.state) if item_id and qty > 0]
+    demand = explode_demand(lines, states.get)
 
+    def _detail(d: dict[str, float]) -> list[dict]:
+        return [
+            {"item_id": iid, "sku": (states.get(iid) or {}).get("sku"),
+             "name": (states.get(iid) or {}).get("name"), "quantity": q}
+            for iid, q in sorted(d.items(), key=lambda kv: (states.get(kv[0]) or {}).get("sku") or kv[0])
+        ]
 
-@router.put("/boms/{bom_id}")
-async def update_bom(
-    bom_id: str,
-    payload: BOMUpdate,
-    company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    await _get_bom(session, company_id, bom_id)
-    update_data = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=bom_id,
-        entity_type="bom",
-        event_type="bom.updated",
-        data=update_data,
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
-    await session.commit()
-    return {"event_id": entry.id, "bom_id": bom_id}
-
-
-@router.delete("/boms/{bom_id}")
-async def delete_bom(
-    bom_id: str,
-    company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    await _get_bom(session, company_id, bom_id)
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=bom_id,
-        entity_type="bom",
-        event_type="bom.deleted",
-        data={},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
-    await session.commit()
-    return {"event_id": entry.id}
+    return {"sub_assemblies": _detail(demand["sub_assemblies"]), "raw_materials": _detail(demand["raw_materials"])}
 
 
 # ---------------------------------------------------------------------------
@@ -278,7 +475,7 @@ async def batch_import_manufacturing(
         _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
     )).scalars().all())
 
-    create_entity_ids = [r.entity_id for r in body.records if r.event_type in {"bom.created", "mfg.order.created"}]
+    create_entity_ids = [r.entity_id for r in body.records if r.event_type == "mfg.order.created"]
     existing_entities: set[str] = set()
     if create_entity_ids:
         existing_entities = set((await session.execute(
@@ -294,16 +491,15 @@ async def batch_import_manufacturing(
         if rec.idempotency_key in existing_keys:
             skipped += 1
             continue
-        if rec.event_type in {"bom.created", "mfg.order.created"} and rec.entity_id in existing_entities:
+        if rec.event_type == "mfg.order.created" and rec.entity_id in existing_entities:
             skipped += 1
             continue
         try:
-            entity_type = "bom" if rec.event_type.startswith("bom.") else "mfg_order"
             await emit_event(
                 session,
                 company_id=company_id,
                 entity_id=rec.entity_id,
-                entity_type=entity_type,
+                entity_type="mfg_order",
                 event_type=rec.event_type,
                 data=rec.data,
                 actor_id=user.id,
@@ -313,7 +509,7 @@ async def batch_import_manufacturing(
                 metadata_={"source_ts": rec.source_ts} if rec.source_ts else {},
             )
             existing_keys.add(rec.idempotency_key)
-            if rec.event_type in {"bom.created", "mfg.order.created"}:
+            if rec.event_type == "mfg.order.created":
                 existing_entities.add(rec.entity_id)
             created += 1
         except Exception as exc:

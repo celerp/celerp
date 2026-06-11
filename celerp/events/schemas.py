@@ -124,6 +124,46 @@ class ItemProduced(BaseModel):
     quantity_produced: float
 
 
+# --- Manufacturing recipe (materials + labor + overhead) attached to an item ---
+# The recipe is the single source of truth for how a manufactured item is built.
+# Interpretation (cost roll-up, expansion) lives in celerp-manufacturing; the schema
+# is shared here and the projection stores it verbatim (full-replace).
+
+class ComponentSpec(BaseModel):
+    item_id: str                       # entity_id of the input inventory item
+    sku: str | None = None             # denormalized for display; resolved server-side
+    quantity: float                    # qty of this component per recipe batch (output_qty)
+    unit: str | None = None
+
+
+class LaborLine(BaseModel):
+    operation: str
+    hours: float = 0
+    rate: float = 0                    # per-line rate (no company default)
+    source: str = "manual"             # "manual" | "auto:<rule>" (future auto-labor module)
+
+
+class OverheadLine(BaseModel):
+    description: str
+    amount: float = 0
+
+
+class RecipeSpec(BaseModel):
+    output_qty: float = 1              # units one batch of this recipe yields
+    components: list[ComponentSpec] = Field(default_factory=list)
+    labor: list[LaborLine] = Field(default_factory=list)
+    overhead: list[OverheadLine] = Field(default_factory=list)
+    # Derived, written server-side by the cost roll-up — never trusted from the client:
+    unit_cost: float | None = None
+    materials_cost: float | None = None
+    labor_cost: float | None = None
+    overhead_cost: float | None = None
+
+
+class ItemRecipeSet(BaseModel):
+    recipe: RecipeSpec
+
+
 class ItemReserved(BaseModel):
     quantity: float
     reserved_for: str | None = None  # source doc entity_id
@@ -779,6 +819,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.patched": ItemPatched,
     "item.consumed": ItemConsumed,
     "item.produced": ItemProduced,
+    "item.recipe.set": ItemRecipeSet,
     "item.reserved": ItemReserved,
     "item.unreserved": ItemUnreserved,
     "item.file.attached": EntityFileAttached,

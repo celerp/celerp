@@ -36,13 +36,11 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         current["is_in_production"] = False
         if data.get("reason"):
             current["cancel_reason"] = data["reason"]
-    elif event_type == "bom.created":
-        current.update({"entity_type": "bom", **data})
-        current.setdefault("components", [])
-    elif event_type == "bom.updated":
-        current.update(data)
-    elif event_type == "bom.deleted":
-        current["deleted"] = True
+    elif event_type.startswith("bom."):
+        # Retired event family. The standalone BOM entity was removed — recipes now live
+        # on the inventory item (item.recipe.set). Historical bom.* events remain in the
+        # immutable ledger but are inert on replay, so projections still rebuild cleanly.
+        return current
     else:
         raise ValueError(f"Unsupported mfg event: {event_type}")
 
