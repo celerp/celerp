@@ -744,8 +744,8 @@ def _doc_manufacture_panel(doc_id: str, summary: dict, currency: str | None, res
             cls="recipe-block"))
 
     create_btn = Button(
-        "Create manufacturing order(s)", type="button", cls="btn btn--primary mt-sm",
-        hx_post=f"/docs/{doc_id}/manufacture", hx_target="#doc-mfg-panel", hx_swap="outerHTML",
+        "Create manufacturing order(s)", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--primary mt-sm",
+        hx_post=f"/docs/{doc_id}/manufacture", hx_target="#doc-mfg-panel", hx_swap="outerHTML", hx_disabled_elt="this",
     ) if (subs or raws) else ""
 
     return Div(

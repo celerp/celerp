@@ -694,6 +694,8 @@ def data_table(
                ), cls="col-checkbox")] if show_checkboxes else []
         status_val = str(row.get("status", "") or "").lower()
         row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
+        if str(row.get("inventory_type") or "") == "component":
+            row_cls += " data-row--component"  # visual cue for component (raw-material) items
         return Tr(
             *checkbox_td,
             *[

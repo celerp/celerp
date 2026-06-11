@@ -519,6 +519,17 @@ a:hover { text-decoration: underline; }
 /* Component inventory type — visually distinct (item 3) */
 .inventory-type-tabs .category-tab[href*="inventory_type=component"].category-tab--active { border-bottom-color: var(--c-accent); }
 .badge--component { background: rgba(124,58,237,0.12); color: #6d28d9; border: 1px solid rgba(124,58,237,0.3); }
+/* Component (raw-material) rows get a subtle left accent so they read as distinct (item 3). */
+.data-row--component td:first-child { box-shadow: inset 3px 0 0 #7c3aed; }
+
+/* Tiny inline button spinner (shown only while the button's HTMX request is in flight). */
+.btn-spinner { display: none; width: 11px; height: 11px; margin-left: 6px; vertical-align: -1px;
+    border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; animation: spin 0.7s linear infinite; }
+.htmx-request.btn-spinner, .htmx-request .btn-spinner { display: inline-block; }
+/* Inline "clear recipe" confirm — no native popup (GDR §2f). */
+.clear-recipe-wrap { display: inline-flex; align-items: center; }
+.clear-confirm { display: none; align-items: center; gap: 6px; }
+.clear-confirm .confirm-label { font-size: 12px; color: var(--c-text2); }
 .field-tooltip {
     display: inline-flex;
     align-items: center;

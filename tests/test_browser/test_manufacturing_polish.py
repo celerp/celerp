@@ -32,6 +32,8 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     page.wait_for_selector("#inventory-content", timeout=8000)
     body = page.locator("#inventory-content").inner_text()
     assert "PL-COMP" in body and "PL-RAW" not in body, body[:300]
+    # Component rows are visually distinct (left accent class).
+    assert page.locator("tr.data-row--component").count() >= 1
 
     # Item 4: on a splittable item, the +, inputs and Go sit on one line (.split-line).
     page.goto(f"{ui_server}/inventory/{item}?tab=details", wait_until="domcontentloaded")

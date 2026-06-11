@@ -5017,10 +5017,10 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     ]
     if has_recipe:
         cost_children.append(Div(
-            Button("Recalculate cost", type="button", cls="btn btn--secondary btn--xs",
+            Button("Recalculate cost", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs",
                    hx_post=f"/api/items/{entity_id}/recalculate-cost", **_htmx,
                    title="Re-roll this item's cost from the current cost of its components (does not update parent items — use Re-cost dependents on those)"),
-            Button("Apply to cost price", type="button", cls="btn btn--secondary btn--xs",
+            Button("Apply to cost price", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs",
                    hx_post=f"/api/items/{entity_id}/apply-cost", **_htmx,
                    title="Copy this rolled standard cost into the item's cost price (Pricing tab)"),
             cls="recipe-actions mt-sm",
@@ -5031,7 +5031,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         right_col.append(Div(
             H3("Used in other recipes", cls="section-title"),
             P(f"This item is used by {n} other item{'' if n == 1 else 's'} (directly or indirectly). Re-cost them all from current component prices in one step.", cls="hint"),
-            Button("Re-cost dependents", type="button", cls="btn btn--secondary btn--xs mt-sm",
+            Button("Re-cost dependents", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs mt-sm",
                    hx_post=f"/api/items/{entity_id}/recost-dependents", **_htmx,
                    title="Re-roll every item that uses this one, from current component prices"),
             cls="detail-card recipe-side-card",
@@ -5041,12 +5041,25 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
 
     actions = [
-        Button("Update recipe" if has_recipe else "Save recipe", type="button", cls="btn btn--primary",
+        Button("Update recipe" if has_recipe else "Save recipe", Span(cls="btn-spinner htmx-indicator"),
+               type="button", cls="btn btn--primary",
                hx_post=f"/api/items/{entity_id}/recipe", **_htmx),
     ]
     if has_rows:
-        actions.append(Button("Clear recipe", type="button", cls="btn btn--ghost btn--danger",
-                              hx_post=f"{sec}?action=clear", hx_confirm="Clear all recipe rows? (Undone by leaving without saving.)", **_htmx))
+        # Inline confirm (no native popup, per GDR §2f): Clear reveals Yes/Cancel in place.
+        actions.append(Div(
+            Button("Clear recipe", type="button", cls="btn btn--ghost btn--danger",
+                   onclick="this.style.display='none';this.nextElementSibling.style.display='inline-flex';"),
+            Span(
+                Span("Clear all rows?", cls="confirm-label"),
+                Button("Yes, clear", type="button", cls="btn btn--danger btn--xs",
+                       hx_post=f"{sec}?action=clear", **_htmx),
+                Button("Cancel", type="button", cls="btn btn--ghost btn--xs",
+                       onclick="var w=this.closest('.clear-confirm');w.style.display='none';w.previousElementSibling.style.display='';"),
+                cls="clear-confirm", style="display:none;",
+            ),
+            cls="clear-recipe-wrap",
+        ))
 
     return Div(
         Form(
