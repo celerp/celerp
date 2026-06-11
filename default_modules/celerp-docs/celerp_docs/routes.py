@@ -2219,7 +2219,10 @@ async def batch_import_docs(
 
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        _select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key.in_(keys),
+        )
     )).scalars().all())
 
     # Pre-check existing entity_ids for doc.created events (entity guard)
@@ -2245,7 +2248,8 @@ async def batch_import_docs(
                 upsert_already = set(
                     (await session.execute(
                         _select(LedgerEntry.idempotency_key).where(
-                            LedgerEntry.idempotency_key == upsert_idem
+                            LedgerEntry.company_id == company_id,
+                            LedgerEntry.idempotency_key == upsert_idem,
                         )
                     )).scalars().all()
                 )
@@ -2869,7 +2873,10 @@ async def batch_import_lists(
 
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        _select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key.in_(keys),
+        )
     )).scalars().all())
 
     create_entity_ids = [r.entity_id for r in body.records if r.event_type == "list.created"]
@@ -2891,7 +2898,8 @@ async def batch_import_lists(
                 upsert_already = set(
                     (await session.execute(
                         _select(LedgerEntry.idempotency_key).where(
-                            LedgerEntry.idempotency_key == upsert_idem
+                            LedgerEntry.company_id == company_id,
+                            LedgerEntry.idempotency_key == upsert_idem,
                         )
                     )).scalars().all()
                 )

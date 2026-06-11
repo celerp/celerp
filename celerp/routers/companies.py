@@ -328,7 +328,10 @@ async def batch_import_settings(
 
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        _select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key.in_(keys),
+        )
     )).scalars().all())
 
     created = skipped = 0
