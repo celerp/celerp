@@ -392,11 +392,19 @@ def _mock_get_modules_default():
 
 
 @pytest.fixture(autouse=True)
-def _reset_loaded_modules():
-    """Reset the loader's in-process registry between tests. A test that calls
-    load_all() populates celerp.modules.loader._loaded; without this reset that
-    leaks into later tests in the same worker (e.g. a module shows running=True),
-    which surfaces under xdist's test distribution."""
+def _reset_loaded_modules(request):
+    """Clear the loader's in-process registry around each unit test. A test (or
+    a test module's import) that calls load_all() populates
+    celerp.modules.loader._loaded; without this it leaks into later tests in the
+    same worker (e.g. a module shows running=True), which surfaces under xdist's
+    test distribution.
+
+    Browser tests are exempt: their server runs in-process and legitimately owns
+    a populated _loaded (module-gated UI like the credit-note "Receive Returns"
+    button reads loaded_modules()), so wiping it would hide that UI."""
+    if request.node.get_closest_marker("browser"):
+        yield
+        return
     from celerp.modules.loader import _loaded
     _loaded.clear()
     yield
