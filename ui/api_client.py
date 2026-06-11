@@ -1025,9 +1025,9 @@ async def activate_subscription(token: str, entity_id: str) -> dict:
 # Manufacturing
 # ---------------------------------------------------------------------------
 
-async def list_mfg_orders(token: str) -> dict:
+async def list_mfg_orders(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.get("/manufacturing")).json()
+        return _raise(await c.get("/manufacturing", params=params or {})).json()
 
 
 async def get_mfg_order(token: str, order_id: str) -> dict:

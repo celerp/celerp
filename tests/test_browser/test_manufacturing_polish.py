@@ -35,6 +35,38 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     # Component rows are visually distinct (left accent class).
     assert page.locator("tr.data-row--component").count() >= 1
 
+    # /manufacturing: header search box + the standard date-filter bar with all presets.
+    gold = api.post("/items", json={"sku": "PL-MGOLD", "name": "Gold", "quantity": 50, "sell_by": "gram",
+                                    "cost_total": 500, "inventory_type": "component"}).json()["id"]
+    fg = api.post("/items", json={"sku": "PL-MRING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    api.put(f"/manufacturing/items/{fg}/recipe",
+            json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 1}], "labor": [], "overhead": []})
+    api.post(f"/manufacturing/items/{fg}/build", json={"quantity": 1})
+    page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#mfg-table", timeout=10000)
+    bar = page.locator(".preset-btn").all_inner_texts()
+    for label in ("This Month", "Last 3 Months", "Last 6 Months", "Last 12 Months", "This Fiscal Year", "Last Fiscal Year", "All Time"):
+        assert any(label.lower() in b.lower() for b in bar), (label, bar)
+    assert page.locator("button:has-text('Apply')").count() >= 1
+    # Search narrows the order table (by output SKU / doc number / description).
+    box = page.get_by_placeholder("Search order, doc number, SKU...")
+    box.fill("PL-MRING")
+    page.wait_for_selector("#mfg-table:has-text('assembly'), #mfg-table:has-text('Build')", timeout=8000)
+    box.fill("NO-SUCH-DOC-123")
+    page.wait_for_selector("#mfg-table:has-text('No production orders')", timeout=8000)
+
+    # /lists: the same date-filter bar is present.
+    page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
+    page.wait_for_selector(".preset-btn", timeout=10000)
+
+    # /docs?view=drafts&type=invoice: no redundant 'Pro Forma (n)' chip; an explicit way back instead.
+    api.post("/docs", json={"doc_type": "invoice", "line_items": [], "total": 0})  # ensure a draft exists
+    page.goto(f"{ui_server}/docs?view=drafts&type=invoice", wait_until="domcontentloaded")
+    page.wait_for_selector(".drafts-tab", timeout=10000)
+    chip = page.locator(".drafts-tab").inner_text()
+    assert "Back to Invoices" in chip, chip
+    assert "Pro Forma (" not in chip, chip
+
     # Item 4: on a splittable item, the +, inputs and Go sit on one line (.split-line).
     page.goto(f"{ui_server}/inventory/{item}?tab=details", wait_until="domcontentloaded")
     page.wait_for_selector(".split-line", timeout=10000)

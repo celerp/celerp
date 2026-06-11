@@ -574,16 +574,38 @@ async def batch_import_manufacturing(
 
 @router.get("")
 async def list_orders(
+    q: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """List manufacturing orders, newest first. q matches the order id, description,
+    source document (doc number) and output SKUs; dates filter on creation date."""
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,
             Projection.entity_type == "mfg_order",
         )
     )).scalars().all()
-    items = [r.state | {"id": r.entity_id} for r in rows]
+    items = [
+        r.state | {"id": r.entity_id,
+                   "created_at": r.created_at.isoformat() if r.created_at else None}
+        for r in rows
+    ]
+    if q:
+        ql = q.lower().strip().strip(",")
+        def _hay(o: dict) -> str:
+            return " ".join([
+                str(o.get("id", "")), str(o.get("description", "")), str(o.get("source_doc_id", "")),
+                " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])),
+            ]).lower()
+        items = [o for o in items if ql in _hay(o)]
+    if date_from:
+        items = [o for o in items if (o.get("created_at") or "")[:10] >= date_from]
+    if date_to:
+        items = [o for o in items if (o.get("created_at") or "")[:10] <= date_to]
+    items.sort(key=lambda o: o.get("created_at") or "", reverse=True)
     return {"items": items, "total": len(items)}
 
 

@@ -12,7 +12,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
-from ui.components.table import EMPTY, breadcrumbs, status_cards, empty_state_cta, format_value, add_new_option, searchable_select
+from ui.components.table import EMPTY, breadcrumbs, status_cards, empty_state_cta, format_value, add_new_option, searchable_select, search_bar
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 
@@ -50,7 +50,7 @@ def _mfg_status_cards(orders: list[dict], active_status: str) -> FT:
 
 
 def _order_row(order: dict) -> FT:
-    oid = order.get("entity_id", "")
+    oid = order.get("entity_id") or order.get("id", "")
     short_id = oid.split(":")[-1][:8] if oid else EMPTY
     inputs = order.get("inputs", [])
     return Tr(
@@ -321,13 +321,35 @@ def _demand_section(demand: list[dict]) -> FT:
 
 def setup_routes(app):
 
+    def _order_params(request: Request) -> tuple[dict, str, str, str]:
+        """Shared q + date-range parsing for the orders list and its search fragment."""
+        from ui.routes.reports import _date_filter_bar as _dfb, _parse_dates  # noqa: F401 (reused below)
+        q = request.query_params.get("q", "")
+        has_explicit_date = bool(request.query_params.get("preset")
+                                 or request.query_params.get("from") or request.query_params.get("to"))
+        if has_explicit_date:
+            date_from, date_to, preset = _parse_dates(request)
+        else:
+            date_from, date_to, preset = "", "", "all"  # an order queue defaults to everything
+        params: dict = {}
+        if q:
+            params["q"] = q
+        if date_from:
+            params["date_from"] = date_from
+        if date_to:
+            params["date_to"] = date_to
+        return params, date_from, date_to, preset
+
     @app.get("/manufacturing")
     async def manufacturing_list(request: Request):
+        from ui.routes.reports import _date_filter_bar
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        params, date_from, date_to, preset = _order_params(request)
+        q = params.get("q", "")
         try:
-            orders = (await api.list_mfg_orders(token)).get("items", [])
+            orders = (await api.list_mfg_orders(token, params)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
@@ -336,13 +358,18 @@ def setup_routes(app):
             demand = (await api.manufacturing_demand(token)).get("items", [])
         except APIError:
             demand = []
+        date_qs = f"&from={date_from}&to={date_to}&preset={preset}" if (date_from or date_to) else ""
         return base_shell(
             page_header(
                 "Manufacturing",
+                search_bar(placeholder="Search order, doc number, SKU...", target="#mfg-table",
+                           url=f"/manufacturing/search?{date_qs.lstrip('&')}" if date_qs else "/manufacturing/search"),
                 A(t("doc.import_csv"), href="/manufacturing/import", cls="btn btn--secondary"),
                 A("Build to stock", href="/manufacturing/new", cls="btn btn--primary",
                   title="Create an order without a sales document, e.g. to replenish stock"),
             ),
+            _date_filter_bar("/manufacturing", date_from, date_to, preset,
+                             extra_params=f"&q={q}" if q else "", lang=get_lang(request)),
             _demand_section(demand),
             _mfg_status_cards(orders, request.query_params.get("status", "")),
             _order_table(orders),
@@ -350,6 +377,19 @@ def setup_routes(app):
             nav_active="manufacturing",
             request=request,
         )
+
+    @app.get("/manufacturing/search")
+    async def manufacturing_search(request: Request):
+        """Order-table fragment for the header search box (keeps the active date range)."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        params, _f, _t, _p = _order_params(request)
+        try:
+            orders = (await api.list_mfg_orders(token, params)).get("items", [])
+        except APIError:
+            orders = []
+        return _order_table(orders)
 
     @app.post("/manufacturing/demand/{doc_id:path}/create")
     async def create_demand_orders(request: Request, doc_id: str):

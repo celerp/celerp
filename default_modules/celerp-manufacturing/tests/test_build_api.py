@@ -62,3 +62,34 @@ async def test_build_unknown_404(client) -> None:
     token = await _register(client)
     r = await client.post("/manufacturing/items/item:nope/build", headers=_h(token), json={"quantity": 1})
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_orders_search_dates_and_created_at(client) -> None:
+    token = await _register(client)
+    gold = await _item(client, token, "LGOLD", quantity=100, cost_total=100)
+    ring = await _item(client, token, "LRING")
+    pin = await _item(client, token, "LPIN")
+    for fg in (ring, pin):
+        r = await client.put(f"/manufacturing/items/{fg}/recipe", headers=_h(token),
+                             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 1}], "labor": [], "overhead": []})
+        assert r.status_code == 200
+    assert (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 1})).status_code == 200
+    assert (await client.post(f"/manufacturing/items/{pin}/build", headers=_h(token), json={"quantity": 2})).status_code == 200
+
+    everything = (await client.get("/manufacturing", headers=_h(token))).json()["items"]
+    assert len(everything) == 2
+    # Newest first, and created_at is returned (GDR: newer rows on top).
+    assert all(o.get("created_at") for o in everything)
+    assert everything[0]["created_at"] >= everything[1]["created_at"]
+
+    # q matches the output SKU and the description ("Build N x SKU").
+    hits = (await client.get("/manufacturing", headers=_h(token), params={"q": "LRING"})).json()["items"]
+    assert len(hits) == 1 and hits[0]["expected_outputs"][0]["sku"] == "LRING"
+
+    # Date range: everything today; nothing in the far past.
+    today = everything[0]["created_at"][:10]
+    assert (await client.get("/manufacturing", headers=_h(token),
+                             params={"date_from": today, "date_to": today})).json()["total"] == 2
+    assert (await client.get("/manufacturing", headers=_h(token),
+                             params={"date_to": "2000-01-01"})).json()["total"] == 0

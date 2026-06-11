@@ -3366,6 +3366,21 @@ celerpUpdateBulkAlloc();
         page = int(request.query_params.get("page", 1))
         is_drafts_view = view == "drafts" or status == "draft"
         effective_status = "draft" if is_drafts_view else ("exclude_draft" if not status else status)
+        # Date range: same semantics as /docs (explicit selection wins, else company default).
+        _has_explicit_date = (request.query_params.get("preset")
+                              or request.query_params.get("from") or request.query_params.get("to"))
+        if _has_explicit_date:
+            date_from, date_to, preset = _parse_dates(request)
+        else:
+            try:
+                _default_preset = (await api.get_company(token)).get("docs_default_preset") or "last_12m"
+            except APIError:
+                _default_preset = "last_12m"
+            if _default_preset == "all":
+                date_from, date_to, preset = "", "", "all"
+            else:
+                date_from, date_to = _resolve_preset(_default_preset)
+                preset = _default_preset
         try:
             params: dict = {"limit": _PER_PAGE, "offset": (page - 1) * _PER_PAGE}
             if q:
@@ -3380,6 +3395,10 @@ celerpUpdateBulkAlloc();
                 params["status"] = effective_status
             if converted_to_type_list:
                 params["converted_to_type"] = converted_to_type_list
+            if date_from and not is_drafts_view:
+                params["date_from"] = date_from
+            if date_to and not is_drafts_view:
+                params["date_to"] = date_to
             result = await api.list_lists(token, params)
             lists = result.get("items", [])
             filtered_total = result.get("total", len(lists))
@@ -3390,6 +3409,7 @@ celerpUpdateBulkAlloc();
                 return RedirectResponse("/login", status_code=302)
             lists, summary, draft_count, filtered_total = [], {}, 0, 0
         lang = get_lang(request)
+        _lists_extra = f"q={q}&type={list_type}&status={status}&view={view}".strip("&")
         return base_shell(
             page_header(
                 t("page.lists", lang),
@@ -3399,6 +3419,10 @@ celerpUpdateBulkAlloc();
                 A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary"),
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary"),
             ),
+            *([] if is_drafts_view else [
+                _date_filter_bar("/lists", date_from, date_to, preset,
+                                 extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
+            ]),
             _list_type_tabs(list_type),
             _list_status_cards(summary, status, converted_to_type=converted_to_type_list),
             _list_table(lists, lang=lang),
@@ -6632,11 +6656,14 @@ def _drafts_tab(draft_count: int, is_active: bool, doc_type: str = "", status: s
     # Invoice drafts are called "Pro Forma" since they use proforma numbering
     label = t("status.pro_forma", lang) if doc_type == "invoice" else t("status.drafts", lang)
     if is_active:
+        # On the drafts view the status cards already show the draft count; a second
+        # "{label} (n)" chip here reads as a redundant filter. Offer the way back instead.
+        back_label = _DOC_TYPE_PAGE_LABELS.get(doc_type, "Documents")
         return A(
-            f"{label} ({draft_count})",
+            f"← Back to {back_label}",
             href="/docs" + (f"?type={doc_type}" if doc_type else ""),
             cls="drafts-tab drafts-tab--active",
-            title=f"Viewing {label.lower()} - click to return to live documents",
+            title=f"Viewing {label.lower()}. Click to return to issued documents.",
         )
     if draft_count == 0:
         return Span()
@@ -6738,8 +6765,9 @@ def _list_type_tabs(active: str) -> FT:
 def _list_drafts_tab(draft_count: int, is_active: bool, list_type: str = "") -> FT:
     type_param = f"&type={list_type}" if list_type else ""
     if is_active:
-        return A(f"Drafts ({draft_count})", href="/lists" + (f"?type={list_type}" if list_type else ""),
-                 cls="drafts-tab drafts-tab--active", title="Viewing drafts - click to return")
+        # Same rationale as _drafts_tab: on the drafts view the count chip is redundant.
+        return A("← Back to Lists", href="/lists" + (f"?type={list_type}" if list_type else ""),
+                 cls="drafts-tab drafts-tab--active", title="Viewing drafts. Click to return to issued lists.")
     if draft_count == 0:
         return Span()
     return A(f"Drafts ({draft_count})", href=f"/lists?view=drafts{type_param}", cls="drafts-tab")
