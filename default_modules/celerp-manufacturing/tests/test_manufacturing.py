@@ -134,40 +134,8 @@ async def test_cancel_after_start_sets_cancelled_not_in_production(client):
 
 
 @pytest.mark.asyncio
-async def test_bom_crud(client):
+async def test_company_boms_endpoint_removed(client):
+    # The core /companies/me/boms surface was purged — recipes live on the item now.
     token = await _register(client)
-
-    create = await client.post(
-        "/companies/me/boms",
-        headers=_h(token),
-        json={
-            "bom_id": "bom:FG-A",
-            "name": "FG A BOM",
-            "version": 1,
-            "inputs": [{"item_id": "item:raw", "quantity": 2}],
-            "outputs": [{"sku": "FG-A", "name": "Finished A", "quantity": 1}],
-            "is_active": True,
-        },
-    )
-    assert create.status_code == 200
-
-    listed = (await client.get("/companies/me/boms", headers=_h(token))).json()["items"]
-    assert any(b["bom_id"] == "bom:FG-A" for b in listed)
-
-    got = (await client.get("/companies/me/boms/bom:FG-A", headers=_h(token))).json()
-    assert got["name"] == "FG A BOM"
-
-    assert (
-        await client.patch(
-            "/companies/me/boms/bom:FG-A",
-            headers=_h(token),
-            json={"name": "FG A BOM Updated", "version": 2},
-        )
-    ).status_code == 200
-    patched = (await client.get("/companies/me/boms/bom:FG-A", headers=_h(token))).json()
-    assert patched["name"] == "FG A BOM Updated"
-    assert patched["version"] == 2
-
-    assert (await client.delete("/companies/me/boms/bom:FG-A", headers=_h(token))).status_code == 200
-    deactivated = (await client.get("/companies/me/boms/bom:FG-A", headers=_h(token))).json()
-    assert deactivated["is_active"] is False
+    assert (await client.get("/companies/me/boms", headers=_h(token))).status_code in (404, 405)
+    assert (await client.post("/companies/me/boms", headers=_h(token), json={"bom_id": "x", "name": "x"})).status_code in (404, 405)

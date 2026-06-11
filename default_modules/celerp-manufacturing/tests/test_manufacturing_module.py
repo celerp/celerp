@@ -193,22 +193,13 @@ class TestManufacturingProjectionHandler:
         assert s["status"] == "cancelled"
         assert "cancel_reason" not in s
 
-    def test_bom_created(self):
+    def test_legacy_bom_events_are_inert(self):
+        # The standalone BOM entity was removed (recipes live on the item). Historical
+        # bom.* events stay in the ledger but are inert on replay — see test_bom_removed.
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        s = apply_manufacturing_event({}, "bom.created", {"name": "BOM A", "components": []})
-        assert s["entity_type"] == "bom"
-        assert s["name"] == "BOM A"
-        assert s["components"] == []
-
-    def test_bom_updated(self):
-        from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        s = apply_manufacturing_event({"name": "Old", "components": []}, "bom.updated", {"name": "New"})
-        assert s["name"] == "New"
-
-    def test_bom_deleted(self):
-        from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        s = apply_manufacturing_event({"name": "BOM A"}, "bom.deleted", {})
-        assert s["deleted"] is True
+        state = {"sku": "X", "quantity": 1}
+        for et in ("bom.created", "bom.updated", "bom.deleted"):
+            assert apply_manufacturing_event(state, et, {"name": "old"}) == state
 
     def test_unknown_event_raises(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
@@ -252,17 +243,6 @@ class TestProjectionEngineSlotDispatch:
         from celerp.projections.engine import ProjectionEngine
         result = ProjectionEngine._apply({}, "mfg.order.created", {"description": "x"})
         assert result["entity_type"] == "mfg_order"
-
-    def test_engine_dispatches_bom_event_via_slot(self):
-        from celerp.modules.slots import register
-        register("projection_handler", {
-            "prefix": "bom.",
-            "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
-            "_module": "celerp-manufacturing",
-        })
-        from celerp.projections.engine import ProjectionEngine
-        result = ProjectionEngine._apply({}, "bom.created", {"name": "BOM X"})
-        assert result["entity_type"] == "bom"
 
     def test_engine_dispatches_item_event_via_slot(self):
         """item.* events dispatch via the inventory projection_handler slot."""
@@ -388,53 +368,6 @@ class TestManufacturingModuleHTTP:
         assert get_r.status_code == 200
         assert get_r.json()["description"] == "Make FG"
         assert get_r.json()["status"] == "created"
-
-    @pytest.mark.asyncio
-    async def test_bom_crud(self, client):
-        token = await _register(client, "bom")
-        # Create
-        r = await client.post(
-            "/manufacturing/boms",
-            headers=_h(token),
-            json={"name": "BOM-1", "components": [{"sku": "C1", "qty": 2, "sell_by": "piece"}]},
-        )
-        assert r.status_code == 200
-        bom_id = r.json()["bom_id"]
-
-        # Get
-        g = await client.get(f"/manufacturing/boms/{bom_id}", headers=_h(token))
-        assert g.status_code == 200
-        assert g.json()["name"] == "BOM-1"
-
-        # Update
-        u = await client.put(
-            f"/manufacturing/boms/{bom_id}",
-            headers=_h(token),
-            json={"name": "BOM-1-updated"},
-        )
-        assert u.status_code == 200
-
-        # Verify update
-        g2 = await client.get(f"/manufacturing/boms/{bom_id}", headers=_h(token))
-        assert g2.json()["name"] == "BOM-1-updated"
-
-        # Delete
-        d = await client.delete(f"/manufacturing/boms/{bom_id}", headers=_h(token))
-        assert d.status_code == 200
-
-        # 404 after delete
-        g3 = await client.get(f"/manufacturing/boms/{bom_id}", headers=_h(token))
-        assert g3.status_code == 404
-
-    @pytest.mark.asyncio
-    async def test_bom_empty_name_rejected(self, client):
-        token = await _register(client, "bomname")
-        r = await client.post(
-            "/manufacturing/boms",
-            headers=_h(token),
-            json={"name": "  "},
-        )
-        assert r.status_code == 422
 
     @pytest.mark.asyncio
     async def test_full_order_lifecycle(self, client):
