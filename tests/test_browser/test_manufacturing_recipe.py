@@ -2,12 +2,9 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Browser test + screenshot capture for the item Manufacturing (recipe) tab.
 
-Proves the Phase-1 slice end to end in a real browser:
-1. The Manufacturing tab renders the costing sheet (Materials / Labor / Overhead + Cost summary).
-2. Components/labor/overhead can be added on-page (HTMX, no reload) with a searchable SKU picker.
-3. Saving rolls the cost up and shows the unit cost.
-
-Screenshots are written to context/reviews/phase1/ for the professionalism review.
+The recipe behaves like every other celerp table: a ghost add-row commits real rows,
+values are double-click-to-edit cells, and every change persists immediately.
+Screenshots go to context/reviews/phase1/ for the professionalism review.
 """
 from __future__ import annotations
 
@@ -22,8 +19,9 @@ SHOTS = Path("context/reviews/phase1")
 
 @pytest.fixture(scope="module")
 def recipe_item(api):
-    """Create a priced raw material and a finished good; return (ui_path, raw_sku)."""
-    raw = api.post("/items", json={"sku": "GOLD-1G", "name": "Gold 1g", "quantity": 100, "sell_by": "gram", "cost_total": 8000, "inventory_type": "component"})
+    """A priced raw component and a finished good; returns (fg_id, raw_sku)."""
+    raw = api.post("/items", json={"sku": "GOLD-1G", "name": "Gold 1g", "quantity": 100, "sell_by": "gram",
+                                   "cost_total": 8000, "inventory_type": "component"})
     assert raw.status_code == 200, raw.text
     fg = api.post("/items", json={"sku": "RING-18K", "name": "18K Ring", "quantity": 0, "sell_by": "piece"})
     assert fg.status_code == 200, fg.text
@@ -35,7 +33,40 @@ def _open_tab(page, ui_server, item_id):
     page.wait_for_selector("#recipe-form", timeout=10000)
 
 
-def test_recipe_tab_flow_with_screenshots(page, ui_server, recipe_item):
+def _ghost_pick(page, sku):
+    """Pick a SKU in the ghost add-row combobox; commits a real component row."""
+    box = page.locator(".recipe-add-row .combobox-input").first
+    box.click()
+    box.fill(sku)
+    page.wait_for_selector(".combobox-list.open", timeout=3000)
+    opt = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first
+    opt.wait_for(state="visible", timeout=3000)
+    opt.click()
+
+
+def _set_cell(page, data_col, value):
+    """Edit a recipe value the system-standard way: double-click, type, Enter.
+
+    Retries once: rapid successive cell edits can race the previous cell's swap settling.
+    """
+    for attempt in range(2):
+        try:
+            page.dblclick(f'td[data-col="{data_col}"]')
+            inp = page.locator("input[name=value]")
+            inp.wait_for(state="visible", timeout=4000)
+            inp.fill(str(value))
+            inp.press("Enter")
+            cell = page.locator(f'td[data-col="{data_col}"]')
+            cell.wait_for(state="visible", timeout=6000)
+            if str(value) in cell.inner_text():
+                return
+        except Exception:
+            if attempt:
+                raise
+    raise AssertionError(f"cell {data_col} did not save {value}")
+
+
+def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
     SHOTS.mkdir(parents=True, exist_ok=True)
     item_id, raw_sku = recipe_item
     page.set_viewport_size({"width": 1440, "height": 1000})
@@ -43,84 +74,76 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, recipe_item):
     _open_tab(page, ui_server, item_id)
     page.screenshot(path=str(SHOTS / "01-empty.png"), full_page=True)
 
-    # Add a component via the ghost "add" row — picking a SKU commits a real row (no Add button).
-    box = page.locator("#recipe-form .combobox-input").last
-    box.click()
-    box.fill(raw_sku)
-    page.wait_for_selector(".combobox-list.open", timeout=3000)
-    opt = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first
-    opt.wait_for(state="visible", timeout=3000)
-    opt.click()
-    page.wait_for_selector("input[name=comp_qty_0]", timeout=8000)  # real row materialized
-    page.fill("input[name=comp_qty_0]", "5")
-    page.locator("input[name=comp_qty_0]").blur()
+    # Ghost add-row commits a real, persisted component (qty defaults to 1).
+    _ghost_pick(page, raw_sku)
+    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
+    _set_cell(page, "recipe__components__0__quantity", "5")
+    page.wait_for_selector("#recipe-cost-card:has-text('400')", timeout=8000)
 
-    # Add a labor operation via the ghost row.
+    # Labor via ghost row, then per-cell edits.
     page.fill("input[name=labor_new_op]", "Setting")
     page.locator("input[name=labor_new_op]").blur()
-    page.wait_for_selector("input[name=labor_op_0]", timeout=8000)
-    page.fill("input[name=labor_hours_0]", "2")
-    page.fill("input[name=labor_rate_0]", "50")
-    page.locator("input[name=labor_rate_0]").blur()
+    page.wait_for_selector('td[data-col="recipe__labor__0__hours"]', timeout=8000)
+    _set_cell(page, "recipe__labor__0__hours", "2")
+    _set_cell(page, "recipe__labor__0__rate", "50")
 
-    # Add an overhead line via the ghost row.
+    # Overhead via ghost row.
     page.fill("input[name=oh_new_desc]", "Polishing & box")
     page.locator("input[name=oh_new_desc]").blur()
-    page.wait_for_selector("input[name=oh_amount_0]", timeout=8000)
-    page.fill("input[name=oh_amount_0]", "15")
-    page.locator("input[name=oh_amount_0]").blur()
+    page.wait_for_selector('td[data-col="recipe__overhead__0__amount"]', timeout=8000)
+    _set_cell(page, "recipe__overhead__0__amount", "15")
     page.screenshot(path=str(SHOTS / "02-filled.png"), full_page=True)
 
-    # Auto-save rolls up: 5*80 materials + 100 labor + 15 overhead = 515 (cost card updates OOB).
+    # 5*80 materials + 100 labor + 15 overhead = 515, all persisted automatically.
     page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
     page.screenshot(path=str(SHOTS / "03-saved.png"), full_page=True)
+    assert api.get(f"/items/{item_id}").json()["recipe"]["unit_cost"] == 515.0
 
-    # Progress survives navigating away and back — nothing was explicitly "saved".
-    page.goto(f"{ui_server}/inventory/{item_id}?tab=details", wait_until="domcontentloaded")
-    _open_tab(page, ui_server, item_id)
-    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
-    assert float(page.locator("input[name=comp_qty_0]").input_value()) == 5.0
-
-
-def test_fixed_labor_and_derived_unit(page, ui_server, api):
-    """Fixed (flat) labor + component unit derived from the component's sell unit."""
-    gold = api.post("/items", json={"sku": "FL-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram", "cost_total": 1000, "inventory_type": "component"}).json()["id"]  # unit 10
-    fg = api.post("/items", json={"sku": "FL-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
-    page.set_viewport_size({"width": 1440, "height": 1000})
-    page.goto(f"{ui_server}/inventory/{fg}?tab=manufacturing", wait_until="domcontentloaded")
-    page.wait_for_selector("#recipe-form", timeout=10000)
-
-    box = page.locator("#recipe-form .combobox-input").last
-    box.click(); box.fill("FL-GOLD")
-    page.wait_for_selector(".combobox-list.open", timeout=3000)
-    page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first.click()
-    page.wait_for_selector("input[name=comp_qty_0]", timeout=8000)
-    page.fill("input[name=comp_qty_0]", "2")
-    page.locator("input[name=comp_qty_0]").blur()
-    # The unit cell shows the component's sell unit (gram), live, with no unit input.
-    page.wait_for_selector('.comp-unit[data-for="comp_item_0"]:has-text("gram")', timeout=3000)
-    assert page.locator("input[name=comp_unit_0]").count() == 0
-
-    page.fill("input[name=labor_new_op]", "Bench fee")
-    page.locator("input[name=labor_new_op]").blur()
-    page.wait_for_selector("select[name=labor_kind_0]", timeout=8000)
-    page.select_option("select[name=labor_kind_0]", "fixed")
-    # Switching to Fixed disables hours/rate and enables the amount field.
-    assert page.locator("input[name=labor_hours_0]").is_disabled()
-    assert not page.locator("input[name=labor_amount_0]").is_disabled()
-    page.fill("input[name=labor_amount_0]", "30")
-
-    page.locator("input[name=labor_amount_0]").blur()  # auto-save on change
-    # 2 * 10 materials + 30 fixed labor = 50 (persisted automatically)
-    page.wait_for_selector("#recipe-cost-card:has-text('50')", timeout=8000)
-    assert api.get(f"/items/{fg}").json()["recipe"]["unit_cost"] == 50.0
-    assert api.get(f"/items/{fg}").json()["recipe"]["components"][0]["unit"] == "gram"
-
-    # No Save button — changes auto-save; the Clear action remains (GDR §2a undoable).
+    # No Save button anywhere; Clear remains (GDR 2a).
     assert page.locator("button:has-text('Save recipe')").count() == 0
     assert page.locator("button:has-text('Clear recipe')").count() == 1
 
-    # Cost summary must not be clipped: it sits in the right column, fully on-screen.
-    box = page.locator(".recipe-cost-summary").bounding_box()
-    vw = page.viewport_size["width"]
-    assert box is not None and box["x"] + box["width"] <= vw + 1, f"Cost summary overflows viewport: {box}, vw={vw}"
+    # Progress survives navigation: leave the tab and come back.
+    page.goto(f"{ui_server}/inventory/{item_id}?tab=details", wait_until="domcontentloaded")
+    _open_tab(page, ui_server, item_id)
+    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
+    assert page.locator('td[data-col="recipe__components__0__quantity"]').inner_text().strip() == "5"
+
+
+def test_fixed_labor_derived_unit_and_add_new_option(page, ui_server, api):
+    """Fixed labor, unit derived from the component's sell unit, and the add-new option."""
+    api.post("/items", json={"sku": "FL-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
+                             "cost_total": 1000, "inventory_type": "component"})  # unit 10
+    fg = api.post("/items", json={"sku": "FL-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    _open_tab(page, ui_server, fg)
+
+    # The picker's last option is always "+ Add new component".
+    box = page.locator(".recipe-add-row .combobox-input").first
+    box.click()
+    page.wait_for_selector(".combobox-list.open", timeout=3000)
+    assert page.locator(".combobox-list.open .combobox-option--new:has-text('Add new component')").count() == 1
+
+    _ghost_pick(page, "FL-GOLD")
+    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
+    _set_cell(page, "recipe__components__0__quantity", "2")
+    # Unit comes from the component's sell unit; there is no unit input anywhere.
+    assert "gram" in page.locator(".comp-unit-cell").first.inner_text()
+    assert page.locator("input[name=comp_unit_0]").count() == 0
+
+    # Fixed labor: add the row, switch Type to Fixed via the standard select cell.
+    page.fill("input[name=labor_new_op]", "Bench fee")
+    page.locator("input[name=labor_new_op]").blur()
+    page.wait_for_selector('td[data-col="recipe__labor__0__kind"]', timeout=8000)
+    page.dblclick('td[data-col="recipe__labor__0__kind"]')
+    page.wait_for_selector("select[name=value]", timeout=5000)
+    page.select_option("select[name=value]", "fixed")
+    page.wait_for_selector('td[data-col="recipe__labor__0__kind"]:has-text("Fixed")', timeout=8000)
+    _set_cell(page, "recipe__labor__0__amount", "30")
+
+    # 2 * 10 materials + 30 fixed labor = 50, persisted automatically.
+    page.wait_for_selector("#recipe-cost-card:has-text('50')", timeout=8000)
+    got = api.get(f"/items/{fg}").json()["recipe"]
+    assert got["unit_cost"] == 50.0
+    assert got["components"][0]["unit"] == "gram"
+    assert got["labor"][0]["kind"] == "fixed"

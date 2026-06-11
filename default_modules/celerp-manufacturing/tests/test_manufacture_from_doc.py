@@ -103,6 +103,29 @@ async def test_components_summary_nested(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_demand_queue_lists_unordered_lines_then_empties(client) -> None:
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDD", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RINGD")
+    plain = await _item(client, token, "PLAIND")
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    doc = await _doc(client, token, [
+        {"item_id": ring, "sku": "RINGD", "name": "Ring", "quantity": 2, "unit_price": 1},
+        {"item_id": plain, "sku": "PLAIND", "name": "Plain", "quantity": 1, "unit_price": 1},
+    ])
+
+    demand = (await client.get("/manufacturing/demand", headers=_h(token))).json()["items"]
+    mine = [d for d in demand if d["doc_id"] == doc]
+    # Only the recipe-bearing line is demand; the plain line is not.
+    assert len(mine) == 1 and mine[0]["sku"] == "RINGD" and mine[0]["quantity"] == 2.0
+
+    # Creating the orders clears the demand row (idempotent order ids).
+    assert (await client.post(f"/manufacturing/documents/{doc}/orders", headers=_h(token))).status_code == 200
+    demand = (await client.get("/manufacturing/demand", headers=_h(token))).json()["items"]
+    assert [d for d in demand if d["doc_id"] == doc] == []
+
+
+@pytest.mark.asyncio
 async def test_manufacture_unknown_doc_404(client) -> None:
     token = await _register(client)
     r = await client.post("/manufacturing/documents/doc:nope/orders", headers=_h(token))

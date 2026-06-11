@@ -1075,6 +1075,11 @@ async def document_components_summary(token: str, doc_id: str) -> dict:
         return _raise(await c.get(f"/manufacturing/documents/{doc_id}/components-summary")).json()
 
 
+async def manufacturing_demand(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/manufacturing/demand")).json()
+
+
 async def start_mfg_order(token: str, order_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/start")).json()

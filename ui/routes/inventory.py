@@ -1204,9 +1204,21 @@ def setup_routes(app):
             return Response("", status_code=500)
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{item_id}"})
 
-    # /inventory/new: redirect for any bookmarked links
+    # /inventory/new: ?type=component creates a blank component item and opens it
+    # (target of the "+ Add new component" picker option); otherwise redirect to the list.
     @app.get("/inventory/new")
     async def inventory_new_redirect(request: Request):
+        if request.query_params.get("type") == "component":
+            token = _token(request)
+            if not token:
+                return RedirectResponse("/login", status_code=302)
+            try:
+                result = await api.create_item(token, {"name": "New Component", "quantity": 0,
+                                                       "sell_by": "piece", "inventory_type": "component"})
+                item_id = result.get("id", result.get("entity_id", ""))
+                return RedirectResponse(f"/inventory/{item_id}", status_code=302)
+            except APIError as e:
+                logger.warning("Create component item failed: %s", e.detail)
         return RedirectResponse("/inventory", status_code=302)
 
     @app.get("/inventory/{entity_id}")
@@ -1318,13 +1330,16 @@ function celerpPrintLabel(entityId, templateId) {
         ]
         return Div(*items, Script(print_js))
 
-    async def _recipe_section_response(token: str, entity_id: str, rows: dict | None = None,
+    async def _recipe_section_response(token: str, entity_id: str, show_all: bool = False,
                                        flash_msg: str | None = None, flash_kind: str = "success"):
         """Fetch item + item list + currency and render the Manufacturing section."""
         item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         items = (await api.list_items(token, {"limit": 1000})).get("items", [])
-        return _recipe_section(entity_id, item, items, currency_symbol(company.get("currency") or ""), rows=rows,
-                               flash_msg=flash_msg, flash_kind=flash_kind)
+        return _recipe_section(entity_id, item, items, currency_symbol(company.get("currency") or ""),
+                               show_all=show_all, flash_msg=flash_msg, flash_kind=flash_kind)
+
+    def _recipe_saved_status(msg: str = "Saved ✓", kind: str = "saved"):
+        return Div(msg, id="recipe-save-status", cls=f"recipe-save-status hint {kind}", hx_swap_oob="true")
 
     @app.get("/api/items/{entity_id}/recipe-section")
     async def recipe_section(request: Request, entity_id: str):
@@ -1340,73 +1355,134 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/{entity_id}/recipe-section")
     async def recipe_section_edit(request: Request, entity_id: str):
-        """Add/remove a recipe row and re-render (no persistence — in-progress edit)."""
+        """Structural recipe change (add/remove/clear row): persist immediately, re-render."""
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
-        rows = _parse_recipe_form(form)
+        show_all = str(form.get("show_all_components", "")) in ("on", "true", "1")
         action = request.query_params.get("action", "")
         try:
             index = int(request.query_params.get("index", "-1"))
         except ValueError:
             index = -1
-        structural = {"add_component", "add_labor", "add_overhead",
-                      "remove_component", "remove_labor", "remove_overhead", "clear"}
-        if action == "add_component":
-            new_id = str(form.get("comp_new", "")).strip()
-            if new_id:
-                rows["components"].append({"item_id": new_id, "quantity": "1"})
-        elif action == "add_labor":
-            new_op = str(form.get("labor_new_op", "")).strip()
-            if new_op:
-                rows["labor"].append({"operation": new_op, "kind": "hourly", "hours": "", "rate": "", "amount": ""})
-        elif action == "add_overhead":
-            new_desc = str(form.get("oh_new_desc", "")).strip()
-            if new_desc:
-                rows["overhead"].append({"description": new_desc, "amount": ""})
-        elif action == "remove_component" and 0 <= index < len(rows["components"]):
-            rows["components"].pop(index)
-        elif action == "remove_labor" and 0 <= index < len(rows["labor"]):
-            rows["labor"].pop(index)
-        elif action == "remove_overhead" and 0 <= index < len(rows["overhead"]):
-            rows["overhead"].pop(index)
-        elif action == "clear":
-            rows["components"], rows["labor"], rows["overhead"] = [], [], []
-            rows["output_qty"] = "1"
-        # Structural changes persist immediately so they survive tab navigation (req #1).
-        # "noop" (the Show-all toggle) only re-renders. Persist is best-effort: a half-valid
-        # in-progress state simply isn't saved yet (rows are preserved either way).
-        if action in structural:
-            try:
-                await api.set_item_recipe(token, entity_id, _recipe_to_payload(rows))
-            except APIError:
-                pass
         try:
-            return await _recipe_section_response(token, entity_id, rows=rows)
+            item = await api.get_item(token, entity_id)
+            recipe = item.get("recipe") or {"output_qty": 1, "components": [], "labor": [], "overhead": []}
+            changed = True
+            if action == "add_component":
+                new_id = str(form.get("comp_new", "")).strip()
+                changed = bool(new_id) and new_id not in {c.get("item_id") for c in recipe["components"]}
+                if changed:
+                    recipe["components"].append({"item_id": new_id, "quantity": 1})
+            elif action == "add_labor":
+                new_op = str(form.get("labor_new_op", "")).strip()
+                changed = bool(new_op)
+                if changed:
+                    recipe["labor"].append({"operation": new_op, "kind": "hourly", "hours": 0, "rate": 0, "amount": 0})
+            elif action == "add_overhead":
+                new_desc = str(form.get("oh_new_desc", "")).strip()
+                changed = bool(new_desc)
+                if changed:
+                    recipe["overhead"].append({"description": new_desc, "amount": 0})
+            elif action == "remove_component" and 0 <= index < len(recipe.get("components", [])):
+                recipe["components"].pop(index)
+            elif action == "remove_labor" and 0 <= index < len(recipe.get("labor", [])):
+                recipe["labor"].pop(index)
+            elif action == "remove_overhead" and 0 <= index < len(recipe.get("overhead", [])):
+                recipe["overhead"].pop(index)
+            elif action == "clear":
+                recipe = {"output_qty": 1, "components": [], "labor": [], "overhead": []}
+            else:  # "noop" (Show-all toggle) or an out-of-range index: render only
+                changed = False
+            if changed:
+                await api.set_item_recipe(token, entity_id, _recipe_api_payload(recipe))
+            return await _recipe_section_response(token, entity_id, show_all=show_all)
         except APIError as e:
-            return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            try:
+                return await _recipe_section_response(token, entity_id, show_all=show_all,
+                                                      flash_msg=e.detail, flash_kind="error")
+            except APIError:
+                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     @app.post("/api/items/{entity_id}/recipe-autosave")
     async def recipe_autosave(request: Request, entity_id: str):
-        """Persist on every field/select change; refresh only the cost card (out-of-band)."""
+        """Persist the output quantity on change; refresh only the cost card (out-of-band)."""
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
-        payload = _recipe_to_payload(_parse_recipe_form(form))
         try:
-            await api.set_item_recipe(token, entity_id, payload)
+            output_qty = float(str(form.get("output_qty", "1")) or 1)
+        except ValueError:
+            return _recipe_saved_status("Not saved: output quantity must be a number.", "error")
+        try:
+            item = await api.get_item(token, entity_id)
+            recipe = item.get("recipe") or {"output_qty": 1, "components": [], "labor": [], "overhead": []}
+            recipe["output_qty"] = output_qty
+            await api.set_item_recipe(token, entity_id, _recipe_api_payload(recipe))
             item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
             cur = currency_symbol(company.get("currency") or "")
-            return (
-                _recipe_cost_card(entity_id, item, cur, oob=True),
-                Div("Saved ✓", id="recipe-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true"),
-            )
+            return (_recipe_cost_card(entity_id, item, cur, oob=True), _recipe_saved_status())
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
-            return Div(f"Not saved — {e.detail}", id="recipe-save-status", cls="recipe-save-status hint error", hx_swap_oob="true")
+            return _recipe_saved_status(f"Not saved: {e.detail}", "error")
+
+    @app.get("/api/items/{entity_id}/recipe-cost-card")
+    async def recipe_cost_card(request: Request, entity_id: str):
+        """Fresh cost card; fired by the recipeSaved event after a cell save. Carries the
+        saved-status update as an OOB sibling (plain-div response, so OOB is safe here)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
+            cur = currency_symbol(company.get("currency") or "")
+            return (_recipe_cost_card(entity_id, item, cur), _recipe_saved_status())
+        except APIError as e:
+            return _recipe_saved_status(f"Not saved: {e.detail}", "error")
+
+    @app.get("/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/edit")
+    async def recipe_cell_edit(request: Request, entity_id: str, section: str, idx: int, field: str):
+        """Edit mode for one recipe value: the system-standard editable cell."""
+        from ui.components.table import editable_cell
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        cell_type = _RECIPE_CELLS.get(section, {}).get(field)
+        if cell_type is None:
+            return P("Unknown recipe field", cls="cell-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(e.detail, cls="cell-error")
+        rows_ = (item.get("recipe") or {}).get(section, [])
+        value = rows_[idx].get(field, "") if 0 <= idx < len(rows_) else ""
+        return editable_cell(
+            entity_id=entity_id, field=f"recipe__{section}__{idx}__{field}", value=value,
+            cell_type=cell_type,
+            options=list(_LABOR_KIND_LABELS) if field == "kind" else None,
+            restore_url=f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/display",
+            label_map=_LABOR_KIND_LABELS if field == "kind" else None,
+        )
+
+    @app.get("/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/display")
+    async def recipe_cell_display(request: Request, entity_id: str, section: str, idx: int, field: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if _RECIPE_CELLS.get(section, {}).get(field) is None:
+            return P("Unknown recipe field", cls="cell-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(e.detail, cls="cell-error")
+        rows_ = (item.get("recipe") or {}).get(section, [])
+        value = rows_[idx].get(field, "") if 0 <= idx < len(rows_) else ""
+        return _recipe_cell(entity_id, section, idx, field, value)
 
     @app.post("/api/items/{entity_id}/recalculate-cost")
     async def recalculate_item_cost(request: Request, entity_id: str):
@@ -1610,6 +1686,53 @@ function celerpPrintLabel(entityId, templateId) {
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         value: str | float | bool = str(form.get("value", ""))
+
+        # Recipe cells (field = recipe__{section}__{idx}__{name}): patch one value on the
+        # persisted recipe, then return the display cell + cost card refresh (out-of-band).
+        if field.startswith("recipe__"):
+            from ui.components.table import editable_cell
+            try:
+                _, section, idx_s, fname = field.split("__", 3)
+                idx = int(idx_s)
+            except ValueError:
+                return P("Bad recipe field", cls="cell-error")
+            cell_type = _RECIPE_CELLS.get(section, {}).get(fname)
+            if cell_type is None:
+                return P("Unknown recipe field", cls="cell-error")
+            restore_url = f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{fname}/display"
+            if cell_type == "number":
+                try:
+                    value = float(str(value) or 0)
+                except (ValueError, TypeError):
+                    edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
+                                            cell_type="number", restore_url=restore_url)
+                    edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                    return edit_td
+            try:
+                item = await api.get_item(token, entity_id)
+                recipe = item.get("recipe") or {}
+                rows_ = recipe.get(section) or []
+                if not (0 <= idx < len(rows_)):
+                    return P("Row no longer exists. Reload the tab.", cls="cell-error")
+                rows_[idx][fname] = value
+                await api.set_item_recipe(token, entity_id, _recipe_api_payload(recipe))
+                item = await api.get_item(token, entity_id)
+                fresh = (item.get("recipe") or {}).get(section, [])
+                new_val = fresh[idx].get(fname, "") if 0 <= idx < len(fresh) else ""
+                # A <td> swap cannot carry OOB siblings (table fragment parsing mangles them);
+                # fire recipeSaved instead, which the cost card + status listen for.
+                return _recipe_cell(entity_id, section, idx, fname, new_val), HttpHeader("HX-Trigger", "recipeSaved")
+            except APIError as e:
+                if e.status == 401:
+                    return P(t("error.unauthorized"), cls="cell-error")
+                # Keep the user in the editor with the system-standard error styling.
+                edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
+                                        cell_type=cell_type, restore_url=restore_url,
+                                        options=list(_LABOR_KIND_LABELS) if fname == "kind" else None,
+                                        label_map=_LABOR_KIND_LABELS if fname == "kind" else None)
+                edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                edit_td.attrs["title"] = f"Not saved: {e.detail}"
+                return edit_td
 
         # Convert bool fields from string to proper bool
         if field == "allow_splitting":
@@ -4804,9 +4927,6 @@ def _item_files_section(entity_id: str, item: dict) -> FT:
     return _shared_files_section("item", entity_id, files, can_set_hero=True, show_linked=False)
 
 
-_RECIPE_MAX_ROWS = 200
-
-
 def _recipe_money(v, currency: str | None) -> str:
     """Format a derived cost; '--' (not blank) for unset, per GDR §2k."""
     if v in (None, ""):
@@ -4814,91 +4934,58 @@ def _recipe_money(v, currency: str | None) -> str:
     return f"{currency or ''}{float(v):,.2f}"
 
 
-def _parse_recipe_form(form) -> dict:
-    """Parse the recipe form into ordered, possibly-partial rows.
+# Editable fields per recipe section, with their system-standard cell types.
+_RECIPE_CELLS: dict[str, dict[str, str]] = {
+    "components": {"quantity": "number"},
+    "labor": {"operation": "text", "kind": "select", "hours": "number", "rate": "number", "amount": "number"},
+    "overhead": {"description": "text", "amount": "number"},
+}
+_LABOR_KIND_LABELS = {"hourly": "Hourly", "fixed": "Fixed"}
 
-    Tolerates index gaps (a mid-list row may be missing between a remove action and
-    the re-render that renumbers). Rows are kept verbatim so the user never loses
-    in-progress edits on add/remove — validation happens only on save (GDR §2e).
-    """
-    def _rows(parse_one):
-        out = []
-        for i in range(_RECIPE_MAX_ROWS):
-            row = parse_one(i)
-            if row is not None:
-                out.append(row)
-        return out
 
-    def _component(i):
-        if f"comp_item_{i}" not in form and f"comp_qty_{i}" not in form:
-            return None
-        # Unit is derived from the component item's sell unit — not entered here.
-        return {
-            "item_id": str(form.get(f"comp_item_{i}", "")).strip(),
-            "quantity": str(form.get(f"comp_qty_{i}", "")).strip(),
-        }
-
-    def _labor(i):
-        if f"labor_op_{i}" not in form and f"labor_kind_{i}" not in form:
-            return None
-        return {
-            "operation": str(form.get(f"labor_op_{i}", "")).strip(),
-            "kind": str(form.get(f"labor_kind_{i}", "hourly")).strip() or "hourly",
-            "hours": str(form.get(f"labor_hours_{i}", "")).strip(),
-            "rate": str(form.get(f"labor_rate_{i}", "")).strip(),
-            "amount": str(form.get(f"labor_amount_{i}", "")).strip(),
-        }
-
-    def _overhead(i):
-        if f"oh_desc_{i}" not in form and f"oh_amount_{i}" not in form:
-            return None
-        return {
-            "description": str(form.get(f"oh_desc_{i}", "")).strip(),
-            "amount": str(form.get(f"oh_amount_{i}", "")).strip(),
-        }
-
+def _recipe_api_payload(recipe: dict) -> dict:
+    """The persisted recipe, shaped for the manufacturing API (derived costs recomputed there)."""
+    def _num(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
     return {
-        "output_qty": str(form.get("output_qty", "1")).strip() or "1",
-        "components": _rows(_component),
-        "labor": _rows(_labor),
-        "overhead": _rows(_overhead),
-        "show_all": str(form.get("show_all_components", "")) in ("on", "true", "1"),
+        "output_qty": _num(recipe.get("output_qty")) or 1.0,
+        "components": [
+            {"item_id": c.get("item_id"), "sku": c.get("sku"), "quantity": _num(c.get("quantity")), "unit": c.get("unit")}
+            for c in recipe.get("components", []) if c.get("item_id")
+        ],
+        "labor": [
+            {"operation": l.get("operation", ""), "kind": l.get("kind") or "hourly", "hours": _num(l.get("hours")),
+             "rate": _num(l.get("rate")), "amount": _num(l.get("amount")), "source": l.get("source") or "manual"}
+            for l in recipe.get("labor", [])
+        ],
+        "overhead": [
+            {"description": o.get("description", ""), "amount": _num(o.get("amount"))}
+            for o in recipe.get("overhead", [])
+        ],
     }
 
 
-def _recipe_to_payload(rows: dict) -> dict:
-    """Build the API recipe payload from parsed rows, dropping blank rows.
-
-    A component counts only with an item selected and qty > 0; a labor line needs an
-    operation; an overhead line needs a description. Derived costs are computed server-side.
-    """
-    def _num(v, default=0.0):
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return default
-
-    components = [
-        {"item_id": r["item_id"], "quantity": _num(r["quantity"])}  # unit resolved server-side from sell_by
-        for r in rows["components"] if r["item_id"] and _num(r["quantity"]) > 0
-    ]
-    labor = [
-        {"operation": r["operation"], "kind": r.get("kind") or "hourly",
-         "hours": _num(r.get("hours")), "rate": _num(r.get("rate")), "amount": _num(r.get("amount")), "source": "manual"}
-        for r in rows["labor"] if r["operation"]
-    ]
-    overhead = [
-        {"description": r["description"], "amount": _num(r["amount"])}
-        for r in rows["overhead"] if r["description"]
-    ]
-    return {"output_qty": _num(rows["output_qty"], 1.0) or 1.0, "components": components, "labor": labor, "overhead": overhead}
+def _recipe_cell(entity_id: str, section: str, idx: int, field: str, value) -> FT:
+    """A recipe value as the system-standard dblclick-to-edit cell (same as item/doc tables)."""
+    from ui.components.table import display_cell
+    return display_cell(
+        entity_id=entity_id,
+        field=f"recipe__{section}__{idx}__{field}",
+        value=value,
+        cell_type=_RECIPE_CELLS[section][field],
+        edit_url=f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/edit",
+        label_map=_LABOR_KIND_LABELS if field == "kind" else None,
+    )
 
 
 def _recipe_cost_card(entity_id: str, item: dict, currency: str | None, oob: bool = False) -> FT:
     """The Cost Summary card (materials/labor/overhead/unit + Recalculate/Apply).
 
-    Extracted so auto-save can refresh just this card out-of-band (``oob=True``) without
-    re-rendering the form — the user's focus is never disturbed mid-edit.
+    Extracted so cell saves can refresh just this card out-of-band (``oob=True``) without
+    re-rendering the form, so the user's focus is never disturbed mid-edit.
     """
     recipe = item.get("recipe") or {}
     has_recipe = bool(recipe.get("components"))
@@ -4908,12 +4995,16 @@ def _recipe_cost_card(entity_id: str, item: dict, currency: str | None, oob: boo
         return Tr(Td(label, cls="detail-label detail-label--total" if total else "detail-label"),
                   Td(_recipe_money(recipe.get(key), currency), cls="recipe-amount cell--total" if total else "recipe-amount"))
 
+    # Only mention the Recalculate button when it is actually rendered (it needs a recipe).
+    hint = ("Standard cost, rolled up from current component costs. A price change made on a "
+            "component elsewhere is not picked up automatically. Click Recalculate cost to refresh."
+            if has_recipe else
+            "Standard cost will appear here as you add components below.")
     children = [
         H3("Cost summary", cls="section-title"),
         Table(Tbody(_row("Materials", "materials_cost"), _row("Labor", "labor_cost"),
                     _row("Overhead", "overhead_cost"), _row("Unit cost", "unit_cost", total=True)), cls="detail-table"),
-        P("Standard cost, rolled up from current component costs. It does not update on its own when a "
-          "component's price changes elsewhere — click Recalculate cost.", cls="hint"),
+        P(hint, cls="hint"),
     ]
     if has_recipe:
         children.append(Div(
@@ -4924,107 +5015,87 @@ def _recipe_cost_card(entity_id: str, item: dict, currency: str | None, oob: boo
                    hx_post=f"/api/items/{entity_id}/apply-cost", **_htmx,
                    title="Copy this rolled standard cost into the item's cost price (Pricing tab)"),
             cls="recipe-actions mt-sm"))
-    attrs = {"id": "recipe-cost-card", "cls": "detail-card recipe-cost-summary"}
+    # The card refreshes itself whenever a recipe cell save fires the "recipeSaved" event
+    # (HX-Trigger header). OOB is only used by the output-qty autosave path, whose response
+    # is plain divs; cell PATCHes return a <td>, which cannot carry OOB siblings.
+    attrs = {
+        "id": "recipe-cost-card", "cls": "detail-card recipe-cost-summary",
+        "hx_get": f"/api/items/{entity_id}/recipe-cost-card",
+        "hx_trigger": "recipeSaved from:body", "hx_swap": "outerHTML",
+    }
     if oob:
         attrs["hx_swap_oob"] = "true"
     return Div(*children, **attrs)
 
 
 def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
-                    rows: dict | None = None, flash_msg: str | None = None, flash_kind: str = "success") -> FT:
-    """The Manufacturing tab: editable Materials / Labor / Overhead tables + Cost Summary.
+                    show_all: bool = False, flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+    """The Manufacturing tab: Materials / Labor / Overhead tables + Cost Summary.
 
-    On first load (rows is None) the persisted recipe is shown. After add/remove the
-    caller passes the in-progress ``rows`` so nothing is lost. All editing is on-page
-    via HTMX — no popups, no full reload (GDR §2f).
+    The persisted recipe is the single source of truth: every change saves immediately.
+    Values use the system-standard double-click-to-edit cells (same as item and document
+    tables) so the page behaves like the rest of celerp. All editing is on-page via HTMX.
     """
     recipe = item.get("recipe") or {}
-    if rows is None:
-        rows = {
-            "output_qty": str(recipe.get("output_qty", 1) or 1),
-            "components": [
-                {"item_id": c.get("item_id", ""), "quantity": str(c.get("quantity", ""))}
-                for c in recipe.get("components", [])
-            ],
-            "labor": [
-                {"operation": l.get("operation", ""), "kind": l.get("kind") or "hourly",
-                 "hours": str(l.get("hours", "")), "rate": str(l.get("rate", "")), "amount": str(l.get("amount", ""))}
-                for l in recipe.get("labor", [])
-            ],
-            "overhead": [
-                {"description": o.get("description", ""), "amount": str(o.get("amount", ""))}
-                for o in recipe.get("overhead", [])
-            ],
-        }
+    components = recipe.get("components", [])
+    labor_rows = recipe.get("labor", [])
+    overhead_rows = recipe.get("overhead", [])
 
     # list_items flattens the projection id onto "id" (see _flatten_item); exclude the
     # item being edited so it can't be a component of itself.
     item_opts = []
     component_ids: set[str] = set()
+    by_id: dict[str, dict] = {}
     for it in items:
         iid = it.get("id") or it.get("entity_id") or ""
-        if iid and iid != entity_id:
-            item_opts.append((iid, f"{it.get('sku', '')} — {it.get('name', '')}".strip(" —")))
+        if not iid:
+            continue
+        by_id[iid] = it
+        if iid != entity_id:
+            item_opts.append((iid, f"{it.get('sku', '')} - {it.get('name', '')}".strip(" -")))
             if (it.get("inventory_type") or "stocked") == "component":
                 component_ids.add(iid)
 
     sec = f"/api/items/{entity_id}/recipe-section"
-    # hx_disabled_elt disables the clicked button while its request is in flight — no double-submits.
+    # hx_disabled_elt disables the clicked button while its request is in flight (no double-submits).
     _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
-    # Auto-save: every field/select change persists in the background and refreshes only the
-    # cost card (out-of-band) — the form is not re-rendered, so focus is never lost (req #1).
-    _save = {"hx_post": f"/api/items/{entity_id}/recipe-autosave", "hx_trigger": "change",
-             "hx_include": "#recipe-form", "hx_swap": "none"}
 
-    # Orphan guard: a saved component whose item was since deleted still renders,
-    # flagged "(unavailable)" so the user can see and fix it (GDR §2e — surface, don't hide).
-    valid_ids = {iid for iid, _ in item_opts}
-    selected_ids = {r["item_id"] for r in rows["components"] if r["item_id"]}
-    orphan_ids = sorted({r["item_id"] for r in rows["components"] if r["item_id"] and r["item_id"] not in valid_ids})
-    # Materials picker searches COMPONENTS only by default (req #2); already-selected items stay
-    # visible, and "Show all items" widens it to every SKU.
-    show_all = bool(rows.get("show_all"))
-    base_opts = item_opts if show_all else [o for o in item_opts if o[0] in component_ids or o[0] in selected_ids]
-    comp_opts = base_opts + [(oid, f"{oid} (unavailable)") for oid in orphan_ids]
-    # Component unit is the component item's own sell unit (item 1) — shown, not entered.
-    unit_by_id = {(it.get("id") or it.get("entity_id")): (it.get("sell_by") or it.get("unit") or "") for it in items}
+    # The add-picker searches COMPONENTS only by default; "Show all items" widens it to every
+    # SKU, and the last option always offers creating a brand-new component item.
+    selected_ids = {c.get("item_id") for c in components}
+    base_opts = [o for o in item_opts if o[0] not in selected_ids and (show_all or o[0] in component_ids)]
+    comp_opts = base_opts + [("__new__:/inventory/new?type=component", "+ Add new component")]
 
-    def _comp_row(i, r):
-        orphan = bool(r["item_id"]) and r["item_id"] not in valid_ids
-        unit = unit_by_id.get(r["item_id"], "") or EMPTY
+    def _comp_row(i, c):
+        cid = c.get("item_id", "")
+        it = by_id.get(cid)
+        orphan = it is None
+        label = f"{c.get('sku') or cid} - {it.get('name', '')}".strip(" -") if it else f"{c.get('sku') or cid} (unavailable)"
         return Tr(
-            Td(searchable_select(f"comp_item_{i}", comp_opts, value=r["item_id"], placeholder="Search SKU…", **_save)),
-            Td(Input(type="number", name=f"comp_qty_{i}", value=r["quantity"], step="any", min="0", cls="cell--number", **_save), cls="cell--number"),
-            Td(Span(unit, cls="comp-unit", data_for=f"comp_item_{i}"), cls="comp-unit-cell"),
+            Td(A(label, href=f"/inventory/{cid}", cls="table-link") if not orphan else Span(label)),
+            _recipe_cell(entity_id, "components", i, "quantity", c.get("quantity")),
+            Td(c.get("unit") or EMPTY, cls="comp-unit-cell"),
             Td(Button("×", type="button", title="Remove component", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_component&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row recipe-row--orphan" if orphan else "data-row",
         )
 
-    def _labor_row(i, r):
-        kind = r.get("kind") or "hourly"
-        fixed = kind == "fixed"
+    def _labor_row(i, l):
         return Tr(
-            Td(Input(type="text", name=f"labor_op_{i}", value=r["operation"], placeholder="e.g. Assembly", **_save)),
-            Td(Select(
-                Option("Hourly", value="hourly", selected=not fixed),
-                Option("Fixed", value="fixed", selected=fixed),
-                name=f"labor_kind_{i}", cls="labor-kind", onchange="laborKindChanged(this)", **_save)),
-            Td(Input(type="number", name=f"labor_hours_{i}", value=r.get("hours", ""), step="any", min="0",
-                     cls="cell--number labor-hours", disabled=fixed, **_save), cls="cell--number"),
-            Td(Input(type="number", name=f"labor_rate_{i}", value=r.get("rate", ""), step="any", min="0",
-                     cls="cell--number labor-rate", disabled=fixed, **_save), cls="cell--number"),
-            Td(Input(type="number", name=f"labor_amount_{i}", value=r.get("amount", ""), step="any", min="0",
-                     cls="cell--number labor-amount", disabled=not fixed, **_save), cls="cell--number"),
+            _recipe_cell(entity_id, "labor", i, "operation", l.get("operation")),
+            _recipe_cell(entity_id, "labor", i, "kind", l.get("kind") or "hourly"),
+            _recipe_cell(entity_id, "labor", i, "hours", l.get("hours")),
+            _recipe_cell(entity_id, "labor", i, "rate", l.get("rate")),
+            _recipe_cell(entity_id, "labor", i, "amount", l.get("amount")),
             Td(Button("×", type="button", title="Remove operation", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_labor&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row",
         )
 
-    def _oh_row(i, r):
+    def _oh_row(i, o):
         return Tr(
-            Td(Input(type="text", name=f"oh_desc_{i}", value=r["description"], placeholder="e.g. Packaging", **_save)),
-            Td(Input(type="number", name=f"oh_amount_{i}", value=r["amount"], step="any", min="0", cls="cell--number", **_save), cls="cell--number"),
+            _recipe_cell(entity_id, "overhead", i, "description", o.get("description")),
+            _recipe_cell(entity_id, "overhead", i, "amount", o.get("amount")),
             Td(Button("×", type="button", title="Remove cost", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_overhead&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row",
@@ -5032,7 +5103,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
     cur_label = f" ({currency})" if currency else ""
 
-    # Permanent "add" row at the bottom of each table — committing on first input creates a real,
+    # Permanent "add" row at the bottom of each table: committing on first input creates a real,
     # persisted row (then a fresh add-row appears). No orphan blank rows to lose on navigation.
     _add = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML"}
     comp_add_row = Tr(
@@ -5055,19 +5126,19 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     )
     materials = Table(
         Thead(Tr(Th("Component SKU"), Th("Quantity", cls="cell--number"), Th("Unit"), Th("", cls="cell--actions"))),
-        Tbody(*[_comp_row(i, r) for i, r in enumerate(rows["components"])], comp_add_row),
+        Tbody(*[_comp_row(i, c) for i, c in enumerate(components)], comp_add_row),
         cls="data-table",
     )
     labor = Table(
         Thead(Tr(Th("Operation"), Th("Type"), Th("Hours", cls="cell--number"),
                  Th(f"Rate / hr{cur_label}", cls="cell--number"), Th(f"Fixed amount{cur_label}", cls="cell--number"),
                  Th("", cls="cell--actions"))),
-        Tbody(*[_labor_row(i, r) for i, r in enumerate(rows["labor"])], labor_add_row),
+        Tbody(*[_labor_row(i, l) for i, l in enumerate(labor_rows)], labor_add_row),
         cls="data-table",
     )
     overhead = Table(
         Thead(Tr(Th("Description"), Th(f"Amount{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
-        Tbody(*[_oh_row(i, r) for i, r in enumerate(rows["overhead"])], oh_add_row),
+        Tbody(*[_oh_row(i, o) for i, o in enumerate(overhead_rows)], oh_add_row),
         cls="data-table",
     )
 
@@ -5095,10 +5166,10 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             cls="detail-card recipe-side-card",
         ))
 
-    has_rows = any(rows[k] for k in ("components", "labor", "overhead"))
+    has_rows = bool(components or labor_rows or overhead_rows)
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
 
-    # No Save button — every change persists automatically (req #1). Clear keeps an inline confirm.
+    # No Save button: every change persists automatically. Clear keeps an inline confirm.
     clear_action = ""
     if has_rows:
         clear_action = Div(
@@ -5119,17 +5190,23 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Input(type="checkbox", name="show_all_components", checked=show_all,
               hx_post=f"{sec}?action=noop", hx_trigger="change", hx_include="#recipe-form",
               hx_target="#recipe-section", hx_swap="outerHTML"),
-        " Show all items (not just components)",
+        " Search all items, not only components",
         cls="recipe-showall",
     )
+
+    # Auto-save for the one standalone form field (output qty); rows save per-cell.
+    _save = {"hx_post": f"/api/items/{entity_id}/recipe-autosave", "hx_trigger": "change",
+             "hx_include": "#recipe-form", "hx_swap": "none"}
 
     return Div(
         Form(
             flash_el,
-            Div("All changes save automatically.", id="recipe-save-status", cls="recipe-save-status hint"),
+            Div("All changes save automatically. Double-click a value to edit it.",
+                id="recipe-save-status", cls="recipe-save-status hint"),
             Div(
                 Label("Output quantity per batch", For="output_qty"),
-                Input(type="number", id="output_qty", name="output_qty", value=rows["output_qty"], min="0.001", step="any", cls="cell--number", **_save),
+                Input(type="number", id="output_qty", name="output_qty",
+                      value=f"{recipe.get('output_qty', 1) or 1:g}", min="0.001", step="any", cls="cell--number", **_save),
                 P("Unit cost = total recipe cost ÷ this quantity.", cls="hint"),
                 cls="detail-card recipe-block",
             ),
@@ -5140,17 +5217,6 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             id="recipe-form",
         ),
         Div(*right_col, cls="recipe-right"),
-        Script(
-            "window.RECIPE_UNITS = " + json.dumps(unit_by_id) + ";\n"
-            "if (!window._recipeUnitInit) { window._recipeUnitInit = true;\n"
-            "  document.addEventListener('change', function(e){ var t=e.target;\n"
-            "    if (t && t.name && t.name.indexOf('comp_item_')===0){\n"
-            "      var c=document.querySelector('.comp-unit[data-for=\"'+t.name+'\"]');\n"
-            "      if(c) c.textContent = (window.RECIPE_UNITS[t.value] || '--'); } }); }\n"
-            "function laborKindChanged(sel){ var row=sel.closest('tr'), fixed=sel.value==='fixed';\n"
-            "  var h=row.querySelector('.labor-hours'), r=row.querySelector('.labor-rate'), a=row.querySelector('.labor-amount');\n"
-            "  if(h)h.disabled=fixed; if(r)r.disabled=fixed; if(a)a.disabled=!fixed; }"
-        ),
         id="recipe-section",
         cls="recipe-grid",
     )
@@ -5254,7 +5320,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                     cur_prefix,
                     Input(
                         type="number", name=conventional_key, id=unit_id,
-                        value=unit_val, step="0.01", min="0", placeholder="—",
+                        value=unit_val, step="0.01", min="0", placeholder="--",
                         cls="form-input",
                         oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
                     ),
@@ -5266,7 +5332,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                     cur_prefix,
                     Input(
                         type="number", id=total_id,
-                        value=total_val, step="0.01", min="0", placeholder="—",
+                        value=total_val, step="0.01", min="0", placeholder="--",
                         cls="form-input",
                         disabled=not has_qty,
                         oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",

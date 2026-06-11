@@ -431,6 +431,48 @@ async def create_orders_from_document(
     return {"created": created, "skipped": skipped, "created_count": len(created), "skipped_count": len(skipped)}
 
 
+@router.get("/demand")
+async def production_demand(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Open sales-document lines that need production: a recipe item with no order yet.
+
+    This is the automatic side of the workflow: demand surfaces here as soon as a document
+    carries a manufacturable line. Creating the order stays an explicit user click (GDR 2d).
+    """
+    states = await _all_item_states(session, company_id)
+    docs = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type.in_(("doc", "list")),
+        )
+    )).scalars().all()
+    out: list[dict] = []
+    for doc in docs:
+        st = doc.state or {}
+        if (st.get("status") or "") in {"void", "cancelled", "converted", "expired"}:
+            continue
+        cycle = int(st.get("fulfill_cycle", 0) or 0)
+        ref = st.get("ref_id") or doc.entity_id
+        for _idx, item_id, line_id, qty, label in _doc_lines(st):
+            if not item_id or qty <= 0:
+                continue
+            ist = states.get(item_id)
+            if not is_manufacturable(ist):
+                continue
+            order_id = _order_id_for(doc.entity_id, line_id, cycle)
+            if await session.get(Projection, {"company_id": company_id, "entity_id": order_id}) is not None:
+                continue
+            out.append({
+                "doc_id": doc.entity_id, "doc_ref": ref,
+                "doc_type": st.get("doc_type") or doc.entity_type,
+                "item_id": item_id, "sku": (ist or {}).get("sku"),
+                "name": (ist or {}).get("name"), "quantity": qty,
+            })
+    return {"items": out, "total": len(out)}
+
+
 @router.get("/documents/{doc_id}/components-summary")
 async def document_components_summary(
     doc_id: str,

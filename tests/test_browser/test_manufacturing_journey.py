@@ -36,21 +36,35 @@ def test_full_manufacturing_journey(page, ui_server, api):
     # 2. Define the recipe on the item (Phase 1).
     page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#recipe-form", timeout=10000)
-    _combo_pick(page, "#recipe-form", "JNY-GOLD")  # ghost add-row → commits a real component
-    page.wait_for_selector("input[name=comp_qty_0]", timeout=8000)
-    page.fill("input[name=comp_qty_0]", "5")
-    page.locator("input[name=comp_qty_0]").blur()
+    def _set_cell(data_col, value):
+        for attempt in range(2):  # retry once: successive edits can race the prior swap
+            try:
+                page.dblclick(f'td[data-col="{data_col}"]')
+                inp = page.locator("input[name=value]")
+                inp.wait_for(state="visible", timeout=4000)
+                inp.fill(str(value))
+                inp.press("Enter")
+                cell = page.locator(f'td[data-col="{data_col}"]')
+                cell.wait_for(state="visible", timeout=6000)
+                if str(value) in cell.inner_text():
+                    return
+            except Exception:
+                if attempt:
+                    raise
+        raise AssertionError(f"cell {data_col} did not save {value}")
+
+    _combo_pick(page, ".recipe-add-row", "JNY-GOLD")  # ghost add-row commits a real component
+    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
+    _set_cell("recipe__components__0__quantity", "5")
     page.fill("input[name=labor_new_op]", "Setting")
     page.locator("input[name=labor_new_op]").blur()
-    page.wait_for_selector("input[name=labor_hours_0]", timeout=8000)
-    page.fill("input[name=labor_hours_0]", "2")
-    page.fill("input[name=labor_rate_0]", "50")
-    page.locator("input[name=labor_rate_0]").blur()
+    page.wait_for_selector('td[data-col="recipe__labor__0__hours"]', timeout=8000)
+    _set_cell("recipe__labor__0__hours", "2")
+    _set_cell("recipe__labor__0__rate", "50")
     page.fill("input[name=oh_new_desc]", "Polish & box")
     page.locator("input[name=oh_new_desc]").blur()
-    page.wait_for_selector("input[name=oh_amount_0]", timeout=8000)
-    page.fill("input[name=oh_amount_0]", "15")
-    page.locator("input[name=oh_amount_0]").blur()
+    page.wait_for_selector('td[data-col="recipe__overhead__0__amount"]', timeout=8000)
+    _set_cell("recipe__overhead__0__amount", "15")
     page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
     assert api.get(f"/items/{ring}").json()["recipe"]["unit_cost"] == 515.0
 

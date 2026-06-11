@@ -712,7 +712,7 @@ def _doc_manufacture_panel(doc_id: str, summary: dict, currency: str | None, res
                 bits.append(Span(". "))
             if s:
                 shown = skipped[:6]
-                reasons = "; ".join(f"{sk.get('label')} — {sk.get('reason')}" for sk in shown)
+                reasons = "; ".join(f"{sk.get('label')}: {sk.get('reason')}" for sk in shown)
                 more = f" and {s - 6} more" if s > 6 else ""
                 bits.append(Span(f"Skipped {s}: {reasons}{more}."))
             kind = "success" if c else "warning"
@@ -752,7 +752,7 @@ def _doc_manufacture_panel(doc_id: str, summary: dict, currency: str | None, res
         H3("Manufacturing", cls="section-title"),
         flash_el,
         P("One order per line that has a recipe; inputs auto-expand from each item's components. "
-          "Clicking again is safe — existing orders are not duplicated.", cls="hint"),
+          "Clicking again is safe; existing orders are not duplicated.", cls="hint"),
         create_btn,
         *tables,
         id="doc-mfg-panel", cls="detail-card recipe-block",
@@ -1568,7 +1568,7 @@ def setup_routes(app):
         hidden_ids = [Input(type="hidden", name="doc_ids", value=(d.get("entity_id") or d.get("id", ""))) for d in payable]
 
         panel = Div(
-            H3(f"Bulk Payment — {contact_name} ({len(payable)} document{'s' if len(payable) != 1 else ''})", cls="section-title"),
+            H3(f"Bulk Payment: {contact_name} ({len(payable)} document{'s' if len(payable) != 1 else ''})", cls="section-title"),
             P(f"{skipped} document(s) skipped (already paid or draft).", cls="text-muted") if skipped else "",
             P(f"Total Outstanding: {fmt_money(total_outstanding, currency)}", cls="total-label--final"),
             Table(
@@ -4264,7 +4264,7 @@ def _payment_section(doc: dict, bank_accounts: list[dict] | None = None, is_oper
             invoices.forEach(inv => {{
                 const opt = document.createElement('option');
                 opt.value = inv.id;
-                opt.textContent = inv.doc_number + ' — ' + inv.contact_name + ' — Outstanding: ' + inv.outstanding.toFixed(2);
+                opt.textContent = inv.doc_number + ' - ' + inv.contact_name + ' - Outstanding: ' + inv.outstanding.toFixed(2);
                 sel.appendChild(opt);
             }});
             sel.addEventListener('change', function() {{
