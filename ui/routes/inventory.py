@@ -21,7 +21,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, INACTIVE_ITEM_STATUSES
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from ui.i18n import t, get_lang
@@ -1323,7 +1323,7 @@ function celerpPrintLabel(entityId, templateId) {
         """Fetch item + item list + currency and render the Manufacturing section."""
         item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
         items = (await api.list_items(token, {"limit": 1000})).get("items", [])
-        return _recipe_section(entity_id, item, items, company.get("currency"), rows=rows,
+        return _recipe_section(entity_id, item, items, currency_symbol(company.get("currency") or ""), rows=rows,
                                flash_msg=flash_msg, flash_kind=flash_kind)
 
     @app.get("/api/items/{entity_id}/recipe-section")
@@ -4913,7 +4913,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             item_opts.append((iid, f"{it.get('sku', '')} — {it.get('name', '')}".strip(" —")))
 
     sec = f"/api/items/{entity_id}/recipe-section"
-    _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML"}
+    # hx_disabled_elt disables the clicked button while its request is in flight — no double-submits.
+    _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
 
     # Orphan guard: a saved component whose item was since deleted still renders,
     # flagged "(unavailable)" so the user can see and fix it (GDR §2e — surface, don't hide).
