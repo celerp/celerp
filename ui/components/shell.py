@@ -223,6 +223,8 @@ function initCombobox(wrap) {
     var lower = q.toLowerCase();
     var visible = 0;
     currentOpts().forEach(function(opt) {
+      // Pinned options (actions like "+ Add new" / scope toggles) always stay visible.
+      if (opt.classList.contains('combobox-option--pinned')) { opt.style.display = ''; return; }
       // Search data-search if present (includes UTC offset aliases), else textContent
       var haystack = (opt.dataset.search || opt.textContent).toLowerCase();
       var match = haystack.includes(lower);

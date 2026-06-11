@@ -118,11 +118,15 @@ def test_fixed_labor_derived_unit_and_add_new_option(page, ui_server, api):
     page.set_viewport_size({"width": 1440, "height": 1000})
     _open_tab(page, ui_server, fg)
 
-    # The picker's last option is always "+ Add new component".
+    # Pinned action options live inside THIS picker: scope toggle + add-new. They survive typing.
     box = page.locator(".recipe-add-row .combobox-input").first
     box.click()
     page.wait_for_selector(".combobox-list.open", timeout=3000)
     assert page.locator(".combobox-list.open .combobox-option--new:has-text('Add new component')").count() == 1
+    assert page.locator(".combobox-list.open .combobox-option--pinned:has-text('Search all items')").count() == 1
+    box.fill("zzz-no-match")
+    assert page.locator(".combobox-list.open .combobox-option--pinned:has-text('Search all items')").is_visible()
+    box.fill("")
 
     _ghost_pick(page, "FL-GOLD")
     page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)

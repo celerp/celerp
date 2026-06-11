@@ -378,69 +378,52 @@ async def _get_document(session: AsyncSession, company_id, doc_id: str) -> Proje
     return row
 
 
-@router.post("/documents/{doc_id}/orders")
-async def create_orders_from_document(
-    doc_id: str,
-    company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Create one manufacturing order per document line whose item has a recipe.
+# Document statuses whose lines no longer drive production.
+_CLOSED_DOC_STATUSES = {"void", "cancelled", "converted", "expired"}
 
-    Inputs auto-expand from the item's recipe (component qty x line qty). Idempotent: a
-    deterministic order id per (doc, line, fulfill-cycle) means re-invoking never double-creates.
-    Lines with no recipe are reported back explicitly — never silently dropped (GDR §2e).
+
+async def _sync_doc_orders(session: AsyncSession, company_id, user, doc: Projection,
+                           states: dict[str, dict]) -> list[str]:
+    """Ensure one manufacturing order exists per recipe-bearing line of one document.
+
+    Orders are created automatically from open sales documents (owner decision 2026-06-12,
+    superseding the earlier manual-click flow). Deterministic order ids + idempotency keys
+    per (doc, line, fulfill-cycle) make this safe to run on every read; a cancelled order's
+    projection still exists, so cancelling never resurrects. Returns created order ids.
     """
-    doc = await _get_document(session, company_id, doc_id)
-    states = await _all_item_states(session, company_id)
-    cycle = int(doc.state.get("fulfill_cycle", 0) or 0)
-    ref = doc.state.get("ref_id") or doc_id
-    created: list[dict] = []
-    skipped: list[dict] = []
-
-    for idx, item_id, line_id, qty, label in _doc_lines(doc.state):
-        st = states.get(item_id) if item_id else None
-        if not item_id:
-            skipped.append({"label": label, "reason": "line has no inventory item"})
+    st = doc.state or {}
+    if (st.get("status") or "") in _CLOSED_DOC_STATUSES:
+        return []
+    cycle = int(st.get("fulfill_cycle", 0) or 0)
+    ref = st.get("ref_id") or doc.entity_id
+    created: list[str] = []
+    for _idx, item_id, line_id, qty, _label in _doc_lines(st):
+        if not item_id or qty <= 0:
             continue
-        if qty <= 0:
-            skipped.append({"label": label, "reason": "zero quantity"})
+        ist = states.get(item_id)
+        if not is_manufacturable(ist):
             continue
-        if not is_manufacturable(st):
-            skipped.append({"label": label, "reason": "no recipe defined"})
-            continue
-        order_id = _order_id_for(doc_id, line_id, cycle)
+        order_id = _order_id_for(doc.entity_id, line_id, cycle)
         if await session.get(Projection, {"company_id": company_id, "entity_id": order_id}) is not None:
-            skipped.append({"label": label, "reason": "order already created"})
             continue
-        inputs, outputs = expand_recipe(st, qty)
+        inputs, outputs = expand_recipe(ist, qty)
         await emit_event(
             session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
             event_type="mfg.order.created",
             data={
-                "description": f"Build {qty:g} x {st.get('sku', '')} (from {ref})",
+                "description": f"Build {qty:g} x {ist.get('sku', '')} (from {ref})",
                 "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
-                "source_doc_id": doc_id, "source_doc_type": doc.entity_type, "source_line_id": line_id,
+                "source_doc_id": doc.entity_id, "source_doc_type": doc.entity_type, "source_line_id": line_id,
             },
-            actor_id=user.id, location_id=None, source="api",
-            idempotency_key=mfg_idem_key(doc_id, line_id, cycle), metadata_={},
+            actor_id=user.id, location_id=None, source="auto",
+            idempotency_key=mfg_idem_key(doc.entity_id, line_id, cycle), metadata_={},
         )
-        created.append({"order_id": order_id, "label": label})
-
-    await session.commit()
-    return {"created": created, "skipped": skipped, "created_count": len(created), "skipped_count": len(skipped)}
+        created.append(order_id)
+    return created
 
 
-@router.get("/demand")
-async def production_demand(
-    company_id=Depends(get_current_company_id),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Open sales-document lines that need production: a recipe item with no order yet.
-
-    This is the automatic side of the workflow: demand surfaces here as soon as a document
-    carries a manufacturable line. Creating the order stays an explicit user click (GDR 2d).
-    """
+async def _ensure_orders_for_open_docs(session: AsyncSession, company_id, user) -> int:
+    """Run _sync_doc_orders across every open sales document; returns count created."""
     states = await _all_item_states(session, company_id)
     docs = (await session.execute(
         select(Projection).where(
@@ -448,29 +431,12 @@ async def production_demand(
             Projection.entity_type.in_(("doc", "list")),
         )
     )).scalars().all()
-    out: list[dict] = []
+    created = 0
     for doc in docs:
-        st = doc.state or {}
-        if (st.get("status") or "") in {"void", "cancelled", "converted", "expired"}:
-            continue
-        cycle = int(st.get("fulfill_cycle", 0) or 0)
-        ref = st.get("ref_id") or doc.entity_id
-        for _idx, item_id, line_id, qty, label in _doc_lines(st):
-            if not item_id or qty <= 0:
-                continue
-            ist = states.get(item_id)
-            if not is_manufacturable(ist):
-                continue
-            order_id = _order_id_for(doc.entity_id, line_id, cycle)
-            if await session.get(Projection, {"company_id": company_id, "entity_id": order_id}) is not None:
-                continue
-            out.append({
-                "doc_id": doc.entity_id, "doc_ref": ref,
-                "doc_type": st.get("doc_type") or doc.entity_type,
-                "item_id": item_id, "sku": (ist or {}).get("sku"),
-                "name": (ist or {}).get("name"), "quantity": qty,
-            })
-    return {"items": out, "total": len(out)}
+        created += len(await _sync_doc_orders(session, company_id, user, doc, states))
+    if created:
+        await session.commit()
+    return created
 
 
 @router.get("/documents/{doc_id}/components-summary")
@@ -578,10 +544,15 @@ async def list_orders(
     date_from: str | None = None,
     date_to: str | None = None,
     company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """List manufacturing orders, newest first. q matches the order id, description,
-    source document (doc number) and output SKUs; dates filter on creation date."""
+    source document (doc number) and output SKUs; dates filter on creation date.
+
+    Orders for open sales documents are ensured (auto-created, idempotently) before
+    listing, so the queue always reflects current demand without a manual step."""
+    await _ensure_orders_for_open_docs(session, company_id, user)
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,

@@ -82,15 +82,15 @@ def test_full_manufacturing_journey(page, ui_server, api):
     page.wait_for_selector(".flash--success", timeout=8000)
     assert api.get(f"/items/{ring}").json()["recipe"]["unit_cost"] == 615.0  # 5*100 + 100 + 15
 
-    # 4. Sell on an invoice, then create the order from the doc (Phase 3).
+    # 4. Sell on an invoice; the manufacturing order is created automatically (Phase 3).
     doc = api.post("/docs", json={"doc_type": "invoice", "line_items": [
         {"item_id": ring, "sku": "JNY-RING", "name": "18K Ring", "quantity": 2, "unit_price": 900},
     ], "total": 1800}).json()["id"]
     page.goto(f"{ui_server}/docs/{doc}", wait_until="domcontentloaded")
-    page.wait_for_selector("#doc-mfg-panel button:has-text('Create manufacturing order')", timeout=10000)
-    assert "10" in page.locator("#doc-mfg-panel").inner_text()  # 2 rings -> 10 g gold
-    page.click("#doc-mfg-panel button:has-text('Create manufacturing order')")
-    page.wait_for_selector("#doc-mfg-panel .flash", timeout=8000)
+    page.wait_for_selector("#doc-mfg-panel:has-text('Manufacturing orders')", timeout=10000)
+    panel = page.locator("#doc-mfg-panel").inner_text()
+    assert "Create manufacturing order" not in panel  # nothing to click; it already exists
+    assert "10" in panel  # 2 rings -> 10 g gold in the JIT summary
     page.screenshot(path=str(SHOTS / "doc-order-created.png"), full_page=True)
     doc_orders = [o for o in api.get("/manufacturing").json()["items"] if o.get("source_doc_id") == doc]
     assert len(doc_orders) == 1 and doc_orders[0]["inputs"][0]["quantity"] == 10.0

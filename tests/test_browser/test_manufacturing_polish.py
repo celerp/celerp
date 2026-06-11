@@ -59,13 +59,12 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
     page.wait_for_selector(".preset-btn", timeout=10000)
 
-    # /docs?view=drafts&type=invoice: no redundant 'Pro Forma (n)' chip; an explicit way back instead.
+    # /docs?view=drafts&type=invoice: no redundant chip at all, and the date bar is present.
     api.post("/docs", json={"doc_type": "invoice", "line_items": [], "total": 0})  # ensure a draft exists
-    page.goto(f"{ui_server}/docs?view=drafts&type=invoice", wait_until="domcontentloaded")
-    page.wait_for_selector(".drafts-tab", timeout=10000)
-    chip = page.locator(".drafts-tab").inner_text()
-    assert "Back to Invoices" in chip, chip
-    assert "Pro Forma (" not in chip, chip
+    page.goto(f"{ui_server}/docs?view=drafts&type=invoice&preset=all", wait_until="domcontentloaded")
+    page.wait_for_selector("#doc-table, .data-table", timeout=10000)
+    assert page.locator(".drafts-tab").count() == 0
+    assert page.locator(".preset-btn").count() >= 7  # full date-filter bar on the drafts view too
 
     # Item 4: on a splittable item, the +, inputs and Go sit on one line (.split-line).
     page.goto(f"{ui_server}/inventory/{item}?tab=details", wait_until="domcontentloaded")

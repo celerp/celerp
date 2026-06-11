@@ -1372,9 +1372,14 @@ function celerpPrintLabel(entityId, templateId) {
             changed = True
             if action == "add_component":
                 new_id = str(form.get("comp_new", "")).strip()
-                changed = bool(new_id) and new_id not in {c.get("item_id") for c in recipe["components"]}
-                if changed:
-                    recipe["components"].append({"item_id": new_id, "quantity": 1})
+                if new_id.startswith("__scope__"):
+                    # In-dropdown scope toggle for this picker: no data change, just re-render.
+                    show_all = new_id == "__scope__all"
+                    changed = False
+                else:
+                    changed = bool(new_id) and new_id not in {c.get("item_id") for c in recipe["components"]}
+                    if changed:
+                        recipe["components"].append({"item_id": new_id, "quantity": 1})
             elif action == "add_labor":
                 new_op = str(form.get("labor_new_op", "")).strip()
                 changed = bool(new_op)
@@ -5060,11 +5065,13 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # hx_disabled_elt disables the clicked button while its request is in flight (no double-submits).
     _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
 
-    # The add-picker searches COMPONENTS only by default; "Show all items" widens it to every
-    # SKU, and the last option always offers creating a brand-new component item.
+    # The add-picker searches COMPONENTS only by default. Scope is controlled inside the
+    # dropdown itself (the common footer-action pattern): a pinned "Search all items…"
+    # option widens this picker only, and the last option creates a brand-new component.
     selected_ids = {c.get("item_id") for c in components}
     base_opts = [o for o in item_opts if o[0] not in selected_ids and (show_all or o[0] in component_ids)]
-    comp_opts = base_opts + [("__new__:/inventory/new?type=component", "+ Add new component")]
+    scope_opt = ("__scope__components", "Show components only…") if show_all else ("__scope__all", "Search all items…")
+    comp_opts = base_opts + [scope_opt, ("__new__:/inventory/new?type=component", "+ Add new component")]
 
     def _comp_row(i, c):
         cid = c.get("item_id", "")
@@ -5186,13 +5193,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             cls="clear-recipe-wrap",
         )
 
-    showall_toggle = Label(
-        Input(type="checkbox", name="show_all_components", checked=show_all,
-              hx_post=f"{sec}?action=noop", hx_trigger="change", hx_include="#recipe-form",
-              hx_target="#recipe-section", hx_swap="outerHTML"),
-        " Search all items, not only components",
-        cls="recipe-showall",
-    )
+    # Per-picker scope state rides in the form so it survives re-renders.
+    scope_state = Input(type="hidden", name="show_all_components", value="on") if show_all else ""
 
     # Auto-save for the one standalone form field (output qty); rows save per-cell.
     _save = {"hx_post": f"/api/items/{entity_id}/recipe-autosave", "hx_trigger": "change",
@@ -5201,6 +5203,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     return Div(
         Form(
             flash_el,
+            scope_state,
             Div("All changes save automatically. Double-click a value to edit it.",
                 id="recipe-save-status", cls="recipe-save-status hint"),
             Div(
@@ -5210,7 +5213,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                 P("Unit cost = total recipe cost ÷ this quantity.", cls="hint"),
                 cls="detail-card recipe-block",
             ),
-            Div(H3("Materials", cls="section-title"), showall_toggle, materials, cls="detail-card recipe-block"),
+            Div(H3("Materials", cls="section-title"), materials, cls="detail-card recipe-block"),
             Div(H3("Labor", cls="section-title"), labor, cls="detail-card recipe-block"),
             Div(H3("Overhead", cls="section-title"), overhead, cls="detail-card recipe-block"),
             clear_action,

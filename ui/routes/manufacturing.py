@@ -273,52 +273,6 @@ def _detail_panel(order: dict) -> FT:
     )
 
 
-def _demand_section(demand: list[dict]) -> FT:
-    """The production queue: open sales-document lines with a recipe and no order yet.
-
-    Demand appears here automatically as documents are raised; creating the order is
-    always an explicit click (GDR 2d, locked decision: never auto-spawn orders).
-    """
-    if not demand:
-        return Div(
-            H3("Needs production", cls="section-title"),
-            P("No open sales-document lines are waiting for a manufacturing order. "
-              "Lines appear here automatically when an invoice, pro forma or list contains an item with a recipe.",
-              cls="hint"),
-            cls="detail-card recipe-block",
-        )
-
-    def _doc_url(row: dict) -> str:
-        doc_id = row.get("doc_id", "")
-        return f"/lists/{doc_id}" if doc_id.startswith("list:") else f"/docs/{doc_id}"
-
-    rows = [
-        Tr(
-            Td(A(d.get("doc_ref") or d.get("doc_id"), href=_doc_url(d), cls="table-link")),
-            Td((d.get("doc_type") or "").replace("_", " ").title()),
-            Td(A(d.get("sku") or d.get("item_id"), href=f"/inventory/{d.get('item_id')}", cls="table-link")),
-            Td(d.get("name") or EMPTY),
-            Td(f"{float(d.get('quantity', 0)):g}", cls="cell--number"),
-            Td(Form(Button("Create order", type="submit", cls="btn btn--primary btn--xs"),
-                    method="post", action=f"/manufacturing/demand/{d.get('doc_id')}/create"),
-               cls="cell--actions"),
-            cls="data-row",
-        )
-        for d in demand
-    ]
-    return Div(
-        H3(f"Needs production ({len(demand)})", cls="section-title"),
-        P("Open sales-document lines with a recipe and no manufacturing order yet. "
-          "Creating an order pulls the inputs from the item's recipe.", cls="hint"),
-        Table(
-            Thead(Tr(Th("Document"), Th("Type"), Th("SKU"), Th("Item"), Th("Quantity", cls="cell--number"), Th("", cls="cell--actions"))),
-            Tbody(*rows),
-            cls="data-table",
-        ),
-        cls="detail-card recipe-block",
-    )
-
-
 def setup_routes(app):
 
     def _order_params(request: Request) -> tuple[dict, str, str, str]:
@@ -354,10 +308,6 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             orders = []
-        try:
-            demand = (await api.manufacturing_demand(token)).get("items", [])
-        except APIError:
-            demand = []
         date_qs = f"&from={date_from}&to={date_to}&preset={preset}" if (date_from or date_to) else ""
         return base_shell(
             page_header(
@@ -370,7 +320,8 @@ def setup_routes(app):
             ),
             _date_filter_bar("/manufacturing", date_from, date_to, preset,
                              extra_params=f"&q={q}" if q else "", lang=get_lang(request)),
-            _demand_section(demand),
+            P("Orders are created automatically from open invoices, pro formas and lists that contain recipe items.",
+              cls="hint"),
             _mfg_status_cards(orders, request.query_params.get("status", "")),
             _order_table(orders),
             title="Manufacturing - Celerp",
@@ -390,20 +341,6 @@ def setup_routes(app):
         except APIError:
             orders = []
         return _order_table(orders)
-
-    @app.post("/manufacturing/demand/{doc_id:path}/create")
-    async def create_demand_orders(request: Request, doc_id: str):
-        """Create the manufacturing order(s) for one document from the demand queue."""
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.create_orders_from_document(token, doc_id)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            logger.warning("Create orders from demand failed for %s: %s", doc_id, e.detail)
-        return RedirectResponse("/manufacturing", status_code=302)
 
     async def _buildable_items(token: str) -> list[dict]:
         """Inventory items that have a manufacturing recipe (can be built)."""

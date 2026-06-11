@@ -1065,19 +1065,9 @@ async def build_item(token: str, item_id: str, quantity: float) -> dict:
         return _raise(await c.post(f"/manufacturing/items/{item_id}/build", json={"quantity": quantity})).json()
 
 
-async def create_orders_from_document(token: str, doc_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/documents/{doc_id}/orders")).json()
-
-
 async def document_components_summary(token: str, doc_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get(f"/manufacturing/documents/{doc_id}/components-summary")).json()
-
-
-async def manufacturing_demand(token: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get("/manufacturing/demand")).json()
 
 
 async def start_mfg_order(token: str, order_id: str) -> dict:

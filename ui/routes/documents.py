@@ -686,39 +686,16 @@ def _doc_manufacture_mount(doc_id: str, doc_type: str) -> FT | str:
                hx_trigger="load", hx_swap="outerHTML", id="doc-mfg-panel")
 
 
-def _doc_manufacture_panel(doc_id: str, summary: dict, currency: str | None, result: dict | None = None) -> FT:
-    """Render the Manufacturing panel for a document: create-orders action + JIT components summary."""
+def _doc_manufacture_panel(doc_id: str, summary: dict, orders: list[dict]) -> FT:
+    """Manufacturing panel for a document: its auto-created orders + the JIT components summary.
+
+    Orders are created automatically for recipe-bearing lines (idempotently, on read), so this
+    panel only shows them; there is nothing to click to create.
+    """
     subs = summary.get("sub_assemblies", []) or []
     raws = summary.get("raw_materials", []) or []
 
-    flash_el = ""
-    if result is not None:
-        created = result.get("created", [])
-        skipped = result.get("skipped", [])
-        c, s = len(created), len(skipped)
-        only_dupes = c == 0 and s > 0 and all(sk.get("reason") == "order already created" for sk in skipped)
-        if only_dupes:
-            bits = [Span("All manufacturing orders for this document already exist. "),
-                    A("View orders", href="/manufacturing")]
-            kind = "success"
-        else:
-            bits = [Span(f"Created {c} manufacturing order{'' if c == 1 else 's'}. ")]
-            if created:  # link to each created order so the user knows where they went (GDR §2b)
-                bits.append(Span("View: "))
-                for i, o in enumerate(created):
-                    if i:
-                        bits.append(Span(", "))
-                    bits.append(A(o.get("label") or "order", href=f"/manufacturing/{o['order_id']}"))
-                bits.append(Span(". "))
-            if s:
-                shown = skipped[:6]
-                reasons = "; ".join(f"{sk.get('label')}: {sk.get('reason')}" for sk in shown)
-                more = f" and {s - 6} more" if s > 6 else ""
-                bits.append(Span(f"Skipped {s}: {reasons}{more}."))
-            kind = "success" if c else "warning"
-        flash_el = Div(*bits, cls=f"flash flash--{kind}", role="status")
-
-    if not subs and not raws and result is None:
+    if not subs and not raws and not orders:
         return Div(
             H3("Manufacturing", cls="section-title"),
             P("No items on this document have a manufacturing recipe.", cls="hint"),
@@ -729,7 +706,22 @@ def _doc_manufacture_panel(doc_id: str, summary: dict, currency: str | None, res
         return [Tr(Td(it.get("sku") or it.get("item_id")), Td(it.get("name") or EMPTY),
                    Td(f"{float(it.get('quantity', 0)):g}", cls="cell--number")) for it in items]
 
-    tables = []
+    order_rows = [
+        Tr(
+            Td(A(f"#{(o.get('id') or '').split(':')[-1][:8]}", href=f"/manufacturing/{o.get('id')}", cls="table-link")),
+            Td(o.get("description") or EMPTY),
+            Td(Span((o.get("status") or "created").title(), cls="badge")),
+            cls="data-row",
+        )
+        for o in orders
+    ]
+    tables = [Div(
+        H3("Manufacturing orders", cls="section-title"),
+        P("Created automatically for the recipe items on this document.", cls="hint"),
+        Table(Thead(Tr(Th("Order"), Th("Description"), Th("Status"))),
+              Tbody(*order_rows) if order_rows else Tbody(Tr(Td("None yet.", colspan="3", cls="empty-row"))),
+              cls="data-table"),
+        cls="recipe-block")]
     if subs:
         tables.append(Div(
             H3("Sub-assemblies to build", cls="section-title"),
@@ -743,17 +735,8 @@ def _doc_manufacture_panel(doc_id: str, summary: dict, currency: str | None, res
                   Tbody(*_qty_rows(raws)), cls="data-table"),
             cls="recipe-block"))
 
-    create_btn = Button(
-        "Create manufacturing order(s)", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--primary mt-sm",
-        hx_post=f"/docs/{doc_id}/manufacture", hx_target="#doc-mfg-panel", hx_swap="outerHTML", hx_disabled_elt="this",
-    ) if (subs or raws) else ""
-
     return Div(
         H3("Manufacturing", cls="section-title"),
-        flash_el,
-        P("One order per line that has a recipe; inputs auto-expand from each item's components. "
-          "Clicking again is safe; existing orders are not duplicated.", cls="hint"),
-        create_btn,
         *tables,
         id="doc-mfg-panel", cls="detail-card recipe-block",
     )
@@ -849,9 +832,9 @@ def setup_routes(app):
                 params["not_stocked"] = "1"
             if converted_to_type:
                 params["converted_to_type"] = converted_to_type
-            if date_from and not is_drafts_view:
+            if date_from:
                 params["date_from"] = date_from
-            if date_to and not is_drafts_view:
+            if date_to:
                 params["date_to"] = date_to
             import asyncio as _asyncio
             docs_resp, summary = await _asyncio.gather(
@@ -899,9 +882,7 @@ def setup_routes(app):
                 A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary"),
                 A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary"),
             ),
-            *([] if is_drafts_view else [
-                _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
-            ]),
+            _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
             _summary_bar(summary, doc_type, currency, lang),
             _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only, unfulfilled_only=unfulfilled_only, not_restocked=not_restocked, not_stocked=not_stocked, all_issued=all_issued, converted_to_type=converted_to_type),
             _doc_table(
@@ -1823,32 +1804,20 @@ celerpUpdateBulkAlloc();
 
     @app.get("/docs/{entity_id}/manufacture-panel")
     async def doc_manufacture_panel(request: Request, entity_id: str):
+        """The doc's manufacturing orders (auto-created on read) + JIT components summary."""
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         try:
+            # Listing orders ensures missing ones are auto-created first; q narrows to this doc.
+            orders = (await api.list_mfg_orders(token, {"q": entity_id})).get("items", [])
             summary = await api.document_components_summary(token, entity_id)
-            company = await api.get_company(token)
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="doc-mfg-panel")
-        return _doc_manufacture_panel(entity_id, summary, company.get("currency"))
-
-    @app.post("/docs/{entity_id}/manufacture")
-    async def doc_manufacture(request: Request, entity_id: str):
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        try:
-            result = await api.create_orders_from_document(token, entity_id)
-            summary = await api.document_components_summary(token, entity_id)
-            company = await api.get_company(token)
-        except APIError as e:
-            if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
-            return Div(P(e.detail, cls="cell-error"), id="doc-mfg-panel")
-        return _doc_manufacture_panel(entity_id, summary, company.get("currency"), result=result)
+        orders = [o for o in orders if o.get("source_doc_id") == entity_id]
+        return _doc_manufacture_panel(entity_id, summary, orders)
 
     @app.get("/docs/{entity_id}/field/{field}/display")
     async def doc_field_display(request: Request, entity_id: str, field: str):
@@ -3395,9 +3364,9 @@ celerpUpdateBulkAlloc();
                 params["status"] = effective_status
             if converted_to_type_list:
                 params["converted_to_type"] = converted_to_type_list
-            if date_from and not is_drafts_view:
+            if date_from:
                 params["date_from"] = date_from
-            if date_to and not is_drafts_view:
+            if date_to:
                 params["date_to"] = date_to
             result = await api.list_lists(token, params)
             lists = result.get("items", [])
@@ -3419,10 +3388,8 @@ celerpUpdateBulkAlloc();
                 A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary"),
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary"),
             ),
-            *([] if is_drafts_view else [
-                _date_filter_bar("/lists", date_from, date_to, preset,
-                                 extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
-            ]),
+            _date_filter_bar("/lists", date_from, date_to, preset,
+                             extra_params=(f"&{_lists_extra}" if _lists_extra else ""), lang=lang),
             _list_type_tabs(list_type),
             _list_status_cards(summary, status, converted_to_type=converted_to_type_list),
             _list_table(lists, lang=lang),
@@ -6656,15 +6623,9 @@ def _drafts_tab(draft_count: int, is_active: bool, doc_type: str = "", status: s
     # Invoice drafts are called "Pro Forma" since they use proforma numbering
     label = t("status.pro_forma", lang) if doc_type == "invoice" else t("status.drafts", lang)
     if is_active:
-        # On the drafts view the status cards already show the draft count; a second
-        # "{label} (n)" chip here reads as a redundant filter. Offer the way back instead.
-        back_label = _DOC_TYPE_PAGE_LABELS.get(doc_type, "Documents")
-        return A(
-            f"← Back to {back_label}",
-            href="/docs" + (f"?type={doc_type}" if doc_type else ""),
-            cls="drafts-tab drafts-tab--active",
-            title=f"Viewing {label.lower()}. Click to return to issued documents.",
-        )
+        # On the drafts view the status cards already show the draft count and the sidebar
+        # leads back to issued documents, so any chip here is redundant. Render nothing.
+        return Span()
     if draft_count == 0:
         return Span()
     return A(
@@ -6765,9 +6726,8 @@ def _list_type_tabs(active: str) -> FT:
 def _list_drafts_tab(draft_count: int, is_active: bool, list_type: str = "") -> FT:
     type_param = f"&type={list_type}" if list_type else ""
     if is_active:
-        # Same rationale as _drafts_tab: on the drafts view the count chip is redundant.
-        return A("← Back to Lists", href="/lists" + (f"?type={list_type}" if list_type else ""),
-                 cls="drafts-tab drafts-tab--active", title="Viewing drafts. Click to return to issued lists.")
+        # Same rationale as _drafts_tab: any chip on the drafts view is redundant.
+        return Span()
     if draft_count == 0:
         return Span()
     return A(f"Drafts ({draft_count})", href=f"/lists?view=drafts{type_param}", cls="drafts-tab")

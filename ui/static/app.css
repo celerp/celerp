@@ -535,8 +535,8 @@ a:hover { text-decoration: underline; }
 .recipe-save-status { margin: 0 0 10px; font-size: 11px; color: var(--c-text2); }
 .recipe-save-status.saved { color: var(--c-green); }
 .recipe-save-status.error { color: var(--c-red); }
-.recipe-showall { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-text2); margin-bottom: 8px; cursor: pointer; }
-.recipe-showall input { margin: 0; }
+/* Pinned combobox action options (add-new, scope toggles): always visible, set apart. */
+.combobox-option--pinned { border-top: 1px solid var(--c-border); color: var(--c-text2); font-style: italic; }
 /* Ghost "add" row: a permanent affordance at the bottom of each recipe table. */
 .recipe-add-row td { background: var(--c-bg2); }
 .recipe-add-row input::placeholder, .recipe-add-row .combobox-input::placeholder { font-style: italic; color: var(--c-text-muted); }

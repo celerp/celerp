@@ -194,10 +194,17 @@ def searchable_select(
     # Current label for display
     display_label = next((lbl for val, lbl in normalized if val == value), value)
 
-    opt_els = [
-        Div(label, cls=f"combobox-option{' combobox-option--new' if val.startswith('__new__') else ''}", data_value=val)
-        for val, label in normalized
-    ]
+    def _opt_cls(val: str) -> str:
+        # "__"-prefixed values are action options (add-new, scope toggles): pinned so they
+        # survive typing/filtering; "__new__" additionally gets the add-new styling.
+        cls = "combobox-option"
+        if val.startswith("__"):
+            cls += " combobox-option--pinned"
+        if val.startswith("__new__"):
+            cls += " combobox-option--new"
+        return cls
+
+    opt_els = [Div(label, cls=_opt_cls(val), data_value=val) for val, label in normalized]
     opt_els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty", style="display:none"))
 
     wrap_attrs: dict = {"cls": "combobox-wrap"}

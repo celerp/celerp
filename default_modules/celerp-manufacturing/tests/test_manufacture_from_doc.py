@@ -1,6 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""API tests: create manufacturing orders from a document (one per recipe-bearing line) + JIT summary."""
+"""API tests: manufacturing orders are created automatically from open sales documents.
+
+Listing orders (GET /manufacturing) ensures one order per recipe-bearing document line,
+idempotently (deterministic order ids per doc+line+fulfill-cycle). There is no manual
+create step. Also covers the JIT components-summary endpoint.
+"""
 from __future__ import annotations
 
 import uuid
@@ -38,51 +43,83 @@ async def _doc(client, token, line_items, doc_type="invoice") -> str:
     return r.json()["id"]
 
 
+async def _orders(client, token) -> list[dict]:
+    return (await client.get("/manufacturing", headers=_h(token))).json()["items"]
+
+
 @pytest.mark.asyncio
-async def test_one_order_per_recipe_line_others_skipped(client) -> None:
+async def test_orders_auto_created_one_per_recipe_line(client) -> None:
     token = await _register(client)
     gold = await _item(client, token, "GOLD", quantity=100, cost_total=8000)
     ring = await _item(client, token, "RING")
-    widget = await _item(client, token, "WIDGET")  # no recipe
+    widget = await _item(client, token, "WIDGET")  # no recipe: never drives an order
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
-
     doc = await _doc(client, token, [
         {"item_id": ring, "sku": "RING", "name": "Ring", "quantity": 2, "unit_price": 100},
         {"item_id": widget, "sku": "WIDGET", "name": "Widget", "quantity": 1, "unit_price": 50},
     ])
 
-    r = await client.post(f"/manufacturing/documents/{doc}/orders", headers=_h(token))
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["created_count"] == 1
-    assert body["skipped_count"] == 1
-    assert body["skipped"][0]["reason"] == "no recipe defined"
-
-    # The created order's inputs must equal expand_recipe: gold x (5 * 2) = 10.
-    order_id = body["created"][0]["order_id"]
-    order = (await client.get(f"/manufacturing/{order_id}", headers=_h(token))).json()
+    mine = [o for o in await _orders(client, token) if o.get("source_doc_id") == doc]
+    assert len(mine) == 1
+    order = mine[0]
+    # Inputs expanded from the recipe: gold x (5 * 2) = 10; provenance stamped.
     assert order["inputs"] == [{"item_id": gold, "quantity": 10.0}]
     assert order["expected_outputs"][0]["sku"] == "RING"
     assert order["expected_outputs"][0]["quantity"] == 2.0
-    assert order["source_doc_id"] == doc
+    assert order["source_line_id"] is not None
 
 
 @pytest.mark.asyncio
-async def test_reinvoke_is_idempotent(client) -> None:
+async def test_auto_sync_is_idempotent(client) -> None:
     token = await _register(client)
     gold = await _item(client, token, "GOLD2", quantity=100, cost_total=8000)
     ring = await _item(client, token, "RING2")
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 3}])
     doc = await _doc(client, token, [{"item_id": ring, "sku": "RING2", "name": "Ring", "quantity": 4, "unit_price": 1}])
 
-    first = (await client.post(f"/manufacturing/documents/{doc}/orders", headers=_h(token))).json()
-    assert first["created_count"] == 1
-    second = (await client.post(f"/manufacturing/documents/{doc}/orders", headers=_h(token))).json()
-    assert second["created_count"] == 0
-    assert second["skipped"][0]["reason"] == "order already created"
-    # Still exactly one order overall.
-    orders = (await client.get("/manufacturing", headers=_h(token))).json()["items"]
-    assert len([o for o in orders if o.get("source_doc_id") == doc]) == 1
+    first = [o for o in await _orders(client, token) if o.get("source_doc_id") == doc]
+    second = [o for o in await _orders(client, token) if o.get("source_doc_id") == doc]
+    assert len(first) == 1 and len(second) == 1
+    assert first[0]["id"] == second[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_order_is_not_resurrected(client) -> None:
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDC", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RINGC")
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    doc = await _doc(client, token, [{"item_id": ring, "sku": "RINGC", "name": "Ring", "quantity": 1, "unit_price": 1}])
+
+    order = [o for o in await _orders(client, token) if o.get("source_doc_id") == doc][0]
+    assert (await client.post(f"/manufacturing/{order['id']}/cancel", headers=_h(token), json={"reason": "test"})).status_code == 200
+    mine = [o for o in await _orders(client, token) if o.get("source_doc_id") == doc]
+    assert len(mine) == 1 and mine[0]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_auto_create_from_list_doc(client) -> None:
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDL", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RINGL")
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    lst = await _doc(client, token, [{"item_id": ring, "sku": "RINGL", "name": "Ring", "quantity": 2, "unit_price": 1}], doc_type="list")
+    mine = [o for o in await _orders(client, token) if o.get("source_doc_id") == lst]
+    assert len(mine) == 1 and mine[0]["inputs"][0]["quantity"] == 10.0
+
+
+@pytest.mark.asyncio
+async def test_voided_doc_does_not_drive_orders(client) -> None:
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDV", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RINGV")
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    doc = await _doc(client, token, [{"item_id": ring, "sku": "RINGV", "name": "Ring", "quantity": 1, "unit_price": 1}])
+    # Void before any order sync has run for this doc.
+    r = await client.post(f"/docs/{doc}/void", headers=_h(token), json={"reason": "test"})
+    if r.status_code != 200:
+        pytest.skip(f"void not permitted in this doc state: {r.status_code}")
+    assert [o for o in await _orders(client, token) if o.get("source_doc_id") == doc] == []
 
 
 @pytest.mark.asyncio
@@ -100,44 +137,3 @@ async def test_components_summary_nested(client) -> None:
     subs = {s["item_id"]: s["quantity"] for s in summary["sub_assemblies"]}
     assert raws == {gold: 6.0}              # 1 * 3 * 2
     assert subs == {ring: 1.0, sub: 3.0}
-
-
-@pytest.mark.asyncio
-async def test_demand_queue_lists_unordered_lines_then_empties(client) -> None:
-    token = await _register(client)
-    gold = await _item(client, token, "GOLDD", quantity=100, cost_total=8000)
-    ring = await _item(client, token, "RINGD")
-    plain = await _item(client, token, "PLAIND")
-    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
-    doc = await _doc(client, token, [
-        {"item_id": ring, "sku": "RINGD", "name": "Ring", "quantity": 2, "unit_price": 1},
-        {"item_id": plain, "sku": "PLAIND", "name": "Plain", "quantity": 1, "unit_price": 1},
-    ])
-
-    demand = (await client.get("/manufacturing/demand", headers=_h(token))).json()["items"]
-    mine = [d for d in demand if d["doc_id"] == doc]
-    # Only the recipe-bearing line is demand; the plain line is not.
-    assert len(mine) == 1 and mine[0]["sku"] == "RINGD" and mine[0]["quantity"] == 2.0
-
-    # Creating the orders clears the demand row (idempotent order ids).
-    assert (await client.post(f"/manufacturing/documents/{doc}/orders", headers=_h(token))).status_code == 200
-    demand = (await client.get("/manufacturing/demand", headers=_h(token))).json()["items"]
-    assert [d for d in demand if d["doc_id"] == doc] == []
-
-
-@pytest.mark.asyncio
-async def test_manufacture_unknown_doc_404(client) -> None:
-    token = await _register(client)
-    r = await client.post("/manufacturing/documents/doc:nope/orders", headers=_h(token))
-    assert r.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_manufacture_from_list(client) -> None:
-    token = await _register(client)
-    gold = await _item(client, token, "GOLDL", quantity=100, cost_total=8000)
-    ring = await _item(client, token, "RINGL")
-    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
-    lst = await _doc(client, token, [{"item_id": ring, "sku": "RINGL", "name": "Ring", "quantity": 2, "unit_price": 1}], doc_type="list")
-    r = await client.post(f"/manufacturing/documents/{lst}/orders", headers=_h(token))
-    assert r.status_code == 200 and r.json()["created_count"] == 1
