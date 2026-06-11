@@ -131,19 +131,23 @@ def test_no_fulfill_button_on_draft(page, ui_server, draft_doc_id):
 
 
 def test_fulfill_button_on_final_doc(page, ui_server, final_doc_id):
-    """FULFILL-02: Finalized invoice shows Fulfill / Deduct Inventory button."""
+    """FULFILL-02: A finalized invoice exposes the per-line 'Fulfill Selected' action.
+
+    Fulfillment moved from a doc-level "Fulfill / Deduct Inventory" button to a
+    line-item bulk action: an option (value=li-fulfill) in the #li-bulk-select
+    dropdown above the line items.
+    """
     page.goto(f"{ui_server}/docs/{final_doc_id}", wait_until="domcontentloaded")
     _assert_no_crash(page, "final doc detail")
     _save_screenshot(page, "02-final-doc-with-fulfill-button")
 
-    # Look for the exact button text we set
-    fulfill_btn = page.locator("button:has-text('Fulfill / Deduct Inventory')").first
-    if fulfill_btn.count() == 0:
-        pytest.skip("Fulfill button not found - inventory module likely not enabled")
-    assert fulfill_btn.is_visible(), "Fulfill button should be visible on final doc"
-    # Verify tooltip is present
-    title_attr = fulfill_btn.get_attribute("title")
-    assert title_attr and len(title_attr) > 10, "Fulfill button must have a descriptive tooltip"
+    fulfill_opt = page.locator('#li-bulk-select option[value="li-fulfill"]')
+    assert fulfill_opt.count() > 0, (
+        "Per-line 'Fulfill Selected' action missing on a finalized invoice with line items"
+    )
+    assert "Fulfill" in (fulfill_opt.first.text_content() or ""), (
+        f"Unexpected fulfill option label: {fulfill_opt.first.text_content()!r}"
+    )
 
 
 def test_fulfill_action_marks_fulfilled_and_shows_revert(page, ui_server, api, final_doc):
