@@ -154,10 +154,15 @@ def test_select_all_then_delete(page, ui_server, api):
     assert api.get(f"/docs/{id2}").status_code == 404
 
 
-def test_auto_redirect_drafts_when_no_finals(page, ui_server, api):
-    """BULK-DOC-05: Visiting /docs?type=invoice with no finals but with drafts auto-redirects to drafts view."""
-    # Ensure at least one draft exists
-    _create_draft(api, "invoice")
+def test_auto_redirect_drafts_when_no_finals(page, ui_server, fresh_company):
+    """BULK-DOC-05: Visiting /docs?type=invoice with no finals but with drafts auto-redirects to drafts view.
+
+    Uses an isolated, empty company (fresh_company) — the shared session company
+    accumulates finalized invoices from other tests, which would suppress the
+    "no finals" redirect.
+    """
+    # Ensure at least one draft exists (in the fresh company)
+    _create_draft(fresh_company, "invoice")
 
     # Navigate to invoice list (no type=draft, no view=drafts)
     page.goto(f"{ui_server}/docs?type=invoice", wait_until="domcontentloaded")

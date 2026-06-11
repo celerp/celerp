@@ -259,6 +259,38 @@ def api(api_server, seeded_user):
         yield client
 
 
+def _set_auth_cookie(browser_context, token: str) -> None:
+    browser_context.clear_cookies()
+    browser_context.add_cookies([{
+        "name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/",
+    }])
+
+
+@pytest.fixture
+def fresh_company(api_server, seeded_user, browser_context, api):
+    """A brand-new, empty company for tests that need a clean slate, isolated from
+    the shared session company's accumulated data (drafts/finals/contacts).
+
+    Creates the company (POST /companies), points BOTH the browser page (auth
+    cookie) and the returned API client at it, and restores the session company
+    afterward so other tests are unaffected.
+    """
+    import uuid as _uuid
+    r = api.post("/companies", json={"name": f"Isolated {_uuid.uuid4().hex[:6]}"})
+    assert r.status_code in (200, 201), f"create company failed: {r.text}"
+    new_token = r.json()["access_token"]
+
+    _set_auth_cookie(browser_context, new_token)
+    client = httpx.Client(
+        base_url=api_server, headers={"Authorization": f"Bearer {new_token}"}, timeout=10
+    )
+    try:
+        yield client
+    finally:
+        client.close()
+        _set_auth_cookie(browser_context, seeded_user["access_token"])
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _reset_event_loop_after_playwright():
     """Playwright's sync API creates and closes its own asyncio event loop.
