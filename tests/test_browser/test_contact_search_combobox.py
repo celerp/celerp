@@ -43,10 +43,10 @@ def _load(page, url):
 def test_contact_field_has_server_search_url(page, contact_search_page):
     """After clicking the contact cell, the combobox wrap must carry data-search-url."""
     _load(page, contact_search_page)
-    # Click the contact display cell to open the edit combobox
-    contact_cell = page.locator(".editable-cell").filter(has_text="Select").or_(
-        page.locator("[hx-get*='field/contact_id/edit']")
-    ).first
+    # Click the contact display cell to open the edit combobox. Target the
+    # contact field specifically — a bare has_text="Select" can match another
+    # editable cell (e.g. a line-item picker) that appears first in the DOM.
+    contact_cell = page.locator("[hx-get*='field/contact_id/edit']").first
     contact_cell.click()
     page.wait_for_selector(".combobox-wrap[data-search-url]", timeout=5000)
     wrap = page.locator(".combobox-wrap[data-search-url]").first
