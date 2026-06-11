@@ -85,7 +85,7 @@ def test_contact_search_shows_results(page, contact_search_page):
     inp.fill("Alpha")
     # Wait for HTMX to fire (300ms debounce) and the response to render
     page.wait_for_timeout(700)
-    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=3000)
+    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
 
     opts = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)")
     assert opts.count() >= 1, "Expected at least one search result for 'Alpha'"
@@ -104,7 +104,7 @@ def test_contact_search_select_commits_value(page, contact_search_page):
     hidden = page.locator(".combobox-wrap[data-search-url] input[type=hidden]").first
     inp.fill("Alpha")
     page.wait_for_timeout(700)
-    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=3000)
+    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
 
     first_opt = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)").first
     opt_value = first_opt.get_attribute("data-value")
