@@ -1040,6 +1040,41 @@ async def create_mfg_order(token: str, data: dict) -> dict:
         return _raise(await c.post("/manufacturing", json=data)).json()
 
 
+async def set_item_recipe(token: str, entity_id: str, recipe: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/manufacturing/items/{entity_id}/recipe", json=recipe)).json()
+
+
+async def recalculate_item_cost(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/items/{entity_id}/recalculate")).json()
+
+
+async def recost_dependents(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/items/{entity_id}/recost-dependents")).json()
+
+
+async def apply_recipe_cost(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/items/{entity_id}/apply-cost")).json()
+
+
+async def build_item(token: str, item_id: str, quantity: float) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/items/{item_id}/build", json={"quantity": quantity})).json()
+
+
+async def create_orders_from_document(token: str, doc_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/documents/{doc_id}/orders")).json()
+
+
+async def document_components_summary(token: str, doc_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/manufacturing/documents/{doc_id}/components-summary")).json()
+
+
 async def start_mfg_order(token: str, order_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/{order_id}/start")).json()
@@ -1068,31 +1103,6 @@ async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None)
 # ---------------------------------------------------------------------------
 # BOM
 # ---------------------------------------------------------------------------
-
-async def list_boms(token: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get("/manufacturing/boms")).json()
-
-
-async def get_bom(token: str, bom_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/manufacturing/boms/{bom_id}")).json()
-
-
-async def create_bom(token: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing/boms", json=data)).json()
-
-
-async def update_bom(token: str, bom_id: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.put(f"/manufacturing/boms/{bom_id}", json=data)).json()
-
-
-async def delete_bom(token: str, bom_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.delete(f"/manufacturing/boms/{bom_id}")).json()
-
 
 # ---------------------------------------------------------------------------
 # Scanning disabled — module not yet complete

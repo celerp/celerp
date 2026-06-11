@@ -486,6 +486,24 @@ a:hover { text-decoration: underline; }
 .detail-table .cell--number,
 .detail-table .cell-number,
 .detail-table .cell-money { text-align: left; font-family: inherit; }
+
+/* Manufacturing recipe tab */
+/* minmax(0,…) lets columns shrink below their content width so the wide materials
+   table can't blow the grid out and clip the cost summary. */
+.recipe-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 20px; margin-bottom: 20px; align-items: start; }
+@media (max-width: 900px) { .recipe-grid { grid-template-columns: 1fr; } }
+.recipe-block { padding: 14px; }
+.recipe-block .section-title { margin-bottom: 8px; }
+.recipe-block > .btn { margin-top: 10px; }
+.recipe-cost-summary { padding: 14px; }
+.recipe-side-card { padding: 14px; }
+.recipe-cost-summary .detail-table td.recipe-amount { text-align: right; font-variant-numeric: tabular-nums; }
+.recipe-cost-summary .cell--total { font-weight: 600; }
+.recipe-actions { display: flex; gap: 8px; align-items: center; margin-top: 16px; }
+.data-table thead th.cell--number { text-align: right; }
+.empty-row td { color: var(--c-text2); font-style: italic; text-align: center; }
+.recipe-row--orphan .combobox-input { border-color: var(--c-red); }
+.hint { font-size: 11px; color: var(--c-text2); margin-top: 6px; }
 .field-tooltip {
     display: inline-flex;
     align-items: center;
@@ -842,7 +860,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .import-fill-input { flex: 1; min-width: 60px; padding: 3px 6px; font-size: 11px; background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 4px; color: var(--c-text); }
 .import-hint--fill { color: var(--c-text2); }
 .import-spinner-label { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--c-text2); }
-.flash--success { background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3); color: var(--c-green); }
 
 /* Step indicator */
 .import-steps { display: flex; align-items: center; gap: 0; margin-bottom: 20px; padding: 0; }

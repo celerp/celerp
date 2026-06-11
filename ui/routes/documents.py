@@ -675,6 +675,90 @@ async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool)
     )
 
 
+_MANUFACTURABLE_DOC_TYPES = ("invoice", "list", "quotation")
+
+
+def _doc_manufacture_mount(doc_id: str, doc_type: str) -> FT | str:
+    """Lazily-loaded manufacturing panel mount — only for sales docs you'd build for."""
+    if doc_type not in _MANUFACTURABLE_DOC_TYPES:
+        return ""
+    return Div(P("Loading…", cls="hint"), hx_get=f"/docs/{doc_id}/manufacture-panel",
+               hx_trigger="load", hx_swap="outerHTML", id="doc-mfg-panel")
+
+
+def _doc_manufacture_panel(doc_id: str, summary: dict, currency: str | None, result: dict | None = None) -> FT:
+    """Render the Manufacturing panel for a document: create-orders action + JIT components summary."""
+    subs = summary.get("sub_assemblies", []) or []
+    raws = summary.get("raw_materials", []) or []
+
+    flash_el = ""
+    if result is not None:
+        created = result.get("created", [])
+        skipped = result.get("skipped", [])
+        c, s = len(created), len(skipped)
+        only_dupes = c == 0 and s > 0 and all(sk.get("reason") == "order already created" for sk in skipped)
+        if only_dupes:
+            bits = [Span("All manufacturing orders for this document already exist. "),
+                    A("View orders", href="/manufacturing")]
+            kind = "success"
+        else:
+            bits = [Span(f"Created {c} manufacturing order{'' if c == 1 else 's'}. ")]
+            if created:  # link to each created order so the user knows where they went (GDR §2b)
+                bits.append(Span("View: "))
+                for i, o in enumerate(created):
+                    if i:
+                        bits.append(Span(", "))
+                    bits.append(A(o.get("label") or "order", href=f"/manufacturing/{o['order_id']}"))
+                bits.append(Span(". "))
+            if s:
+                shown = skipped[:6]
+                reasons = "; ".join(f"{sk.get('label')} — {sk.get('reason')}" for sk in shown)
+                more = f" and {s - 6} more" if s > 6 else ""
+                bits.append(Span(f"Skipped {s}: {reasons}{more}."))
+            kind = "success" if c else "warning"
+        flash_el = Div(*bits, cls=f"flash flash--{kind}", role="status")
+
+    if not subs and not raws and result is None:
+        return Div(
+            H3("Manufacturing", cls="section-title"),
+            P("No items on this document have a manufacturing recipe.", cls="hint"),
+            id="doc-mfg-panel", cls="detail-card recipe-block",
+        )
+
+    def _qty_rows(items):
+        return [Tr(Td(it.get("sku") or it.get("item_id")), Td(it.get("name") or EMPTY),
+                   Td(f"{float(it.get('quantity', 0)):g}", cls="cell--number")) for it in items]
+
+    tables = []
+    if subs:
+        tables.append(Div(
+            H3("Sub-assemblies to build", cls="section-title"),
+            Table(Thead(Tr(Th("SKU"), Th("Name"), Th("Quantity", cls="cell--number"))),
+                  Tbody(*_qty_rows(subs)), cls="data-table"),
+            cls="recipe-block"))
+    if raws:
+        tables.append(Div(
+            H3("Raw materials required", cls="section-title"),
+            Table(Thead(Tr(Th("SKU"), Th("Name"), Th("Quantity", cls="cell--number"))),
+                  Tbody(*_qty_rows(raws)), cls="data-table"),
+            cls="recipe-block"))
+
+    create_btn = Button(
+        "Create manufacturing order(s)", type="button", cls="btn btn--primary mt-sm",
+        hx_post=f"/docs/{doc_id}/manufacture", hx_target="#doc-mfg-panel", hx_swap="outerHTML",
+    ) if (subs or raws) else ""
+
+    return Div(
+        H3("Manufacturing", cls="section-title"),
+        flash_el,
+        P("One order per line that has a recipe; inputs auto-expand from each item's components. "
+          "Clicking again is safe — existing orders are not duplicated.", cls="hint"),
+        create_btn,
+        *tables,
+        id="doc-mfg-panel", cls="detail-card recipe-block",
+    )
+
+
 def setup_routes(app):
 
     @app.get("/docs")
@@ -1731,10 +1815,40 @@ celerpUpdateBulkAlloc();
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
             _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses),
+            _doc_manufacture_mount(entity_id, doc_type),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
         )
+
+    @app.get("/docs/{entity_id}/manufacture-panel")
+    async def doc_manufacture_panel(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            summary = await api.document_components_summary(token, entity_id)
+            company = await api.get_company(token)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="doc-mfg-panel")
+        return _doc_manufacture_panel(entity_id, summary, company.get("currency"))
+
+    @app.post("/docs/{entity_id}/manufacture")
+    async def doc_manufacture(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            result = await api.create_orders_from_document(token, entity_id)
+            summary = await api.document_components_summary(token, entity_id)
+            company = await api.get_company(token)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="doc-mfg-panel")
+        return _doc_manufacture_panel(entity_id, summary, company.get("currency"), result=result)
 
     @app.get("/docs/{entity_id}/field/{field}/display")
     async def doc_field_display(request: Request, entity_id: str, field: str):

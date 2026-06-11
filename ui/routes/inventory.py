@@ -20,7 +20,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, INACTIVE_ITEM_STATUSES
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, INACTIVE_ITEM_STATUSES
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from ui.i18n import t, get_lang
@@ -1316,6 +1316,134 @@ function celerpPrintLabel(entityId, templateId) {
             for tpl in templates
         ]
         return Div(*items, Script(print_js))
+
+    async def _recipe_section_response(token: str, entity_id: str, rows: dict | None = None,
+                                       flash_msg: str | None = None, flash_kind: str = "success"):
+        """Fetch item + item list + currency and render the Manufacturing section."""
+        item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
+        items = (await api.list_items(token, {"limit": 1000})).get("items", [])
+        return _recipe_section(entity_id, item, items, company.get("currency"), rows=rows,
+                               flash_msg=flash_msg, flash_kind=flash_kind)
+
+    @app.get("/api/items/{entity_id}/recipe-section")
+    async def recipe_section(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            return await _recipe_section_response(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+
+    @app.post("/api/items/{entity_id}/recipe-section")
+    async def recipe_section_edit(request: Request, entity_id: str):
+        """Add/remove a recipe row and re-render (no persistence — in-progress edit)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        rows = _parse_recipe_form(form)
+        action = request.query_params.get("action", "")
+        try:
+            index = int(request.query_params.get("index", "-1"))
+        except ValueError:
+            index = -1
+        if action == "add_component":
+            rows["components"].append({"item_id": "", "quantity": "1", "unit": ""})
+        elif action == "add_labor":
+            rows["labor"].append({"operation": "", "hours": "", "rate": ""})
+        elif action == "add_overhead":
+            rows["overhead"].append({"description": "", "amount": ""})
+        elif action == "remove_component" and 0 <= index < len(rows["components"]):
+            rows["components"].pop(index)
+        elif action == "remove_labor" and 0 <= index < len(rows["labor"]):
+            rows["labor"].pop(index)
+        elif action == "remove_overhead" and 0 <= index < len(rows["overhead"]):
+            rows["overhead"].pop(index)
+        elif action == "clear":
+            rows["components"], rows["labor"], rows["overhead"] = [], [], []
+            rows["output_qty"] = "1"
+        try:
+            return await _recipe_section_response(token, entity_id, rows=rows)
+        except APIError as e:
+            return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+
+    @app.post("/api/items/{entity_id}/recipe")
+    async def save_item_recipe(request: Request, entity_id: str):
+        """Persist the recipe via the manufacturing API, then re-render with a result flash."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        rows = _parse_recipe_form(form)
+        payload = _recipe_to_payload(rows)
+        try:
+            await api.set_item_recipe(token, entity_id, payload)
+            return await _recipe_section_response(token, entity_id, flash_msg="Recipe saved.", flash_kind="success")
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            # Validation failure (GDR §2e): keep the user's rows, show the reason.
+            try:
+                return await _recipe_section_response(token, entity_id, rows=rows, flash_msg=e.detail, flash_kind="error")
+            except APIError:
+                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+
+    @app.post("/api/items/{entity_id}/recalculate-cost")
+    async def recalculate_item_cost(request: Request, entity_id: str):
+        """Re-roll this item's cost from current component costs (mark-to-market, one item)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            await api.recalculate_item_cost(token, entity_id)
+            return await _recipe_section_response(token, entity_id, flash_msg="Cost recalculated from current component costs.", flash_kind="success")
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            try:
+                return await _recipe_section_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
+            except APIError:
+                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+
+    @app.post("/api/items/{entity_id}/apply-cost")
+    async def apply_recipe_cost(request: Request, entity_id: str):
+        """Copy the recipe's rolled standard cost into the item's cost price."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            res = await api.apply_recipe_cost(token, entity_id)
+            cp = res.get("cost_price")
+            return await _recipe_section_response(token, entity_id, flash_msg=f"Cost price set to {cp} from the recipe.", flash_kind="success")
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            try:
+                return await _recipe_section_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
+            except APIError:
+                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+
+    @app.post("/api/items/{entity_id}/recost-dependents")
+    async def recost_dependents(request: Request, entity_id: str):
+        """Re-cost every item that uses this one as a component (mark-to-market, the gold case)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            result = await api.recost_dependents(token, entity_id)
+            n = result.get("count", 0)
+            msg = f"Re-costed {n} dependent item{'s' if n != 1 else ''} from current costs." if n else "No dependent items to re-cost."
+            return await _recipe_section_response(token, entity_id, flash_msg=msg, flash_kind="success" if n else "warning")
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            try:
+                return await _recipe_section_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
+            except APIError:
+                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     @app.get("/api/items/{entity_id}/field/{field}/edit")
     async def field_edit_cell(request: Request, entity_id: str, field: str):
@@ -4658,6 +4786,276 @@ def _item_files_section(entity_id: str, item: dict) -> FT:
     return _shared_files_section("item", entity_id, files, can_set_hero=True, show_linked=False)
 
 
+_RECIPE_MAX_ROWS = 200
+
+
+def _recipe_money(v, currency: str | None) -> str:
+    """Format a derived cost; '--' (not blank) for unset, per GDR §2k."""
+    if v in (None, ""):
+        return EMPTY
+    return f"{currency or ''}{float(v):,.2f}"
+
+
+def _parse_recipe_form(form) -> dict:
+    """Parse the recipe form into ordered, possibly-partial rows.
+
+    Tolerates index gaps (a mid-list row may be missing between a remove action and
+    the re-render that renumbers). Rows are kept verbatim so the user never loses
+    in-progress edits on add/remove — validation happens only on save (GDR §2e).
+    """
+    def _rows(parse_one):
+        out = []
+        for i in range(_RECIPE_MAX_ROWS):
+            row = parse_one(i)
+            if row is not None:
+                out.append(row)
+        return out
+
+    def _component(i):
+        if f"comp_item_{i}" not in form and f"comp_qty_{i}" not in form:
+            return None
+        return {
+            "item_id": str(form.get(f"comp_item_{i}", "")).strip(),
+            "quantity": str(form.get(f"comp_qty_{i}", "")).strip(),
+            "unit": str(form.get(f"comp_unit_{i}", "")).strip(),
+        }
+
+    def _labor(i):
+        if f"labor_op_{i}" not in form and f"labor_hours_{i}" not in form:
+            return None
+        return {
+            "operation": str(form.get(f"labor_op_{i}", "")).strip(),
+            "hours": str(form.get(f"labor_hours_{i}", "")).strip(),
+            "rate": str(form.get(f"labor_rate_{i}", "")).strip(),
+        }
+
+    def _overhead(i):
+        if f"oh_desc_{i}" not in form and f"oh_amount_{i}" not in form:
+            return None
+        return {
+            "description": str(form.get(f"oh_desc_{i}", "")).strip(),
+            "amount": str(form.get(f"oh_amount_{i}", "")).strip(),
+        }
+
+    return {
+        "output_qty": str(form.get("output_qty", "1")).strip() or "1",
+        "components": _rows(_component),
+        "labor": _rows(_labor),
+        "overhead": _rows(_overhead),
+    }
+
+
+def _recipe_to_payload(rows: dict) -> dict:
+    """Build the API recipe payload from parsed rows, dropping blank rows.
+
+    A component counts only with an item selected and qty > 0; a labor line needs an
+    operation; an overhead line needs a description. Derived costs are computed server-side.
+    """
+    def _num(v, default=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    components = [
+        {"item_id": r["item_id"], "quantity": _num(r["quantity"]), "unit": r["unit"] or None}
+        for r in rows["components"] if r["item_id"] and _num(r["quantity"]) > 0
+    ]
+    labor = [
+        {"operation": r["operation"], "hours": _num(r["hours"]), "rate": _num(r["rate"]), "source": "manual"}
+        for r in rows["labor"] if r["operation"]
+    ]
+    overhead = [
+        {"description": r["description"], "amount": _num(r["amount"])}
+        for r in rows["overhead"] if r["description"]
+    ]
+    return {"output_qty": _num(rows["output_qty"], 1.0) or 1.0, "components": components, "labor": labor, "overhead": overhead}
+
+
+def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
+                    rows: dict | None = None, flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+    """The Manufacturing tab: editable Materials / Labor / Overhead tables + Cost Summary.
+
+    On first load (rows is None) the persisted recipe is shown. After add/remove the
+    caller passes the in-progress ``rows`` so nothing is lost. All editing is on-page
+    via HTMX — no popups, no full reload (GDR §2f).
+    """
+    recipe = item.get("recipe") or {}
+    if rows is None:
+        rows = {
+            "output_qty": str(recipe.get("output_qty", 1) or 1),
+            "components": [
+                {"item_id": c.get("item_id", ""), "quantity": str(c.get("quantity", "")), "unit": c.get("unit") or ""}
+                for c in recipe.get("components", [])
+            ],
+            "labor": [
+                {"operation": l.get("operation", ""), "hours": str(l.get("hours", "")), "rate": str(l.get("rate", ""))}
+                for l in recipe.get("labor", [])
+            ],
+            "overhead": [
+                {"description": o.get("description", ""), "amount": str(o.get("amount", ""))}
+                for o in recipe.get("overhead", [])
+            ],
+        }
+
+    # list_items flattens the projection id onto "id" (see _flatten_item); exclude the
+    # item being edited so it can't be a component of itself.
+    item_opts = []
+    for it in items:
+        iid = it.get("id") or it.get("entity_id") or ""
+        if iid and iid != entity_id:
+            item_opts.append((iid, f"{it.get('sku', '')} — {it.get('name', '')}".strip(" —")))
+
+    sec = f"/api/items/{entity_id}/recipe-section"
+    _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML"}
+
+    # Orphan guard: a saved component whose item was since deleted still renders,
+    # flagged "(unavailable)" so the user can see and fix it (GDR §2e — surface, don't hide).
+    valid_ids = {iid for iid, _ in item_opts}
+    orphan_ids = sorted({r["item_id"] for r in rows["components"] if r["item_id"] and r["item_id"] not in valid_ids})
+    comp_opts = item_opts + [(oid, f"{oid} (unavailable)") for oid in orphan_ids]
+
+    def _comp_row(i, r):
+        orphan = bool(r["item_id"]) and r["item_id"] not in valid_ids
+        return Tr(
+            Td(searchable_select(f"comp_item_{i}", comp_opts, value=r["item_id"], placeholder="Search SKU…")),
+            Td(Input(type="number", name=f"comp_qty_{i}", value=r["quantity"], step="any", min="0", cls="cell--number"), cls="cell--number"),
+            Td(Input(type="text", name=f"comp_unit_{i}", value=r["unit"], placeholder="pieces")),
+            Td(Button("×", type="button", title="Remove component", cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_component&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row recipe-row--orphan" if orphan else "data-row",
+        )
+
+    def _labor_row(i, r):
+        return Tr(
+            Td(Input(type="text", name=f"labor_op_{i}", value=r["operation"], placeholder="e.g. Assembly")),
+            Td(Input(type="number", name=f"labor_hours_{i}", value=r["hours"], step="any", min="0", cls="cell--number"), cls="cell--number"),
+            Td(Input(type="number", name=f"labor_rate_{i}", value=r["rate"], step="any", min="0", cls="cell--number"), cls="cell--number"),
+            Td(Button("×", type="button", title="Remove operation", cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_labor&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row",
+        )
+
+    def _oh_row(i, r):
+        return Tr(
+            Td(Input(type="text", name=f"oh_desc_{i}", value=r["description"], placeholder="e.g. Packaging")),
+            Td(Input(type="number", name=f"oh_amount_{i}", value=r["amount"], step="any", min="0", cls="cell--number"), cls="cell--number"),
+            Td(Button("×", type="button", title="Remove cost", cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_overhead&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row",
+        )
+
+    cur_label = f" ({currency})" if currency else ""
+    materials = Table(
+        Thead(Tr(Th("Component SKU"), Th("Quantity", cls="cell--number"), Th("Unit"), Th("", cls="cell--actions"))),
+        Tbody(*[_comp_row(i, r) for i, r in enumerate(rows["components"])]
+              or [Tr(Td("No components yet — add the SKUs this item is built from.", colspan="4", cls="empty-row"))]),
+        cls="data-table",
+    )
+    labor = Table(
+        Thead(Tr(Th("Operation"), Th("Hours", cls="cell--number"), Th(f"Rate / hr{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Tbody(*[_labor_row(i, r) for i, r in enumerate(rows["labor"])]
+              or [Tr(Td("No labor yet.", colspan="4", cls="empty-row"))]),
+        cls="data-table",
+    )
+    overhead = Table(
+        Thead(Tr(Th("Description"), Th(f"Amount{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Tbody(*[_oh_row(i, r) for i, r in enumerate(rows["overhead"])]
+              or [Tr(Td("No overhead yet.", colspan="3", cls="empty-row"))]),
+        cls="data-table",
+    )
+
+    has_recipe = bool((item.get("recipe") or {}).get("components"))
+
+    # Mark-to-market: which items use THIS one as a component (directly or transitively)?
+    from celerp_manufacturing.costing import where_used as _where_used
+    deps = {
+        (it.get("id") or it.get("entity_id")): {
+            c.get("item_id") for c in (it.get("recipe") or {}).get("components", []) if c.get("item_id")
+        }
+        for it in items if (it.get("id") or it.get("entity_id"))
+    }
+    used_by = _where_used(entity_id, deps)
+
+    def _summary_row(label, key, total=False):
+        return Tr(
+            Td(label, cls="detail-label detail-label--total" if total else "detail-label"),
+            Td(_recipe_money(recipe.get(key), currency), cls="recipe-amount cell--total" if total else "recipe-amount"),
+        )
+
+    cost_children = [
+        H3("Cost summary", cls="section-title"),
+        Table(Tbody(
+            _summary_row("Materials", "materials_cost"),
+            _summary_row("Labor", "labor_cost"),
+            _summary_row("Overhead", "overhead_cost"),
+            _summary_row("Unit cost", "unit_cost", total=True),
+        ), cls="detail-table"),
+        P("Standard cost, rolled up from current component costs. It does not update on its own when component prices change — click Recalculate cost.", cls="hint"),
+    ]
+    if has_recipe:
+        cost_children.append(Div(
+            Button("Recalculate cost", type="button", cls="btn btn--secondary btn--xs",
+                   hx_post=f"/api/items/{entity_id}/recalculate-cost", **_htmx,
+                   title="Re-roll this item's cost from the current cost of its components (does not update parent items — use Re-cost dependents on those)"),
+            Button("Apply to cost price", type="button", cls="btn btn--secondary btn--xs",
+                   hx_post=f"/api/items/{entity_id}/apply-cost", **_htmx,
+                   title="Copy this rolled standard cost into the item's cost price (Pricing tab)"),
+            cls="recipe-actions mt-sm",
+        ))
+    right_col = [Div(*cost_children, cls="detail-card recipe-cost-summary")]
+    if used_by:
+        n = len(used_by)
+        right_col.append(Div(
+            H3("Used in other recipes", cls="section-title"),
+            P(f"This item is used by {n} other item{'' if n == 1 else 's'} (directly or indirectly). Re-cost them all from current component prices in one step.", cls="hint"),
+            Button("Re-cost dependents", type="button", cls="btn btn--secondary btn--xs mt-sm",
+                   hx_post=f"/api/items/{entity_id}/recost-dependents", **_htmx,
+                   title="Re-roll every item that uses this one, from current component prices"),
+            cls="detail-card recipe-side-card",
+        ))
+
+    has_rows = any(rows[k] for k in ("components", "labor", "overhead"))
+    flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
+
+    actions = [
+        Button("Update recipe" if has_recipe else "Save recipe", type="button", cls="btn btn--primary",
+               hx_post=f"/api/items/{entity_id}/recipe", **_htmx),
+    ]
+    if has_rows:
+        actions.append(Button("Clear recipe", type="button", cls="btn btn--ghost btn--danger",
+                              hx_post=f"{sec}?action=clear", hx_confirm="Clear all recipe rows? (Undone by leaving without saving.)", **_htmx))
+
+    return Div(
+        Form(
+            flash_el,
+            Div(
+                Label("Output quantity per batch", For="output_qty"),
+                Input(type="number", id="output_qty", name="output_qty", value=rows["output_qty"], min="0.001", step="any", cls="cell--number"),
+                P("Unit cost = total recipe cost ÷ this quantity.", cls="hint"),
+                cls="detail-card recipe-block",
+            ),
+            Div(H3("Materials", cls="section-title"), materials,
+                Button("+ Add component", type="button", cls="btn btn--secondary btn--xs",
+                       hx_post=f"{sec}?action=add_component", **_htmx),
+                cls="detail-card recipe-block"),
+            Div(H3("Labor", cls="section-title"), labor,
+                Button("+ Add operation", type="button", cls="btn btn--secondary btn--xs",
+                       hx_post=f"{sec}?action=add_labor", **_htmx),
+                cls="detail-card recipe-block"),
+            Div(H3("Overhead", cls="section-title"), overhead,
+                Button("+ Add cost", type="button", cls="btn btn--secondary btn--xs",
+                       hx_post=f"{sec}?action=add_overhead", **_htmx),
+                cls="detail-card recipe-block"),
+            Div(*actions, cls="recipe-actions"),
+            id="recipe-form",
+        ),
+        Div(*right_col, cls="recipe-right"),
+        id="recipe-section",
+        cls="recipe-grid",
+    )
+
+
 def _item_detail_tabs(
     entity_id: str,
     item: dict,
@@ -4669,8 +5067,8 @@ def _item_detail_tabs(
     price_lists: list[dict] | None = None,
     cell_renderers: dict | None = None,
 ) -> FT:
-    """Tabbed item detail: Details | Pricing | Activity."""
-    tabs = [("details", "Details"), ("pricing", "Pricing"), ("activity", "Activity")]
+    """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
+    tabs = [("details", "Details"), ("pricing", "Pricing"), ("manufacturing", "Manufacturing"), ("activity", "Activity")]
     tab_bar = Div(
         *[
             A(
@@ -4693,6 +5091,16 @@ def _item_detail_tabs(
                 _detail_table(entity_id, item, pricing_fields, title="Pricing", currency=currency),
                 cls="detail-grid detail-grid--single",
             )
+    elif active_tab == "manufacturing":
+        # Lazy-loaded: the section route fetches the item list for the SKU picker.
+        # Plain full-width wrapper — the swapped-in #recipe-section owns its own grid.
+        panel = Div(
+            P("Loading…", cls="hint"),
+            hx_get=f"/api/items/{entity_id}/recipe-section",
+            hx_trigger="load",
+            hx_swap="outerHTML",
+            id="recipe-section",
+        )
     elif active_tab == "activity":
         panel = Div(
             _ledger_table(ledger),
