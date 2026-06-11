@@ -47,8 +47,11 @@ def splittable_piece_item(api):
     })
     assert r.status_code in {200, 201}, f"create failed: {r.text}"
     item = r.json()
-    # Set pieces attribute so the Pieces column appears in split form
-    rp = api.patch(f"/items/{item['id']}", json={"attributes": {"pieces": 10}})
+    # Set the pieces attribute (the endpoint only reads fields_changed; a raw
+    # {"attributes": ...} body is silently ignored)
+    rp = api.patch(f"/items/{item['id']}", json={
+        "fields_changed": {"pieces": {"old": None, "new": 10}},
+    })
     assert rp.status_code in {200, 201}
     return item
 
@@ -182,36 +185,57 @@ def test_ghost_col_02_no_ghost_cols_after_transform(page, ui_server, api, splitt
 
 
 # ---------------------------------------------------------------------------
-# PIECE-SYNC-01: Changing Qty mirrors to Pieces for sell_by=piece
+# PIECE-SYNC-01: Changing Qty mirrors to the read-only Pieces column (sell_by=piece)
 # ---------------------------------------------------------------------------
 
-def test_piece_sync_01_qty_mirrors_to_pieces(page, ui_server, splittable_piece_item):
-    """PIECE-SYNC-01: For sell_by=piece, typing child_qty must mirror to child_pieces.
+def test_piece_sync_01_qty_mirrors_to_pieces(page, ui_server, api):
+    """PIECE-SYNC-01: For sell_by=piece WITH weight, the Pieces column mirrors QTY.
 
-    Qty and Pieces represent the same value for piece-unit items. Setting Qty=6
-    must immediately update Pieces to 6 and update the mother row for both columns.
+    A piece item that also carries weight shows both columns; pieces renders as a
+    read-only mirror of QTY (no editable input — pieces IS qty), and the static
+    displays must follow every qty change.
+
+    Seeds its own item — the module fixture's item is mutated by the earlier
+    split test, so its qty is no longer 10.
     """
-    _open_split_panel(page, ui_server, splittable_piece_item["id"])
+    r = api.post("/items", json={
+        "sku": "GHOST-PIECEMIRROR-001",
+        "name": "Ghost Col Piece Mirror Item",
+        "sell_by": "piece",
+        "quantity": 10.0,
+        "weight": 5.0,
+        "weight_unit": "gram",
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+    rp = api.patch(f"/items/{item['id']}", json={
+        "fields_changed": {"pieces": {"old": None, "new": 10}},
+    })
+    assert rp.status_code in {200, 201}
+
+    _open_split_panel(page, ui_server, item["id"])
+
+    # Read-only: pieces must be a static display, never an editable input.
+    assert page.locator('input[name="child_pieces"]').count() == 0, (
+        "child_pieces must not be editable for sell_by=piece (pieces IS qty)"
+    )
+    child_pieces = page.locator(".child-pieces-display")
+    assert child_pieces.count() > 0, "Pieces column (read-only mirror) not rendered"
 
     qty_input = page.locator('input[name="child_qty"]')
-    pieces_input = page.locator('input[name="child_pieces"]')
-
-    if pieces_input.count() == 0:
-        pytest.skip("No child_pieces input - pieces attribute may not be set")
-
     qty_input.fill("6")
     qty_input.dispatch_event("change")
     page.wait_for_timeout(200)
 
-    pieces_val = pieces_input.input_value()
-    assert pieces_val == "6", (
-        f"After setting child_qty=6, child_pieces shows '{pieces_val}' instead of '6'. "
+    pieces_val = child_pieces.inner_text()
+    assert pieces_val.strip() == "6", (
+        f"After setting child_qty=6, child pieces display shows '{pieces_val}' instead of '6'. "
         "For sell_by=piece, Qty and Pieces must mirror each other."
     )
 
-    # Mother qty display should show 4 (10 - 6)
-    mother_qty = page.locator(".mother-qty-display").inner_text()
-    assert "4" in mother_qty, f"Mother qty display should show 4, got '{mother_qty}'"
+    # Mother qty should show 4 (10 - 6)
+    mother_qty = page.locator(".mother-qty-input").input_value()
+    assert "4" in mother_qty, f"Mother qty should show 4, got '{mother_qty}'"
 
     # Mother pieces display should also show 4
     mother_pieces = page.locator(".mother-pieces-display").inner_text()
@@ -221,38 +245,67 @@ def test_piece_sync_01_qty_mirrors_to_pieces(page, ui_server, splittable_piece_i
 
 
 # ---------------------------------------------------------------------------
-# PIECE-SYNC-02: Changing Pieces mirrors to Qty for sell_by=piece
+# PIECE-SYNC-02: Editable Pieces recalcs the mother row (independent pieces)
 # ---------------------------------------------------------------------------
 
-def test_piece_sync_02_pieces_mirrors_to_qty(page, ui_server, splittable_piece_item):
-    """PIECE-SYNC-02: For sell_by=piece, typing child_pieces must mirror to child_qty.
-
-    Setting Pieces=7 must immediately update Qty to 7 and update the mother row.
+def test_piece_sync_02_editable_pieces_updates_mother(page, ui_server, api):
+    """PIECE-SYNC-02: When pieces is independent of qty (weight-unit parcel),
+    child_pieces is editable and editing it must recalc the mother pieces display.
     """
-    _open_split_panel(page, ui_server, splittable_piece_item["id"])
+    r = api.post("/items", json={
+        "sku": "GHOST-GRAMPC-001",
+        "name": "Ghost Col Gram Parcel",
+        "sell_by": "gram",
+        "quantity": 10.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+    rp = api.patch(f"/items/{item['id']}", json={
+        "fields_changed": {"pieces": {"old": None, "new": 10}},
+    })
+    assert rp.status_code in {200, 201}
 
-    qty_input = page.locator('input[name="child_qty"]')
+    _open_split_panel(page, ui_server, item["id"])
+
     pieces_input = page.locator('input[name="child_pieces"]')
-
-    if pieces_input.count() == 0:
-        pytest.skip("No child_pieces input - pieces attribute may not be set")
+    assert pieces_input.count() > 0, (
+        "child_pieces input not rendered for a weight-unit item with a pieces attribute"
+    )
 
     pieces_input.fill("7")
     pieces_input.dispatch_event("input")
     page.wait_for_timeout(200)
 
-    qty_val = qty_input.input_value()
-    assert qty_val == "7", (
-        f"After setting child_pieces=7, child_qty shows '{qty_val}' instead of '7'. "
-        "For sell_by=piece, Pieces and Qty must mirror each other."
-    )
-
-    # Mother qty display should show 3 (10 - 7)
-    mother_qty = page.locator(".mother-qty-display").inner_text()
-    assert "3" in mother_qty, f"Mother qty display should show 3, got '{mother_qty}'"
-
     mother_pieces = page.locator(".mother-pieces-display").inner_text()
-    assert "3" in mother_pieces, f"Mother pieces display should show 3, got '{mother_pieces}'"
+    assert "3" in mother_pieces, f"Mother pieces display should show 3 (10 - 7), got '{mother_pieces}'"
 
-    _save_screenshot(page, "piece-sync-02-pieces-to-qty")
+    _save_screenshot(page, "piece-sync-02-editable-pieces")
+
+
+# ---------------------------------------------------------------------------
+# PIECE-SYNC-03: sell_by=piece without weight shows QTY only (no pieces column)
+# ---------------------------------------------------------------------------
+
+def test_piece_sync_03_no_pieces_column_without_weight(page, ui_server, api):
+    """PIECE-SYNC-03: A piece item with no weight shows only the QTY column.
+
+    Without a weight column, pieces would just duplicate QTY — the split panel
+    must render neither a pieces input nor pieces displays.
+    """
+    r = api.post("/items", json={
+        "sku": "GHOST-PIECEONLY-001",
+        "name": "Ghost Col Piece Only Item",
+        "sell_by": "piece",
+        "quantity": 10.0,
+    })
+    assert r.status_code in {200, 201}, f"create failed: {r.text}"
+    item = r.json()
+
+    _open_split_panel(page, ui_server, item["id"])
+
+    assert page.locator('input[name="child_pieces"]').count() == 0
+    assert page.locator(".child-pieces-display").count() == 0
+    assert page.locator(".mother-pieces-display").count() == 0
+
+    _save_screenshot(page, "piece-sync-03-qty-only")
 

@@ -43,8 +43,31 @@ def split_item_piece(api):
     })
     assert r.status_code in {200, 201}, f"Failed to create piece item: {r.text}"
     item = r.json()
-    # Set pieces via patch
-    rp = api.patch(f"/items/{item['id']}", json={"attributes": {"pieces": 10}})
+    # Set pieces via patch (the endpoint only reads fields_changed; a raw
+    # {"attributes": ...} body is silently ignored)
+    rp = api.patch(f"/items/{item['id']}", json={
+        "fields_changed": {"pieces": {"old": None, "new": 10}},
+    })
+    assert rp.status_code in {200, 201}, f"Failed to set pieces: {rp.text}"
+    return item
+
+
+@pytest.fixture(scope="module")
+def split_item_gram_pieces(api):
+    """sell_by=gram parcel with an independent pieces attribute (10 pieces
+    weighed as 10g) — the shape where child_pieces renders as an editable input.
+    (For sell_by=piece items the pieces column is hidden: redundant with QTY.)"""
+    r = api.post("/items", json={
+        "sku": "SPLIT-UX-GRAM-001",
+        "name": "Split UX Gram Parcel",
+        "sell_by": "gram",
+        "quantity": 10.0,
+    })
+    assert r.status_code in {200, 201}, f"Failed to create gram item: {r.text}"
+    item = r.json()
+    rp = api.patch(f"/items/{item['id']}", json={
+        "fields_changed": {"pieces": {"old": None, "new": 10}},
+    })
     assert rp.status_code in {200, 201}, f"Failed to set pieces: {rp.text}"
     return item
 
@@ -149,15 +172,21 @@ def test_split_ui_02_qty_change_does_not_alter_weight(page, ui_server, split_ite
     )
 
 
-def test_split_ui_03_qty_change_does_not_alter_pieces(page, ui_server, split_item_piece):
-    """SPLIT-UI-03: Changing child_qty must NOT auto-set child_pieces."""
-    _open_split_panel(page, ui_server, split_item_piece["id"])
+def test_split_ui_03_qty_change_does_not_alter_pieces(page, ui_server, split_item_gram_pieces):
+    """SPLIT-UI-03: Changing child_qty must NOT auto-set child_pieces.
+
+    Uses a weight-unit parcel with an independent pieces attribute — the only
+    shape where child_pieces is editable (for sell_by=piece items the pieces
+    column is hidden entirely; pieces is redundant with QTY there).
+    """
+    _open_split_panel(page, ui_server, split_item_gram_pieces["id"])
 
     pieces_input = page.locator('input[name="child_pieces"]')
     qty_input = page.locator('input[name="child_qty"]')
 
-    if pieces_input.count() == 0:
-        pytest.skip("No child_pieces input - item may not have pieces set")
+    assert pieces_input.count() > 0, (
+        "child_pieces input not rendered for a weight-unit item with a pieces attribute"
+    )
 
     initial_pieces = pieces_input.input_value()
 
@@ -242,6 +271,11 @@ def test_split_ui_06_ct_item_fractional_weight_end_to_end(page, ui_server, api, 
     qty_input = page.locator('input[name="child_qty"]')
     sku_input = page.locator('input[name="child_sku"]')
     assert qty_input.count() > 0, "child_qty input not found"
+
+    # Weight-type sell_by without pieces: QTY alone carries the information —
+    # no redundant weight column (qty IS the carat weight).
+    assert page.locator('input[name="child_weight"]').count() == 0
+    assert page.locator(".child-weight-display").count() == 0
 
     # Type the fractional carat weight character-by-character to catch a rewrite.
     qty_input.click()

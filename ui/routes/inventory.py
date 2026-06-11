@@ -163,6 +163,11 @@ function bulkSplitMotherQtyChanged(input) {
     var mw = form.querySelector('.mother-weight-display');
     if (mw) mw.textContent = motherQty.toFixed(weightDecimals);
   }
+  // For piece-unit items qty IS pieces — keep mother-pieces-display in sync.
+  if (form.dataset.sellByType === 'pieces') {
+    var mp = form.querySelector('.mother-pieces-display');
+    if (mp) mp.textContent = String(Math.round(motherQty));
+  }
   _updateSplitTotals(form);
 }
 function bulkSplitChildQtyChanged(input) {
@@ -184,7 +189,7 @@ function bulkSplitChildQtyChanged(input) {
   }
   input.value = childQty.toFixed(decimals);
   // For piece-unit items qty and pieces are the same — keep them in sync.
-  if (form.dataset.sellBy === 'piece') {
+  if (form.dataset.sellByType === 'pieces') {
     var piecesInput = form.querySelector('[name="child_pieces"]');
     if (piecesInput) { piecesInput.value = Math.round(childQty); }
     var childPiecesDisplay = form.querySelector('.child-pieces-display');
@@ -2226,11 +2231,27 @@ function celerpPrintLabel(entityId, templateId) {
         sell_by_display = _unit_display_name(sell_by_label)
         weight_display = _unit_display_name(weight_unit_label)
 
-        # Weight column: show when sell_by is weight (qty IS weight) or item has weight.
-        # Pieces column: only show when item has pieces AND sell_by is NOT pieces
-        #   (when sell_by IS pieces, QTY = pieces - showing both is redundant).
-        show_weight = preview.get("has_weight", False) or sell_by_type == "weight"
-        show_pieces = preview.get("has_pieces", False) and sell_by_type != "pieces"
+        # QTY is always shown. Weight/pieces columns follow one symmetric rule:
+        #   - weight-type sell_by: qty IS weight, so the weight column is a
+        #     read-only mirror of QTY - only worth showing alongside an editable
+        #     pieces column. Without pieces, QTY alone carries the information.
+        #   - pieces-type sell_by: qty IS pieces - the pieces mirror shows only
+        #     alongside an editable weight column.
+        #   - other sell_by: weight/pieces show when the item has them (editable).
+        has_weight = preview.get("has_weight", False)
+        has_pieces = preview.get("has_pieces", False)
+        parent_pieces_val = preview.get("parent_pieces")
+        if sell_by_type == "weight":
+            show_weight = has_pieces
+            show_pieces = has_pieces
+        elif sell_by_type == "pieces":
+            show_weight = has_weight
+            show_pieces = has_weight
+            if parent_pieces_val is None:
+                parent_pieces_val = int(round(float(preview["parent_qty"])))
+        else:
+            show_weight = has_weight
+            show_pieces = has_pieces
 
         weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
         headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th")]
@@ -2280,7 +2301,7 @@ function celerpPrintLabel(entityId, templateId) {
                 # When sell_by IS pieces, qty = pieces so child pieces is derived from QTY (static).
                 child_pieces_editable = is_child and pieces_name and sell_by_type != "pieces"
                 if child_pieces_editable:
-                    pieces_max = str(int(preview.get("parent_pieces", 1)) - 1)
+                    pieces_max = str(int(parent_pieces_val or 1) - 1)
                     cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max))
                 elif is_child:
                     cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td"))
@@ -2297,7 +2318,7 @@ function celerpPrintLabel(entityId, templateId) {
                      cls="form-input form-input--xs sp-input mother-qty-input",
                      onchange="bulkSplitMotherQtyChanged(this)"), cls="sp-td"),
             preview.get("parent_weight"),
-            preview.get("parent_pieces"),
+            parent_pieces_val,
             weight_name=None,
             pieces_name=None,
             is_child=False,
@@ -2332,7 +2353,7 @@ function celerpPrintLabel(entityId, templateId) {
         if show_weight:
             form_data["data_parent_weight"] = str(preview["parent_weight"])
         if show_pieces:
-            form_data["data_parent_pieces"] = str(int(preview["parent_pieces"]))
+            form_data["data_parent_pieces"] = str(int(parent_pieces_val))
 
         # Totals footer: mother qty (initial) + child qty (0) for QTY column;
         # weight/pieces use parent totals since child starts at 0.
@@ -2348,7 +2369,7 @@ function celerpPrintLabel(entityId, templateId) {
             ))
         if show_pieces:
             tfoot_cells.append(Td(
-                str(int(preview.get("parent_pieces") or 0)),
+                str(int(parent_pieces_val or 0)),
                 cls="sp-td sp-total-val sp-total-pieces",
             ))
 
