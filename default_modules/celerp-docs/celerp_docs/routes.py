@@ -592,7 +592,14 @@ async def create_doc(
             resolved_sell_by = li.sell_by or (sell_by_map.get(li.sku) if li.sku else None)
             validate_line_quantity(li.quantity, resolved_sell_by, unit_map, label=li.name or li.sku or "Line item")
 
-    company = await session.get(Company, company_id)
+    # Lock the company row (SELECT ... FOR UPDATE) for the rest of the
+    # transaction so concurrent doc creation can't read the same numbering
+    # counter and mint duplicate refs (e.g. two CN-2606-0002).
+    company = (
+        await session.execute(
+            select(Company).where(Company.id == company_id).with_for_update()
+        )
+    ).scalar_one_or_none()
     # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
     seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
     ref_id = payload.ref_id or next_doc_ref(company, seq_type)
