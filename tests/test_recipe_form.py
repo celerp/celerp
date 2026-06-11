@@ -30,13 +30,21 @@ def test_payload_drops_blank_rows_and_casts_numbers() -> None:
             {"item_id": "", "quantity": "9", "unit": ""},        # no item → dropped
             {"item_id": "item:b", "quantity": "0", "unit": ""},  # qty 0 → dropped
         ],
-        "labor": [{"operation": "Weld", "hours": "2", "rate": "30"}, {"operation": "", "hours": "9", "rate": "9"}],
+        "labor": [
+            {"operation": "Weld", "kind": "hourly", "hours": "2", "rate": "30", "amount": ""},
+            {"operation": "Setup", "kind": "fixed", "hours": "", "rate": "", "amount": "25"},
+            {"operation": "", "hours": "9", "rate": "9"},  # blank op → dropped
+        ],
         "overhead": [{"description": "Box", "amount": "1.2"}, {"description": "", "amount": "5"}],
     }
     payload = _recipe_to_payload(rows)
     assert payload["output_qty"] == 5.0
-    assert payload["components"] == [{"item_id": "item:a", "quantity": 3.0, "unit": "pieces"}]
-    assert payload["labor"] == [{"operation": "Weld", "hours": 2.0, "rate": 30.0, "source": "manual"}]
+    # Component unit is no longer entered here — it is derived server-side from the item's sell unit.
+    assert payload["components"] == [{"item_id": "item:a", "quantity": 3.0}]
+    assert payload["labor"] == [
+        {"operation": "Weld", "kind": "hourly", "hours": 2.0, "rate": 30.0, "amount": 0.0, "source": "manual"},
+        {"operation": "Setup", "kind": "fixed", "hours": 0.0, "rate": 0.0, "amount": 25.0, "source": "manual"},
+    ]
     assert payload["overhead"] == [{"description": "Box", "amount": 1.2}]
 
 

@@ -57,6 +57,19 @@ def test_cost_with_overhead() -> None:
     assert bd["overhead_cost"] == 2.0 and bd["unit_cost"] == 2.0
 
 
+def test_cost_fixed_labor() -> None:
+    bd = roll_up_cost(_recipe(labor=[{"operation": "Setup", "kind": "fixed", "amount": 25}]), {}.get)
+    assert bd["labor_cost"] == 25.0
+
+
+def test_cost_mixed_hourly_and_fixed_labor() -> None:
+    bd = roll_up_cost(_recipe(labor=[
+        {"operation": "Assemble", "kind": "hourly", "hours": 2, "rate": 10},
+        {"operation": "Setup", "kind": "fixed", "amount": 15},
+    ]), {}.get)
+    assert bd["labor_cost"] == 35.0  # 2*10 + 15
+
+
 def test_cost_labor_sums_all_sources() -> None:
     bd = roll_up_cost(_recipe(labor=[
         {"operation": "A", "hours": 1, "rate": 10, "source": "manual"},

@@ -78,6 +78,40 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, recipe_item):
     summary = page.locator(".recipe-cost-summary").inner_text()
     assert "515" in summary, f"Expected unit cost 515 in summary, got: {summary}"
 
+
+def test_fixed_labor_and_derived_unit(page, ui_server, api):
+    """Fixed (flat) labor + component unit derived from the component's sell unit."""
+    gold = api.post("/items", json={"sku": "FL-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram", "cost_total": 1000}).json()["id"]  # unit 10
+    fg = api.post("/items", json={"sku": "FL-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    page.goto(f"{ui_server}/inventory/{fg}?tab=manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#recipe-form", timeout=10000)
+
+    page.click("button:has-text('+ Add component')")
+    page.wait_for_selector("input[name=comp_qty_0]", timeout=5000)
+    box = page.locator("#recipe-form .combobox-input").last
+    box.click(); box.fill("FL-GOLD")
+    page.wait_for_selector(".combobox-list.open", timeout=3000)
+    page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first.click()
+    page.fill("input[name=comp_qty_0]", "2")
+    # The unit cell shows the component's sell unit (gram), live, with no unit input.
+    page.wait_for_selector('.comp-unit[data-for="comp_item_0"]:has-text("gram")', timeout=3000)
+    assert page.locator("input[name=comp_unit_0]").count() == 0
+
+    page.click("button:has-text('+ Add operation')")
+    page.fill("input[name=labor_op_0]", "Bench fee")
+    page.select_option("select[name=labor_kind_0]", "fixed")
+    # Switching to Fixed disables hours/rate and enables the amount field.
+    assert page.locator("input[name=labor_hours_0]").is_disabled()
+    assert not page.locator("input[name=labor_amount_0]").is_disabled()
+    page.fill("input[name=labor_amount_0]", "30")
+
+    page.click("button:has-text('Save recipe')")
+    page.wait_for_selector(".flash--success", timeout=8000)
+    # 2 * 10 materials + 30 fixed labor = 50
+    assert api.get(f"/items/{fg}").json()["recipe"]["unit_cost"] == 50.0
+    assert api.get(f"/items/{fg}").json()["recipe"]["components"][0]["unit"] == "gram"
+
     # After a save the button must read "Update recipe" and a "Clear recipe" action must exist (GDR §2a).
     assert page.locator("button:has-text('Update recipe')").count() == 1
     assert page.locator("button:has-text('Clear recipe')").count() == 1

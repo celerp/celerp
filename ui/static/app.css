@@ -504,6 +504,21 @@ a:hover { text-decoration: underline; }
 .empty-row td { color: var(--c-text2); font-style: italic; text-align: center; }
 .recipe-row--orphan .combobox-input { border-color: var(--c-red); }
 .hint { font-size: 11px; color: var(--c-text2); margin-top: 6px; }
+.comp-unit-cell { color: var(--c-text2); }
+.labor-kind { font-size: 12px; padding: 4px 6px; max-width: 100px; }
+/* Keep the 6-column Labor / Materials tables within their card (no clipping). */
+.recipe-block { overflow-x: auto; }
+.recipe-block .data-table input.cell--number { max-width: 96px; }
+.data-table input.cell--number:disabled { background: var(--c-bg2); color: var(--c-text2); opacity: 0.55; }
+
+/* Split action: + button, inputs, Go all on one line (item 4) */
+.split-line { display: flex; gap: 6px; align-items: flex-start; margin-top: 4px; }
+.split-line > #split-qty-rows { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.split-line > .split-add-btn, .split-line > .btn--primary { flex: none; align-self: flex-start; }
+
+/* Component inventory type — visually distinct (item 3) */
+.inventory-type-tabs .category-tab[href*="inventory_type=component"].category-tab--active { border-bottom-color: var(--c-accent); }
+.badge--component { background: rgba(124,58,237,0.12); color: #6d28d9; border: 1px solid rgba(124,58,237,0.3); }
 .field-tooltip {
     display: inline-flex;
     align-items: center;

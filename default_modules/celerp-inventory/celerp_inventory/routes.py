@@ -31,7 +31,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "non_stocked", "service"})
+VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service"})
 
 _DEFAULT_UNITS = DEFAULT_UNITS  # backwards-compat alias for any internal callers
 

@@ -177,6 +177,12 @@ async def set_item_recipe(
     if missing:
         raise HTTPException(status_code=422, detail=f"Component item(s) not found: {', '.join(sorted(set(missing)))}")
 
+    # The component unit is not free text — it is the component item's own sell unit.
+    for comp in recipe["components"]:
+        cstate = graph.get(comp.get("item_id")) or {}
+        comp["unit"] = cstate.get("sell_by") or cstate.get("unit") or comp.get("unit")
+        comp["sku"] = cstate.get("sku") or comp.get("sku")
+
     try:
         breakdown = roll_up_cost(recipe, graph.get, _path=frozenset({item_id}))
     except RecipeError as exc:

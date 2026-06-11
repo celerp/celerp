@@ -20,6 +20,13 @@ class RecipeError(ValueError):
     """Raised on a cyclic or too-deeply-nested recipe graph."""
 
 
+def _labor_line_cost(line: dict) -> float:
+    """A labor line is either a flat fixed amount or hours × rate."""
+    if (line.get("kind") or "hourly") == "fixed":
+        return float(line.get("amount") or 0)
+    return float(line.get("hours") or 0) * float(line.get("rate") or 0)
+
+
 def _leaf_unit_cost(item_state: dict) -> float:
     """Unit cost of a non-manufactured (raw / purchased) item, from its lot value.
 
@@ -61,7 +68,7 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, _path: frozenset[str] = fr
         child_cost = unit_cost(lookup(cid), lookup, _path=_path | {cid}, _depth=_depth + 1)
         materials += float(comp.get("quantity") or 0) * child_cost
 
-    labor = sum(float(l.get("hours") or 0) * float(l.get("rate") or 0) for l in recipe.get("labor", []))
+    labor = sum(_labor_line_cost(l) for l in recipe.get("labor", []))
     overhead = sum(float(o.get("amount") or 0) for o in recipe.get("overhead", []))
     output_qty = float(recipe.get("output_qty") or 1) or 1
     total = materials + labor + overhead

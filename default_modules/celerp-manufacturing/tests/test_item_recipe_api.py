@@ -56,6 +56,18 @@ async def test_put_recipe_round_trip_and_cost(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_put_recipe_resolves_component_unit_from_sell_by(client) -> None:
+    token = await _register(client)
+    raw = await _item(client, token, "GRAM", quantity=10, cost_total=50, sell_by="gram")
+    fg = await _item(client, token, "FGU")
+    # No unit sent — the server must derive it from the component item's sell unit.
+    r = await client.put(f"/manufacturing/items/{fg}/recipe", headers=_h(token), json=_recipe([{"item_id": raw, "quantity": 3}]))
+    assert r.status_code == 200, r.text
+    got = (await client.get(f"/items/{fg}", headers=_h(token))).json()
+    assert got["recipe"]["components"][0]["unit"] == "gram"
+
+
+@pytest.mark.asyncio
 async def test_put_recipe_unknown_component_422(client, session) -> None:
     token = await _register(client)
     fg = await _item(client, token, "FG2")

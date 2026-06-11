@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import logging
 import re
 from urllib.parse import urlencode
@@ -3999,6 +4000,7 @@ def _inventory_type_tabs(p: dict) -> FT:
     _TABS = [
         ("", "All Types"),
         ("stocked", "Stocked"),
+        ("component", "Components"),
         ("service", "Services"),
         ("non_stocked", "Non-Stocked"),
     ]
@@ -4665,7 +4667,7 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
 
 
 _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
-    "inventory_type": ["stocked", "non_stocked", "service"],
+    "inventory_type": ["stocked", "component", "non_stocked", "service"],
 }
 
 
@@ -4814,19 +4816,21 @@ def _parse_recipe_form(form) -> dict:
     def _component(i):
         if f"comp_item_{i}" not in form and f"comp_qty_{i}" not in form:
             return None
+        # Unit is derived from the component item's sell unit — not entered here.
         return {
             "item_id": str(form.get(f"comp_item_{i}", "")).strip(),
             "quantity": str(form.get(f"comp_qty_{i}", "")).strip(),
-            "unit": str(form.get(f"comp_unit_{i}", "")).strip(),
         }
 
     def _labor(i):
-        if f"labor_op_{i}" not in form and f"labor_hours_{i}" not in form:
+        if f"labor_op_{i}" not in form and f"labor_kind_{i}" not in form:
             return None
         return {
             "operation": str(form.get(f"labor_op_{i}", "")).strip(),
+            "kind": str(form.get(f"labor_kind_{i}", "hourly")).strip() or "hourly",
             "hours": str(form.get(f"labor_hours_{i}", "")).strip(),
             "rate": str(form.get(f"labor_rate_{i}", "")).strip(),
+            "amount": str(form.get(f"labor_amount_{i}", "")).strip(),
         }
 
     def _overhead(i):
@@ -4858,11 +4862,12 @@ def _recipe_to_payload(rows: dict) -> dict:
             return default
 
     components = [
-        {"item_id": r["item_id"], "quantity": _num(r["quantity"]), "unit": r["unit"] or None}
+        {"item_id": r["item_id"], "quantity": _num(r["quantity"])}  # unit resolved server-side from sell_by
         for r in rows["components"] if r["item_id"] and _num(r["quantity"]) > 0
     ]
     labor = [
-        {"operation": r["operation"], "hours": _num(r["hours"]), "rate": _num(r["rate"]), "source": "manual"}
+        {"operation": r["operation"], "kind": r.get("kind") or "hourly",
+         "hours": _num(r.get("hours")), "rate": _num(r.get("rate")), "amount": _num(r.get("amount")), "source": "manual"}
         for r in rows["labor"] if r["operation"]
     ]
     overhead = [
@@ -4885,11 +4890,12 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         rows = {
             "output_qty": str(recipe.get("output_qty", 1) or 1),
             "components": [
-                {"item_id": c.get("item_id", ""), "quantity": str(c.get("quantity", "")), "unit": c.get("unit") or ""}
+                {"item_id": c.get("item_id", ""), "quantity": str(c.get("quantity", ""))}
                 for c in recipe.get("components", [])
             ],
             "labor": [
-                {"operation": l.get("operation", ""), "hours": str(l.get("hours", "")), "rate": str(l.get("rate", ""))}
+                {"operation": l.get("operation", ""), "kind": l.get("kind") or "hourly",
+                 "hours": str(l.get("hours", "")), "rate": str(l.get("rate", "")), "amount": str(l.get("amount", ""))}
                 for l in recipe.get("labor", [])
             ],
             "overhead": [
@@ -4914,23 +4920,36 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     valid_ids = {iid for iid, _ in item_opts}
     orphan_ids = sorted({r["item_id"] for r in rows["components"] if r["item_id"] and r["item_id"] not in valid_ids})
     comp_opts = item_opts + [(oid, f"{oid} (unavailable)") for oid in orphan_ids]
+    # Component unit is the component item's own sell unit (item 1) — shown, not entered.
+    unit_by_id = {(it.get("id") or it.get("entity_id")): (it.get("sell_by") or it.get("unit") or "") for it in items}
 
     def _comp_row(i, r):
         orphan = bool(r["item_id"]) and r["item_id"] not in valid_ids
+        unit = unit_by_id.get(r["item_id"], "") or EMPTY
         return Tr(
             Td(searchable_select(f"comp_item_{i}", comp_opts, value=r["item_id"], placeholder="Search SKU…")),
             Td(Input(type="number", name=f"comp_qty_{i}", value=r["quantity"], step="any", min="0", cls="cell--number"), cls="cell--number"),
-            Td(Input(type="text", name=f"comp_unit_{i}", value=r["unit"], placeholder="pieces")),
+            Td(Span(unit, cls="comp-unit", data_for=f"comp_item_{i}"), cls="comp-unit-cell"),
             Td(Button("×", type="button", title="Remove component", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_component&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row recipe-row--orphan" if orphan else "data-row",
         )
 
     def _labor_row(i, r):
+        kind = r.get("kind") or "hourly"
+        fixed = kind == "fixed"
         return Tr(
             Td(Input(type="text", name=f"labor_op_{i}", value=r["operation"], placeholder="e.g. Assembly")),
-            Td(Input(type="number", name=f"labor_hours_{i}", value=r["hours"], step="any", min="0", cls="cell--number"), cls="cell--number"),
-            Td(Input(type="number", name=f"labor_rate_{i}", value=r["rate"], step="any", min="0", cls="cell--number"), cls="cell--number"),
+            Td(Select(
+                Option("Hourly", value="hourly", selected=not fixed),
+                Option("Fixed", value="fixed", selected=fixed),
+                name=f"labor_kind_{i}", cls="labor-kind", onchange="laborKindChanged(this)")),
+            Td(Input(type="number", name=f"labor_hours_{i}", value=r.get("hours", ""), step="any", min="0",
+                     cls="cell--number labor-hours", disabled=fixed), cls="cell--number"),
+            Td(Input(type="number", name=f"labor_rate_{i}", value=r.get("rate", ""), step="any", min="0",
+                     cls="cell--number labor-rate", disabled=fixed), cls="cell--number"),
+            Td(Input(type="number", name=f"labor_amount_{i}", value=r.get("amount", ""), step="any", min="0",
+                     cls="cell--number labor-amount", disabled=not fixed), cls="cell--number"),
             Td(Button("×", type="button", title="Remove operation", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_labor&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row",
@@ -4953,9 +4972,11 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         cls="data-table",
     )
     labor = Table(
-        Thead(Tr(Th("Operation"), Th("Hours", cls="cell--number"), Th(f"Rate / hr{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Thead(Tr(Th("Operation"), Th("Type"), Th("Hours", cls="cell--number"),
+                 Th(f"Rate / hr{cur_label}", cls="cell--number"), Th(f"Fixed amount{cur_label}", cls="cell--number"),
+                 Th("", cls="cell--actions"))),
         Tbody(*[_labor_row(i, r) for i, r in enumerate(rows["labor"])]
-              or [Tr(Td("No labor yet.", colspan="4", cls="empty-row"))]),
+              or [Tr(Td("No labor yet.", colspan="6", cls="empty-row"))]),
         cls="data-table",
     )
     overhead = Table(
@@ -5051,6 +5072,17 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             id="recipe-form",
         ),
         Div(*right_col, cls="recipe-right"),
+        Script(
+            "window.RECIPE_UNITS = " + json.dumps(unit_by_id) + ";\n"
+            "if (!window._recipeUnitInit) { window._recipeUnitInit = true;\n"
+            "  document.addEventListener('change', function(e){ var t=e.target;\n"
+            "    if (t && t.name && t.name.indexOf('comp_item_')===0){\n"
+            "      var c=document.querySelector('.comp-unit[data-for=\"'+t.name+'\"]');\n"
+            "      if(c) c.textContent = (window.RECIPE_UNITS[t.value] || '--'); } }); }\n"
+            "function laborKindChanged(sel){ var row=sel.closest('tr'), fixed=sel.value==='fixed';\n"
+            "  var h=row.querySelector('.labor-hours'), r=row.querySelector('.labor-rate'), a=row.querySelector('.labor-amount');\n"
+            "  if(h)h.disabled=fixed; if(r)r.disabled=fixed; if(a)a.disabled=!fixed; }"
+        ),
         id="recipe-section",
         cls="recipe-grid",
     )
@@ -5118,11 +5150,13 @@ def _item_detail_tabs(
             ) if right else Div(id="item-attributes-section"),
             cls="detail-grid",
         )
+    # Files + item operations belong with the item's core details — keep them off the
+    # Pricing / Manufacturing / Activity tabs so each tab shows only its own concern.
+    extras = (_item_files_section(entity_id, item), _advanced_panel(entity_id, item)) if active_tab == "details" else ()
     return Div(
         tab_bar,
         panel,
-        _item_files_section(entity_id, item),
-        _advanced_panel(entity_id, item),
+        *extras,
     )
 
 
@@ -5639,25 +5673,25 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         split_card = Div(
             Form(
                 Strong(t("inv.u2702_split"), cls="action-card-title"),
-                # ── Manual split rows ──
-                Div(
-                    Div(
-                        Input(type="number", name="split_qty",
-                              placeholder=f"{sell_by_label} to split off",
-                              title=_qty_title,
-                              step="any", min="0.001",
-                              cls="form-input form-input--sm split-qty-main", required=True),
-                        *_comp_inputs,
-                        cls="split-qty-row",
-                    ),
-                    id="split-qty-rows",
-                ),
+                # ── Manual split: [+] [input(s)] [Go] on one line ──
                 Div(
                     Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
-                           onclick="addSplitRow(this)"),
+                           onclick="addSplitRow(this)", title="Add another split"),
+                    Div(
+                        Div(
+                            Input(type="number", name="split_qty",
+                                  placeholder=f"{sell_by_label} to split off",
+                                  title=_qty_title,
+                                  step="any", min="0.001",
+                                  cls="form-input form-input--sm split-qty-main", required=True),
+                            *_comp_inputs,
+                            cls="split-qty-row",
+                        ),
+                        id="split-qty-rows",
+                    ),
                     Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
                            onclick="(function(btn){btn.disabled=true;btn.style.opacity='0.5';btn.form.requestSubmit();})(this);return false;"),
-                    cls="action-card-row", style="margin-top:4px",
+                    cls="action-card-row split-line",
                 ),
                 # ── Divider + Batch Split heading ──
                 Hr(cls="action-card-divider"),
