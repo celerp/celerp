@@ -30,7 +30,7 @@ def test_full_manufacturing_journey(page, ui_server, api):
     page.set_viewport_size({"width": 1440, "height": 1100})
 
     # 1. Stock a raw material + an empty finished good.
-    gold = api.post("/items", json={"sku": "JNY-GOLD", "name": "Gold 1g", "quantity": 100, "sell_by": "gram", "cost_total": 8000}).json()["id"]
+    gold = api.post("/items", json={"sku": "JNY-GOLD", "name": "Gold 1g", "quantity": 100, "sell_by": "gram", "cost_total": 8000, "inventory_type": "component"}).json()["id"]
     ring = api.post("/items", json={"sku": "JNY-RING", "name": "18K Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
 
     # 2. Define the recipe on the item (Phase 1).
@@ -47,9 +47,8 @@ def test_full_manufacturing_journey(page, ui_server, api):
     page.click("button:has-text('+ Add cost')")
     page.fill("input[name=oh_desc_0]", "Polish & box")
     page.fill("input[name=oh_amount_0]", "15")
-    page.click("button:has-text('Save recipe')")
-    page.wait_for_selector(".flash--success", timeout=8000)
-    assert "515" in page.locator(".recipe-cost-summary").inner_text()
+    page.locator("input[name=oh_amount_0]").blur()  # auto-save (no Save button)
+    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
     assert api.get(f"/items/{ring}").json()["recipe"]["unit_cost"] == 515.0
 
     # 2b. Apply the rolled standard cost to the item's cost price (Decision 1), and verify it sticks.

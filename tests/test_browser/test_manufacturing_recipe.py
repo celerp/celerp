@@ -23,7 +23,7 @@ SHOTS = Path("context/reviews/phase1")
 @pytest.fixture(scope="module")
 def recipe_item(api):
     """Create a priced raw material and a finished good; return (ui_path, raw_sku)."""
-    raw = api.post("/items", json={"sku": "GOLD-1G", "name": "Gold 1g", "quantity": 100, "sell_by": "gram", "cost_total": 8000})
+    raw = api.post("/items", json={"sku": "GOLD-1G", "name": "Gold 1g", "quantity": 100, "sell_by": "gram", "cost_total": 8000, "inventory_type": "component"})
     assert raw.status_code == 200, raw.text
     fg = api.post("/items", json={"sku": "RING-18K", "name": "18K Ring", "quantity": 0, "sell_by": "piece"})
     assert fg.status_code == 200, fg.text
@@ -67,21 +67,23 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, recipe_item):
     page.wait_for_selector("input[name=oh_desc_0]", timeout=5000)
     page.fill("input[name=oh_desc_0]", "Polishing & box")
     page.fill("input[name=oh_amount_0]", "15")
-
+    page.locator("input[name=oh_amount_0]").blur()  # blur → auto-save (no Save button)
     page.screenshot(path=str(SHOTS / "02-filled.png"), full_page=True)
 
-    # Save → cost roll-up: 5*80 materials + 100 labor + 15 overhead = 515
-    page.click("button:has-text('Save recipe')")
-    page.wait_for_selector(".flash--success", timeout=8000)
+    # Auto-save rolls up: 5*80 materials + 100 labor + 15 overhead = 515 (cost card updates OOB).
+    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
     page.screenshot(path=str(SHOTS / "03-saved.png"), full_page=True)
 
-    summary = page.locator(".recipe-cost-summary").inner_text()
-    assert "515" in summary, f"Expected unit cost 515 in summary, got: {summary}"
+    # Progress survives navigating away and back — nothing was explicitly "saved".
+    page.goto(f"{ui_server}/inventory/{item_id}?tab=details", wait_until="domcontentloaded")
+    _open_tab(page, ui_server, item_id)
+    page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
+    assert float(page.locator("input[name=comp_qty_0]").input_value()) == 5.0
 
 
 def test_fixed_labor_and_derived_unit(page, ui_server, api):
     """Fixed (flat) labor + component unit derived from the component's sell unit."""
-    gold = api.post("/items", json={"sku": "FL-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram", "cost_total": 1000}).json()["id"]  # unit 10
+    gold = api.post("/items", json={"sku": "FL-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram", "cost_total": 1000, "inventory_type": "component"}).json()["id"]  # unit 10
     fg = api.post("/items", json={"sku": "FL-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
     page.set_viewport_size({"width": 1440, "height": 1000})
     page.goto(f"{ui_server}/inventory/{fg}?tab=manufacturing", wait_until="domcontentloaded")
@@ -106,14 +108,14 @@ def test_fixed_labor_and_derived_unit(page, ui_server, api):
     assert not page.locator("input[name=labor_amount_0]").is_disabled()
     page.fill("input[name=labor_amount_0]", "30")
 
-    page.click("button:has-text('Save recipe')")
-    page.wait_for_selector(".flash--success", timeout=8000)
-    # 2 * 10 materials + 30 fixed labor = 50
+    page.locator("input[name=labor_amount_0]").blur()  # auto-save on change
+    # 2 * 10 materials + 30 fixed labor = 50 (persisted automatically)
+    page.wait_for_selector("#recipe-cost-card:has-text('50')", timeout=8000)
     assert api.get(f"/items/{fg}").json()["recipe"]["unit_cost"] == 50.0
     assert api.get(f"/items/{fg}").json()["recipe"]["components"][0]["unit"] == "gram"
 
-    # After a save the button must read "Update recipe" and a "Clear recipe" action must exist (GDR §2a).
-    assert page.locator("button:has-text('Update recipe')").count() == 1
+    # No Save button — changes auto-save; the Clear action remains (GDR §2a undoable).
+    assert page.locator("button:has-text('Save recipe')").count() == 0
     assert page.locator("button:has-text('Clear recipe')").count() == 1
 
     # Cost summary must not be clipped: it sits in the right column, fully on-screen.

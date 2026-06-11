@@ -1351,10 +1351,12 @@ function celerpPrintLabel(entityId, templateId) {
             index = int(request.query_params.get("index", "-1"))
         except ValueError:
             index = -1
+        structural = {"add_component", "add_labor", "add_overhead",
+                      "remove_component", "remove_labor", "remove_overhead", "clear"}
         if action == "add_component":
-            rows["components"].append({"item_id": "", "quantity": "1", "unit": ""})
+            rows["components"].append({"item_id": "", "quantity": "1"})
         elif action == "add_labor":
-            rows["labor"].append({"operation": "", "hours": "", "rate": ""})
+            rows["labor"].append({"operation": "", "kind": "hourly", "hours": "", "rate": "", "amount": ""})
         elif action == "add_overhead":
             rows["overhead"].append({"description": "", "amount": ""})
         elif action == "remove_component" and 0 <= index < len(rows["components"]):
@@ -1366,31 +1368,39 @@ function celerpPrintLabel(entityId, templateId) {
         elif action == "clear":
             rows["components"], rows["labor"], rows["overhead"] = [], [], []
             rows["output_qty"] = "1"
+        # Structural changes persist immediately so they survive tab navigation (req #1).
+        # "noop" (the Show-all toggle) only re-renders. Persist is best-effort: a half-valid
+        # in-progress state simply isn't saved yet (rows are preserved either way).
+        if action in structural:
+            try:
+                await api.set_item_recipe(token, entity_id, _recipe_to_payload(rows))
+            except APIError:
+                pass
         try:
             return await _recipe_section_response(token, entity_id, rows=rows)
         except APIError as e:
             return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
-    @app.post("/api/items/{entity_id}/recipe")
-    async def save_item_recipe(request: Request, entity_id: str):
-        """Persist the recipe via the manufacturing API, then re-render with a result flash."""
+    @app.post("/api/items/{entity_id}/recipe-autosave")
+    async def recipe_autosave(request: Request, entity_id: str):
+        """Persist on every field/select change; refresh only the cost card (out-of-band)."""
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
-        rows = _parse_recipe_form(form)
-        payload = _recipe_to_payload(rows)
+        payload = _recipe_to_payload(_parse_recipe_form(form))
         try:
             await api.set_item_recipe(token, entity_id, payload)
-            return await _recipe_section_response(token, entity_id, flash_msg="Recipe saved.", flash_kind="success")
+            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
+            cur = currency_symbol(company.get("currency") or "")
+            return (
+                _recipe_cost_card(entity_id, item, cur, oob=True),
+                Div("Saved ✓", id="recipe-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true"),
+            )
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
-            # Validation failure (GDR §2e): keep the user's rows, show the reason.
-            try:
-                return await _recipe_section_response(token, entity_id, rows=rows, flash_msg=e.detail, flash_kind="error")
-            except APIError:
-                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+            return Div(f"Not saved — {e.detail}", id="recipe-save-status", cls="recipe-save-status hint error", hx_swap_oob="true")
 
     @app.post("/api/items/{entity_id}/recalculate-cost")
     async def recalculate_item_cost(request: Request, entity_id: str):
@@ -4846,6 +4856,7 @@ def _parse_recipe_form(form) -> dict:
         "components": _rows(_component),
         "labor": _rows(_labor),
         "overhead": _rows(_overhead),
+        "show_all": str(form.get("show_all_components", "")) in ("on", "true", "1"),
     }
 
 
@@ -4875,6 +4886,42 @@ def _recipe_to_payload(rows: dict) -> dict:
         for r in rows["overhead"] if r["description"]
     ]
     return {"output_qty": _num(rows["output_qty"], 1.0) or 1.0, "components": components, "labor": labor, "overhead": overhead}
+
+
+def _recipe_cost_card(entity_id: str, item: dict, currency: str | None, oob: bool = False) -> FT:
+    """The Cost Summary card (materials/labor/overhead/unit + Recalculate/Apply).
+
+    Extracted so auto-save can refresh just this card out-of-band (``oob=True``) without
+    re-rendering the form — the user's focus is never disturbed mid-edit.
+    """
+    recipe = item.get("recipe") or {}
+    has_recipe = bool(recipe.get("components"))
+    _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
+
+    def _row(label, key, total=False):
+        return Tr(Td(label, cls="detail-label detail-label--total" if total else "detail-label"),
+                  Td(_recipe_money(recipe.get(key), currency), cls="recipe-amount cell--total" if total else "recipe-amount"))
+
+    children = [
+        H3("Cost summary", cls="section-title"),
+        Table(Tbody(_row("Materials", "materials_cost"), _row("Labor", "labor_cost"),
+                    _row("Overhead", "overhead_cost"), _row("Unit cost", "unit_cost", total=True)), cls="detail-table"),
+        P("Standard cost, rolled up from current component costs. It does not update on its own when a "
+          "component's price changes elsewhere — click Recalculate cost.", cls="hint"),
+    ]
+    if has_recipe:
+        children.append(Div(
+            Button("Recalculate cost", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs",
+                   hx_post=f"/api/items/{entity_id}/recalculate-cost", **_htmx,
+                   title="Re-roll this item's cost from the current cost of its components"),
+            Button("Apply to cost price", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs",
+                   hx_post=f"/api/items/{entity_id}/apply-cost", **_htmx,
+                   title="Copy this rolled standard cost into the item's cost price (Pricing tab)"),
+            cls="recipe-actions mt-sm"))
+    attrs = {"id": "recipe-cost-card", "cls": "detail-card recipe-cost-summary"}
+    if oob:
+        attrs["hx_swap_oob"] = "true"
+    return Div(*children, **attrs)
 
 
 def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
@@ -4907,20 +4954,32 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # list_items flattens the projection id onto "id" (see _flatten_item); exclude the
     # item being edited so it can't be a component of itself.
     item_opts = []
+    component_ids: set[str] = set()
     for it in items:
         iid = it.get("id") or it.get("entity_id") or ""
         if iid and iid != entity_id:
             item_opts.append((iid, f"{it.get('sku', '')} — {it.get('name', '')}".strip(" —")))
+            if (it.get("inventory_type") or "stocked") == "component":
+                component_ids.add(iid)
 
     sec = f"/api/items/{entity_id}/recipe-section"
     # hx_disabled_elt disables the clicked button while its request is in flight — no double-submits.
     _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
+    # Auto-save: every field/select change persists in the background and refreshes only the
+    # cost card (out-of-band) — the form is not re-rendered, so focus is never lost (req #1).
+    _save = {"hx_post": f"/api/items/{entity_id}/recipe-autosave", "hx_trigger": "change",
+             "hx_include": "#recipe-form", "hx_swap": "none"}
 
     # Orphan guard: a saved component whose item was since deleted still renders,
     # flagged "(unavailable)" so the user can see and fix it (GDR §2e — surface, don't hide).
     valid_ids = {iid for iid, _ in item_opts}
+    selected_ids = {r["item_id"] for r in rows["components"] if r["item_id"]}
     orphan_ids = sorted({r["item_id"] for r in rows["components"] if r["item_id"] and r["item_id"] not in valid_ids})
-    comp_opts = item_opts + [(oid, f"{oid} (unavailable)") for oid in orphan_ids]
+    # Materials picker searches COMPONENTS only by default (req #2); already-selected items stay
+    # visible, and "Show all items" widens it to every SKU.
+    show_all = bool(rows.get("show_all"))
+    base_opts = item_opts if show_all else [o for o in item_opts if o[0] in component_ids or o[0] in selected_ids]
+    comp_opts = base_opts + [(oid, f"{oid} (unavailable)") for oid in orphan_ids]
     # Component unit is the component item's own sell unit (item 1) — shown, not entered.
     unit_by_id = {(it.get("id") or it.get("entity_id")): (it.get("sell_by") or it.get("unit") or "") for it in items}
 
@@ -4928,8 +4987,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         orphan = bool(r["item_id"]) and r["item_id"] not in valid_ids
         unit = unit_by_id.get(r["item_id"], "") or EMPTY
         return Tr(
-            Td(searchable_select(f"comp_item_{i}", comp_opts, value=r["item_id"], placeholder="Search SKU…")),
-            Td(Input(type="number", name=f"comp_qty_{i}", value=r["quantity"], step="any", min="0", cls="cell--number"), cls="cell--number"),
+            Td(searchable_select(f"comp_item_{i}", comp_opts, value=r["item_id"], placeholder="Search SKU…", **_save)),
+            Td(Input(type="number", name=f"comp_qty_{i}", value=r["quantity"], step="any", min="0", cls="cell--number", **_save), cls="cell--number"),
             Td(Span(unit, cls="comp-unit", data_for=f"comp_item_{i}"), cls="comp-unit-cell"),
             Td(Button("×", type="button", title="Remove component", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_component&index={i}", **_htmx), cls="cell--actions"),
@@ -4940,17 +4999,17 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         kind = r.get("kind") or "hourly"
         fixed = kind == "fixed"
         return Tr(
-            Td(Input(type="text", name=f"labor_op_{i}", value=r["operation"], placeholder="e.g. Assembly")),
+            Td(Input(type="text", name=f"labor_op_{i}", value=r["operation"], placeholder="e.g. Assembly", **_save)),
             Td(Select(
                 Option("Hourly", value="hourly", selected=not fixed),
                 Option("Fixed", value="fixed", selected=fixed),
-                name=f"labor_kind_{i}", cls="labor-kind", onchange="laborKindChanged(this)")),
+                name=f"labor_kind_{i}", cls="labor-kind", onchange="laborKindChanged(this)", **_save)),
             Td(Input(type="number", name=f"labor_hours_{i}", value=r.get("hours", ""), step="any", min="0",
-                     cls="cell--number labor-hours", disabled=fixed), cls="cell--number"),
+                     cls="cell--number labor-hours", disabled=fixed, **_save), cls="cell--number"),
             Td(Input(type="number", name=f"labor_rate_{i}", value=r.get("rate", ""), step="any", min="0",
-                     cls="cell--number labor-rate", disabled=fixed), cls="cell--number"),
+                     cls="cell--number labor-rate", disabled=fixed, **_save), cls="cell--number"),
             Td(Input(type="number", name=f"labor_amount_{i}", value=r.get("amount", ""), step="any", min="0",
-                     cls="cell--number labor-amount", disabled=not fixed), cls="cell--number"),
+                     cls="cell--number labor-amount", disabled=not fixed, **_save), cls="cell--number"),
             Td(Button("×", type="button", title="Remove operation", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_labor&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row",
@@ -4958,8 +5017,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
     def _oh_row(i, r):
         return Tr(
-            Td(Input(type="text", name=f"oh_desc_{i}", value=r["description"], placeholder="e.g. Packaging")),
-            Td(Input(type="number", name=f"oh_amount_{i}", value=r["amount"], step="any", min="0", cls="cell--number"), cls="cell--number"),
+            Td(Input(type="text", name=f"oh_desc_{i}", value=r["description"], placeholder="e.g. Packaging", **_save)),
+            Td(Input(type="number", name=f"oh_amount_{i}", value=r["amount"], step="any", min="0", cls="cell--number", **_save), cls="cell--number"),
             Td(Button("×", type="button", title="Remove cost", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_overhead&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row",
@@ -4999,33 +5058,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     }
     used_by = _where_used(entity_id, deps)
 
-    def _summary_row(label, key, total=False):
-        return Tr(
-            Td(label, cls="detail-label detail-label--total" if total else "detail-label"),
-            Td(_recipe_money(recipe.get(key), currency), cls="recipe-amount cell--total" if total else "recipe-amount"),
-        )
-
-    cost_children = [
-        H3("Cost summary", cls="section-title"),
-        Table(Tbody(
-            _summary_row("Materials", "materials_cost"),
-            _summary_row("Labor", "labor_cost"),
-            _summary_row("Overhead", "overhead_cost"),
-            _summary_row("Unit cost", "unit_cost", total=True),
-        ), cls="detail-table"),
-        P("Standard cost, rolled up from current component costs. It does not update on its own when component prices change — click Recalculate cost.", cls="hint"),
-    ]
-    if has_recipe:
-        cost_children.append(Div(
-            Button("Recalculate cost", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs",
-                   hx_post=f"/api/items/{entity_id}/recalculate-cost", **_htmx,
-                   title="Re-roll this item's cost from the current cost of its components (does not update parent items — use Re-cost dependents on those)"),
-            Button("Apply to cost price", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs",
-                   hx_post=f"/api/items/{entity_id}/apply-cost", **_htmx,
-                   title="Copy this rolled standard cost into the item's cost price (Pricing tab)"),
-            cls="recipe-actions mt-sm",
-        ))
-    right_col = [Div(*cost_children, cls="detail-card recipe-cost-summary")]
+    right_col = [_recipe_cost_card(entity_id, item, currency)]
     if used_by:
         n = len(used_by)
         right_col.append(Div(
@@ -5040,14 +5073,10 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     has_rows = any(rows[k] for k in ("components", "labor", "overhead"))
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
 
-    actions = [
-        Button("Update recipe" if has_recipe else "Save recipe", Span(cls="btn-spinner htmx-indicator"),
-               type="button", cls="btn btn--primary",
-               hx_post=f"/api/items/{entity_id}/recipe", **_htmx),
-    ]
+    # No Save button — every change persists automatically (req #1). Clear keeps an inline confirm.
+    clear_action = ""
     if has_rows:
-        # Inline confirm (no native popup, per GDR §2f): Clear reveals Yes/Cancel in place.
-        actions.append(Div(
+        clear_action = Div(
             Button("Clear recipe", type="button", cls="btn btn--ghost btn--danger",
                    onclick="this.style.display='none';this.nextElementSibling.style.display='inline-flex';"),
             Span(
@@ -5059,18 +5088,27 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                 cls="clear-confirm", style="display:none;",
             ),
             cls="clear-recipe-wrap",
-        ))
+        )
+
+    showall_toggle = Label(
+        Input(type="checkbox", name="show_all_components", checked=show_all,
+              hx_post=f"{sec}?action=noop", hx_trigger="change", hx_include="#recipe-form",
+              hx_target="#recipe-section", hx_swap="outerHTML"),
+        " Show all items (not just components)",
+        cls="recipe-showall",
+    )
 
     return Div(
         Form(
             flash_el,
+            Div("All changes save automatically.", id="recipe-save-status", cls="recipe-save-status hint"),
             Div(
                 Label("Output quantity per batch", For="output_qty"),
-                Input(type="number", id="output_qty", name="output_qty", value=rows["output_qty"], min="0.001", step="any", cls="cell--number"),
+                Input(type="number", id="output_qty", name="output_qty", value=rows["output_qty"], min="0.001", step="any", cls="cell--number", **_save),
                 P("Unit cost = total recipe cost ÷ this quantity.", cls="hint"),
                 cls="detail-card recipe-block",
             ),
-            Div(H3("Materials", cls="section-title"), materials,
+            Div(H3("Materials", cls="section-title"), showall_toggle, materials,
                 Button("+ Add component", type="button", cls="btn btn--secondary btn--xs",
                        hx_post=f"{sec}?action=add_component", **_htmx),
                 cls="detail-card recipe-block"),
@@ -5082,7 +5120,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                 Button("+ Add cost", type="button", cls="btn btn--secondary btn--xs",
                        hx_post=f"{sec}?action=add_overhead", **_htmx),
                 cls="detail-card recipe-block"),
-            Div(*actions, cls="recipe-actions"),
+            clear_action,
             id="recipe-form",
         ),
         Div(*right_col, cls="recipe-right"),

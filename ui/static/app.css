@@ -530,6 +530,13 @@ a:hover { text-decoration: underline; }
 .clear-recipe-wrap { display: inline-flex; align-items: center; }
 .clear-confirm { display: none; align-items: center; gap: 6px; }
 .clear-confirm .confirm-label { font-size: 12px; color: var(--c-text2); }
+
+/* Auto-save status + component-only picker toggle (recipe tab). */
+.recipe-save-status { margin: 0 0 10px; font-size: 11px; color: var(--c-text2); }
+.recipe-save-status.saved { color: var(--c-green); }
+.recipe-save-status.error { color: var(--c-red); }
+.recipe-showall { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--c-text2); margin-bottom: 8px; cursor: pointer; }
+.recipe-showall input { margin: 0; }
 .field-tooltip {
     display: inline-flex;
     align-items: center;
