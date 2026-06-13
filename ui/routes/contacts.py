@@ -204,11 +204,11 @@ def _settings_card(c: dict) -> FT:
 
 def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start: str = "01-01") -> FT:
     """Compute and render financial summary cards from contact docs."""
+    from ui.routes.reports import _fy_start
     today = date.today()
-    fy_month, fy_day = (int(x) for x in fiscal_year_start.split("-"))
-    fy_start = date(today.year, fy_month, fy_day)
-    if fy_start > today:
-        fy_start = date(today.year - 1, fy_month, fy_day)
+    # Reuse the canonical parser: it falls back to Jan 1 on a malformed
+    # fiscal_year_start (e.g. "01" with no day) instead of crashing the page.
+    fy_start = _fy_start(fiscal_year_start, today)
     fy_start_str = fy_start.isoformat()
 
     invoices = [d for d in docs if d.get("doc_type") == "invoice"]
