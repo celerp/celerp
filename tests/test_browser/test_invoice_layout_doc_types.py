@@ -69,3 +69,63 @@ def test_print_view_preserves_weight_unit(page, ui_server, api, doc_type):
     assert "4.5 carat" in body, (
         f"{doc_type} print dropped the weight unit; expected '4.5 carat' in the print HTML"
     )
+
+def test_doc_lines_columns_scale_proportionally(page, ui_server, api):
+    """The line table fills its container (rightmost column pinned to the right edge), column
+    widths are percentages, and they rescale when the viewport changes — not fixed pixels."""
+    doc_id = _make_draft(api, "invoice")
+    page.set_viewport_size({"width": 1400, "height": 900})
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    table = page.locator("table.doc-lines")
+    table.wait_for(state="visible", timeout=5000)
+    page.wait_for_function(
+        "() => { const t = document.querySelector('table.doc-lines thead th'); "
+        "return t && t.style.width.endsWith('%'); }", timeout=5000)
+
+    def table_w():
+        return page.evaluate("document.querySelector('table.doc-lines').offsetWidth")
+
+    def container_w():
+        return page.evaluate(
+            "document.querySelector('.doc-section--lines').clientWidth")
+
+    # Widths are stored/applied as percentages, and the table fills its container at this size.
+    th_widths = page.eval_on_selector_all(
+        "table.doc-lines thead th", "els => els.map(e => e.style.width)")
+    assert all(w.endswith("%") for w in th_widths if w), th_widths
+    wide_table, wide_container = table_w(), container_w()
+    assert abs(wide_table - wide_container) <= 4, (wide_table, wide_container)
+
+    # Shrink the viewport: the table scales down with the container (proportional, not fixed px).
+    page.set_viewport_size({"width": 900, "height": 900})
+    page.wait_for_function(
+        "(w) => document.querySelector('table.doc-lines').offsetWidth < w",
+        arg=wide_table, timeout=5000)  # poll until the layout settles (no fixed sleep -> no flake)
+    narrow_table, narrow_container = table_w(), container_w()
+    assert narrow_table < wide_table, (narrow_table, wide_table)        # it actually shrank
+    assert abs(narrow_table - narrow_container) <= 4, (narrow_table, narrow_container)  # still fills
+
+
+def test_doc_lines_resize_persists_as_percent(page, ui_server, api):
+    """Dragging a column handle stores percentages (not px) and they restore on reload."""
+    doc_id = _make_draft(api, "invoice")
+    page.set_viewport_size({"width": 1400, "height": 900})
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.wait_for_function(
+        "() => { const t = document.querySelector('table.doc-lines thead th'); "
+        "return t && t.style.width.endsWith('%'); }", timeout=5000)
+
+    handle = page.locator("table.doc-lines thead th .col-resize-handle").first
+    handle.scroll_into_view_if_needed()  # the line table sits below the fold on a long doc page
+    box = handle.bounding_box()
+    cy = box["y"] + box["height"] / 2
+    page.mouse.move(box["x"] + box["width"] / 2, cy)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 120, cy, steps=6)
+    page.mouse.up()
+
+    stored = page.evaluate("localStorage.getItem('celerp_dline_wpct_invoice')")
+    assert stored, "resize did not persist any widths"
+    import json
+    vals = json.loads(stored)
+    assert vals and all(isinstance(v, (int, float)) for v in vals.values()), vals  # numeric %, not '120px'

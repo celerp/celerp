@@ -1601,36 +1601,52 @@ def unwrap_address(raw) -> str:
 
 
 def col_resize_script(table_selector: str, storage_key: str):
-    """Reusable drag-to-resize for a header's columns.
+    """Reusable PROPORTIONAL drag-to-resize for a header's columns.
 
-    Adds a ``.col-resize-handle`` to each ``<thead> th`` of every table matched by
-    ``table_selector``. Dragging a handle sets that one column's width; on a
-    ``width:auto`` table the table re-sums to its columns, so only the dragged
-    column changes and the table grows past its ``.table-scroll-wrap`` (which
-    scrolls) — the same feel as the inventory/contacts tables, with no
-    redistribution across the other columns.
+    The table is meant to fill its container (``width:100%; table-layout:fixed``). Every column
+    width is held as a PERCENTAGE of the table, so the layout scales with the viewport and the
+    rightmost column stays locked to the right edge at any screen size. Dragging a handle widens
+    one column and narrows its right-hand neighbour by the same amount, so the columns always sum
+    to 100% (no overflow, no horizontal scroll).
 
-    Widths persist to ``localStorage[storage_key]``, keyed by each th's first
-    ``col-*`` class, and are restored (after layout) on load. The column set is
-    fixed — this only resizes, never adds/removes/reorders.
+    On first load (no saved prefs) the columns' current rendered proportions are captured as the
+    baseline; otherwise the saved percentages are restored. Widths persist to
+    ``localStorage[storage_key]`` keyed by each th's first ``col-*`` class. The column set is
+    fixed — this only resizes, never adds/removes/reorders. The last column has no handle (it is
+    pinned to the right edge; resize it by dragging its left neighbour's handle).
     """
     import json as _json
     sel = _json.dumps(table_selector)
     key = _json.dumps(storage_key)
     js = (
         "(function(){"
-        "var SEL=" + sel + ",KEY=" + key + ";"
+        "var SEL=" + sel + ",KEY=" + key + ",MIN=3;"  # MIN = floor width per column, in %
         "function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);return m?m[0]:'';}"
         "document.querySelectorAll(SEL).forEach(function(t){"
         "if(t.dataset.colResize)return;t.dataset.colResize='1';"
-        "var ths=Array.from(t.querySelectorAll('thead th'));"
-        "function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k&&h.style.width)w[k]=h.style.width;});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}"
-        "requestAnimationFrame(function(){try{var sv=JSON.parse(localStorage.getItem(KEY)||'null');if(sv)ths.forEach(function(h){var k=ck(h);if(k&&sv[k])h.style.width=sv[k];});}catch(e){}});"
-        "ths.forEach(function(h){if(h.querySelector('.col-resize-handle'))return;"
+        "var ths=Array.from(t.querySelectorAll('thead th'));if(!ths.length)return;"
+        "function tw(){return t.offsetWidth||1;}"
+        "function pct(h){return h.offsetWidth/tw()*100;}"
+        "function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}"
+        # Baseline: restore saved % per column, else capture the current rendered proportions;
+        # then normalise so the set sums to exactly 100% and fills the table.
+        "requestAnimationFrame(function(){"
+        "var sv=null;try{sv=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}"
+        "var ws=ths.map(function(h){var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);});"
+        "var s=ws.reduce(function(a,b){return a+b;},0)||1;"
+        "ths.forEach(function(h,i){h.style.width=(ws[i]/s*100)+'%';});"
+        "});"
+        # Handles on every column except the last (which is pinned to the right edge).
+        "ths.forEach(function(h,idx){"
+        "if(idx>=ths.length-1)return;"
+        "if(h.querySelector('.col-resize-handle'))return;"
         "var d=document.createElement('div');d.className='col-resize-handle';h.style.position='relative';h.appendChild(d);"
         "d.addEventListener('mousedown',function(e){"
-        "var sx=e.pageX,sw=h.offsetWidth;document.body.style.cursor='col-resize';"
-        "function mv(ev){h.style.width=Math.max(24,sw+(ev.pageX-sx))+'px';}"
+        "var nx=ths[idx+1],W=tw(),sx=e.pageX,a0=h.offsetWidth/W*100,b0=nx.offsetWidth/W*100,sum=a0+b0;"
+        "document.body.style.cursor='col-resize';"
+        "function mv(ev){var dp=(ev.pageX-sx)/W*100,a=a0+dp,b=b0-dp;"
+        "if(a<MIN){a=MIN;b=sum-MIN;}if(b<MIN){b=MIN;a=sum-MIN;}"
+        "h.style.width=a+'%';nx.style.width=b+'%';}"
         "function up(){document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.body.style.cursor='';save();}"
         "document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);e.preventDefault();e.stopPropagation();"
         "});});});"

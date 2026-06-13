@@ -5132,14 +5132,14 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
         # Total: read-only computed preview for rate-based (default Hourly), editable only for Fixed.
         Td(Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", readonly=True, onkeydown=_add_enter), cls="cell--number"),
-        Td(Button("+ Add", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
+        Td(Button("Save", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_labor", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
     oh_add_row = Tr(
         Td(Input(type="text", name="oh_new_desc", value="", placeholder="Add a cost…", cls="recipe-req", onkeydown=_add_enter)),
         Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter), cls="cell--number"),
-        Td(Button("+ Add", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
+        Td(Button("Save", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
                   hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
