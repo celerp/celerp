@@ -508,6 +508,9 @@ a:hover { text-decoration: underline; }
 .recipe-section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }
 .recipe-section-head .section-title { margin-bottom: 0; }
 .recipe-section-total { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--c-text); }
+/* Pricing tab: Cost card on the left, Sell-prices card on the right. */
+.pricing-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
+.form-input--readonly { display: inline-block; padding: 6px 0; color: var(--c-text2); }
 /* Read-only per-row cost cells in the recipe tables (catalog cost + extended). */
 .recipe-block .data-table td.recipe-amount { text-align: right; font-variant-numeric: tabular-nums; color: var(--c-text2); }
 .empty-row td { color: var(--c-text2); font-style: italic; text-align: center; }

@@ -67,6 +67,35 @@ def test_item_detail_pricing_tab_loads(page, ui_server, test_item):
     assert "Pricing" in body
 
 
+def test_pricing_tab_autosaves_no_button_two_cards(page, ui_server, api, test_item):
+    """Pricing tab: Cost / Sell-prices split, no Save button, edits persist automatically."""
+    item_id = test_item["id"]
+    page.goto(f"{ui_server}/inventory/{item_id}?tab=pricing", wait_until="domcontentloaded")
+    page.wait_for_selector(".pricing-grid", timeout=10000)
+    _assert_no_crash(page, "pricing autosave")
+
+    # No Save button anywhere; the two cards are present (Cost left, Sell prices right).
+    assert page.get_by_role("button", name="Save Prices").count() == 0
+    grid = page.locator(".pricing-grid").inner_text()
+    assert "Cost" in grid and "Sell prices" in grid
+
+    # Editing the retail unit price autosaves on blur — no reload, status flips to Saved.
+    retail = page.locator("input[name=retail_price]")
+    retail.fill("42.50")
+    retail.blur()
+    page.wait_for_selector("#pricing-save-status.saved", timeout=8000)
+    # Verify it persisted through the API.
+    import time as _t
+    deadline = _t.time() + 6
+    saved = None
+    while _t.time() < deadline:
+        saved = api.get(f"/items/{item_id}").json().get("retail_price")
+        if saved == 42.5:
+            break
+        _t.sleep(0.3)
+    assert saved == 42.5, f"retail_price not autosaved (got {saved})"
+
+
 def test_item_detail_activity_tab_loads(page, ui_server, test_item):
     """DETAIL-03: Clicking Activity tab must load without crash."""
     page.goto(f"{ui_server}/inventory/{test_item['id']}?tab=activity", wait_until="domcontentloaded")

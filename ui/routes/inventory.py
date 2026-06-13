@@ -3111,8 +3111,11 @@ function celerpPrintLabel(entityId, templateId) {
                     else:
                         await api.set_item_price(token, entity_id, pl_name, price)
         except APIError as e:
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+            # OOB so the message lands in the save-status (inputs use hx_swap="none").
+            return Div(f"Not saved: {e.detail}", id="pricing-save-status",
+                       cls="recipe-save-status hint error", hx_swap_oob="true")
+        # Autosave: a transient saved indicator, no page reload (consistent with the rest of the UI).
+        return Div("Saved ✓", id="pricing-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true")
 
     @app.post("/api/items/{entity_id}/status")
     async def item_status(request: Request, entity_id: str):
@@ -5213,10 +5216,8 @@ def _item_detail_tabs(
     )
     if active_tab == "pricing":
         if price_lists:
-            panel = Div(
-                _pricing_form(entity_id, item, price_lists, currency),
-                cls="detail-grid detail-grid--single",
-            )
+            # _pricing_form owns its own Cost / Sell-prices grid; no single-column wrapper.
+            panel = _pricing_form(entity_id, item, price_lists, currency)
         else:
             panel = Div(
                 _detail_table(entity_id, item, pricing_fields, title="Pricing", currency=currency),
@@ -5260,63 +5261,78 @@ def _item_detail_tabs(
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None) -> FT:
-    """Render dynamic pricing form: unit price + linked total (back-calculates unit price from total)."""
+    """Pricing tab: Cost on the left, Sell prices on the right. Every field saves automatically.
+
+    Each input autosaves on change (no Save button), consistent with the rest of the system.
+    For a manufactured item the cost is rolled from the recipe and shown read-only here — it is
+    edited on the Manufacturing tab — so the single source of truth stays the recipe.
+    """
     from ui.routes.documents import resolve_price as _resolve_price
     qty = float(item.get("quantity") or 0)
     sell_by = str(item.get("sell_by") or "unit")
     has_qty = qty > 0
-
     cur_sym = currency or ""
-    rows = []
-    for pl in price_lists:
-        pl_name = pl.get("name", "")
+    has_recipe = bool((item.get("recipe") or {}).get("components"))
+
+    unit_hdr = f"Unit ({cur_sym} / {sell_by})" if cur_sym else f"Unit / {sell_by}"
+    total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else "Total (no stock)"
+
+    def _cur(v):
+        return Div(Span(cur_sym, cls="input-prefix") if cur_sym else "", v, cls="input-with-prefix")
+
+    def _row(pl_name: str, editable: bool) -> FT:
         conventional_key = f"{pl_name.lower()}_price"
         price_val = _resolve_price(item, pl_name)
         unit_val = f"{price_val:.2f}" if price_val else ""
         total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
-        # JS IDs scoped per price list
-        unit_id = f"unit_{conventional_key}"
-        total_id = f"total_{conventional_key}"
-        cur_prefix = Span(cur_sym, cls="input-prefix") if cur_sym else ""
-        rows.append(Tr(
-            Td(pl_name, cls="detail-label"),
-            Td(
-                Div(
-                    cur_prefix,
-                    Input(
-                        type="number", name=conventional_key, id=unit_id,
-                        value=unit_val, step="0.01", min="0", placeholder="--",
-                        cls="form-input",
-                        oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
-                    ),
-                    cls="input-with-prefix",
-                )
-            ),
-            Td(
-                Div(
-                    cur_prefix,
-                    Input(
-                        type="number", id=total_id,
-                        value=total_val, step="0.01", min="0", placeholder="--",
-                        cls="form-input",
-                        disabled=not has_qty,
-                        oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
-                    ),
-                    cls="input-with-prefix",
-                )
-            ),
-        ))
+        if not editable:
+            # Recipe-managed cost: read-only display (edited on the Manufacturing tab).
+            return Tr(
+                Td(pl_name, cls="detail-label"),
+                Td(_cur(Span(unit_val or EMPTY, cls="form-input form-input--readonly"))),
+                Td(_cur(Span(total_val or EMPTY, cls="form-input form-input--readonly")) if has_qty else Span(EMPTY)),
+            )
+        unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
+        # Autosave on change (blur/Enter); the linked total mirrors the unit live via oninput.
+        _save = {"hx_post": f"/api/items/{entity_id}/price", "hx_trigger": "change",
+                 "hx_include": "this", "hx_swap": "none"}
+        unit_input = Input(type="number", name=conventional_key, id=unit_id, value=unit_val,
+                           step="0.01", min="0", placeholder="--", cls="form-input",
+                           oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})", **_save)
+        total_input = Input(type="number", id=total_id, value=total_val, step="0.01", min="0",
+                            placeholder="--", cls="form-input", disabled=not has_qty,
+                            oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
+                            # Editing the total back-fills the unit, then re-fires its autosave.
+                            onchange=f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))")
+        return Tr(Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input)))
 
-    unit_hdr = f"Unit price ({cur_sym} / {sell_by})" if cur_sym else f"Unit price / {sell_by}"
-    total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else f"Total (no stock)"
+    def _card(title: str, lists: list[dict], editable: bool, note: str | None = None) -> FT:
+        return Div(
+            H3(title, cls="section-title"),
+            Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
+                  Tbody(*[_row(pl.get("name", ""), editable) for pl in lists]),
+                  cls="detail-table"),
+            P(note, cls="hint") if note else "",
+            cls="detail-card",
+        )
+
+    is_cost = lambda pl: pl.get("name", "").lower() == "cost"
+    cost_lists = [pl for pl in price_lists if is_cost(pl)]
+    sell_lists = [pl for pl in price_lists if not is_cost(pl)]
+
+    cards = []
+    if cost_lists:
+        note = "Rolled up from the recipe and kept in sync automatically. Edit it on the Manufacturing tab." if has_recipe else None
+        cards.append(_card("Cost", cost_lists, editable=not has_recipe, note=note))
+    if sell_lists:
+        cards.append(_card("Sell prices", sell_lists, editable=True))
 
     return Div(
-        H3(t("page.pricing"), cls="section-title"),
         Script("""
 function syncPricingTotal(unitId, totalId, qty) {
   var u = parseFloat(document.getElementById(unitId).value);
   var tEl = document.getElementById(totalId);
-  tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(2);
+  if (tEl) tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(2);
 }
 function syncPricingUnit(unitId, totalId, qty) {
   if (!qty) return;
@@ -5325,18 +5341,9 @@ function syncPricingUnit(unitId, totalId, qty) {
   uEl.value = isNaN(total) ? '' : (total / qty).toFixed(2);
 }
 """),
-        Form(
-            Table(
-                Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
-                Tbody(*rows),
-                cls="detail-table",
-            ),
-            Button(t("btn.save_prices"), type="submit", cls="btn btn--primary mt-sm"),
-            hx_post=f"/api/items/{entity_id}/price",
-            hx_swap="none",
-            hx_on__after_request="window.location.reload()",
-        ),
-        cls="detail-card",
+        Div("Prices save automatically.", id="pricing-save-status", cls="recipe-save-status hint"),
+        Div(*cards, cls="pricing-grid"),
+        cls="pricing-tab",
     )
 
 

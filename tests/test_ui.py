@@ -3524,53 +3524,9 @@ class TestSprint4Polish:
         assert b"INV-2026-0001" in r.content
 
 
-class TestSprint4BOMs:
-    """T5: BOM management UI."""
-
-    @pytest.mark.asyncio
-    async def test_bom_list_page_renders(self, ui_client):
-        """GET /manufacturing/boms renders BOM list."""
-        boms = [{"bom_id": "bom:1", "name": "Ring BOM", "output_item_id": "item:x", "output_qty": 1, "components": [{"sku": "A"}]}]
-        with patch("ui.api_client.list_boms", new=AsyncMock(return_value={"items": boms, "total": len(boms)})):
-            r = await ui_client.get("/manufacturing/boms", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Ring BOM" in r.content
-
-    @pytest.mark.asyncio
-    async def test_bom_list_empty_state(self, ui_client):
-        """Empty BOM list shows empty state message."""
-        with patch("ui.api_client.list_boms", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/manufacturing/boms", cookies=_authed())
-        assert r.status_code == 200
-        assert b"No BOMs" in r.content or b"New BOM" in r.content
-
-    @pytest.mark.asyncio
-    async def test_bom_detail_shows_components(self, ui_client):
-        """GET /manufacturing/boms/{id} renders component rows."""
-        bom = {
-            "bom_id": "bom:1", "name": "Ring BOM",
-            "output_item_id": "item:ring", "output_qty": 1.0,
-            "components": [{"sku": "GLD-18K", "qty": 5.0, "unit": "grams"}],
-        }
-        with patch("ui.api_client.get_bom", new=AsyncMock(return_value=bom)):
-            r = await ui_client.get("/manufacturing/boms/bom:1", cookies=_authed())
-        assert r.status_code == 200
-        assert b"GLD-18K" in r.content
-        assert b"Add Component" in r.content
-
-    @pytest.mark.asyncio
-    async def test_bom_new_form_renders(self, ui_client):
-        """GET /manufacturing/boms/new renders creation form."""
-        r = await ui_client.get("/manufacturing/boms/new", cookies=_authed())
-        assert r.status_code == 200
-        assert b"BOM Name" in r.content or b"name" in r.content.lower()
-
-    @pytest.mark.asyncio
-    async def test_manufacturing_page_shows_boms_link(self, ui_client):
-        """Manufacturing list page has a link to BOMs section."""
-        with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/manufacturing", cookies=_authed())
-        assert b"boms" in r.content.lower() or b"Bill" in r.content
+# Removed: TestSprint4BOMs — the standalone BOM entity + its UI were purged when recipes
+# moved onto the inventory item (manufacturing module revision). No replacement tests here;
+# recipe coverage lives in default_modules/celerp-manufacturing/tests and the browser suite.
 
 
 # ===========================================================================
@@ -3812,7 +3768,9 @@ class TestSprint5ItemActions:
             patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
             r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "300", "wholesale_price": "200", "cost_price": "100"}, cookies=_authed())
-        assert r.status_code == 204
+        # Autosave: 200 + OOB saved status (no 204/redirect).
+        assert r.status_code == 200
+        assert b"pricing-save-status" in r.content
 
     @pytest.mark.asyncio
     async def test_status_item_route(self, ui_client):
@@ -4171,15 +4129,18 @@ class TestItemActionRouteCompleteness:
     # ── price ────────────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_price_redirects_to_item(self, ui_client):
+    async def test_price_autosaves_without_reload(self, ui_client):
+        """Prices autosave: a transient saved status (OOB), no full-page reload."""
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 5.0})),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={"event_id": "e1"})),
             patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/price", data={"cost_price": "10", "wholesale_price": "20", "retail_price": "30"}, cookies=_authed())
-        assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
+            r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "30"}, cookies=_authed())
+        assert r.status_code == 200
+        assert "HX-Redirect" not in r.headers
+        assert b"pricing-save-status" in r.content and b"Saved" in r.content
 
     @pytest.mark.asyncio
     async def test_price_passes_only_provided_fields(self, ui_client):
