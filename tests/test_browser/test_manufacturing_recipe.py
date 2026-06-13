@@ -158,3 +158,44 @@ def test_fixed_labor_derived_unit_and_add_new_option(page, ui_server, api):
     assert got["unit_cost"] == 50.0
     assert got["components"][0]["unit"] == "gram"
     assert got["labor"][0]["kind"] == "fixed"
+
+
+def test_labor_type_toggles_applicable_fields(page, ui_server, api):
+    """Switching the labor Type (Hourly <-> Fixed) updates which fields apply, in the add-row
+    and in a committed row."""
+    api.post("/items", json={"sku": "LT-GOLD", "name": "Gold", "quantity": 1, "sell_by": "gram",
+                             "cost_total": 100, "inventory_type": "component"})  # unit 100
+    fg = api.post("/items", json={"sku": "LT-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    _open_tab(page, ui_server, fg)
+    _ghost_pick(page, "LT-GOLD")  # a component so the item is manufacturable
+    page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
+
+    # Add-row: default Hourly -> Fixed amount disabled, Hours/Rate enabled.
+    assert page.locator("input[name=labor_new_amount]").is_disabled()
+    assert not page.locator("input[name=labor_new_hours]").is_disabled()
+    # Choosing Fixed flips it: Hours/Rate disabled, Fixed amount enabled.
+    page.select_option("select[name=labor_new_kind]", "fixed")
+    assert page.locator("input[name=labor_new_hours]").is_disabled()
+    assert not page.locator("input[name=labor_new_amount]").is_disabled()
+
+    # Commit an Hourly line; its row shows Hours/Rate editable and the amount cell dimmed (N/A).
+    page.select_option("select[name=labor_new_kind]", "hourly")
+    page.fill("input[name=labor_new_op]", "Cutting")
+    page.fill("input[name=labor_new_hours]", "2")
+    page.fill("input[name=labor_new_rate]", "30")
+    page.locator("tr.recipe-add-row:has(input[name=labor_new_op]) button.recipe-add-btn").click()
+    page.wait_for_selector('td[data-col="recipe__labor__0__rate"]', timeout=8000)
+    assert page.locator('td[data-col="recipe__labor__0__amount"]').count() == 0  # amount is the dimmed N/A cell
+    assert page.locator('tr:has(td[data-col="recipe__labor__0__rate"]) td.recipe-cell--na').count() == 1
+
+    # Switch the committed row's Type to Fixed -> the fields flip live.
+    page.dblclick('td[data-col="recipe__labor__0__kind"]')
+    page.wait_for_selector("select[name=value]", timeout=5000)
+    page.select_option("select[name=value]", "fixed")
+    page.wait_for_selector('td[data-col="recipe__labor__0__amount"]', timeout=8000)
+    assert page.locator('td[data-col="recipe__labor__0__hours"]').count() == 0  # hours now dimmed N/A
+    _set_cell(page, "recipe__labor__0__amount", "40")
+    page.wait_for_selector("#recipe-cost-card:has-text('140')", timeout=8000)  # 100 materials + 40 fixed
+    got = api.get(f"/items/{fg}").json()["recipe"]
+    assert got["labor"][0]["kind"] == "fixed" and got["labor"][0]["amount"] == 40.0

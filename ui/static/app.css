@@ -514,6 +514,8 @@ a:hover { text-decoration: underline; }
 .form-input--readonly { display: inline-block; padding: 6px 0; color: var(--c-text2); }
 /* Read-only per-row cost cells in the recipe tables (catalog cost + extended). */
 .recipe-block .data-table td.recipe-amount { text-align: right; font-variant-numeric: tabular-nums; color: var(--c-text2); }
+/* Labor field that doesn't apply to the current Type (Hourly vs Fixed): dimmed, not editable. */
+.recipe-block .data-table td.recipe-cell--na { text-align: right; color: var(--c-text2); opacity: 0.5; }
 .empty-row td { color: var(--c-text2); font-style: italic; text-align: center; }
 .recipe-row--orphan .combobox-input { border-color: var(--c-red); }
 .hint { font-size: 11px; color: var(--c-text2); margin-top: 6px; }
