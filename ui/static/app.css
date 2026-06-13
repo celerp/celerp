@@ -513,7 +513,13 @@ a:hover { text-decoration: underline; }
 .doc-meta { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
 .doc-meta-left, .doc-meta-right { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
 .doc-lines { margin-top: 12px; }
-.data-table.doc-lines { table-layout: fixed; width: 100%; max-width: 100%; }
+/* width:max-content sizes the table to its columns and lets it exceed the
+   section (so dragging a column wider overflows into the .table-scroll-wrap,
+   which scrolls — like inventory); width:auto would cap it at the container.
+   min-width:0 overrides the base .data-table's min-width:100% so columns are not
+   stretched to fill — a resize handle sits on each column's real edge and saved
+   widths restore exactly. */
+.data-table.doc-lines { table-layout: fixed; width: max-content; min-width: 0; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
 .doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }

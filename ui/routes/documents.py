@@ -15,7 +15,7 @@ import ui.api_client as api
 from ui.api_client import APIError
 from celerp.services.line_measures import measure_sublines, qty_label, item_measure_meta, measure_locks, resolve_line_measures
 from ui.components.shell import base_shell, page_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address, col_resize_script
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import _files_section as _shared_doc_files_section
@@ -6344,6 +6344,7 @@ async function celerpCsvImport(input, entityId) {{
         # Line items + price list bar
         Div(
             lines_section,
+            col_resize_script("table.doc-lines", f"celerp_dline_w_{doc_type}"),
             cls="doc-section doc-section--lines",
         ),
         # Totals + optional quotation valid-until
