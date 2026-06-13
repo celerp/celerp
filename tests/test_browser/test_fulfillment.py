@@ -197,7 +197,14 @@ def test_revert_fulfillment_restores_fulfill_button(page, ui_server, api, final_
         r = api.post(f"/docs/{final_doc_id}/fulfill-lines", json={"line_entity_ids": eids})
         assert r.status_code in {200, 201}, f"Pre-revert fulfill failed ({r.status_code}): {r.text}"
 
-    r = api.post(f"/docs/{final_doc_id}/revert-lines", json={"line_entity_ids": eids})
+    # A partial fulfill splits the parcel and rewrites the line to the child, so
+    # revert using the doc's CURRENT line refs rather than the original item id.
+    cur_eids = [
+        li.get("entity_id") or li.get("item_id")
+        for li in api.get(f"/docs/{final_doc_id}").json().get("line_items", [])
+        if (li.get("entity_id") or li.get("item_id"))
+    ]
+    r = api.post(f"/docs/{final_doc_id}/revert-lines", json={"line_entity_ids": cur_eids})
     assert r.status_code in {200, 201}, f"API revert-lines failed ({r.status_code}): {r.text}"
     # Reverting the lines must clear the fulfilled status (authoritative signal).
     fs_after = api.get(f"/docs/{final_doc_id}").json().get("fulfillment_status", "MISSING")
@@ -312,8 +319,6 @@ def test_stock_shortage_returns_409_with_details(api):
         pytest.skip("Cannot finalize")
 
     r3 = api.post(f"/docs/{doc_id}/fulfill-lines", json={"line_entity_ids": [item_id]})
-    if r3.status_code in {200, 201}:
-        pytest.skip("Inventory not enforcing stock levels in this env")
     assert r3.status_code == 409, f"Expected 409 for stock shortage, got {r3.status_code}: {r3.text}"
 
     detail = r3.json().get("detail", "")

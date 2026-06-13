@@ -1410,6 +1410,148 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     }
 
 
+async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_proj: Projection,
+                          child_qty: float, child_weight: float | None = None,
+                          child_pieces: int | None = None) -> tuple[str, str]:
+    """Split one child of ``child_qty`` off ``parent_proj`` → ``(child_eid, child_sku)``.
+
+    The child (SKU ``{parent_sku}.N``) is the split-off portion; the mother keeps
+    the remainder under its original SKU. Cost splits proportionally by quantity.
+    Weight and pieces come ONLY from the explicit args — no proportional fallback,
+    no auto-derivation; the mother keeps ``parent - child`` for each.
+
+    Invariants (raise ValueError if violated):
+      - parcel has weight (weight-unit sell_by OR a weight attribute)
+            -> child_weight is required
+      - sell_by is a weight unit  -> child_weight must equal child_qty
+      - parcel has pieces (piece-unit sell_by OR a pieces attribute)
+            -> child_pieces is required
+      - sell_by is a pieces unit  -> child_pieces must equal child_qty
+
+    Does NOT commit — the caller owns the transaction.
+    """
+    parent = parent_proj
+    entity_id = parent.entity_id
+    parent_sku = parent.state.get("sku", "")
+    parent_qty = float(parent.state.get("quantity") or 0)
+    parent_attrs = dict(parent.state.get("attributes") or {})
+
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
+    sell_by = parent.state.get("sell_by") or ""
+    weight_type = is_weight_unit(sell_by, unit_map)
+    pieces_type = is_pieces_unit(sell_by, unit_map)
+    parent_weight = _read_float(parent.state, "weight")
+    parent_pieces = _read_pieces(parent.state)
+
+    # --- validate (no omission, no fallback) ---
+    if (weight_type or parent_weight is not None) and child_weight is None:
+        raise ValueError("child_weight is required: this item is weight-tracked")
+    if weight_type and child_weight is not None and abs(child_weight - child_qty) > 1e-9:
+        raise ValueError("for weight-sold items child_weight must equal child_qty")
+    if (pieces_type or parent_pieces is not None) and child_pieces is None:
+        raise ValueError("child_pieces is required: this item is piece-tracked")
+    if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
+        raise ValueError("for piece-sold items child_pieces must equal child_qty")
+
+    # Next free child SKU: {parent_sku}.N
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
+    )).scalars().all()
+    prefix = f"{parent_sku}."
+    max_suffix = 0
+    for it in rows:
+        sku = str(it.state.get("sku", "") or "")
+        if sku.startswith(prefix) and "." not in sku[len(prefix):]:
+            try:
+                max_suffix = max(max_suffix, int(sku[len(prefix):]))
+            except ValueError:
+                pass
+    child_sku = f"{prefix}{max_suffix + 1}"
+
+    # Cost: proportional by quantity (unit-cost invariant).
+    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
+        float(parent.state.get("cost_price") or 0) * parent_qty
+    )
+    child_cost_total: float | None = None
+    if parent_cost_total and parent_qty:
+        unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
+        child_cost_total = float((unit_cost * Decimal(str(child_qty))).quantize(Decimal("0.0000000001")))
+
+    ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
+    parent_prices = {
+        k: parent.state[k] for k in parent.state
+        if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"
+    }
+
+    # --- create the child ---
+    child_eid = f"item:{uuid.uuid4()}"
+    next_barcode_seq = await _next_seq(session, company_id)
+    child_attrs = dict(parent_attrs)
+    if ch_pieces is not None:
+        child_attrs["pieces"] = ch_pieces
+    child_data = {k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS}
+    child_data.update({
+        "sku": child_sku,
+        "name": parent.state.get("name", child_sku),
+        "quantity": child_qty,
+        "status": "available",
+        "attributes": child_attrs,
+        "barcode": str(next_barcode_seq).zfill(6),
+    })
+    if child_weight is not None:
+        child_data["weight"] = child_weight
+    await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
+                     event_type="item.created", data=child_data, actor_id=user_id,
+                     location_id=_parse_uuid(parent.state.get("location_id")), source="fulfill_split",
+                     idempotency_key=str(uuid.uuid4()), metadata_={"parent_id": entity_id})
+    for price_type, price_val in parent_prices.items():
+        await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
+                         event_type="item.pricing.set", data={"price_type": price_type, "new_price": price_val},
+                         actor_id=user_id, location_id=None, source="fulfill_split",
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
+    if child_cost_total is not None:
+        await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
+                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": child_cost_total},
+                         actor_id=user_id, location_id=None, source="fulfill_split",
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
+
+    # --- reduce the mother ---
+    new_parent_qty = max(0.0, round(parent_qty - child_qty, 10))
+    await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                     event_type="item.quantity.adjusted", data={"new_qty": new_parent_qty},
+                     actor_id=user_id, location_id=None, source="fulfill_split",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    if child_cost_total is not None and parent_cost_total:
+        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                         event_type="item.pricing.set",
+                         data={"price_type": "cost_total", "new_price": max(0.0, round(parent_cost_total - child_cost_total, 10))},
+                         actor_id=user_id, location_id=None, source="fulfill_split",
+                         idempotency_key=str(uuid.uuid4()), metadata_={})
+    # Secondary measures are NOT conserved: the child keeps its (uncapped) value and
+    # the mother floors at 0 (e.g. child weight 20 of a 15ct mother -> mother 0ct).
+    fields_changed: dict[str, dict] = {}
+    if child_weight is not None and parent_weight is not None:
+        fields_changed["weight"] = {"old": parent.state.get("weight"), "new": max(0.0, round(parent_weight - child_weight, 10))}
+    if ch_pieces is not None and parent_pieces is not None:
+        new_attrs = dict(parent_attrs)
+        new_attrs["pieces"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
+        fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
+    if fields_changed:
+        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                         event_type="item.updated", data={"fields_changed": fields_changed},
+                         actor_id=user_id, location_id=None, source="fulfill_split",
+                         idempotency_key=str(uuid.uuid4()), metadata_={})
+
+    # history
+    await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                     event_type="item.split",
+                     data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty]},
+                     actor_id=user_id, location_id=None, source="fulfill_split",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    return child_eid, child_sku
+
+
 @router.post("/{entity_id}/transform")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent

@@ -29,7 +29,7 @@ from celerp.services.auth import get_current_company_id, get_current_user, requi
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
 from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import PickResult, compute_pick_plan
-from celerp.services.units import DEFAULT_UNITS, build_unit_map, validate_line_quantity
+from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES
 
@@ -49,6 +49,11 @@ class LineItem(BaseModel):
     taxes: list[TaxApplication] = Field(default_factory=list)
     sell_by: str | None = None
     line_total: float | None = None
+    # Invoice fulfillment: how much of the linked parcel this line draws, by piece
+    # and by weight. Drive the split-on-fulfill (child_pieces / child_weight). Only
+    # editable when the parcel actually tracks that measure and splitting is allowed.
+    pieces: float | None = None
+    weight: float | None = None
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":
@@ -2987,8 +2992,21 @@ async def fulfill_lines(
     if not body.line_entity_ids:
         raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
-    errors: list[str] = []
+    # Each line keyed by the item parcel it references (for qty + split measures).
+    line_qty_by_eid: dict[str, float] = {}
+    line_by_eid: dict[str, dict] = {}
+    for li in state.get("line_items", []):
+        _eid = li.get("entity_id") or li.get("item_id") or ""
+        if _eid:
+            line_qty_by_eid[_eid] = float(li.get("quantity") or 0)
+            line_by_eid[_eid] = li
+
+    _unit_map = await _get_unit_map(session, company_id)
+
+    errors: list[str] = []          # 422: item not found / not available
+    blocked: list[str] = []         # 409: stock shortage / non-splittable partial
     to_fulfill: list[str] = []
+    split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial draws)
     fetched: dict[str, Projection] = {}
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
@@ -3001,8 +3019,57 @@ async def fulfill_lines(
                 f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', is '{item_status}'"
             )
             continue
+        # Stock guard: the invoiced quantity must not exceed the parcel's stock,
+        # and a partial draw is only allowed when the item permits splitting.
+        sku = item_proj.state.get("sku", "")
+        line_qty = line_qty_by_eid.get(item_eid, 0.0)
+        available = float(item_proj.state.get("quantity", 0))
+        if line_qty > available + 1e-9:
+            blocked.append(
+                f"{sku}: insufficient stock — invoiced {line_qty:g}, available {available:g}"
+            )
+            continue
+        if line_qty + 1e-9 < available and not item_proj.state.get("allow_splitting", True):
+            blocked.append(
+                f"{sku}: invoiced {line_qty:g} of {available:g} but 'Allow Splitting' is off — "
+                f"enable splitting or invoice the full quantity"
+            )
+            continue
+        _line = line_by_eid.get(item_eid, {})
+        _sb = item_proj.state.get("sell_by")
+        # Whole draw: taking all the quantity takes the whole parcel, so the secondary
+        # measures (not the sell-by one) must match the parcel exactly.
+        if abs(line_qty - available) <= 1e-9:
+            _checks = []
+            if not is_pieces_unit(_sb, _unit_map):
+                _checks.append(("pcs", (item_proj.state.get("attributes") or {}).get("pieces"), _line.get("pieces")))
+            if not is_weight_unit(_sb, _unit_map):
+                _checks.append(("weight", item_proj.state.get("weight"), _line.get("weight")))
+            _bad = next(((n, p, v) for n, p, v in _checks
+                         if p is not None and v is not None and abs(float(v) - float(p)) > 1e-9), None)
+            if _bad:
+                _n, _p, _v = _bad
+                blocked.append(
+                    f"{sku}: invoicing the whole quantity must take all {float(_p):g} {_n} (got {float(_v):g})"
+                )
+                continue
         fetched[item_eid] = item_proj
         to_fulfill.append(item_eid)
+        if line_qty + 1e-9 < available:
+            # Partial draw of a splittable parcel: split off the invoiced amount as a
+            # child and fulfill that; the mother keeps the remainder. For a parcel sold
+            # BY pieces/weight the quantity IS that measure, so derive it (the line
+            # doesn't carry it separately); otherwise take the line's entered value
+            # (defaults to the parcel's, so by default the child takes all).
+            split_plan[item_eid] = {
+                "child_qty": line_qty,
+                "child_weight": line_qty if is_weight_unit(_sb, _unit_map) else _line.get("weight"),
+                "child_pieces": line_qty if is_pieces_unit(_sb, _unit_map) else _line.get("pieces"),
+            }
+
+    # A shortage or a non-splittable partial prohibits the whole fulfill.
+    if blocked:
+        raise HTTPException(status_code=409, detail="Cannot fulfill: " + "; ".join(blocked))
 
     if errors and not to_fulfill:
         raise HTTPException(status_code=422, detail={"errors": errors})
@@ -3013,6 +3080,41 @@ async def fulfill_lines(
     now = datetime.now(UTC).isoformat()
     cid = uuid.UUID(str(company_id))
     uid = user.id
+
+    # Split partial draws: carve the invoiced amount off each parcel as a child,
+    # retarget fulfillment to the child, and rewrite the doc line to reference it.
+    if split_plan:
+        from celerp_inventory.routes import split_off_child
+        new_line_items = [dict(li) for li in state.get("line_items", [])]
+        for parent_eid, plan in split_plan.items():
+            try:
+                child_eid, child_sku = await split_off_child(
+                    session, company_id=cid, user_id=uid, parent_proj=fetched[parent_eid],
+                    child_qty=plan["child_qty"], child_weight=plan.get("child_weight"),
+                    child_pieces=plan.get("child_pieces"),
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot split {fetched[parent_eid].state.get('sku', '')}: {exc}",
+                )
+            to_fulfill[to_fulfill.index(parent_eid)] = child_eid
+            fetched[child_eid] = await session.get(Projection, {"company_id": company_id, "entity_id": child_eid})
+            del fetched[parent_eid]
+            for nli in new_line_items:
+                if (nli.get("entity_id") or nli.get("item_id")) == parent_eid:
+                    nli["entity_id"] = child_eid
+                    nli["item_id"] = child_eid
+                    nli["sku"] = child_sku
+                    break
+        await emit_event(
+            session, company_id=cid, entity_id=entity_id, entity_type="doc",
+            event_type="doc.updated",
+            data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_line_items}}},
+            actor_id=uid, location_id=None, source="fulfillment",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        state["line_items"] = new_line_items
 
     total_cogs = 0.0
     for item_eid in to_fulfill:

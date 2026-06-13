@@ -365,6 +365,10 @@ a:hover { text-decoration: underline; }
   color: var(--c-text); font-size: 12px; font-family: inherit;
   outline: none;
 }
+.cell-input:disabled {
+  background: var(--c-bg3); border-color: var(--c-bg3);
+  opacity: 0.55; cursor: not-allowed;
+}
 .cell-input--number { text-align: right; font-family: var(--font-mono); }
 .cell-input--select { cursor: pointer; background: var(--c-bg2); }
 .cell-input--select option { background: var(--c-bg2); color: var(--c-text); }
@@ -519,6 +523,58 @@ a:hover { text-decoration: underline; }
 .doc-lines th.col-cat,         .doc-lines td.col-cat         { width: 60px;  }
 .doc-lines th.col-type,        .doc-lines td.col-type        { width: 55px;  }
 .doc-lines th.col-qty,         .doc-lines td.col-qty         { width: 45px;  text-align: right; }
+.doc-lines th.col-pcs,         .doc-lines td.col-pcs         { width: 45px;  text-align: right; }
+.doc-lines th.col-weight,      .doc-lines td.col-weight      { width: 45px;  text-align: right; }
+/* Invoice draft: the description cell holds the desc input plus inline editable
+   PCS / WEIGHT for the secondary measure; the column is bordered off. */
+.doc-lines--invoice th.col-desc, .doc-lines--invoice td.col-desc {
+    width: 320px; border-left: 1px solid var(--c-border); border-right: 1px solid var(--c-border);
+}
+/* Gray body only — the header cell inherits the darker thead gray like every other
+   header. The selector gets an opaque bg (the SKU selector's green-over-white color)
+   so the gray cell doesn't tint it. */
+.doc-lines--invoice td.col-desc { background: var(--c-bg3); }
+.doc-lines--invoice td.col-desc .catalog-ac-input { background-color: #e2f4ef; }
+.doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 75px; }
+/* Inside the fixed-width description cell: description is fixed at 70% (no grow,
+   no shrink) so every row's description is the same width and they all line up;
+   pcs 10%, weight 20% take the rest (and may shrink to absorb the gaps). */
+.desc-measures { display: flex; align-items: center; gap: 8px; }
+.desc-measures > :first-child { flex: 0 0 70%; min-width: 0; }
+.measure-pcs { flex: 0 1 13%; min-width: 0; display: inline-flex; align-items: center; justify-content: flex-start; gap: 2px; white-space: nowrap; overflow: hidden; }
+.measure-weight { flex: 0 1 17%; min-width: 0; display: inline-flex; align-items: center; justify-content: flex-start; gap: 2px; white-space: nowrap; overflow: hidden; }
+/* Match the inventory paired cells (.paired-primary / .paired-secondary): inline,
+   no box — value with a dashed accent underline when editable, muted unit, and
+   lighter italic text when locked. */
+.cell-input--measure {
+    flex: 0 0 auto; field-sizing: content; width: auto; min-width: 1.2ch; max-width: 100%;
+    height: auto; padding: 0 1px; text-align: left;
+    background: transparent; border: none; outline: none; box-shadow: none;
+    border-bottom: 1px dashed rgba(14,165,122,0.35); border-radius: 2px;
+    color: var(--c-text); font-size: 12px;
+}
+.cell-input--measure:hover:not(:disabled),
+.cell-input--measure:focus { background: rgba(14,165,122,0.07); border-bottom-color: var(--c-accent); }
+.cell-input--measure:disabled {
+    background: transparent; border-bottom: none; box-shadow: none; opacity: 1;
+    color: var(--c-text2); font-style: italic;
+}
+.measure-pcs .unit-label, .measure-weight .unit-label { color: var(--c-text-muted, #888); cursor: help; }
+/* Darker gray header; the description column body is the lighter gray (--c-bg3). */
+.doc-lines--invoice thead th { background: var(--c-border); }
+/* Neat number inputs like inventory — strip the spinner arrows. */
+.doc-lines--invoice input[type="number"]::-webkit-inner-spin-button,
+.doc-lines--invoice input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; appearance: none; margin: 0; }
+.doc-lines--invoice input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+/* qty cell keeps the merged number + unit label */
+.qty-unit-wrap { display: flex; align-items: center; gap: 2px; }
+.qty-unit-wrap .cell-input { flex: 1 1 auto; min-width: 0; max-width: none; }
+.unit-label { flex: 0 0 auto; font-size: 11px; color: var(--c-text); opacity: 0.7; white-space: nowrap; }
+/* Finalized invoices fold the unit into the qty cell ("5 carat"), so widen qty. */
+.doc-lines--fin-invoice th.col-qty, .doc-lines--fin-invoice td.col-qty { width: 75px; white-space: nowrap; }
+/* Pieces / Weight sub-lines under a finalized line's description. */
+.col-desc .li-measure { margin-top: 4px; font-size: 11px; color: var(--c-text); }
+.col-desc .li-measure strong { display: inline-block; color: var(--c-accent); }
 .doc-lines th.col-unit,        .doc-lines td.col-unit        { width: 44px;  }
 .doc-lines th.col-unit-price,  .doc-lines td.col-unit-price  { width: 90px;  text-align: right; }
 .doc-lines th.col-disc,        .doc-lines td.col-disc        { width: 44px;  text-align: right; }
