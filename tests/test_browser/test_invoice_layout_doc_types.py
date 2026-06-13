@@ -129,3 +129,22 @@ def test_doc_lines_resize_persists_as_percent(page, ui_server, api):
     import json
     vals = json.loads(stored)
     assert vals and all(isinstance(v, (int, float)) for v in vals.values()), vals  # numeric %, not '120px'
+
+
+def test_doc_lines_inputs_fill_their_cells(page, ui_server, api):
+    """Line inputs (description, qty, unit price, total) fill their cell — no wasted space
+    from the old fixed input cap or the reserved (but hidden) measure area."""
+    doc_id = _make_draft(api, "invoice")
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.wait_for_selector("table.doc-lines tbody tr", timeout=5000)
+
+    def fill_ratio(col):
+        return page.evaluate(
+            "(c) => { const cell = document.querySelector('td.'+c);"
+            "const inp = cell.querySelector('input:not([type=hidden]),select');"
+            "return inp ? inp.offsetWidth / cell.clientWidth : 0; }", col)
+
+    # Each input spans essentially the whole cell (only the small cell padding remains).
+    for col in ("col-desc", "col-unit-price", "col-total"):
+        assert fill_ratio(col) >= 0.9, f"{col} input leaves wasted space: {fill_ratio(col)}"

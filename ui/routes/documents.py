@@ -30,7 +30,7 @@ def _measure_pcs_field(val, *, locked: bool, show: bool, avail=None):
               data_name="pieces", disabled=bool(locked), onblur="celerpAutoSave()",
               cls="cell-input cell-input--measure"),
         Span("pcs", cls="unit-label", title=_title),
-        cls="measure-pcs", style=("" if show else "visibility:hidden"),
+        cls="measure-pcs", style=("" if show else "display:none"),
     )
 
 
@@ -43,7 +43,7 @@ def _measure_weight_field(val, unit, *, locked: bool, show: bool, avail=None):
               data_name="weight", disabled=bool(locked), onblur="celerpAutoSave()",
               cls="cell-input cell-input--measure"),
         Span(unit or "", cls="unit-label js-weight-unit", title=_title),
-        cls="measure-weight", style=("" if show else "visibility:hidden"),
+        cls="measure-weight", style=("" if show else "display:none"),
     )
 
 
@@ -5497,12 +5497,13 @@ function celerpFillRow(row, data) {{
     // (the one qty is NOT) and only when the item tracks it.
     const showPcs = (data.pieces != null) && !data.qty_is_pieces;
     const pcsGroup = row.querySelector('.measure-pcs');
-    if (pcsGroup) pcsGroup.style.visibility = showPcs ? 'visible' : 'hidden';
+    // display (not visibility) so a hidden measure reserves no space and the description fills.
+    if (pcsGroup) pcsGroup.style.display = showPcs ? '' : 'none';
     const pcsEl = row.querySelector('[data-name="pieces"]');
     if (pcsEl) {{ pcsEl.disabled = !data.allow_splitting; pcsEl.value = (data.pieces == null) ? '' : data.pieces; }}
     const showWt = (data.weight != null) && !data.qty_is_weight;
     const wtGroup = row.querySelector('.measure-weight');
-    if (wtGroup) wtGroup.style.visibility = showWt ? 'visible' : 'hidden';
+    if (wtGroup) wtGroup.style.display = showWt ? '' : 'none';
     const weightEl = row.querySelector('[data-name="weight"]');
     if (weightEl) {{ weightEl.disabled = !data.allow_splitting; weightEl.value = (data.weight == null) ? '' : data.weight; }}
     const wuEl = row.querySelector('.js-weight-unit');

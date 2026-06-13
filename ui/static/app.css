@@ -600,6 +600,9 @@ a:hover { text-decoration: underline; }
    widths restore exactly. */
 .data-table.doc-lines { table-layout: fixed; width: 100%; }
 .doc-lines th, .doc-lines td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Tight cell padding so the full-width inputs nearly fill each cell (dense, spreadsheet-like)
+   rather than sitting inside the base table's 10px gutters. Per-column overrides still apply. */
+.doc-lines th, .doc-lines td { padding-left: 4px; padding-right: 4px; }
 /* doc-lines column widths — fixed layout, all px, must sum to ≤ table width */
 .doc-lines th.col-checkbox,    .doc-lines td.col-checkbox    { width: 36px;  padding: 0 4px; text-align: center; }
 .doc-lines th.col-item-status, .doc-lines td.col-item-status { width: 100px; }
@@ -625,7 +628,9 @@ a:hover { text-decoration: underline; }
    no shrink) so every row's description is the same width and they all line up;
    pcs 10%, weight 20% take the rest (and may shrink to absorb the gaps). */
 .desc-measures { display: flex; align-items: center; gap: 8px; }
-.desc-measures > :first-child { flex: 0 0 70%; min-width: 0; }
+/* Description fills the cell, growing to absorb any space the pcs/weight fields don't use
+   (so there's no wasted gap on lines without a secondary measure). */
+.desc-measures > :first-child { flex: 1 1 auto; min-width: 0; }
 .measure-pcs { flex: 0 1 13%; min-width: 0; display: inline-flex; align-items: center; justify-content: flex-start; gap: 2px; white-space: nowrap; overflow: hidden; }
 .measure-weight { flex: 0 1 17%; min-width: 0; display: inline-flex; align-items: center; justify-content: flex-start; gap: 2px; white-space: nowrap; overflow: hidden; }
 /* Match the inventory paired cells (.paired-primary / .paired-secondary): inline,
@@ -668,6 +673,9 @@ a:hover { text-decoration: underline; }
 .doc-lines th.col-total,       .doc-lines td.col-total       { width: 100px; text-align: right; padding-right: 8px; }
 /* input inside editable total cell — fills cell width */
 .doc-lines td.col-total input.line-total { width: 100%; text-align: right; box-sizing: border-box; }
+/* Every line input fills its (percentage-width) cell — the cell-input--xs 80px cap left wasted
+   space now that columns are proportional. Measure inputs keep their content-based sizing. */
+.doc-lines td .cell-input:not(.cell-input--measure) { width: 100%; max-width: none; box-sizing: border-box; }
 .line-actions { margin-top: 8px; padding: 4px 0 4px 10px; }
 
 /* ─── Reports ─────────────────────────────────────────────────────────── */
