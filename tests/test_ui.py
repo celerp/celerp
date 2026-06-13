@@ -3420,12 +3420,13 @@ class TestSprint4DocActions:
         assert "/docs?type=invoice" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
-    async def test_doc_detail_draft_shows_unit_column(self, ui_client):
-        """Draft doc line item table includes Unit column header."""
+    async def test_doc_detail_draft_invoice_unit_merged_into_qty(self, ui_client):
+        """Draft invoice merges the unit into the qty cell (read-only label), so the
+        unit is still rendered but there is no standalone Unit column header."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         html = r.text
-        assert ">Unit<" in html or "Unit</th>" in html
+        assert 'data-name="unit"' in html
 
     @pytest.mark.asyncio
     async def test_no_popups_in_doc_detail(self, ui_client):

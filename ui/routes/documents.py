@@ -13,11 +13,63 @@ from urllib.parse import urlencode
 
 import ui.api_client as api
 from ui.api_client import APIError
+from celerp.services.line_measures import measure_sublines, qty_label, item_measure_meta, measure_locks, resolve_line_measures
 from ui.components.shell import base_shell, page_header
-from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address
+from ui.components.table import search_bar, EMPTY, pagination, searchable_select, breadcrumbs, status_cards, empty_state_cta, fmt_money, format_value, currency_symbol, unwrap_address, col_resize_script
 from ui.components.activity import activity_table
 from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form as _shared_note_edit_form
 from ui.components.files import _files_section as _shared_doc_files_section
+
+
+def _measure_pcs_field(val, *, locked: bool, show: bool, avail=None):
+    """Inline PCS input for an invoice description cell ('pcs' suffix after the number).
+    Hovering the unit shows the parcel's available pieces (max)."""
+    _title = f"max: {float(avail):g} pcs" if avail is not None else ""
+    return Span(
+        Input(type="number", value=("" if val is None else str(val)), step="any",
+              data_name="pieces", disabled=bool(locked), onblur="celerpAutoSave()",
+              cls="cell-input cell-input--measure"),
+        Span("pcs", cls="unit-label", title=_title),
+        cls="measure-pcs", style=("" if show else "visibility:hidden"),
+    )
+
+
+def _measure_weight_field(val, unit, *, locked: bool, show: bool, avail=None):
+    """Inline WEIGHT input + unit suffix for an invoice description cell.
+    Hovering the unit shows the parcel's available weight (max)."""
+    _title = f"max: {float(avail):g} {unit}".rstrip() if avail is not None else ""
+    return Span(
+        Input(type="number", value=("" if val is None else str(val)), step="any",
+              data_name="weight", disabled=bool(locked), onblur="celerpAutoSave()",
+              cls="cell-input cell-input--measure"),
+        Span(unit or "", cls="unit-label js-weight-unit", title=_title),
+        cls="measure-weight", style=("" if show else "visibility:hidden"),
+    )
+
+
+def _picker_item(item: dict, unit_price, unit_map: dict) -> dict:
+    """Inventory item -> line-item picker payload, shared by both catalog
+    autocomplete endpoints (lookup-by-SKU and typeahead search)."""
+    meta = item_measure_meta(item, unit_map)
+    return {
+        "sku": item.get("sku") or "",
+        "description": item.get("name") or item.get("description") or "",
+        "unit_price": unit_price,
+        "sell_by": meta["sell_by"] or None,
+        "quantity": meta["quantity"] or 0,
+        "hs_code": item.get("hs_code") or None,
+        "entity_id": item.get("entity_id") or item.get("id") or None,
+        "allow_splitting": meta["allow_splitting"],
+        "category": item.get("category") or None,
+        "cost_price": item.get("cost_price") or None,
+        "wholesale_price": item.get("wholesale_price") or None,
+        "barcode": item.get("barcode") or None,
+        "weight": meta["weight"],
+        "weight_unit": meta["weight_unit"],
+        "pieces": meta["pieces"],
+        "qty_is_weight": meta["qty_is_weight"],
+        "qty_is_pieces": meta["qty_is_pieces"],
+    }
 
 
 def _enrich_doc_files(doc: dict) -> list[dict]:
@@ -517,19 +569,25 @@ def _doc_print_view(doc: dict) -> FT:
             return f"{sym}{float(v or 0):,.2f}"
 
     has_disc = any(li.get("discount_pct") for li in line_items)
+    from celerp.services.units import build_unit_map as _bum, DEFAULT_UNITS as _DU
+    _print_umap = _bum(_DU)
     rows = []
     for li in line_items:
         qty = li.get("quantity") or li.get("qty") or 0
         price = li.get("unit_price") or li.get("price") or 0
         disc = li.get("discount_pct") or 0
         line_total = li.get("line_total") or (float(qty) * float(price) * (1 - float(disc) / 100))
-        desc = li.get("description") or ""
-        item_name = li.get("name") or li.get("item_name") or li.get("sku") or ""
+        # Description holds only the description (the SKU has its own column) plus
+        # Pieces / Weight as labelled sub-lines when the line carries them.
+        desc = li.get("description") or li.get("name") or ""
         sku = li.get("sku") or ""
+        _ls = "margin:0;font-size:8.5pt;"
+        _desc_parts = [P(f"- {desc}", style=_ls)]
+        _desc_parts += [P(_ln, style=_ls) for _ln in measure_sublines(li, unit_map=_print_umap)]
         rows.append(Tr(
             Td(sku, cls="mono"),
-            Td(Div(Strong(item_name), P(desc, style="font-size:8pt;color:#555;") if desc and desc != item_name else None)),
-            Td(str(qty), cls="r"),
+            Td(Div(*_desc_parts)),
+            Td(qty_label(li), cls="r"),
             Td(_money(price), cls="r"),
             *([] if not has_disc else [Td(f"{disc}%" if disc else "", cls="r")]),
             Td(_money(line_total), cls="r"),
@@ -1105,22 +1163,14 @@ def setup_routes(app):
             return JSONResponse({})
         price_list = request.query_params.get("price_list", "Retail").strip() or "Retail"
         is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
+        from celerp.services.units import build_unit_map
+        try:
+            _unit_map = build_unit_map(await api.get_units(token))
+        except Exception:
+            _unit_map = {}
 
         def _extract(item: dict) -> dict:
-            return {
-                "sku": item.get("sku") or "",
-                "description": item.get("name") or item.get("description") or "",
-                "unit_price": resolve_price(item, price_list),
-                "sell_by": item.get("sell_by") or None,
-                "quantity": item.get("quantity") or 0,
-                "hs_code": item.get("hs_code") or None,
-                "entity_id": item.get("entity_id") or item.get("id") or None,
-                "allow_splitting": bool(item.get("allow_splitting")),
-                "category": item.get("category") or None,
-                "cost_price": item.get("cost_price") or None,
-                "wholesale_price": item.get("wholesale_price") or None,
-                "barcode": item.get("barcode") or None,
-            }
+            return _picker_item(item, resolve_price(item, price_list), _unit_map)
 
         try:
             if is_credit_note:
@@ -1157,22 +1207,14 @@ def setup_routes(app):
         is_credit_note = request.query_params.get("doc_type", "").strip() == "credit_note"
         if not q:
             return _J([])
+        from celerp.services.units import build_unit_map
+        try:
+            _unit_map = build_unit_map(await api.get_units(token))
+        except Exception:
+            _unit_map = {}
 
         def _extract(item: dict) -> dict:
-            return {
-                "sku": item.get("sku") or "",
-                "description": item.get("name") or item.get("description") or "",
-                "unit_price": resolve_price(item, price_list),
-                "sell_by": item.get("sell_by") or None,
-                "hs_code": item.get("hs_code") or None,
-                "quantity": item.get("quantity") or 0,
-                "entity_id": item.get("entity_id") or item.get("id") or None,
-                "allow_splitting": bool(item.get("allow_splitting")),
-                "category": item.get("category") or None,
-                "cost_price": item.get("cost_price") or None,
-                "wholesale_price": item.get("wholesale_price") or None,
-                "barcode": item.get("barcode") or None,
-            }
+            return _picker_item(item, resolve_price(item, price_list), _unit_map)
 
         try:
             if is_credit_note:
@@ -1468,6 +1510,28 @@ def setup_routes(app):
                 doc["contact_tax_id"] = contact.get("tax_id") or ""
             except Exception:
                 pass
+        # Lines created before the PCS/WEIGHT feature don't store pieces/weight, so
+        # source them (and the weight's unit) from the parcel for the printout.
+        if doc.get("doc_type") == "invoice":
+            import asyncio as _aio
+            from celerp.services.line_measures import resolve_line_measures
+            from celerp.services.units import build_unit_map
+            try:
+                _umap = build_unit_map(await api.get_units(token))
+            except Exception:
+                _umap = {}
+
+            async def _enrich(li: dict) -> None:
+                eid = li.get("entity_id") or li.get("item_id")
+                if not eid:
+                    return
+                try:
+                    item = await api.get_item(token, eid)
+                except Exception:
+                    return
+                meta = item_measure_meta(item, _umap)
+                li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
+            await _aio.gather(*(_enrich(li) for li in doc.get("line_items", [])))
         from starlette.responses import HTMLResponse as _HR
         from fasthtml.common import to_xml
         return _HR(to_xml(_doc_print_view(doc)))
@@ -1772,30 +1836,46 @@ celerpUpdateBulkAlloc();
         back_url = _doc_section_url(doc_type)
         # Bulk-fetch inventory statuses for fulfillable doc types to show status column
         item_status_map: dict[str, str] = {}
-        if (doc_type in _FULFILLABLE_DOC_TYPES or doc_type in ("bill", "consignment_in")) and status not in ("draft",):
+        # Per-line item meta (sell_by / weight / pieces / allow_splitting) drives the
+        # invoice PCS+WEIGHT editability; needed on drafts too, so fetch for invoices
+        # regardless of status.
+        item_meta_map: dict[str, dict] = {}
+        _need_status = (doc_type in _FULFILLABLE_DOC_TYPES or doc_type in ("bill", "consignment_in")) and status not in ("draft",)
+        if _need_status or doc_type == "invoice":
             try:
                 _line_eids = [
                     li.get("entity_id") or li.get("item_id") or ""
                     for li in doc.get("line_items", [])
                     if li.get("entity_id") or li.get("item_id")
                 ]
+                # Classify each item's sell_by unit (weight/pieces) so the row can tell
+                # whether quantity already IS the pieces/weight measure (then it's locked).
+                from celerp.services.units import build_unit_map
+                try:
+                    _unit_map = build_unit_map(await api.get_units(token))
+                except Exception:
+                    _unit_map = {}
                 # Fetch each item individually - doc line counts are always small (10s),
                 # so per-item calls are cheaper and always correct vs. a limit=1000 page scan.
                 import asyncio as _asyncio
-                async def _fetch_status(eid: str) -> tuple[str, str]:
+                async def _fetch_item(eid: str) -> tuple[str, dict | None]:
                     try:
-                        item = await api.get_item(token, eid)
-                        return eid, item.get("status", "")
+                        return eid, await api.get_item(token, eid)
                     except Exception:
-                        return eid, ""
-                results = await _asyncio.gather(*(_fetch_status(e) for e in _line_eids))
-                item_status_map = {eid: st for eid, st in results if st}
+                        return eid, None
+                results = await _asyncio.gather(*(_fetch_item(e) for e in _line_eids))
+                for eid, item in results:
+                    if not item:
+                        continue
+                    if item.get("status"):
+                        item_status_map[eid] = item["status"]
+                    item_meta_map[eid] = item_measure_meta(item, _unit_map)
             except Exception:
                 pass
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
-            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses),
+            _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses),
             _doc_manufacture_mount(entity_id, doc_type),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
@@ -4537,7 +4617,7 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
     )
 
 
-def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None) -> FT:
+def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = None, price_lists: list | None = None, tc_templates: list | None = None, tz: str = "UTC", company_taxes: list | None = None, bank_accounts: list | None = None, company_locations: list | None = None, role: str = "owner", item_categories: list | None = None, notes: list | None = None, company_currency: str = "USD", suppress_doc_actions: bool = False, extra_left_actions: list | None = None, extra_right_actions: list | None = None, suppress_pdf: bool = False, relay_connected: bool = False, item_status_map: dict | None = None, item_meta_map: dict | None = None, chart_accounts: list | None = None, contact_shipping_addresses: list | None = None) -> FT:
     def _pick(*keys: str):
         for k in keys:
             if k in doc and doc.get(k) is not None:
@@ -5034,22 +5114,52 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             else:
                 receive_as_cell = None
 
+            _qty_disabled = False
+            _qty_measure = ""  # which measure the quantity IS, so editing qty syncs it
+            _desc_inner = _desc_input(li.get("description", "") or li.get("name", ""))
+            if doc_type == "invoice":
+                # PCS / WEIGHT are editable inputs inline in the description cell. Show
+                # only the secondary measure (the one qty is NOT) — same skip rule as the
+                # print/finalized view; locks + values come from the shared helper.
+                _meta = (item_meta_map or {}).get(li_entity_id) or {}
+                _allow_split = _meta.get("allow_splitting", bool(li.get("allow_splitting")))
+                _locks = measure_locks(_meta, allow_split=_allow_split)
+                _qty_disabled = _locks["qty_locked"]
+                _qty_measure = "weight" if _meta.get("qty_is_weight") else ("pieces" if _meta.get("qty_is_pieces") else "")
+                _pcs_val, _weight_val, _wu, _qip, _qiw = resolve_line_measures(li, item_meta=_meta)
+                _desc_cell = Td(Div(
+                    _desc_inner,
+                    _measure_pcs_field(_pcs_val, locked=bool(_locks["pcs_locked"]),
+                                       show=(_pcs_val is not None and not _qip), avail=_meta.get("pieces")),
+                    _measure_weight_field(_weight_val, _wu, locked=bool(_locks["weight_locked"]),
+                                          show=(_weight_val is not None and not _qiw), avail=_meta.get("weight")),
+                    cls="desc-measures"), cls="col-desc")
+            else:
+                _desc_cell = Td(_desc_inner, cls="col-desc")
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id), cls="col-checkbox li-checkbox-cell"),
                 Td(_sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
-                Td(_desc_input(li.get("description", "") or li.get("name", "")), cls="col-desc"),
+                _desc_cell,
             ]
             if category_cell:
                 cells.append(category_cell)
             if receive_as_cell:
                 cells.append(receive_as_cell)
+            _unit_span = Span(li.get("unit", "") or "", data_name="unit",
+                              cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
+            _qty_input = Input(type="number", value=str(qty), step="any",
+                               data_name="quantity", **{"data-qty-measure": _qty_measure},
+                               oninput="celerpUpdateTotals(); celerpSyncQtyMeasure(this)",
+                               onblur="celerpQtyBlur(this); celerpAutoSave()",
+                               disabled=bool(_qty_disabled),
+                               cls="cell-input cell-input--xs")
+            if doc_type == "invoice":
+                # Quantity and its (read-only) unit share one cell; only the number edits.
+                cells.append(Td(Div(_qty_input, _unit_span, cls="qty-unit-wrap"), cls="col-qty"))
+            else:
+                cells.append(Td(_qty_input, cls="col-qty"))
+                cells.append(Td(_unit_span, cls="col-unit"))
             cells.extend([
-                Td(Input(type="number", value=str(qty), step="any",
-                         data_name="quantity", oninput="celerpUpdateTotals()",
-                         onblur="celerpQtyBlur(this); celerpAutoSave()",
-                         cls="cell-input cell-input--xs"), cls="col-qty"),
-                Td(Span(li.get("unit", "") or "", data_name="unit", cls="meta-value meta-value--muted",
-                         style="font-size:12px;display:inline-block;min-width:40px;"), cls="col-unit"),
                 Td(Input(type="number", value=str(price), step="0.01",
                          data_name="unit_price", oninput="celerpUpdateTotals()",
                          onblur="celerpAutoSave()",
@@ -5106,20 +5216,36 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             else:
                 _ra_cell = None
 
+            if doc_type == "invoice":
+                # Both measure fields render hidden; celerpFillRow reveals the relevant
+                # one (and sets value/lock) when an item is picked.
+                _e_desc_cell = Td(Div(
+                    _desc_input(),
+                    _measure_pcs_field(None, locked=True, show=False),
+                    _measure_weight_field(None, "", locked=True, show=False),
+                    cls="desc-measures"), cls="col-desc")
+            else:
+                _e_desc_cell = Td(_desc_input(), cls="col-desc")
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=""), cls="col-checkbox li-checkbox-cell"),
-                Td(_sku_input(), cls="col-sku"), Td(_desc_input(), cls="col-desc"),
+                Td(_sku_input(), cls="col-sku"), _e_desc_cell,
             ]
             if _cat_cell:
                 cells.append(_cat_cell)
             if _ra_cell:
                 cells.append(_ra_cell)
+            _e_unit_span = Span("", data_name="unit", cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
+            _e_qty_input = Input(type="number", value="1", step="any", data_name="quantity",
+                                 **{"data-qty-measure": ""},
+                                 oninput="celerpUpdateTotals(); celerpSyncQtyMeasure(this)",
+                                 onblur="celerpQtyBlur(this); celerpAutoSave()",
+                                 cls="cell-input cell-input--xs")
+            if doc_type == "invoice":
+                cells.append(Td(Div(_e_qty_input, _e_unit_span, cls="qty-unit-wrap"), cls="col-qty"))
+            else:
+                cells.append(Td(_e_qty_input, cls="col-qty"))
+                cells.append(Td(_e_unit_span, cls="col-unit"))
             cells.extend([
-                Td(Input(type="number", value="1", step="any", data_name="quantity",
-                         oninput="celerpUpdateTotals()", onblur="celerpQtyBlur(this); celerpAutoSave()",
-                         cls="cell-input cell-input--xs"), cls="col-qty"),
-                Td(Span("", data_name="unit", cls="meta-value meta-value--muted",
-                         style="font-size:12px;display:inline-block;min-width:40px;"), cls="col-unit"),
                 Td(Input(type="number", value="0", step="0.01", data_name="unit_price",
                          oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-unit-price"),
@@ -5153,14 +5279,23 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if not rows:
             rows = [_li_empty_row()]
 
+        is_invoice = doc_type == "invoice"
+        # Single-level header. Invoices carry PCS/WEIGHT inline inside the description
+        # cell and merge the unit into the qty cell, so they have no PCS/WEIGHT/UNIT
+        # columns of their own.
         _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category"), cls="col-cat"))
             _line_headers.append(Th(t("th.type"), cls="col-type"))
-        _line_headers.extend([Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
+        _line_headers.append(Th(t("th.qty"), cls="col-qty"))
+        if not is_invoice:
+            _line_headers.append(Th(t("th.unit"), cls="col-unit"))
+        _line_headers.extend([Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account"), cls="col-account"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
+        _line_thead = Thead(Tr(*_line_headers))
+        _line_colgroup = None
 
         # CSV import hidden file input + JS handler
         _csv_import_el = Div(
@@ -5225,9 +5360,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _li_bulk_toolbar(entity_id, is_list),
             Div(
                 Table(
-                    Thead(Tr(*_line_headers)),
+                    *([_line_colgroup] if _line_colgroup else []),
+                    _line_thead,
                     Tbody(*rows, id=line_body_id),
-                    cls="data-table doc-lines",
+                    cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice else ""),
                 ),
                 cls="table-scroll-wrap",
             ),
@@ -5339,6 +5475,30 @@ function celerpFillRow(row, data) {{
             qtyEl.value = data.quantity;
         }}
     }}
+    // Invoice PCS / WEIGHT / quantity-lock — mirror the server-side rules on pick.
+    if (qtyEl) {{
+        qtyEl.disabled = !data.allow_splitting;
+        qtyEl.dataset.qtyMeasure = data.qty_is_weight ? 'weight' : (data.qty_is_pieces ? 'pieces' : '');
+    }}
+    // Inline PCS / WEIGHT in the description cell: show only the secondary measure
+    // (the one qty is NOT) and only when the item tracks it.
+    const showPcs = (data.pieces != null) && !data.qty_is_pieces;
+    const pcsGroup = row.querySelector('.measure-pcs');
+    if (pcsGroup) pcsGroup.style.visibility = showPcs ? 'visible' : 'hidden';
+    const pcsEl = row.querySelector('[data-name="pieces"]');
+    if (pcsEl) {{ pcsEl.disabled = !data.allow_splitting; pcsEl.value = (data.pieces == null) ? '' : data.pieces; }}
+    const showWt = (data.weight != null) && !data.qty_is_weight;
+    const wtGroup = row.querySelector('.measure-weight');
+    if (wtGroup) wtGroup.style.visibility = showWt ? 'visible' : 'hidden';
+    const weightEl = row.querySelector('[data-name="weight"]');
+    if (weightEl) {{ weightEl.disabled = !data.allow_splitting; weightEl.value = (data.weight == null) ? '' : data.weight; }}
+    const wuEl = row.querySelector('.js-weight-unit');
+    if (wuEl) {{
+        wuEl.textContent = data.weight_unit || (data.qty_is_weight ? (data.sell_by || '') : '');
+        wuEl.title = (data.weight != null) ? ('max: ' + data.weight + ' ' + wuEl.textContent) : '';
+    }}
+    const pcsUnitEl = row.querySelector('.measure-pcs .unit-label');
+    if (pcsUnitEl) pcsUnitEl.title = (data.pieces != null) ? ('max: ' + data.pieces + ' pcs') : '';
     // Update eye icon link
     const linkEl = row.querySelector('[data-name="item_link"]');
     if (linkEl) {{
@@ -5607,6 +5767,15 @@ function celerpAddLine() {{
     if (newRow) newRow.querySelectorAll('.combobox-wrap').forEach(initCombobox);
     celerpUpdateTotals();
 }}
+function celerpSyncQtyMeasure(qtyEl) {{
+    // Weight/piece-sold items: the quantity IS that measure, so editing qty keeps
+    // the (locked) weight/pieces cell in sync.
+    var m = qtyEl && qtyEl.dataset ? qtyEl.dataset.qtyMeasure : '';
+    if (!m) return;
+    var row = qtyEl.closest('tr');
+    var target = row ? row.querySelector('[data-name="' + m + '"]') : null;
+    if (target) target.value = qtyEl.value;
+}}
 function celerpUpdateTotals() {{
     const _cur = {repr(currency)};
     function _fmt(n) {{
@@ -5741,6 +5910,10 @@ function _celerpCollectLines() {{
         const receiveAs = receiveAsEl ? (receiveAsEl.value || receiveAsEl.textContent || '').trim().toLowerCase() || null : null;
         const accountCode = row.querySelector('[data-name="account_code"]')?.value || null;
         const allowSplitting = row.querySelector('[data-name="allow_splitting"]')?.value === '1';
+        const piecesEl = row.querySelector('[data-name="pieces"]');
+        const pieces = piecesEl && piecesEl.value !== '' ? parseFloat(piecesEl.value) : null;
+        const weightEl = row.querySelector('[data-name="weight"]');
+        const weight = weightEl && weightEl.value !== '' ? parseFloat(weightEl.value) : null;
         if (desc || sku || price) {{
             const lineTotalEl = row.querySelector('.line-total');
             const discounted = lineTotalEl ? (parseFloat(lineTotalEl.value) || 0) : qty * price * (1 - discPct / 100);
@@ -5752,6 +5925,8 @@ function _celerpCollectLines() {{
                          ...(category ? {{category}} : {{}}),
                          ...(receiveAs ? {{receive_as: receiveAs}} : {{}}),
                          ...(accountCode ? {{account_code: accountCode}} : {{}}),
+                         ...(pieces !== null ? {{pieces}} : {{}}),
+                         ...(weight !== null ? {{weight}} : {{}}),
                          allow_splitting: allowSplitting}});
         }}
     }});
@@ -5965,15 +6140,20 @@ async function celerpCsvImport(input, entityId) {{
                         cells.append(Td(badge_el, cls="col-item-status"))
                     else:
                         cells.append(Td(Span("-", cls="muted"), cls="col-item-status"))
+            # Pieces / Weight as compact sub-lines under the description (shared with
+            # the print view + PDF): source from the line, else the parcel; skip the
+            # measure the quantity already is.
+            _meta = (item_meta_map or {}).get(li.get("entity_id") or li.get("item_id") or "") or {}
+            _desc_extra = [Div(_ln, cls="li-measure") for _ln in measure_sublines(li, item_meta=_meta)]
             cells += [
                 Td(format_value(li.get("sku") or None), cls="col-sku"),
-                Td(_li_field_display_cell(entity_id, str(idx), "description", li.get("description") or li.get("name") or ""), cls="col-desc"),
+                Td(_li_field_display_cell(entity_id, str(idx), "description", li.get("description") or li.get("name") or ""),
+                   *_desc_extra, cls="col-desc"),
             ]
             if _is_vendor_doc:
                 cells.append(Td(format_value(li.get("receive_as", "stock").capitalize()), cls="col-type"))
             cells.extend([
-                Td(format_value(li.get("quantity")), cls="col-qty"),
-                Td(format_value(li.get("unit") or None), cls="col-unit"),
+                Td(qty_label(li), cls="col-qty"),
                 Td(format_value(li.get("unit_price"), "money"), cls="cell--number col-unit-price"),
                 Td(f"{discount_pct:.1f}%" if discount_pct else "-", cls="col-disc"),
                 Td(format_value(li.get("tax_rate")), cls="col-tax"),
@@ -5993,7 +6173,7 @@ async function celerpCsvImport(input, entityId) {{
         _thead_base += [Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if _is_vendor_doc:
             _thead_base += [Th(t("th.type"), cls="col-type")]
-        _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit"), cls="col-unit"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
+        _thead_base += [Th(t("th.qty"), cls="col-qty"), Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")]
         if doc_type in ("purchase_order", "bill"):
             _thead_base.append(Th(t("th.account"), cls="col-account"))
         _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
@@ -6006,7 +6186,7 @@ async function celerpCsvImport(input, entityId) {{
                 Tbody(*([_li_row(li, i) for i, li in enumerate(line_items)] if line_items else [
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ]), id=_fin_bulk_id),
-                cls="data-table doc-lines",
+                cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type == "invoice" else ""),
             ),
             Script(f"""
 (function(){{
@@ -6269,6 +6449,7 @@ async function celerpCsvImport(input, entityId) {{
         # Line items + price list bar
         Div(
             lines_section,
+            col_resize_script("table.doc-lines", f"celerp_dline_w_{doc_type}"),
             cls="doc-section doc-section--lines",
         ),
         # Totals + optional quotation valid-until

@@ -263,10 +263,9 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
 
     if has_discount:
         col_widths = [
-            usable * 0.20,  # Description
+            usable * 0.21,  # Description
             usable * 0.13,  # SKU
-            usable * 0.06,  # Qty
-            usable * 0.05,  # Unit
+            usable * 0.10,  # Qty (now includes the unit, e.g. "5 carat")
             usable * 0.14,  # Unit Price
             usable * 0.10,  # Discount %
             usable * 0.10,  # Tax %
@@ -276,7 +275,6 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
             Paragraph("Description", s["th"]),
             Paragraph("SKU", s["th"]),
             Paragraph("Qty", s["th"]),
-            Paragraph("Unit", s["th"]),
             Paragraph("Unit Price", s["th"]),
             Paragraph("Discount", s["th"]),
             Paragraph("Tax %", s["th"]),
@@ -284,24 +282,25 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
         ]]
     else:
         col_widths = [
-            usable * 0.22,  # Description
+            usable * 0.23,  # Description
             usable * 0.15,  # SKU
-            usable * 0.06,  # Qty
-            usable * 0.05,  # Unit
+            usable * 0.11,  # Qty (now includes the unit, e.g. "5 carat")
             usable * 0.16,  # Unit Price
             usable * 0.12,  # Tax %
-            usable * 0.24,  # Total
+            usable * 0.23,  # Total
         ]
         rows = [[
             Paragraph("Description", s["th"]),
             Paragraph("SKU", s["th"]),
             Paragraph("Qty", s["th"]),
-            Paragraph("Unit", s["th"]),
             Paragraph("Unit Price", s["th"]),
             Paragraph("Tax %", s["th"]),
             Paragraph("Total", s["th"]),
         ]]
 
+    from celerp.services.line_measures import measure_sublines, qty_label
+    from celerp.services.units import build_unit_map as _bum, DEFAULT_UNITS as _DU
+    _pdf_umap = _bum(_DU)
     for li in line_items:
         qty = float(li.get("quantity") or 0)
         price = float(li.get("unit_price") or 0)
@@ -318,18 +317,23 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
             )
         else:
             tax_str = f"{float(li.get('tax_rate') or 0):.1f}%"
+        # SKU stays its own column; pieces/weight render as compact sub-lines that
+        # skip the measure the quantity already is.
+        _desc_html = str(li.get("description") or li.get("name") or "-")
+        for _ln in measure_sublines(li, unit_map=_pdf_umap):
+            _desc_html += f"<br/>{_ln}"
+        _qty_html = qty_label(li)
         rows.append([
-            Paragraph(str(li.get("description") or li.get("name") or "-"), s["td"]),
+            Paragraph(_desc_html, s["td"]),
             Paragraph(str(li.get("sku") or "-"), s["td"]),
-            Paragraph(_fmt_qty(qty), s["td_num"]),
-            Paragraph(unit, s["td"]),
+            Paragraph(_qty_html, s["td_num"]),
             Paragraph(_fmt_money(price, currency), s["td_num"]),
             *([Paragraph(f"{discount_pct:.1f}%", s["td_num"])] if has_discount else []),
             Paragraph(tax_str, s["td_num"]),
             Paragraph(_fmt_money(line_total, currency), s["td_num"]),
         ])
 
-    _empty_cols = 8 if has_discount else 7
+    _empty_cols = 7 if has_discount else 6
     if not line_items:
         rows.append([Paragraph("No line items.", s["td"])] + [""] * (_empty_cols - 1))
 
