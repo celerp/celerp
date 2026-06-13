@@ -203,6 +203,8 @@ async def set_item_recipe(
         metadata_={},
     )
     await _apply_standard_cost(session, company_id, user, item_id, item.state, recipe)
+    # Editing this recipe changes its cost, so cascade to anything that uses it (mark-to-market).
+    await _recost_dependents_of(session, company_id, user, item_id)
     await session.commit()
     return {"event_id": entry.id, "recipe": recipe}
 
@@ -310,6 +312,19 @@ async def _recost_one(session: AsyncSession, company_id, user, item_id: str, sta
     return new_recipe
 
 
+async def _recost_dependents_of(session: AsyncSession, company_id, user, item_id: str,
+                                states: dict[str, dict] | None = None) -> list[str]:
+    """Re-roll every item whose recipe uses ``item_id`` (directly or transitively) and persist.
+
+    Does not commit — the caller owns the transaction. Order-independent: roll_up_cost recomputes
+    each ancestor's whole subtree live from current leaf costs.
+    """
+    if states is None:
+        states = await _all_item_states(session, company_id)
+    targets = where_used(item_id, _deps_from_states(states))
+    return [tid for tid in targets if await _recost_one(session, company_id, user, tid, states) is not None]
+
+
 @router.post("/items/{item_id}/recost-dependents")
 async def recost_dependents(
     item_id: str,
@@ -317,16 +332,15 @@ async def recost_dependents(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Re-cost every item whose recipe uses this one (directly or transitively) — mark-to-market.
+    """Re-cost every item whose recipe uses this one — mark-to-market.
 
-    Use after changing a frequently-repriced raw material's cost (e.g. gold) to propagate the
-    new cost into all manufactured items that depend on it, in one action.
+    Called automatically after a component's cost changes (the inventory pricing page) so
+    manufactured items that depend on it stay current with no manual step.
     """
     states = await _all_item_states(session, company_id)
     if item_id not in states:
         raise HTTPException(status_code=404, detail="Item not found")
-    targets = where_used(item_id, _deps_from_states(states))
-    recosted = [tid for tid in targets if await _recost_one(session, company_id, user, tid, states) is not None]
+    recosted = await _recost_dependents_of(session, company_id, user, item_id, states)
     await session.commit()
     return {"recosted": recosted, "count": len(recosted)}
 

@@ -72,14 +72,21 @@ def test_full_manufacturing_journey(page, ui_server, api):
     assert ring_state["cost_price"] == 515.0
     assert page.locator("button:has-text('Apply to cost price')").count() == 0
 
-    # 3. Gold reprices → re-cost dependents (Phase 2).
-    api.post(f"/items/{gold}/price", json={"price_type": "cost_total", "new_price": 10000})  # unit 80 -> 100
-    page.goto(f"{ui_server}/inventory/{gold}?tab=manufacturing", wait_until="domcontentloaded")
-    page.wait_for_selector("button:has-text('Re-cost dependents')", timeout=8000)
-    assert "Used in other recipes" in page.locator("#recipe-section").inner_text()
-    page.click("button:has-text('Re-cost dependents')")
-    page.wait_for_selector(".flash--success", timeout=8000)
-    assert api.get(f"/items/{ring}").json()["recipe"]["unit_cost"] == 615.0  # 5*100 + 100 + 15
+    # 3. Reprice gold on its own Pricing tab (unit 80 -> 100); dependents recost automatically.
+    page.goto(f"{ui_server}/inventory/{gold}?tab=pricing", wait_until="domcontentloaded")
+    page.wait_for_selector(".pricing-grid input[name=cost_price]", timeout=10000)
+    gold_cost = page.locator("input[name=cost_price]")
+    gold_cost.fill("100")
+    gold_cost.press("Enter")
+    page.wait_for_selector("#pricing-save-status.saved", timeout=8000)
+    # No manual re-cost step exists anymore; the ring updates on its own: 5*100 + 100 + 15 = 615.
+    import time as _t
+    deadline = _t.time() + 8
+    while _t.time() < deadline:
+        if (api.get(f"/items/{ring}").json().get("recipe") or {}).get("unit_cost") == 615.0:
+            break
+        _t.sleep(0.3)
+    assert api.get(f"/items/{ring}").json()["recipe"]["unit_cost"] == 615.0
 
     # 4. Sell on an invoice; the manufacturing order is created automatically (Phase 3).
     doc = api.post("/docs", json={"doc_type": "invoice", "line_items": [

@@ -486,6 +486,8 @@ a:hover { text-decoration: underline; }
 .detail-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); margin-bottom: 20px; overflow: hidden; }
 .detail-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .detail-table td { padding: 8px 14px; border-bottom: 1px solid var(--c-border); }
+/* Headers share the cells' horizontal padding so labels aren't flush against the inputs below. */
+.detail-table th { padding: 8px 14px; }
 .detail-table tr:last-child td { border-bottom: none; }
 .detail-table .cell--number,
 .detail-table .cell-number,
@@ -500,7 +502,6 @@ a:hover { text-decoration: underline; }
 .recipe-block .section-title { margin-bottom: 8px; }
 .recipe-block > .btn { margin-top: 10px; }
 .recipe-cost-summary { padding: 14px; }
-.recipe-side-card { padding: 14px; }
 .recipe-cost-summary .detail-table td.recipe-amount { text-align: right; font-variant-numeric: tabular-nums; }
 .recipe-cost-summary .cell--total { font-weight: 600; }
 .data-table thead th.cell--number { text-align: right; }
@@ -521,6 +522,10 @@ a:hover { text-decoration: underline; }
 /* Keep the 6-column Labor / Materials tables within their card (no clipping). */
 .recipe-block { overflow-x: auto; }
 .recipe-block .data-table input.cell--number { max-width: 96px; }
+/* Text inputs in the recipe tables (operation/description edit cells + the add-row inputs)
+   fill their cell so descriptions get the room they need. Number cells keep their cap above. */
+.recipe-block .data-table input[type=text],
+.recipe-block .data-table input.cell-input:not(.cell-input--number) { width: 100%; box-sizing: border-box; }
 .data-table input.cell--number:disabled { background: var(--c-bg2); color: var(--c-text2); opacity: 0.55; }
 
 /* Split action: + button, inputs, Go all on one line (item 4) */

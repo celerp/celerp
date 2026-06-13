@@ -1476,25 +1476,6 @@ function celerpPrintLabel(entityId, templateId) {
         value = rows_[idx].get(field, "") if 0 <= idx < len(rows_) else ""
         return _recipe_cell(entity_id, section, idx, field, value)
 
-    @app.post("/api/items/{entity_id}/recost-dependents")
-    async def recost_dependents(request: Request, entity_id: str):
-        """Re-cost every item that uses this one as a component (mark-to-market, the gold case)."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        try:
-            result = await api.recost_dependents(token, entity_id)
-            n = result.get("count", 0)
-            msg = f"Re-costed {n} dependent item{'s' if n != 1 else ''} from current costs." if n else "No dependent items to re-cost."
-            return await _recipe_section_response(token, entity_id, flash_msg=msg, flash_kind="success" if n else "warning")
-        except APIError as e:
-            if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
-            try:
-                return await _recipe_section_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
-            except APIError:
-                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
-
     @app.get("/api/items/{entity_id}/field/{field}/edit")
     async def field_edit_cell(request: Request, entity_id: str, field: str):
         token = _token(request)
@@ -3093,6 +3074,7 @@ function celerpPrintLabel(entityId, templateId) {
             # Fetch item once to get qty (needed for cost_price → cost_total conversion)
             item_for_price = await api.get_item(token, entity_id)
             item_qty = float(item_for_price.get("quantity") or 0)
+            cost_changed = False
             for pl in price_lists:
                 pl_name = pl.get("name", "")
                 conventional_key = f"{pl_name.lower()}_price"
@@ -3108,8 +3090,18 @@ function celerpPrintLabel(entityId, templateId) {
                     if conventional_key == "cost_price" and item_qty > 0:
                         old_cost_total = item_for_price.get("cost_total")
                         await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}})
+                        cost_changed = True
                     else:
                         await api.set_item_price(token, entity_id, pl_name, price)
+                        if conventional_key == "cost_price":
+                            cost_changed = True
+            # A cost change ripples into every recipe that uses this item — recost them now so
+            # the Manufacturing tab and margins stay current without any manual step.
+            if cost_changed:
+                try:
+                    await api.recost_dependents(token, entity_id)
+                except APIError:
+                    pass  # best-effort propagation; the cost itself is already saved
         except APIError as e:
             # OOB so the message lands in the save-status (inputs use hx_swap="none").
             return Div(f"Not saved: {e.detail}", id="pricing-save-status",
@@ -5110,27 +5102,10 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
     has_recipe = bool((item.get("recipe") or {}).get("components"))
 
-    # Mark-to-market: which items use THIS one as a component (directly or transitively)?
-    from celerp_manufacturing.costing import where_used as _where_used
-    deps = {
-        (it.get("id") or it.get("entity_id")): {
-            c.get("item_id") for c in (it.get("recipe") or {}).get("components", []) if c.get("item_id")
-        }
-        for it in items if (it.get("id") or it.get("entity_id"))
-    }
-    used_by = _where_used(entity_id, deps)
-
+    # Mark-to-market is automatic: changing a component's cost recosts every item that uses it
+    # (see the inventory pricing endpoint + manufacturing set_item_recipe), so there is no
+    # manual "re-cost dependents" control here.
     right_col = [_recipe_cost_card(entity_id, item, currency)]
-    if used_by:
-        n = len(used_by)
-        right_col.append(Div(
-            H3("Used in other recipes", cls="section-title"),
-            P(f"This item is used by {n} other item{'' if n == 1 else 's'} (directly or indirectly). Re-cost them all from current component prices in one step.", cls="hint"),
-            Button("Re-cost dependents", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs mt-sm",
-                   hx_post=f"/api/items/{entity_id}/recost-dependents", **_htmx,
-                   title="Re-roll every item that uses this one, from current component prices"),
-            cls="detail-card recipe-side-card",
-        ))
 
     has_rows = bool(components or labor_rows or overhead_rows)
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
@@ -5293,15 +5268,20 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
                 Td(_cur(Span(total_val or EMPTY, cls="form-input form-input--readonly")) if has_qty else Span(EMPTY)),
             )
         unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
+        # Enter commits by blurring (which fires `change` → the autosave below), matching the
+        # rest of the system where Enter always commits an inline edit.
+        enter_commits = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
         # Autosave on change (blur/Enter); the linked total mirrors the unit live via oninput.
         _save = {"hx_post": f"/api/items/{entity_id}/price", "hx_trigger": "change",
                  "hx_include": "this", "hx_swap": "none"}
         unit_input = Input(type="number", name=conventional_key, id=unit_id, value=unit_val,
                            step="0.01", min="0", placeholder="--", cls="form-input",
-                           oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})", **_save)
+                           oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
+                           onkeydown=enter_commits, **_save)
         total_input = Input(type="number", id=total_id, value=total_val, step="0.01", min="0",
                             placeholder="--", cls="form-input", disabled=not has_qty,
                             oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
+                            onkeydown=enter_commits,
                             # Editing the total back-fills the unit, then re-fires its autosave.
                             onchange=f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))")
         return Tr(Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input)))
