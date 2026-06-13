@@ -102,6 +102,11 @@ _DOC_TYPES = ["invoice", "purchase_order", "bill", "receipt", "credit_note", "me
 # Keep in sync with doc_constants.FULFILLABLE_STATUSES (different package - cannot import directly).
 # Inbound doc types (bill, consignment_in) show item status but use /receive not fulfill-lines.
 _FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "invoice"})
+# Outbound, item-priced doc types that use the invoice line-table design: a single-level
+# header with PCS/WEIGHT shown inline (and editable) inside the description cell, the unit
+# merged into the quantity cell, and no standalone UNIT/PCS/WEIGHT columns.
+# memo = "Consignment Out", list = "Lists".
+_INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"})
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
 # show the button on statuses the backend will reject.  Update when backend allowlist changes.
 # Inbound doc types (bill, consignment_in) are excluded - they use POST /receive.
@@ -1427,6 +1432,33 @@ def setup_routes(app):
 
         return _J({"ok": True, "imported": len(new_lines)})
 
+    async def _enrich_print_lines(token: str, doc: dict) -> None:
+        """Source pieces/weight (and the weight's unit) from each line's parcel for the
+        printout. Invoice-layout docs (invoice / consignment-out / list) show those
+        measures, and lines created before the PCS/WEIGHT feature don't store them
+        (notably the weight unit). No-op for other doc types."""
+        if doc.get("doc_type") not in _INVOICE_LAYOUT_DOC_TYPES:
+            return
+        import asyncio as _aio
+        from celerp.services.line_measures import resolve_line_measures
+        from celerp.services.units import build_unit_map
+        try:
+            _umap = build_unit_map(await api.get_units(token))
+        except Exception:
+            _umap = {}
+
+        async def _enrich(li: dict) -> None:
+            eid = li.get("entity_id") or li.get("item_id")
+            if not eid:
+                return
+            try:
+                item = await api.get_item(token, eid)
+            except Exception:
+                return
+            meta = item_measure_meta(item, _umap)
+            li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
+        await _aio.gather(*(_enrich(li) for li in doc.get("line_items", [])))
+
     # Same export for lists
     @app.get("/lists/{entity_id}/print")
     async def list_print_view(request: Request, entity_id: str):
@@ -1458,6 +1490,7 @@ def setup_routes(app):
                 })
             except Exception:
                 pass
+        await _enrich_print_lines(token, lst)
         from starlette.responses import HTMLResponse as _HR
         from fasthtml.common import to_xml
         return _HR(to_xml(_doc_print_view(lst)))
@@ -1510,28 +1543,8 @@ def setup_routes(app):
                 doc["contact_tax_id"] = contact.get("tax_id") or ""
             except Exception:
                 pass
-        # Lines created before the PCS/WEIGHT feature don't store pieces/weight, so
-        # source them (and the weight's unit) from the parcel for the printout.
-        if doc.get("doc_type") == "invoice":
-            import asyncio as _aio
-            from celerp.services.line_measures import resolve_line_measures
-            from celerp.services.units import build_unit_map
-            try:
-                _umap = build_unit_map(await api.get_units(token))
-            except Exception:
-                _umap = {}
-
-            async def _enrich(li: dict) -> None:
-                eid = li.get("entity_id") or li.get("item_id")
-                if not eid:
-                    return
-                try:
-                    item = await api.get_item(token, eid)
-                except Exception:
-                    return
-                meta = item_measure_meta(item, _umap)
-                li["pieces"], li["weight"], li["weight_unit"], _, _ = resolve_line_measures(li, item_meta=meta)
-            await _aio.gather(*(_enrich(li) for li in doc.get("line_items", [])))
+        # Source pieces/weight (+ the weight unit) from each line's parcel for the printout.
+        await _enrich_print_lines(token, doc)
         from starlette.responses import HTMLResponse as _HR
         from fasthtml.common import to_xml
         return _HR(to_xml(_doc_print_view(doc)))
@@ -1841,7 +1854,7 @@ celerpUpdateBulkAlloc();
         # regardless of status.
         item_meta_map: dict[str, dict] = {}
         _need_status = (doc_type in _FULFILLABLE_DOC_TYPES or doc_type in ("bill", "consignment_in")) and status not in ("draft",)
-        if _need_status or doc_type == "invoice":
+        if _need_status or doc_type in _INVOICE_LAYOUT_DOC_TYPES:
             try:
                 _line_eids = [
                     li.get("entity_id") or li.get("item_id") or ""
@@ -5117,7 +5130,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _qty_disabled = False
             _qty_measure = ""  # which measure the quantity IS, so editing qty syncs it
             _desc_inner = _desc_input(li.get("description", "") or li.get("name", ""))
-            if doc_type == "invoice":
+            if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                 # PCS / WEIGHT are editable inputs inline in the description cell. Show
                 # only the secondary measure (the one qty is NOT) — same skip rule as the
                 # print/finalized view; locks + values come from the shared helper.
@@ -5153,7 +5166,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                                onblur="celerpQtyBlur(this); celerpAutoSave()",
                                disabled=bool(_qty_disabled),
                                cls="cell-input cell-input--xs")
-            if doc_type == "invoice":
+            if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                 # Quantity and its (read-only) unit share one cell; only the number edits.
                 cells.append(Td(Div(_qty_input, _unit_span, cls="qty-unit-wrap"), cls="col-qty"))
             else:
@@ -5216,7 +5229,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             else:
                 _ra_cell = None
 
-            if doc_type == "invoice":
+            if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                 # Both measure fields render hidden; celerpFillRow reveals the relevant
                 # one (and sets value/lock) when an item is picked.
                 _e_desc_cell = Td(Div(
@@ -5240,7 +5253,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                                  oninput="celerpUpdateTotals(); celerpSyncQtyMeasure(this)",
                                  onblur="celerpQtyBlur(this); celerpAutoSave()",
                                  cls="cell-input cell-input--xs")
-            if doc_type == "invoice":
+            if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                 cells.append(Td(Div(_e_qty_input, _e_unit_span, cls="qty-unit-wrap"), cls="col-qty"))
             else:
                 cells.append(Td(_e_qty_input, cls="col-qty"))
@@ -5279,16 +5292,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if not rows:
             rows = [_li_empty_row()]
 
-        is_invoice = doc_type == "invoice"
-        # Single-level header. Invoices carry PCS/WEIGHT inline inside the description
-        # cell and merge the unit into the qty cell, so they have no PCS/WEIGHT/UNIT
-        # columns of their own.
+        is_invoice_layout = doc_type in _INVOICE_LAYOUT_DOC_TYPES
+        # Single-level header. Invoice-layout docs (invoice / consignment-out / list) carry
+        # PCS/WEIGHT inline inside the description cell and merge the unit into the qty cell,
+        # so they have no PCS/WEIGHT/UNIT columns of their own.
         _line_headers = [Th(Input(type="checkbox", id="li-select-all"), cls="col-checkbox li-checkbox-cell"), Th(t("th.skuitem"), cls="col-sku"), Th(t("th.description"), cls="col-desc")]
         if doc_type in ("bill", "purchase_order", "consignment_in"):
             _line_headers.append(Th(t("th.category"), cls="col-cat"))
             _line_headers.append(Th(t("th.type"), cls="col-type"))
         _line_headers.append(Th(t("th.qty"), cls="col-qty"))
-        if not is_invoice:
+        if not is_invoice_layout:
             _line_headers.append(Th(t("th.unit"), cls="col-unit"))
         _line_headers.extend([Th(t("th.unit_price"), cls="col-unit-price"), Th(t("th.disc"), cls="col-disc"), Th(t("th.tax"), cls="col-tax")])
         if doc_type in ("purchase_order", "bill"):
@@ -5363,7 +5376,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     *([_line_colgroup] if _line_colgroup else []),
                     _line_thead,
                     Tbody(*rows, id=line_body_id),
-                    cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice else ""),
+                    cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else ""),
                 ),
                 cls="table-scroll-wrap",
             ),
@@ -6186,7 +6199,7 @@ async function celerpCsvImport(input, entityId) {{
                 Tbody(*([_li_row(li, i) for i, li in enumerate(line_items)] if line_items else [
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ]), id=_fin_bulk_id),
-                cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type == "invoice" else ""),
+                cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type in _INVOICE_LAYOUT_DOC_TYPES else ""),
             ),
             Script(f"""
 (function(){{
