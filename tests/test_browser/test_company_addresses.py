@@ -169,17 +169,15 @@ def test_invoice_address_picker_select(page, ui_server, draft_invoice_id, api):
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body
 
-    page_content = page.content()
-    if 'name="company_address"' not in page_content:
-        # No picker (no locations visible) - skip select test but pass
-        pytest.skip("Address picker not rendered (no locations in dropdown mode)")
+    # The picker renders as a <select> in editing mode whose hx-patch targets the
+    # company_address field (its form name is "value", not "company_address").
+    sel = page.locator('select[hx-patch*="field/company_address"]')
+    assert sel.count() > 0, (
+        "company-address picker (select) not rendered despite a configured location"
+    )
 
     # Select the address option by value
-    sel = page.locator('select[name="company_address"]')
-    if sel.count() == 0:
-        pytest.skip("Select not rendered")
-
-    sel.select_option(value=_addr_text)
+    sel.first.select_option(value=_addr_text)
     page.wait_for_load_state("load", timeout=5000)
 
     # Verify no crash
