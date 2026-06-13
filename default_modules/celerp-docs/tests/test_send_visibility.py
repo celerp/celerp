@@ -139,7 +139,6 @@ def test_doc_send_body_cc_bcc_optional():
 
 # ── unmark_sent action calls revert-to-draft (not patch) ──────────────────────
 
-@pytest.mark.anyio
 async def test_unmark_sent_uses_revert_to_draft_endpoint(client):
     """POST /docs/{id}/action/unmark_sent must call revert-to-draft, not PATCH status."""
     token_resp = await client.post("/auth/register", json={
