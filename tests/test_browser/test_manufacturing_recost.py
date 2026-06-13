@@ -3,9 +3,10 @@
 """Browser test + screenshots for Phase 2 — mark-to-market re-costing.
 
 Proves:
-1. A manufactured item's Manufacturing tab shows a "Recalculate cost" button.
+1. A manufactured item's cost summary shows live rolled totals (no manual recalculate button).
 2. A raw component used elsewhere shows a "Used in other recipes" panel + "Re-cost dependents".
-3. Clicking "Re-cost dependents" after a price change propagates the new cost (unmissable flash).
+3. Clicking "Re-cost dependents" after a price change propagates the new cost (unmissable flash),
+   and the propagated cost flows through to cost_price automatically.
 """
 from __future__ import annotations
 
@@ -43,9 +44,13 @@ def test_recost_flow_with_screenshots(page, ui_server, api, recost_items):
     gold_id, ring_id = recost_items
     page.set_viewport_size({"width": 1440, "height": 1000})
 
-    # Manufactured item shows "Recalculate cost".
+    # Manufactured item shows the live cost summary; the recipe set already applied cost_price.
     _tab(page, ui_server, ring_id)
-    assert page.locator("button:has-text('Recalculate cost')").count() == 1
+    summary = page.locator("#recipe-cost-card").inner_text()
+    assert "Unit cost" in summary and "400" in summary
+    assert page.locator("button:has-text('Recalculate cost')").count() == 0
+    assert page.locator("button:has-text('Apply to cost price')").count() == 0
+    assert api.get(f"/items/{ring_id}").json()["cost_price"] == 400.0
     page.screenshot(path=str(SHOTS / "01-manufactured-item.png"), full_page=True)
 
     # Raw component shows the "Used in other recipes" panel + Re-cost dependents.
@@ -61,6 +66,7 @@ def test_recost_flow_with_screenshots(page, ui_server, api, recost_items):
     page.screenshot(path=str(SHOTS / "03-recosted.png"), full_page=True)
     assert "Re-costed 1 dependent" in page.locator(".flash--success").inner_text()
 
-    # Ring's unit cost must now reflect the new gold price: 5 * 100 = 500.
+    # Ring's unit cost must now reflect the new gold price: 5 * 100 = 500, and cost_price too.
     ring = api.get(f"/items/{ring_id}").json()
     assert ring["recipe"]["unit_cost"] == 500.0, ring["recipe"]
+    assert ring["cost_price"] == 500.0

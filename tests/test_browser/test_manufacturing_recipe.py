@@ -80,6 +80,16 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
     _set_cell(page, "recipe__components__0__quantity", "5")
     page.wait_for_selector("#recipe-cost-card:has-text('400')", timeout=8000)
 
+    # Materials row shows the catalog unit cost (80) and extended cost (400), both read-only,
+    # and the Materials section header carries the section total (400). (Items #2 + #4.)
+    mat_row = page.locator('td[data-col="recipe__components__0__quantity"]').locator("xpath=..")
+    row_text = mat_row.inner_text()
+    assert "80" in row_text and "400" in row_text
+    mat_head = page.locator(".recipe-block:has-text('Materials') .recipe-section-total").first
+    assert "400" in mat_head.inner_text()
+    # The unit cost is not editable here (no edit_url / dblclick handler on those cells).
+    assert page.locator('td[data-col="recipe__components__0__unit_cost"]').count() == 0
+
     # Labor via ghost row, then per-cell edits.
     page.fill("input[name=labor_new_op]", "Setting")
     page.locator("input[name=labor_new_op]").blur()

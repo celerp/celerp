@@ -1045,19 +1045,9 @@ async def set_item_recipe(token: str, entity_id: str, recipe: dict) -> dict:
         return _raise(await c.put(f"/manufacturing/items/{entity_id}/recipe", json=recipe)).json()
 
 
-async def recalculate_item_cost(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/items/{entity_id}/recalculate")).json()
-
-
 async def recost_dependents(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/items/{entity_id}/recost-dependents")).json()
-
-
-async def apply_recipe_cost(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/items/{entity_id}/apply-cost")).json()
 
 
 async def build_item(token: str, item_id: str, quantity: float) -> dict:

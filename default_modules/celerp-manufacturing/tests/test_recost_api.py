@@ -1,6 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""API tests for recalculate + mark-to-market re-cost of dependents."""
+"""API tests for recipe cost: auto-applied cost_price + mark-to-market re-cost of dependents.
+
+The recipe rolls on every save and the rolled unit cost is applied to cost_price automatically
+(no manual recalculate / apply step). An item's OWN recipe still goes stale when a *component*
+reprices (nothing re-saves the parent) — that is what recost-dependents fixes, in one click.
+"""
 from __future__ import annotations
 
 import uuid
@@ -41,26 +46,55 @@ async def _set_cost(client, token, item_id, cost_total):
     assert r.status_code == 200, r.text
 
 
+async def _item_state(client, token, item_id) -> dict:
+    return (await client.get(f"/items/{item_id}", headers=_h(token))).json()
+
+
 async def _unit_cost(client, token, item_id) -> float:
-    return (await client.get(f"/items/{item_id}", headers=_h(token))).json()["recipe"]["unit_cost"]
+    return (await _item_state(client, token, item_id))["recipe"]["unit_cost"]
 
 
 @pytest.mark.asyncio
-async def test_recalculate_reflects_changed_component_cost(client) -> None:
+async def test_set_recipe_auto_applies_cost_price(client) -> None:
     token = await _register(client)
     gold = await _item(client, token, "GOLD", quantity=1, cost_total=80)  # unit 80
-    ring = await _item(client, token, "RING")
+    ring = await _item(client, token, "RING")  # no stock — standard cost must still apply
+    await _set_recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    st = await _item_state(client, token, ring)
+    # Rolled unit cost is applied to cost_price automatically — no manual "apply" step.
+    assert st["recipe"]["unit_cost"] == 400.0
+    assert st["cost_price"] == 400.0
+
+
+@pytest.mark.asyncio
+async def test_set_recipe_annotates_component_line_costs(client) -> None:
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDC", quantity=1, cost_total=80)  # unit 80
+    ring = await _item(client, token, "RINGC")
+    res = await _set_recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    comp = res["recipe"]["components"][0]
+    # Each component carries its catalog unit cost + extended line cost (for the UI, read-only).
+    assert comp["unit_cost"] == 80.0
+    assert comp["line_cost"] == 400.0
+
+
+@pytest.mark.asyncio
+async def test_component_reprice_is_stale_until_recost(client) -> None:
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDS", quantity=1, cost_total=80)
+    ring = await _item(client, token, "RINGS")
     await _set_recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
     assert await _unit_cost(client, token, ring) == 400.0
 
     await _set_cost(client, token, gold, 100)  # gold reprices
-    # Stale until recalculated (no automatic cascade — deterministic):
+    # The parent's own recipe is deterministic-stale (nothing re-saved it):
     assert await _unit_cost(client, token, ring) == 400.0
 
-    r = await client.post(f"/manufacturing/items/{ring}/recalculate", headers=_h(token))
-    assert r.status_code == 200
-    assert r.json()["recipe"]["unit_cost"] == 500.0
-    assert await _unit_cost(client, token, ring) == 500.0
+    r = await client.post(f"/manufacturing/items/{gold}/recost-dependents", headers=_h(token))
+    assert r.status_code == 200 and r.json()["count"] == 1
+    st = await _item_state(client, token, ring)
+    assert st["recipe"]["unit_cost"] == 500.0
+    assert st["cost_price"] == 500.0  # recost also flows through to cost_price
 
 
 @pytest.mark.asyncio
@@ -89,38 +123,3 @@ async def test_recost_dependents_none(client) -> None:
     lonely = await _item(client, token, "LONELY", quantity=1, cost_total=10)
     r = await client.post(f"/manufacturing/items/{lonely}/recost-dependents", headers=_h(token))
     assert r.status_code == 200 and r.json()["count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_recalculate_no_recipe_422(client) -> None:
-    token = await _register(client)
-    raw = await _item(client, token, "RAWX", quantity=1, cost_total=5)
-    r = await client.post(f"/manufacturing/items/{raw}/recalculate", headers=_h(token))
-    assert r.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_recalculate_unknown_404(client) -> None:
-    token = await _register(client)
-    r = await client.post("/manufacturing/items/item:nope/recalculate", headers=_h(token))
-    assert r.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_apply_cost_sets_cost_price(client) -> None:
-    token = await _register(client)
-    gold = await _item(client, token, "GOLDA", quantity=1, cost_total=80)  # unit 80
-    ring = await _item(client, token, "RINGA")  # no stock — standard cost must still persist
-    await _set_recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])  # unit 400
-
-    r = await client.post(f"/manufacturing/items/{ring}/apply-cost", headers=_h(token))
-    assert r.status_code == 200 and r.json()["cost_price"] == 400.0
-    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["cost_price"] == 400.0
-
-
-@pytest.mark.asyncio
-async def test_apply_cost_no_recipe_422(client) -> None:
-    token = await _register(client)
-    raw = await _item(client, token, "RAWA", cost_total=5)
-    r = await client.post(f"/manufacturing/items/{raw}/apply-cost", headers=_h(token))
-    assert r.status_code == 422

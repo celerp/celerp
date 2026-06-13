@@ -1346,8 +1346,10 @@ function celerpPrintLabel(entityId, templateId) {
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        # The self-refresh (recipeSaved) includes #recipe-form, so the picker scope survives.
+        show_all = str(request.query_params.get("show_all_components", "")) in ("on", "true", "1")
         try:
-            return await _recipe_section_response(token, entity_id)
+            return await _recipe_section_response(token, entity_id, show_all=show_all)
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
@@ -1414,7 +1416,7 @@ function celerpPrintLabel(entityId, templateId) {
 
     @app.post("/api/items/{entity_id}/recipe-autosave")
     async def recipe_autosave(request: Request, entity_id: str):
-        """Persist the output quantity on change; refresh only the cost card (out-of-band)."""
+        """Persist the output quantity on change, then fire recipeSaved to re-render the section."""
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
@@ -1428,26 +1430,11 @@ function celerpPrintLabel(entityId, templateId) {
             recipe = item.get("recipe") or {"output_qty": 1, "components": [], "labor": [], "overhead": []}
             recipe["output_qty"] = output_qty
             await api.set_item_recipe(token, entity_id, _recipe_api_payload(recipe))
-            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
-            cur = currency_symbol(company.get("currency") or "")
-            return (_recipe_cost_card(entity_id, item, cur, oob=True), _recipe_saved_status())
+            # Body is ignored (the output_qty input swaps nothing); the trigger re-renders the section.
+            return "", HttpHeader("HX-Trigger", "recipeSaved")
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
-            return _recipe_saved_status(f"Not saved: {e.detail}", "error")
-
-    @app.get("/api/items/{entity_id}/recipe-cost-card")
-    async def recipe_cost_card(request: Request, entity_id: str):
-        """Fresh cost card; fired by the recipeSaved event after a cell save. Carries the
-        saved-status update as an OOB sibling (plain-div response, so OOB is safe here)."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        try:
-            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
-            cur = currency_symbol(company.get("currency") or "")
-            return (_recipe_cost_card(entity_id, item, cur), _recipe_saved_status())
-        except APIError as e:
             return _recipe_saved_status(f"Not saved: {e.detail}", "error")
 
     @app.get("/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/edit")
@@ -1488,41 +1475,6 @@ function celerpPrintLabel(entityId, templateId) {
         rows_ = (item.get("recipe") or {}).get(section, [])
         value = rows_[idx].get(field, "") if 0 <= idx < len(rows_) else ""
         return _recipe_cell(entity_id, section, idx, field, value)
-
-    @app.post("/api/items/{entity_id}/recalculate-cost")
-    async def recalculate_item_cost(request: Request, entity_id: str):
-        """Re-roll this item's cost from current component costs (mark-to-market, one item)."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        try:
-            await api.recalculate_item_cost(token, entity_id)
-            return await _recipe_section_response(token, entity_id, flash_msg="Cost recalculated from current component costs.", flash_kind="success")
-        except APIError as e:
-            if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
-            try:
-                return await _recipe_section_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
-            except APIError:
-                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
-
-    @app.post("/api/items/{entity_id}/apply-cost")
-    async def apply_recipe_cost(request: Request, entity_id: str):
-        """Copy the recipe's rolled standard cost into the item's cost price."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        try:
-            res = await api.apply_recipe_cost(token, entity_id)
-            cp = res.get("cost_price")
-            return await _recipe_section_response(token, entity_id, flash_msg=f"Cost price set to {cp} from the recipe.", flash_kind="success")
-        except APIError as e:
-            if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
-            try:
-                return await _recipe_section_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
-            except APIError:
-                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     @app.post("/api/items/{entity_id}/recost-dependents")
     async def recost_dependents(request: Request, entity_id: str):
@@ -1596,6 +1548,8 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        elif field == "inventory_type":
+            label_map = _INVENTORY_TYPE_LABELS
         # location_name: render a select cell with locations + "Add new" as last option
         if field == "location_name":
             loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
@@ -1656,6 +1610,8 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        elif field == "inventory_type":
+            label_map = _INVENTORY_TYPE_LABELS
         # Virtual total fields store no value in item state; derive from primitives
         virtual_fields = {f["key"]: f for f in schema if f.get("virtual")}
         if field in virtual_fields:
@@ -2031,10 +1987,12 @@ function celerpPrintLabel(entityId, templateId) {
                 return price_td, total_td
             return price_td
         from ui.components.table import display_cell
-        try:
-            label_map = await api.get_category_display_names(token) if field == "category" else None
-        except Exception:
-            label_map = None
+        label_map = _INVENTORY_TYPE_LABELS if field == "inventory_type" else None
+        if field == "category":
+            try:
+                label_map = await api.get_category_display_names(token)
+            except Exception:
+                label_map = None
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
@@ -4138,16 +4096,21 @@ def _status_tabs(p: dict, vertical: str = "") -> FT:
     return Div(*tabs, cls="category-tabs status-tabs", id="status-tabs")
 
 
+# Human labels for the inventory_type slugs. "Inventory" is spelled out on stocked/non-stocked
+# so they aren't confused with the Component type (added with the manufacturing module).
+_INVENTORY_TYPE_LABELS: dict[str, str] = {
+    "stocked": "Stocked Inventory",
+    "component": "Component",
+    "service": "Service",
+    "non_stocked": "Non-Stocked Inventory",
+}
+
+
 def _inventory_type_tabs(p: dict) -> FT:
-    """Filter tabs for inventory_type (all / stocked / service / non_stocked)."""
+    """Filter tabs for inventory_type (all / stocked / component / service / non_stocked)."""
     active = p.get("inventory_type", "")
-    _TABS = [
-        ("", "All Types"),
-        ("stocked", "Stocked"),
-        ("component", "Components"),
-        ("service", "Services"),
-        ("non_stocked", "Non-Stocked"),
-    ]
+    _TABS = [("", "All Types")] + [(k, _INVENTORY_TYPE_LABELS[k])
+                                   for k in ("stocked", "component", "service", "non_stocked")]
     base = {k: v for k, v in _base_state(p).items() if k != "inventory_type"}
 
     def _tab(it: str, label: str) -> FT:
@@ -4986,51 +4949,30 @@ def _recipe_cell(entity_id: str, section: str, idx: int, field: str, value) -> F
     )
 
 
-def _recipe_cost_card(entity_id: str, item: dict, currency: str | None, oob: bool = False) -> FT:
-    """The Cost Summary card (materials/labor/overhead/unit + Recalculate/Apply).
+def _recipe_cost_card(entity_id: str, item: dict, currency: str | None) -> FT:
+    """The Cost Summary card: live materials / labor / overhead / unit-cost totals.
 
-    Extracted so cell saves can refresh just this card out-of-band (``oob=True``) without
-    re-rendering the form, so the user's focus is never disturbed mid-edit.
+    The card always reflects the current recipe (the whole section re-renders on every save),
+    and the rolled unit cost is applied to the item's cost price automatically, so there are
+    no Recalculate / Apply buttons to press.
     """
     recipe = item.get("recipe") or {}
     has_recipe = bool(recipe.get("components"))
-    _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
 
     def _row(label, key, total=False):
         return Tr(Td(label, cls="detail-label detail-label--total" if total else "detail-label"),
                   Td(_recipe_money(recipe.get(key), currency), cls="recipe-amount cell--total" if total else "recipe-amount"))
 
-    # Only mention the Recalculate button when it is actually rendered (it needs a recipe).
-    hint = ("Standard cost, rolled up from current component costs. A price change made on a "
-            "component elsewhere is not picked up automatically. Click Recalculate cost to refresh."
+    hint = ("Rolled up from current component costs and applied to this item's cost price automatically."
             if has_recipe else
-            "Standard cost will appear here as you add components below.")
+            "The standard cost will appear here as you add components below.")
     children = [
         H3("Cost summary", cls="section-title"),
         Table(Tbody(_row("Materials", "materials_cost"), _row("Labor", "labor_cost"),
                     _row("Overhead", "overhead_cost"), _row("Unit cost", "unit_cost", total=True)), cls="detail-table"),
         P(hint, cls="hint"),
     ]
-    if has_recipe:
-        children.append(Div(
-            Button("Recalculate cost", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs",
-                   hx_post=f"/api/items/{entity_id}/recalculate-cost", **_htmx,
-                   title="Re-roll this item's cost from the current cost of its components"),
-            Button("Apply to cost price", Span(cls="btn-spinner htmx-indicator"), type="button", cls="btn btn--secondary btn--xs",
-                   hx_post=f"/api/items/{entity_id}/apply-cost", **_htmx,
-                   title="Copy this rolled standard cost into the item's cost price (Pricing tab)"),
-            cls="recipe-actions mt-sm"))
-    # The card refreshes itself whenever a recipe cell save fires the "recipeSaved" event
-    # (HX-Trigger header). OOB is only used by the output-qty autosave path, whose response
-    # is plain divs; cell PATCHes return a <td>, which cannot carry OOB siblings.
-    attrs = {
-        "id": "recipe-cost-card", "cls": "detail-card recipe-cost-summary",
-        "hx_get": f"/api/items/{entity_id}/recipe-cost-card",
-        "hx_trigger": "recipeSaved from:body", "hx_swap": "outerHTML",
-    }
-    if oob:
-        attrs["hx_swap_oob"] = "true"
-    return Div(*children, **attrs)
+    return Div(*children, id="recipe-cost-card", cls="detail-card recipe-cost-summary")
 
 
 def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
@@ -5082,6 +5024,9 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             Td(A(label, href=f"/inventory/{cid}", cls="table-link") if not orphan else Span(label)),
             _recipe_cell(entity_id, "components", i, "quantity", c.get("quantity")),
             Td(c.get("unit") or EMPTY, cls="comp-unit-cell"),
+            # Unit cost + extended cost are read-only: they come from the component's catalog cost.
+            Td(_recipe_money(c.get("unit_cost"), currency), cls="recipe-amount"),
+            Td(_recipe_money(c.get("line_cost"), currency), cls="recipe-amount"),
             Td(Button("×", type="button", title="Remove component", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_component&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row recipe-row--orphan" if orphan else "data-row",
@@ -5116,7 +5061,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     comp_add_row = Tr(
         Td(searchable_select("comp_new", comp_opts, value="", placeholder="Search to add a component…",
                              hx_post=f"{sec}?action=add_component", hx_trigger="change", **_add)),
-        Td("", cls="cell--number"), Td(""), Td("", cls="cell--actions"),
+        Td("", cls="cell--number"), Td(""), Td("", cls="recipe-amount"), Td("", cls="recipe-amount"),
+        Td("", cls="cell--actions"),
         cls="recipe-add-row",
     )
     labor_add_row = Tr(
@@ -5132,7 +5078,9 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         cls="recipe-add-row",
     )
     materials = Table(
-        Thead(Tr(Th("Component SKU"), Th("Quantity", cls="cell--number"), Th("Unit"), Th("", cls="cell--actions"))),
+        Thead(Tr(Th("Component SKU"), Th("Quantity", cls="cell--number"), Th("Unit"),
+                 Th(f"Unit cost{cur_label}", cls="cell--number"), Th(f"Cost{cur_label}", cls="cell--number"),
+                 Th("", cls="cell--actions"))),
         Tbody(*[_comp_row(i, c) for i, c in enumerate(components)], comp_add_row),
         cls="data-table",
     )
@@ -5148,6 +5096,14 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         Tbody(*[_oh_row(i, o) for i, o in enumerate(overhead_rows)], oh_add_row),
         cls="data-table",
     )
+
+    def _section_head(title: str, total_key: str) -> FT:
+        """Section title with its running total on the right (GDR §4: currency right-aligned)."""
+        return Div(
+            H3(title, cls="section-title"),
+            Span(_recipe_money(recipe.get(total_key), currency), cls="recipe-section-total"),
+            cls="recipe-section-head",
+        )
 
     has_recipe = bool((item.get("recipe") or {}).get("components"))
 
@@ -5213,15 +5169,21 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
                 P("Unit cost = total recipe cost ÷ this quantity.", cls="hint"),
                 cls="detail-card recipe-block",
             ),
-            Div(H3("Materials", cls="section-title"), materials, cls="detail-card recipe-block"),
-            Div(H3("Labor", cls="section-title"), labor, cls="detail-card recipe-block"),
-            Div(H3("Overhead", cls="section-title"), overhead, cls="detail-card recipe-block"),
+            Div(_section_head("Materials", "materials_cost"), materials, cls="detail-card recipe-block"),
+            Div(_section_head("Labor", "labor_cost"), labor, cls="detail-card recipe-block"),
+            Div(_section_head("Overhead", "overhead_cost"), overhead, cls="detail-card recipe-block"),
             clear_action,
             id="recipe-form",
         ),
         Div(*right_col, cls="recipe-right"),
         id="recipe-section",
         cls="recipe-grid",
+        # Any per-cell or output-qty save fires "recipeSaved"; the whole section re-renders so
+        # the per-row costs, the per-section totals and the cost summary all stay consistent.
+        hx_get=f"/api/items/{entity_id}/recipe-section",
+        hx_trigger="recipeSaved from:body",
+        hx_include="#recipe-form",
+        hx_swap="outerHTML",
     )
 
 
@@ -5395,6 +5357,7 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "
                 options=f.get("options"),
                 editable=f.get("editable", True),
                 currency=currency,
+                label_map=_INVENTORY_TYPE_LABELS if key == "inventory_type" else None,
             )
         return Tr(
             Td(f.get("label", key), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),

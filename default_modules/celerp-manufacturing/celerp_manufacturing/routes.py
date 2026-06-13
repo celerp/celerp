@@ -202,8 +202,36 @@ async def set_item_recipe(
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
     )
+    await _apply_standard_cost(session, company_id, user, item_id, item.state, recipe)
     await session.commit()
     return {"event_id": entry.id, "recipe": recipe}
+
+
+async def _apply_standard_cost(session: AsyncSession, company_id, user, item_id: str,
+                               item_state: dict, recipe: dict) -> None:
+    """Keep a manufactured item's cost_price equal to its rolled standard cost.
+
+    The recipe is the single source of truth for a manufactured item's cost, so cost_price
+    tracks the rolled unit cost automatically (no manual "apply" step). Only fires for a
+    real recipe (has components) and only when the value actually changes, so editing a
+    non-cost field or re-saving the same value emits no redundant pricing event.
+    """
+    if not recipe.get("components"):
+        return
+    new_cost = recipe.get("unit_cost")
+    if new_cost is None:
+        return
+    current = item_state.get("cost_price")
+    try:
+        if current is not None and float(current) == float(new_cost):
+            return
+    except (TypeError, ValueError):
+        pass
+    await emit_event(
+        session, company_id=company_id, entity_id=item_id, entity_type="item",
+        event_type="item.pricing.set", data={"price_type": "cost_price", "new_price": new_cost},
+        actor_id=user.id, location_id=None, source="auto", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
 
 
 class BuildBody(BaseModel):
@@ -276,56 +304,10 @@ async def _recost_one(session: AsyncSession, company_id, user, item_id: str, sta
         event_type="item.recipe.set", data={"recipe": new_recipe}, actor_id=user.id,
         location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={"recosted": True},
     )
-    states[item_id] = {**st, "recipe": new_recipe}
+    # Mark-to-market also flows through to cost_price (same rule as a direct recipe edit).
+    await _apply_standard_cost(session, company_id, user, item_id, st, new_recipe)
+    states[item_id] = {**st, "recipe": new_recipe, "cost_price": new_recipe.get("unit_cost")}
     return new_recipe
-
-
-@router.post("/items/{item_id}/recalculate")
-async def recalculate_item_cost(
-    item_id: str,
-    company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Re-roll this item's recipe cost from the current cost of its components (mark-to-market)."""
-    states = await _all_item_states(session, company_id)
-    if item_id not in states:
-        raise HTTPException(status_code=404, detail="Item not found")
-    new = await _recost_one(session, company_id, user, item_id, states)
-    if new is None:
-        raise HTTPException(status_code=422, detail="Item has no recipe to recalculate")
-    await session.commit()
-    return {"recipe": new}
-
-
-@router.post("/items/{item_id}/apply-cost")
-async def apply_recipe_cost(
-    item_id: str,
-    company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Copy the recipe's rolled standard unit cost into the item's cost price (explicit, GDR §2d).
-
-    Standard cost (recipe.unit_cost) and actual lot cost (cost_price) are kept separate by
-    default; this is the user-initiated bridge between them.
-    """
-    item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
-    if item is None or item.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Item not found")
-    recipe = item.state.get("recipe") or {}
-    unit_cost = recipe.get("unit_cost")
-    if not recipe.get("components") or unit_cost is None:
-        raise HTTPException(status_code=422, detail="Item has no rolled recipe cost to apply")
-    # Set cost_price directly (not via cost_total) so the standard cost persists even when
-    # the manufactured item has no stock yet — a produced good carries no purchase-lot cost.
-    await emit_event(
-        session, company_id=company_id, entity_id=item_id, entity_type="item",
-        event_type="item.pricing.set", data={"price_type": "cost_price", "new_price": unit_cost},
-        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
-    )
-    await session.commit()
-    return {"cost_price": unit_cost}
 
 
 @router.post("/items/{item_id}/recost-dependents")

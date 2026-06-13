@@ -66,7 +66,12 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, _path: frozenset[str] = fr
         if cid in _path:
             raise RecipeError(f"recipe cycle detected at {cid}")
         child_cost = unit_cost(lookup(cid), lookup, _path=_path | {cid}, _depth=_depth + 1)
-        materials += float(comp.get("quantity") or 0) * child_cost
+        line = float(comp.get("quantity") or 0) * child_cost
+        # Annotate the line in-place so the UI can show each component's catalog unit cost and
+        # extended cost without re-deriving any cost logic (single source of truth = this module).
+        comp["unit_cost"] = round(child_cost, 4)
+        comp["line_cost"] = round(line, 4)
+        materials += line
 
     labor = sum(_labor_line_cost(l) for l in recipe.get("labor", []))
     overhead = sum(float(o.get("amount") or 0) for o in recipe.get("overhead", []))

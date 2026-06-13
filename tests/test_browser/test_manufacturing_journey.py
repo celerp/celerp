@@ -66,12 +66,11 @@ def test_full_manufacturing_journey(page, ui_server, api):
     page.wait_for_selector('td[data-col="recipe__overhead__0__amount"]', timeout=8000)
     _set_cell("recipe__overhead__0__amount", "15")
     page.wait_for_selector("#recipe-cost-card:has-text('515')", timeout=8000)
-    assert api.get(f"/items/{ring}").json()["recipe"]["unit_cost"] == 515.0
-
-    # 2b. Apply the rolled standard cost to the item's cost price (Decision 1), and verify it sticks.
-    page.click("button:has-text('Apply to cost price')")
-    page.wait_for_selector(".flash--success:has-text('Cost price')", timeout=8000)
-    assert api.get(f"/items/{ring}").json()["cost_price"] == 515.0
+    # The rolled standard cost is applied to cost_price automatically — no button to press.
+    ring_state = api.get(f"/items/{ring}").json()
+    assert ring_state["recipe"]["unit_cost"] == 515.0
+    assert ring_state["cost_price"] == 515.0
+    assert page.locator("button:has-text('Apply to cost price')").count() == 0
 
     # 3. Gold reprices → re-cost dependents (Phase 2).
     api.post(f"/items/{gold}/price", json={"price_type": "cost_total", "new_price": 10000})  # unit 80 -> 100

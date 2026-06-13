@@ -20,12 +20,14 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     comp = api.post("/items", json={"sku": "PL-COMP", "name": "Brass rod", "quantity": 50, "sell_by": "piece", "inventory_type": "component"})
     assert comp.status_code == 200, comp.text
 
-    # Item 3: a "Components" filter tab exists, between Stocked and Services.
+    # Item 3: a "Component" filter tab exists, between Stocked Inventory and Service.
+    # Stocked/Non-Stocked spell out "Inventory" so they aren't confused with the Component type.
     page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
     page.wait_for_selector(".inventory-type-tabs", timeout=10000)
     tabs = [t.strip() for t in page.locator(".inventory-type-tabs .category-tab").all_inner_texts()]
-    assert "Components" in tabs, tabs
-    assert tabs.index("Components") == tabs.index("Stocked") + 1, tabs
+    assert "Stocked Inventory" in tabs and "Non-Stocked Inventory" in tabs, tabs
+    assert "Stocked" not in tabs and "Non-Stocked" not in tabs, tabs  # old bare labels gone
+    assert tabs.index("Component") == tabs.index("Stocked Inventory") + 1, tabs
     page.screenshot(path=str(SHOTS / "01-components-tab.png"))
     # The filter actually filters (URL carries the var per GDR §2m): component item shown, stocked hidden.
     page.goto(f"{ui_server}/inventory?inventory_type=component", wait_until="domcontentloaded")
