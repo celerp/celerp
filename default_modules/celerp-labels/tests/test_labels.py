@@ -489,7 +489,6 @@ class TestLabelPrintJsFlow:
 
 # ── Bug-fix regression tests ──────────────────────────────────────────────────
 
-@pytest.mark.anyio
 async def test_qr_field_resolves_barcode_key(client: AsyncClient):
     """QR/barcode fields in HTML print sheet must resolve item barcode/sku, not key 'qr'."""
     from celerp_labels.ui_routes import _printable_label_sheet
@@ -524,7 +523,6 @@ def test_make_barcode_image_module_height_param():
     )
 
 
-@pytest.mark.anyio
 async def test_barcode_height_saved_and_retrieved(client: AsyncClient):
     """barcode_height set in template field must survive PUT and be returned on GET."""
     headers = await _headers(client)
