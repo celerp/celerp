@@ -660,6 +660,9 @@ a:hover { text-decoration: underline; }
 .qty-unit-wrap { display: flex; align-items: center; gap: 2px; }
 .qty-unit-wrap .cell-input { flex: 1 1 auto; min-width: 0; max-width: none; }
 .unit-label { flex: 0 0 auto; font-size: 11px; color: var(--c-text); opacity: 0.7; white-space: nowrap; }
+/* Reserve a fixed slot for the unit so the quantity input is the same width on every row,
+   whether or not that row has a unit (empty unit still reserves the slot). */
+.qty-unit-wrap .unit-label { flex: 0 0 2.8em; text-align: left; overflow: hidden; text-overflow: ellipsis; }
 /* Finalized invoices fold the unit into the qty cell ("5 carat"), so widen qty. */
 .doc-lines--fin-invoice th.col-qty, .doc-lines--fin-invoice td.col-qty { width: 75px; white-space: nowrap; }
 /* Pieces / Weight sub-lines under a finalized line's description. */
@@ -671,6 +674,10 @@ a:hover { text-decoration: underline; }
 .doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 50px;  text-align: right; }
 .doc-lines th.col-account,     .doc-lines td.col-account     { width: 100px; }
 .doc-lines th.col-total,       .doc-lines td.col-total       { width: 100px; text-align: right; padding-right: 8px; }
+/* All line-table headers are centered. !important + higher specificity beats both the per-column
+   right-align rules and the global `.data-table th.cell--number { text-align:right !important }`
+   (the Total header carries cell--number); cell bodies keep their own alignment. */
+.data-table.doc-lines thead th { text-align: center !important; }
 /* input inside editable total cell — fills cell width */
 .doc-lines td.col-total input.line-total { width: 100%; text-align: right; box-sizing: border-box; }
 /* Every line input fills its (percentage-width) cell — the cell-input--xs 80px cap left wasted

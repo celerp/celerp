@@ -148,3 +148,25 @@ def test_doc_lines_inputs_fill_their_cells(page, ui_server, api):
     # Each input spans essentially the whole cell (only the small cell padding remains).
     for col in ("col-desc", "col-unit-price", "col-total"):
         assert fill_ratio(col) >= 0.9, f"{col} input leaves wasted space: {fill_ratio(col)}"
+
+
+def test_doc_lines_headers_centered_and_qty_inputs_uniform(page, ui_server, api):
+    """All line-table headers are centre-aligned, and the quantity input is the same width on
+    every row (the unit slot is reserved even when a row has no unit)."""
+    g = api.post("/items", json={"sku": "HQ-G", "name": "Gold", "quantity": 10, "sell_by": "carat",
+                                 "weight": 2, "weight_unit": "carat"}).json()["id"]
+    r = api.post("/docs", json={"doc_type": "invoice", "status": "draft", "line_items": [
+        {"sku": "HQ-G", "entity_id": g, "name": "Gold", "quantity": 2, "unit_price": 500, "line_total": 1000},
+        {"name": "Plain", "quantity": 1, "unit_price": 120, "line_total": 120}], "total": 1120})
+    doc_id = r.json()["id"]
+    page.set_viewport_size({"width": 1280, "height": 900})
+    page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
+    page.wait_for_selector("table.doc-lines tbody tr", timeout=5000)
+
+    aligns = page.eval_on_selector_all(
+        "table.doc-lines thead th", "els => els.map(e => getComputedStyle(e).textAlign)")
+    assert all(a == "center" for a in aligns), aligns  # every header centered, incl. the numeric ones
+
+    qty_widths = page.eval_on_selector_all(
+        "td.col-qty input[data-name=quantity]", "els => els.map(e => Math.round(e.offsetWidth))")
+    assert len(qty_widths) == 2 and qty_widths[0] == qty_widths[1], qty_widths  # same width on both rows
