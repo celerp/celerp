@@ -1383,15 +1383,22 @@ function celerpPrintLabel(entityId, templateId) {
                     if changed:
                         recipe["components"].append({"item_id": new_id, "quantity": 1})
             elif action == "add_labor":
+                # The whole line is filled in the add-row, so commit all fields at once.
                 new_op = str(form.get("labor_new_op", "")).strip()
                 changed = bool(new_op)
                 if changed:
-                    recipe["labor"].append({"operation": new_op, "kind": "hourly", "hours": 0, "rate": 0, "amount": 0})
+                    kind = str(form.get("labor_new_kind") or "hourly")
+                    recipe["labor"].append({
+                        "operation": new_op, "kind": kind,
+                        "hours": _num_field(form.get("labor_new_hours")),
+                        "rate": _num_field(form.get("labor_new_rate")),
+                        "amount": _num_field(form.get("labor_new_amount")),
+                    })
             elif action == "add_overhead":
                 new_desc = str(form.get("oh_new_desc", "")).strip()
                 changed = bool(new_desc)
                 if changed:
-                    recipe["overhead"].append({"description": new_desc, "amount": 0})
+                    recipe["overhead"].append({"description": new_desc, "amount": _num_field(form.get("oh_new_amount"))})
             elif action == "remove_component" and 0 <= index < len(recipe.get("components", [])):
                 recipe["components"].pop(index)
             elif action == "remove_labor" and 0 <= index < len(recipe.get("labor", [])):
@@ -4906,6 +4913,14 @@ _RECIPE_CELLS: dict[str, dict[str, str]] = {
 _LABOR_KIND_LABELS = {"hourly": "Hourly", "fixed": "Fixed"}
 
 
+def _num_field(v) -> float:
+    """Parse a numeric add-row field; blank/invalid -> 0.0 (deterministic, no guessing)."""
+    try:
+        return float(str(v).strip() or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _recipe_api_payload(recipe: dict) -> dict:
     """The persisted recipe, shaped for the manufacturing API (derived costs recomputed there)."""
     def _num(v):
@@ -5052,24 +5067,39 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
 
     # Permanent "add" row at the bottom of each table: committing on first input creates a real,
     # persisted row (then a fresh add-row appears). No orphan blank rows to lose on navigation.
-    _add = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML"}
+    _add = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML",
+            "hx_disabled_elt": "this"}
+    # Enter anywhere in an add-row commits the whole line (clicks that row's + Add button).
+    _add_enter = ("if(event.key==='Enter'){event.preventDefault();"
+                  "this.closest('tr').querySelector('button.recipe-add-btn').click();}")
+
+    # Materials: selecting a SKU adds the line in one action (the docs item-picker pattern);
+    # quantity defaults to 1 and is edited in place. The scope toggle lives in the dropdown.
     comp_add_row = Tr(
         Td(searchable_select("comp_new", comp_opts, value="", placeholder="Search to add a component…",
-                             hx_post=f"{sec}?action=add_component", hx_trigger="change", **_add)),
+                             hx_post=f"{sec}?action=add_component", hx_trigger="change",
+                             hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
         Td("", cls="cell--number"), Td(""), Td("", cls="recipe-amount"), Td("", cls="recipe-amount"),
         Td("", cls="cell--actions"),
         cls="recipe-add-row",
     )
+    # Labor / Overhead: free-form lines — fill the whole row, then + Add commits it in one step.
     labor_add_row = Tr(
-        Td(Input(type="text", name="labor_new_op", value="", placeholder="Add an operation…",
-                 hx_post=f"{sec}?action=add_labor", hx_trigger="change", **_add)),
-        Td(""), Td("", cls="cell--number"), Td("", cls="cell--number"), Td("", cls="cell--number"), Td("", cls="cell--actions"),
+        Td(Input(type="text", name="labor_new_op", value="", placeholder="Add an operation…", onkeydown=_add_enter)),
+        Td(Select(Option("Hourly", value="hourly", selected=True), Option("Fixed", value="fixed"),
+                  name="labor_new_kind", cls="labor-kind")),
+        Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter)),
+        Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter)),
+        Td(Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter)),
+        Td(Button("+ Add", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
+                  hx_post=f"{sec}?action=add_labor", **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
     oh_add_row = Tr(
-        Td(Input(type="text", name="oh_new_desc", value="", placeholder="Add a cost…",
-                 hx_post=f"{sec}?action=add_overhead", hx_trigger="change", **_add)),
-        Td("", cls="cell--number"), Td("", cls="cell--actions"),
+        Td(Input(type="text", name="oh_new_desc", value="", placeholder="Add a cost…", onkeydown=_add_enter)),
+        Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter)),
+        Td(Button("+ Add", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
+                  hx_post=f"{sec}?action=add_overhead", **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
     materials = Table(

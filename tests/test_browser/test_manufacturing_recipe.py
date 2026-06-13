@@ -90,18 +90,18 @@ def test_recipe_tab_flow_with_screenshots(page, ui_server, api, recipe_item):
     # The unit cost is not editable here (no edit_url / dblclick handler on those cells).
     assert page.locator('td[data-col="recipe__components__0__unit_cost"]').count() == 0
 
-    # Labor via ghost row, then per-cell edits.
+    # Labor: fill the whole add-row (operation + hours + rate), then "+ Add" commits it at once.
     page.fill("input[name=labor_new_op]", "Setting")
-    page.locator("input[name=labor_new_op]").blur()
-    page.wait_for_selector('td[data-col="recipe__labor__0__hours"]', timeout=8000)
-    _set_cell(page, "recipe__labor__0__hours", "2")
-    _set_cell(page, "recipe__labor__0__rate", "50")
+    page.fill("input[name=labor_new_hours]", "2")
+    page.fill("input[name=labor_new_rate]", "50")
+    page.locator("tr.recipe-add-row:has(input[name=labor_new_op]) button.recipe-add-btn").click()
+    page.wait_for_selector('td[data-col="recipe__labor__0__rate"]', timeout=8000)
 
-    # Overhead via ghost row.
+    # Overhead: same one-step add.
     page.fill("input[name=oh_new_desc]", "Polishing & box")
-    page.locator("input[name=oh_new_desc]").blur()
+    page.fill("input[name=oh_new_amount]", "15")
+    page.locator("tr.recipe-add-row:has(input[name=oh_new_desc]) button.recipe-add-btn").click()
     page.wait_for_selector('td[data-col="recipe__overhead__0__amount"]', timeout=8000)
-    _set_cell(page, "recipe__overhead__0__amount", "15")
     page.screenshot(path=str(SHOTS / "02-filled.png"), full_page=True)
 
     # 5*80 materials + 100 labor + 15 overhead = 515, all persisted automatically.
@@ -145,15 +145,12 @@ def test_fixed_labor_derived_unit_and_add_new_option(page, ui_server, api):
     assert "gram" in page.locator(".comp-unit-cell").first.inner_text()
     assert page.locator("input[name=comp_unit_0]").count() == 0
 
-    # Fixed labor: add the row, switch Type to Fixed via the standard select cell.
+    # Fixed labor: choose Fixed + amount right in the add-row, then + Add — all in one step.
     page.fill("input[name=labor_new_op]", "Bench fee")
-    page.locator("input[name=labor_new_op]").blur()
-    page.wait_for_selector('td[data-col="recipe__labor__0__kind"]', timeout=8000)
-    page.dblclick('td[data-col="recipe__labor__0__kind"]')
-    page.wait_for_selector("select[name=value]", timeout=5000)
-    page.select_option("select[name=value]", "fixed")
+    page.select_option("select[name=labor_new_kind]", "fixed")
+    page.fill("input[name=labor_new_amount]", "30")
+    page.locator("tr.recipe-add-row:has(input[name=labor_new_op]) button.recipe-add-btn").click()
     page.wait_for_selector('td[data-col="recipe__labor__0__kind"]:has-text("Fixed")', timeout=8000)
-    _set_cell(page, "recipe__labor__0__amount", "30")
 
     # 2 * 10 materials + 30 fixed labor = 50, persisted automatically.
     page.wait_for_selector("#recipe-cost-card:has-text('50')", timeout=8000)
