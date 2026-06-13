@@ -62,6 +62,12 @@ def test_cost_fixed_labor() -> None:
     assert bd["labor_cost"] == 25.0
 
 
+def test_cost_daily_labor_is_rate_based() -> None:
+    # Daily behaves like Hourly: cost = quantity (days) x rate (per day).
+    bd = roll_up_cost(_recipe(labor=[{"operation": "Onsite", "kind": "daily", "hours": 3, "rate": 200}]), {}.get)
+    assert bd["labor_cost"] == 600.0
+
+
 def test_cost_mixed_hourly_and_fixed_labor() -> None:
     bd = roll_up_cost(_recipe(labor=[
         {"operation": "Assemble", "kind": "hourly", "hours": 2, "rate": 10},

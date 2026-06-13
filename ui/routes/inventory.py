@@ -4910,7 +4910,10 @@ _RECIPE_CELLS: dict[str, dict[str, str]] = {
     "labor": {"operation": "text", "kind": "select", "hours": "number", "rate": "number", "amount": "number"},
     "overhead": {"description": "text", "amount": "number"},
 }
-_LABOR_KIND_LABELS = {"hourly": "Hourly", "fixed": "Fixed"}
+# Hourly and Daily are both rate-based (qty x rate); Fixed is a flat total. Order = dropdown order.
+_LABOR_KIND_LABELS = {"hourly": "Hourly", "daily": "Daily", "fixed": "Fixed"}
+# Kinds whose cost is quantity x rate (vs a flat fixed total).
+_LABOR_RATE_KINDS = frozenset({"hourly", "daily"})
 
 
 def _num_field(v) -> float:
@@ -5043,17 +5046,24 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         )
 
     def _labor_row(i, l):
-        # Only the fields that apply to this kind are editable; the others show a dimmed "--"
-        # so switching Type (Hourly <-> Fixed) visibly changes which fields drive the cost.
-        fixed = (l.get("kind") or "hourly") == "fixed"
+        # Qty + Rate apply to rate-based kinds (Hourly/Daily); the Total then shows qty x rate
+        # (read-only). Fixed has no qty/rate, so its Total cell is the editable flat amount.
+        # The Total column therefore always shows a value — never a hidden "--".
+        kind = l.get("kind") or "hourly"
+        rate_based = kind in _LABOR_RATE_KINDS
         _na = lambda: Td(EMPTY, cls="recipe-cell--na", title="Not used for this labor type")
-        hours_cell = _na() if fixed else _recipe_cell(entity_id, "labor", i, "hours", l.get("hours"))
-        rate_cell = _na() if fixed else _recipe_cell(entity_id, "labor", i, "rate", l.get("rate"))
-        amount_cell = _recipe_cell(entity_id, "labor", i, "amount", l.get("amount")) if fixed else _na()
+        if rate_based:
+            qty_cell = _recipe_cell(entity_id, "labor", i, "hours", l.get("hours"))
+            rate_cell = _recipe_cell(entity_id, "labor", i, "rate", l.get("rate"))
+            line_total = _num_field(l.get("hours")) * _num_field(l.get("rate"))
+            total_cell = Td(_recipe_money(line_total, currency), cls="recipe-amount")
+        else:
+            qty_cell, rate_cell = _na(), _na()
+            total_cell = _recipe_cell(entity_id, "labor", i, "amount", l.get("amount"))
         return Tr(
             _recipe_cell(entity_id, "labor", i, "operation", l.get("operation")),
-            _recipe_cell(entity_id, "labor", i, "kind", l.get("kind") or "hourly"),
-            hours_cell, rate_cell, amount_cell,
+            _recipe_cell(entity_id, "labor", i, "kind", kind),
+            qty_cell, rate_cell, total_cell,
             Td(Button("×", type="button", title="Remove operation", cls="btn btn--xs btn--ghost",
                       hx_post=f"{sec}?action=remove_labor&index={i}", **_htmx), cls="cell--actions"),
             cls="data-row",
@@ -5089,29 +5099,35 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         cls="recipe-add-row",
     )
     # Labor / Overhead: free-form lines — fill the whole row, then + Add commits it in one step.
-    # The Type select greys out the fields that don't apply: Hourly uses Hours+Rate, Fixed uses
-    # the flat amount. Self-contained inline JS so it survives the section's htmx re-renders.
+    # The Type select greys out the fields that don't apply: rate-based kinds use Qty+Rate (Total
+    # is computed), Fixed uses the flat Total. Self-contained inline JS so it survives re-renders.
     _kind_toggle = ("var r=this.closest('tr'),f=this.value==='fixed';"
                     "r.querySelector('[name=labor_new_hours]').disabled=f;"
                     "r.querySelector('[name=labor_new_rate]').disabled=f;"
                     "r.querySelector('[name=labor_new_amount]').disabled=!f;")
+    # Clicking + Add with the required text field empty flashes it red instead of failing silently.
+    _add_validate = ("var q=this.closest('tr').querySelector('.recipe-req');"
+                     "if(q&&!q.value.trim()){q.classList.add('field-flash-error');q.focus();"
+                     "setTimeout(function(){q.classList.remove('field-flash-error');},1500);"
+                     "event.stopImmediatePropagation();event.preventDefault();return false;}")
     labor_add_row = Tr(
-        Td(Input(type="text", name="labor_new_op", value="", placeholder="Add an operation…", onkeydown=_add_enter)),
-        Td(Select(Option("Hourly", value="hourly", selected=True), Option("Fixed", value="fixed"),
+        Td(Input(type="text", name="labor_new_op", value="", placeholder="Add an operation…", cls="recipe-req", onkeydown=_add_enter)),
+        Td(Select(*[Option(lbl, value=val, selected=(val == "hourly")) for val, lbl in _LABOR_KIND_LABELS.items()],
                   name="labor_new_kind", cls="labor-kind", onchange=_kind_toggle)),
         Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter)),
         Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter)),
-        # Default kind is Hourly, so the flat amount starts disabled until Type is set to Fixed.
+        # Total is editable only for Fixed; for rate-based kinds it is computed (Qty x Rate), so it
+        # starts disabled (default kind is Hourly) and the toggle flips it.
         Td(Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", disabled=True, onkeydown=_add_enter)),
         Td(Button("+ Add", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
-                  hx_post=f"{sec}?action=add_labor", **_add), cls="cell--actions"),
+                  hx_post=f"{sec}?action=add_labor", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
     oh_add_row = Tr(
-        Td(Input(type="text", name="oh_new_desc", value="", placeholder="Add a cost…", onkeydown=_add_enter)),
+        Td(Input(type="text", name="oh_new_desc", value="", placeholder="Add a cost…", cls="recipe-req", onkeydown=_add_enter)),
         Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter)),
         Td(Button("+ Add", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
-                  hx_post=f"{sec}?action=add_overhead", **_add), cls="cell--actions"),
+                  hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
         cls="recipe-add-row",
     )
     materials = Table(
@@ -5122,8 +5138,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
         cls="data-table",
     )
     labor = Table(
-        Thead(Tr(Th("Operation"), Th("Type"), Th("Hours", cls="cell--number"),
-                 Th(f"Rate / hr{cur_label}", cls="cell--number"), Th(f"Fixed amount{cur_label}", cls="cell--number"),
+        Thead(Tr(Th("Operation"), Th("Type"), Th("Qty", cls="cell--number"),
+                 Th(f"Rate{cur_label}", cls="cell--number"), Th(f"Total{cur_label}", cls="cell--number"),
                  Th("", cls="cell--actions"))),
         Tbody(*[_labor_row(i, l) for i, l in enumerate(labor_rows)], labor_add_row),
         cls="data-table",

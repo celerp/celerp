@@ -161,8 +161,8 @@ def test_fixed_labor_derived_unit_and_add_new_option(page, ui_server, api):
 
 
 def test_labor_type_toggles_applicable_fields(page, ui_server, api):
-    """Switching the labor Type (Hourly <-> Fixed) updates which fields apply, in the add-row
-    and in a committed row."""
+    """Switching the labor Type (Hourly/Daily <-> Fixed) updates which fields apply, in the
+    add-row and in a committed row, and the Total column always shows a value."""
     api.post("/items", json={"sku": "LT-GOLD", "name": "Gold", "quantity": 1, "sell_by": "gram",
                              "cost_total": 100, "inventory_type": "component"})  # unit 100
     fg = api.post("/items", json={"sku": "LT-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
@@ -171,31 +171,60 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
     _ghost_pick(page, "LT-GOLD")  # a component so the item is manufacturable
     page.wait_for_selector('td[data-col="recipe__components__0__quantity"]', timeout=8000)
 
-    # Add-row: default Hourly -> Fixed amount disabled, Hours/Rate enabled.
+    # The Type dropdown offers Hourly, Daily and Fixed.
+    assert page.locator("select[name=labor_new_kind] option").count() == 3
+    # Add-row: default Hourly -> Total (fixed amount) disabled, Qty/Rate enabled.
     assert page.locator("input[name=labor_new_amount]").is_disabled()
     assert not page.locator("input[name=labor_new_hours]").is_disabled()
-    # Choosing Fixed flips it: Hours/Rate disabled, Fixed amount enabled.
+    # Daily behaves like Hourly (still rate-based): Qty/Rate enabled, Total computed/disabled.
+    page.select_option("select[name=labor_new_kind]", "daily")
+    assert not page.locator("input[name=labor_new_hours]").is_disabled()
+    assert page.locator("input[name=labor_new_amount]").is_disabled()
+    # Fixed flips it: Qty/Rate disabled, Total (flat amount) enabled.
     page.select_option("select[name=labor_new_kind]", "fixed")
     assert page.locator("input[name=labor_new_hours]").is_disabled()
     assert not page.locator("input[name=labor_new_amount]").is_disabled()
 
-    # Commit an Hourly line; its row shows Hours/Rate editable and the amount cell dimmed (N/A).
+    # Commit an Hourly line; its Total cell shows Qty x Rate (read-only, never "--").
     page.select_option("select[name=labor_new_kind]", "hourly")
     page.fill("input[name=labor_new_op]", "Cutting")
     page.fill("input[name=labor_new_hours]", "2")
     page.fill("input[name=labor_new_rate]", "30")
     page.locator("tr.recipe-add-row:has(input[name=labor_new_op]) button.recipe-add-btn").click()
     page.wait_for_selector('td[data-col="recipe__labor__0__rate"]', timeout=8000)
-    assert page.locator('td[data-col="recipe__labor__0__amount"]').count() == 0  # amount is the dimmed N/A cell
-    assert page.locator('tr:has(td[data-col="recipe__labor__0__rate"]) td.recipe-cell--na').count() == 1
+    row = page.locator('tr:has(td[data-col="recipe__labor__0__rate"])')
+    assert page.locator('td[data-col="recipe__labor__0__amount"]').count() == 0  # Total is computed, not editable
+    assert "60" in row.inner_text()                       # 2 x 30 shown in the Total column
+    assert row.locator("td.recipe-cell--na").count() == 0  # rate-based rows hide nothing
 
-    # Switch the committed row's Type to Fixed -> the fields flip live.
+    # Switch the committed row's Type to Fixed -> Qty/Rate dim, Total becomes the editable amount.
     page.dblclick('td[data-col="recipe__labor__0__kind"]')
     page.wait_for_selector("select[name=value]", timeout=5000)
     page.select_option("select[name=value]", "fixed")
     page.wait_for_selector('td[data-col="recipe__labor__0__amount"]', timeout=8000)
-    assert page.locator('td[data-col="recipe__labor__0__hours"]').count() == 0  # hours now dimmed N/A
+    assert page.locator('td[data-col="recipe__labor__0__hours"]').count() == 0  # Qty now dimmed N/A
+    assert page.locator('tr:has(td[data-col="recipe__labor__0__amount"]) td.recipe-cell--na').count() == 2
     _set_cell(page, "recipe__labor__0__amount", "40")
     page.wait_for_selector("#recipe-cost-card:has-text('140')", timeout=8000)  # 100 materials + 40 fixed
     got = api.get(f"/items/{fg}").json()["recipe"]
     assert got["labor"][0]["kind"] == "fixed" and got["labor"][0]["amount"] == 40.0
+
+
+def test_add_row_validation_flashes_empty_required_field(page, ui_server, api):
+    """Clicking + Add with no operation/description flashes the field red (no silent failure)."""
+    fg = api.post("/items", json={"sku": "AV-FG", "name": "FG", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    _open_tab(page, ui_server, fg)
+
+    # Labor: + Add with an empty operation flashes the field and adds nothing.
+    page.fill("input[name=labor_new_hours]", "2")
+    page.fill("input[name=labor_new_rate]", "10")
+    page.locator("tr.recipe-add-row:has(input[name=labor_new_op]) button.recipe-add-btn").click()
+    page.wait_for_selector("input[name=labor_new_op].field-flash-error", timeout=3000)
+    assert (api.get(f"/items/{fg}").json().get("recipe") or {}).get("labor", []) == []
+
+    # Overhead: same guard on the description field.
+    page.fill("input[name=oh_new_amount]", "5")
+    page.locator("tr.recipe-add-row:has(input[name=oh_new_desc]) button.recipe-add-btn").click()
+    page.wait_for_selector("input[name=oh_new_desc].field-flash-error", timeout=3000)
+    assert (api.get(f"/items/{fg}").json().get("recipe") or {}).get("overhead", []) == []

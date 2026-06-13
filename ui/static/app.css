@@ -514,8 +514,13 @@ a:hover { text-decoration: underline; }
 .form-input--readonly { display: inline-block; padding: 6px 0; color: var(--c-text2); }
 /* Read-only per-row cost cells in the recipe tables (catalog cost + extended). */
 .recipe-block .data-table td.recipe-amount { text-align: right; font-variant-numeric: tabular-nums; color: var(--c-text2); }
-/* Labor field that doesn't apply to the current Type (Hourly vs Fixed): dimmed, not editable. */
+/* Labor field that doesn't apply to the current Type: dimmed, not editable. */
 .recipe-block .data-table td.recipe-cell--na { text-align: right; color: var(--c-text2); opacity: 0.5; }
+/* Add-row placeholders look distinctly like hints, not real values the user typed. */
+.recipe-add-row input::placeholder { color: var(--c-text2); opacity: 0.5; font-size: 0.85em; font-style: italic; }
+/* Required add-row field flashes when + Add is clicked while it is empty. */
+.recipe-add-row input.field-flash-error { border-color: var(--c-red); box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.18); animation: fieldShake 0.3s ease; }
+@keyframes fieldShake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-3px); } 75% { transform: translateX(3px); } }
 .empty-row td { color: var(--c-text2); font-style: italic; text-align: center; }
 .recipe-row--orphan .combobox-input { border-color: var(--c-red); }
 .hint { font-size: 11px; color: var(--c-text2); margin-top: 6px; }
