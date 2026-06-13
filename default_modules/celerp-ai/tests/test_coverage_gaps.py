@@ -464,7 +464,12 @@ def test_count_pages_pdf_zero_pages():
 
 def test_subscribe_url_with_instance_id():
     from celerp.ai.quota import _subscribe_url
-    with patch.object(settings, "gateway_instance_id", "inst-123"):
+    # Patch the LIVE paths: the module-level `settings` import can go stale after
+    # another test reloads celerp.config, and `_instance_id` (set on gateway
+    # connect) overrides settings.gateway_instance_id — patch both at their real
+    # location so this test is immune to that cross-test state.
+    with patch("celerp.gateway.state._instance_id", ""), \
+         patch("celerp.config.settings.gateway_instance_id", "inst-123"):
         url = _subscribe_url()
     assert "instance_id=inst-123" in url
     assert url.endswith("#ai")
@@ -472,7 +477,8 @@ def test_subscribe_url_with_instance_id():
 
 def test_subscribe_url_without_instance_id():
     from celerp.ai.quota import _subscribe_url
-    with patch.object(settings, "gateway_instance_id", ""):
+    with patch("celerp.gateway.state._instance_id", ""), \
+         patch("celerp.config.settings.gateway_instance_id", ""):
         url = _subscribe_url()
     assert "instance_id" not in url
     assert url.endswith("#ai")

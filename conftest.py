@@ -361,6 +361,23 @@ def _reset_hot_path_caches():
 
 
 @pytest.fixture(autouse=True)
+def _reset_gateway_state():
+    """Restore the gateway-state module globals around each test.
+
+    relay_subscribe_url() reads `_instance_id` (set by the gateway client on
+    connect) which OVERRIDES settings.gateway_instance_id. A test that connects
+    the client leaks `_instance_id` into later tests in other modules — e.g. the
+    AI subscribe-URL tests, which patch settings.gateway_instance_id and would
+    otherwise see the leaked global instead. Snapshot + restore both globals.
+    """
+    from celerp.gateway import state as _gw
+    _iid, _tok = _gw.get_instance_id(), _gw.get_session_token()
+    yield
+    _gw.set_instance_id(_iid)
+    _gw.set_session_token(_tok)
+
+
+@pytest.fixture(autouse=True)
 def _disable_rate_limits():
     from celerp.routers.auth import limiter as auth_limiter
 
