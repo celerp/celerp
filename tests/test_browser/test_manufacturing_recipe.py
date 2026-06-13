@@ -173,17 +173,22 @@ def test_labor_type_toggles_applicable_fields(page, ui_server, api):
 
     # The Type dropdown offers Hourly, Daily and Fixed.
     assert page.locator("select[name=labor_new_kind] option").count() == 3
-    # Add-row: default Hourly -> Total (fixed amount) disabled, Qty/Rate enabled.
-    assert page.locator("input[name=labor_new_amount]").is_disabled()
-    assert not page.locator("input[name=labor_new_hours]").is_disabled()
-    # Daily behaves like Hourly (still rate-based): Qty/Rate enabled, Total computed/disabled.
+    hours = page.locator("input[name=labor_new_hours]")
+    rate = page.locator("input[name=labor_new_rate]")
+    amount = page.locator("input[name=labor_new_amount]")
+    # Default Hourly: Qty/Rate editable; Total is a read-only computed preview.
+    assert hours.is_editable() and not amount.is_editable()
+    # Total previews Qty x Rate live, before clicking + Add.
+    hours.fill("2")
+    rate.fill("30")
+    assert amount.input_value() == "60.00"
+    # Daily behaves like Hourly (still rate-based, Total stays the computed preview).
     page.select_option("select[name=labor_new_kind]", "daily")
-    assert not page.locator("input[name=labor_new_hours]").is_disabled()
-    assert page.locator("input[name=labor_new_amount]").is_disabled()
-    # Fixed flips it: Qty/Rate disabled, Total (flat amount) enabled.
+    assert hours.is_editable() and not amount.is_editable()
+    # Fixed flips it: Qty/Rate lock AND clear (no stale greyed values); Total becomes editable.
     page.select_option("select[name=labor_new_kind]", "fixed")
-    assert page.locator("input[name=labor_new_hours]").is_disabled()
-    assert not page.locator("input[name=labor_new_amount]").is_disabled()
+    assert not hours.is_editable() and amount.is_editable()
+    assert hours.input_value() == "" and rate.input_value() == ""
 
     # Commit an Hourly line; its Total cell shows Qty x Rate (read-only, never "--").
     page.select_option("select[name=labor_new_kind]", "hourly")
