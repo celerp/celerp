@@ -39,35 +39,29 @@ def test_doc_finalize_button(page, ui_server, api, draft_invoice_id):
         "doc_type": "invoice",
         "ref_id": "DOC-FINALIZE-001",
         "status": "draft",
-        "line_items": [],
-        "total": 0,
+        "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 50.0, "line_total": 50.0}],
+        "total": 50.0,
     })
-    if r.status_code not in {200, 201}:
-        pytest.skip("Could not create doc for finalize test")
+    assert r.status_code in {200, 201}, f"Could not create doc for finalize test: {r.text}"
     doc_id = r.json()["id"]
 
     page.goto(f"{ui_server}/docs/{doc_id}", wait_until="domcontentloaded")
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body
 
-    finalize_btn = page.locator(
-        "button:has-text('Finalize'), button:has-text('finalize'), "
-        "a:has-text('Finalize'), [data-action='finalize']"
-    ).first
-    if finalize_btn.count() == 0:
-        pytest.skip("No finalize button found on doc detail page")
+    # The finalize button's label is doc-type-specific ("Issue Invoice", "Issue Memo",
+    # …), so match it by its finalize action rather than by visible text.
+    finalize_btn = page.locator("button[onclick*='action/finalize']")
+    assert finalize_btn.count() > 0, "No finalize button on the draft invoice doc detail page"
 
-    finalize_btn.click()
+    finalize_btn.first.click()
+    # finalize persists then POSTs /action/finalize, which HX-Redirects back to the doc
     page.wait_for_load_state("load", timeout=8000)
-    body = page.locator("body").inner_text()
-    assert "Internal Server Error" not in body
-    # Either "finalized" or status badge changed
-    finalized = (
-        "finalized" in body.lower()
-        or "open" in body.lower()  # draft → open is also valid
-        or "confirmed" in body.lower()
-    )
-    assert finalized or True  # Accept if no error regardless (state change may differ)
+    page.wait_for_timeout(300)
+    assert "Internal Server Error" not in page.locator("body").inner_text()
+    # the doc must no longer be a draft after issuing it
+    status = api.get(f"/docs/{doc_id}").json().get("status")
+    assert status and status != "draft", f"finalize did not move the doc off draft: {status!r}"
 
 
 def test_doc_share_button(page, ui_server, api):
