@@ -5175,7 +5175,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                               cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
             _qty_input = Input(type="number", value=str(qty), step="any",
                                data_name="quantity", **{"data-qty-measure": _qty_measure},
-                               oninput="celerpUpdateTotals(); celerpSyncQtyMeasure(this)",
+                               oninput="celerpFieldEdited(this); celerpSyncQtyMeasure(this)",
                                onblur="celerpQtyBlur(this); celerpAutoSave()",
                                disabled=bool(_qty_disabled),
                                cls="cell-input cell-input--xs")
@@ -5187,11 +5187,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(Td(_unit_span, cls="col-unit"))
             cells.extend([
                 Td(Input(type="number", value=str(price), step="0.01",
-                         data_name="unit_price", oninput="celerpUpdateTotals()",
+                         data_name="unit_price", oninput="celerpFieldEdited(this)",
                          onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-unit-price"),
                 Td(Input(type="number", value=str(discount_pct) if discount_pct else "0", step="0.01",
-                         data_name="discount_pct", oninput="celerpUpdateTotals()",
+                         data_name="discount_pct", oninput="celerpFieldEdited(this)",
                          onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
                 Td(_tax_select(float(li.get("tax_rate", 0) or 0), li.get("tax_code", "") or "",
@@ -5203,7 +5203,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value=str(round(line_tot, 2)), step="0.01",
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
-                         onblur="celerpAutoSave()",
+                         onblur="celerpUpdateTotals(); celerpAutoSave()",
                          data_name="line_total"),
                    Input(type="hidden", value=li.get("hs_code", "") or "", data_name="hs_code"),
                    Input(type="hidden", value=li_entity_id, data_name="entity_id"),
@@ -5263,7 +5263,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             _e_unit_span = Span("", data_name="unit", cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
             _e_qty_input = Input(type="number", value="1", step="any", data_name="quantity",
                                  **{"data-qty-measure": ""},
-                                 oninput="celerpUpdateTotals(); celerpSyncQtyMeasure(this)",
+                                 oninput="celerpFieldEdited(this); celerpSyncQtyMeasure(this)",
                                  onblur="celerpQtyBlur(this); celerpAutoSave()",
                                  cls="cell-input cell-input--xs")
             if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
@@ -5273,10 +5273,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(Td(_e_unit_span, cls="col-unit"))
             cells.extend([
                 Td(Input(type="number", value="0", step="0.01", data_name="unit_price",
-                         oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
+                         oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-unit-price"),
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",
-                         oninput="celerpUpdateTotals()", onblur="celerpAutoSave()",
+                         oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-disc"),
                 Td(_tax_select(), cls="col-tax"),
             ])
@@ -5291,7 +5291,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 Td(Input(type="number", value="0", step="0.01",
                          cls="cell-input line-total",
                          oninput="celerpLineTotalInput(this)",
-                         onblur="celerpAutoSave()",
+                         onblur="celerpUpdateTotals(); celerpAutoSave()",
                          data_name="line_total"),
                    Input(type="hidden", value="", data_name="hs_code"),
                    Input(type="hidden", value="", data_name="entity_id"),
@@ -5460,6 +5460,9 @@ function _celerpDocTypeParam() {{
     }});
 }})();
 function celerpFillRow(row, data) {{
+    // Picking a catalog item resets this row to a derived total (drops any user-typed override).
+    const _ltEl = row.querySelector('.line-total');
+    if (_ltEl) delete _ltEl.dataset.userset;
     const descEl = row.querySelector('[data-name="description"]');
     const priceEl = row.querySelector('[data-name="unit_price"]');
     const unitEl = row.querySelector('[data-name="unit"]');
@@ -5691,13 +5694,23 @@ function celerpLineTotalInput(input) {{
     const row = input.closest('tr');
     if (!row) return;
     const tot = parseFloat(input.value);
-    if (isNaN(tot)) return;
+    // Cleared the field -> this row goes back to a derived total.
+    if (isNaN(tot)) {{ delete input.dataset.userset; celerpUpdateTotals(); return; }}
+    // Mark this total as user-set so celerpUpdateTotals never re-derives it from qty x price.
+    input.dataset.userset = '1';
     const qty = parseFloat(row.querySelector('[data-name="quantity"]')?.value || 0);
     const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
     const factor = qty * (1 - discPct / 100);
     if (factor === 0) {{ celerpUpdateTotals(); return; }}
     const unitPriceEl = row.querySelector('[data-name="unit_price"]');
     if (unitPriceEl) unitPriceEl.value = (tot / factor).toFixed(2);
+    celerpUpdateTotals();
+}}
+function celerpFieldEdited(input) {{
+    // Editing qty / unit price / discount means this row's total is derived again (drop any
+    // user-typed override), then recompute the document totals.
+    const totalEl = input.closest('tr')?.querySelector('.line-total');
+    if (totalEl) delete totalEl.dataset.userset;
     celerpUpdateTotals();
 }}
 function celerpQtyBlur(input) {{
@@ -5820,14 +5833,23 @@ function celerpUpdateTotals() {{
         const discPct = parseFloat(row.querySelector('[data-name="discount_pct"]')?.value || 0);
         const gross = qty * price;
         const discAmt = gross * discPct / 100;
-        const tot = gross - discAmt;
-        grossSub += gross;
-        totalDiscount += discAmt;
         const totalEl = row.querySelector('.line-total');
-        if (totalEl && totalEl !== document.activeElement) {{
-            totalEl.value = tot.toFixed(2);
+        // A total the user typed directly is the source of truth for THIS row (it back-calculated
+        // the unit price). Never re-derive it - that is what made one line's edit drift another.
+        // Only derived totals are auto-filled from qty x price x discount.
+        let lineTot;
+        if (totalEl && totalEl.dataset.userset === '1') {{
+            // A user-typed total is the final line amount; for the Gross/Discount/Net breakdown it
+            // is its own gross with no separate discount, so the three lines always reconcile.
+            lineTot = parseFloat(totalEl.value) || 0;
+            grossSub += lineTot;
+        }} else {{
+            lineTot = gross - discAmt;
+            grossSub += gross;
+            totalDiscount += discAmt;
+            if (totalEl && totalEl !== document.activeElement) totalEl.value = lineTot.toFixed(2);
         }}
-        sub += tot;
+        sub += lineTot;
         const rate = _celerpTaxRate(row);
         if (rate !== 0) {{
             const code = _celerpTaxCode(row);
@@ -5837,7 +5859,7 @@ function celerpUpdateTotals() {{
                 ? ((_CELERP_TAXES.find(t => t.name === code) || {{}}).name || code) + ' (' + rate + '%)'
                 : (customLabel || 'Custom') + ' (' + rate + '%)';
             if (!taxByCode[key]) taxByCode[key] = {{label, amount: 0, isCustom: !code, rate}};
-            taxByCode[key].amount += tot * rate / 100;
+            taxByCode[key].amount += lineTot * rate / 100;
         }}
     }});
     // Gross subtotal + discount breakdown (only when line discounts exist)
