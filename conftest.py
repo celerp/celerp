@@ -304,14 +304,8 @@ _SLOT_CONTRIBUTIONS = [
             "_module": "celerp-manufacturing",
         },
     },
-    {
-        "slot": "projection_handler",
-        "contrib": {
-            "prefix": "bom.",
-            "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
-            "_module": "celerp-manufacturing",
-        },
-    },
+    # The retired bom.* prefix is intentionally not registered — historical bom.* events fall
+    # through to the projection engine's default merge handler on replay.
 ]
 
 # If celerp-sales-funnel is installed, add the deal projection handler.

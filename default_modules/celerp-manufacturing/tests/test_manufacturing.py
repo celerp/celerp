@@ -1,6 +1,11 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: LicenseRef-Proprietary
+"""Production-run execution: build -> issue components -> receive finished goods.
 
+Covers the headline P3 correctness rule — completion restocks the *real* product (keyed on
+``allow_splitting``: increment the SKU, or create a discrete lot under it) and never spawns a
+nameless throwaway item — plus the completion journal entry and status transitions.
+"""
 from __future__ import annotations
 
 import uuid
@@ -22,6 +27,19 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _item(client, token, sku, **kw) -> str:
+    body = {"sku": sku, "name": sku, "quantity": kw.pop("quantity", 0), "sell_by": "piece", **kw}
+    r = await client.post("/items", headers=_h(token), json=body)
+    assert r.status_code == 200, r.text
+    return r.json()["id"]
+
+
+async def _recipe(client, token, item_id, components) -> None:
+    r = await client.put(f"/manufacturing/items/{item_id}/recipe", headers=_h(token),
+                         json={"output_qty": 1, "components": components, "labor": [], "overhead": []})
+    assert r.status_code == 200, r.text
+
+
 def _balanced(entries: list[dict]) -> None:
     d = sum(float(x.get("debit", 0) or 0) for x in entries)
     c = sum(float(x.get("credit", 0) or 0) for x in entries)
@@ -29,108 +47,96 @@ def _balanced(entries: list[dict]) -> None:
 
 
 @pytest.mark.asyncio
-async def test_full_assembly_flow_with_lineage_and_je(client, session):
+async def test_build_issue_receive_restocks_product_and_posts_je(client, session):
+    """The full two-step run: issue decrements components and starts the run; receive restocks the
+    product (same SKU, incremented) and completes it. No nameless item is ever created."""
     token = await _register(client)
-    raw = await client.post("/items", headers=_h(token), json={"sku": "RAW-A", "name": "Raw A", "quantity": 10, "sell_by": "piece"})
-    raw_id = raw.json()["id"]
+    gold = await _item(client, token, "GOLD", quantity=100, cost_total=8000)  # unit cost 80
+    ring = await _item(client, token, "RING", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
 
-    order = await client.post(
-        "/manufacturing",
-        headers=_h(token),
-        json={
-            "description": "Assembly",
-            "estimated_cost": 120,
-            "inputs": [{"item_id": raw_id, "quantity": 4}],
-            "expected_outputs": [{"sku": "FG-A", "name": "Finished A", "quantity": 2}],
-        },
-    )
-    assert order.status_code == 200
-    order_id = order.json()["id"]
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 2})).json()["id"]
 
-    assert (await client.post(f"/manufacturing/{order_id}/consume", headers=_h(token), json={"item_id": raw_id, "quantity": 4})).status_code == 200
-    assert (await client.post(f"/manufacturing/{order_id}/start", headers=_h(token))).status_code == 200
-    done = await client.post(f"/manufacturing/{order_id}/complete", headers=_h(token), json={"waste_quantity": 1})
-    assert done.status_code == 200
+    # Issue all components -> components decrement, run auto-advances to In Progress.
+    assert (await client.post(f"/manufacturing/{run}/issue", headers=_h(token))).status_code == 200
+    state = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()
+    assert state["status"] == "in_progress" and state["is_in_production"] is True
+    assert (await client.get(f"/items/{gold}", headers=_h(token))).json()["quantity"] == 90  # 100 - 10
 
-    state = (await client.get(f"/manufacturing/{order_id}", headers=_h(token))).json()
-    assert state["status"] == "completed"
-    assert state["is_in_production"] is False
-
-    raw_state = (await client.get(f"/items/{raw_id}", headers=_h(token))).json()
-    assert raw_state["quantity"] == 6
+    # Receive all -> product restocked (same item), run auto-completes.
+    assert (await client.post(f"/manufacturing/{run}/receive", headers=_h(token))).status_code == 200
+    state = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()
+    assert state["status"] == "completed" and state["is_in_production"] is False
 
     items = (await client.get("/items", headers=_h(token))).json()["items"]
-    fg = next(i for i in items if i.get("sku") == "FG-A")
-    assert fg["quantity"] == 2
-    assert fg["manufacturing_order_id"] == order_id
+    rings = [i for i in items if i.get("sku") == "RING"]
+    assert len(rings) == 1 and rings[0]["id"] == ring and rings[0]["quantity"] == 2  # incremented, not a clone
+    assert not any(i.get("name") in (None, "") for i in items)  # no nameless throwaway item
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
-    je = next(e for e in ledger if order_id in (e["data"].get("memo") or ""))
+    je = next(e for e in ledger if run in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
     assert [x["account"] for x in entries].count("1130-P") == 2
-    assert any(x["account"] == "5100" for x in entries)
     _balanced(entries)
-
     je_row = (await session.execute(select(LedgerEntry).where(LedgerEntry.id == je["id"]))).scalar_one()
-    assert je_row.metadata_["trigger"] == "mfg.order.completed"
-    assert je_row.metadata_["order_id"] == order_id
+    assert je_row.metadata_["trigger"] == "mfg.order.completed" and je_row.metadata_["order_id"] == run
 
 
 @pytest.mark.asyncio
-async def test_merge_flow_and_mfg_guards(client):
+async def test_one_tap_build_completes_in_one_call(client):
+    """complete=true issues + receives + completes in a single action (restaurant / make-to-stock)."""
     token = await _register(client)
-    i1 = (await client.post("/items", headers=_h(token), json={"sku": "RAW-1", "name": "Raw 1", "quantity": 5, "sell_by": "piece"})).json()["id"]
-    i2 = (await client.post("/items", headers=_h(token), json={"sku": "RAW-2", "name": "Raw 2", "quantity": 5, "sell_by": "piece"})).json()["id"]
+    gold = await _item(client, token, "G", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "R", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
 
-    order = await client.post(
-        "/manufacturing",
-        headers=_h(token),
-        json={
-            "description": "Merge",
-            "inputs": [{"item_id": i1, "quantity": 2}, {"item_id": i2, "quantity": 3}],
-            "expected_outputs": [{"sku": "FG-M", "name": "Merged", "quantity": 1}],
-        },
-    )
-    order_id = order.json()["id"]
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token),
+                             json={"quantity": 3, "complete": True})).json()["id"]
+    assert (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()["status"] == "completed"
+    assert (await client.get(f"/items/{gold}", headers=_h(token))).json()["quantity"] == 85  # 100 - 15
+    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 3
 
-    # complete without consuming all inputs
-    assert (await client.post(f"/manufacturing/{order_id}/consume", headers=_h(token), json={"item_id": i1, "quantity": 2})).status_code == 200
-    assert (await client.post(f"/manufacturing/{order_id}/complete", headers=_h(token), json={})).status_code == 409
 
-    # consume missing item
-    assert (await client.post(f"/manufacturing/{order_id}/consume", headers=_h(token), json={"item_id": "item:missing", "quantity": 1})).status_code == 404
+@pytest.mark.asyncio
+async def test_non_splittable_output_creates_lot_under_product(client):
+    """allow_splitting=false: each run yields a discrete lot linked to the product (not the SKU pile)."""
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDX", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RINGX", quantity=0, allow_splitting=False)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
 
-    # finish happy path
-    assert (await client.post(f"/manufacturing/{order_id}/consume", headers=_h(token), json={"item_id": i2, "quantity": 3})).status_code == 200
-    assert (await client.post(f"/manufacturing/{order_id}/complete", headers=_h(token), json={})).status_code == 200
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token),
+                             json={"quantity": 2, "complete": True})).json()["id"]
+    rcv = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()
 
     items = (await client.get("/items", headers=_h(token))).json()["items"]
-    assert any(i.get("sku") == "FG-M" and i.get("quantity") == 1 for i in items)
-
-    # already completed guards
-    assert (await client.post(f"/manufacturing/{order_id}/complete", headers=_h(token), json={})).status_code == 409
-    assert (await client.post(f"/manufacturing/{order_id}/cancel", headers=_h(token), json={"reason": "x"})).status_code == 409
+    rings = [i for i in items if i.get("sku") == "RINGX"]
+    assert len(rings) == 2  # the product + one new lot
+    product = next(i for i in rings if i["id"] == ring)
+    lot = next(i for i in rings if i["id"] != ring)
+    assert product["quantity"] == 0  # the catalog product is not the pile for discrete items
+    assert lot["quantity"] == 2 and lot["parent_item_id"] == ring and lot.get("lot") is True
+    assert lot["manufacturing_order_id"] == run
 
 
 @pytest.mark.asyncio
-async def test_cancel_after_start_sets_cancelled_not_in_production(client):
+async def test_cancel_after_issue_sets_cancelled_not_in_production(client):
     token = await _register(client)
-    item_id = (await client.post("/items", headers=_h(token), json={"sku": "RAW-C", "name": "Raw C", "quantity": 4, "sell_by": "piece"})).json()["id"]
-    order_id = (
-        await client.post(
-            "/manufacturing",
-            headers=_h(token),
-            json={"description": "Cancelable", "inputs": [{"item_id": item_id, "quantity": 1}], "expected_outputs": [{"sku": "FG-C", "name": "FG C", "quantity": 1}]},
-        )
-    ).json()["id"]
+    gold = await _item(client, token, "GC", quantity=100, cost_total=100)
+    ring = await _item(client, token, "RC", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 1})).json()["id"]
 
-    await client.post(f"/manufacturing/{order_id}/start", headers=_h(token))
-    r = await client.post(f"/manufacturing/{order_id}/cancel", headers=_h(token), json={"reason": "operator stop"})
+    await client.post(f"/manufacturing/{run}/issue", headers=_h(token))
+    r = await client.post(f"/manufacturing/{run}/cancel", headers=_h(token), json={"reason": "operator stop"})
     assert r.status_code == 200
+    state = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()
+    assert state["status"] == "cancelled" and state["is_in_production"] is False
 
-    state = (await client.get(f"/manufacturing/{order_id}", headers=_h(token))).json()
-    assert state["status"] == "cancelled"
-    assert state["is_in_production"] is False
+    # A closed run rejects further issue/receive/complete.
+    assert (await client.post(f"/manufacturing/{run}/issue", headers=_h(token))).status_code == 409
+    assert (await client.post(f"/manufacturing/{run}/receive", headers=_h(token))).status_code == 409
+    assert (await client.post(f"/manufacturing/{run}/cancel", headers=_h(token), json={"reason": "x"})).status_code == 409
 
 
 @pytest.mark.asyncio

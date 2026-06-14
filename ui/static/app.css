@@ -1462,7 +1462,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Product Manufacturing tab production hub: Make control + inline per-run status actions. */
 .make-form { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .make-form input { max-width: 90px; }
-.run-actions { display: inline-flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.run-actions { display: inline-flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ── Activating / module-load spinner ── */
 .activating-body { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px 0; }

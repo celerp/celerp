@@ -3,11 +3,12 @@
 """celerp-manufacturing — Manufacturing orders and BOM module for Celerp.
 
 Provides:
-- Bill of Materials (BOM) management
-- Manufacturing order lifecycle (create → start → consume → complete/cancel)
-- Projection handler for mfg.* and bom.* event prefixes
-- Sidebar nav, settings tab, bulk/item action slots
-- Auto journal entry on order completion
+- Manufacturing recipes attached to inventory items (cost roll-up, where-used)
+- Production run lifecycle (planned -> in_progress -> on_hold -> completed/cancelled),
+  with issue (components out) / receive (finished goods in) and one-tap build
+- Projection handler for the mfg.* event prefix
+- Sidebar nav (the Manufacturing group)
+- Auto journal entry on run completion
 """
 
 PLUGIN_MANIFEST = {
@@ -41,10 +42,9 @@ PLUGIN_MANIFEST = {
                 "prefix": "mfg.",
                 "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
             },
-            {
-                "prefix": "bom.",
-                "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
-            },
+            # Historical bom.* events (the BOM entity was retired; recipes live on the item) are
+            # not routed here anymore — they fall through to the engine's default merge handler on
+            # replay, so projections still rebuild cleanly without a dead branch to maintain.
         ],
     },
 

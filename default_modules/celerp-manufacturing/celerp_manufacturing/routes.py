@@ -63,15 +63,15 @@ class MfgOrderCreate(BaseModel):
     idempotency_key: str | None = None
 
 
-class ConsumeBody(BaseModel):
-    item_id: str
-    quantity: float
+class IssueBody(BaseModel):
+    # Components to issue from stock into a run. Omit `items` to issue everything still outstanding.
+    items: list[MfgInput] | None = None
     idempotency_key: str | None = None
 
 
-class StepBody(BaseModel):
-    step_id: str
-    notes: str | None = None
+class ReceiveBody(BaseModel):
+    # Finished-goods quantity to receive. Omit `quantity` to receive everything still outstanding.
+    quantity: float | None = None
     idempotency_key: str | None = None
 
 
@@ -241,6 +241,10 @@ async def _apply_standard_cost(session: AsyncSession, company_id, user, item_id:
 
 class BuildBody(BaseModel):
     quantity: float = 1.0
+    # One-tap build: create the run and immediately issue components + receive output + complete,
+    # all in one action (restaurant / simple make-to-stock). False leaves a Planned run to be
+    # issued/received step by step (jewelry stock room / WIP).
+    complete: bool = False
     idempotency_key: str | None = None
 
 
@@ -252,7 +256,11 @@ async def build_item(
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Create a manufacturing order to build N of a manufacturable item — inputs expand from its recipe."""
+    """Create a production run to build N of a manufacturable item — inputs expand from its recipe.
+
+    With ``complete=true`` this is a one-tap build: the run is created, its components issued,
+    its output received (restocked per ``allow_splitting``), and the run completed in a single call.
+    """
     item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
     if item is None or item.entity_type != "item":
         raise HTTPException(status_code=404, detail="Item not found")
@@ -274,6 +282,13 @@ async def build_item(
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
+    if payload.complete:
+        states = await _all_item_states(session, company_id)
+        run = await _get_order(session, company_id, order_id)
+        await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
+        await _receive(session, company_id, user, order_id, run.state, payload.quantity, states)
+        run = await _get_order(session, company_id, order_id)
+        await _close_run(session, company_id, user, order_id, run.state, states)
     await session.commit()
     return {"event_id": entry.id, "id": order_id}
 
@@ -454,10 +469,12 @@ async def to_make(
             if due and (row["due"] is None or due < row["due"]):
                 row["due"] = due
 
+    # Non-splittable outputs restock as discrete lots under the product, so on-hand must include them.
+    lot_qty = _lot_qty_by_parent(states)
     items: list[dict] = []
     for item_id, row in agg.items():
         ist = states.get(item_id) or {}
-        on_hand = float(ist.get("quantity") or 0)
+        on_hand = float(ist.get("quantity") or 0) + lot_qty.get(item_id, 0.0)
         to_make_qty = max(0.0, row["demand"] - on_hand)
         recipe = ist.get("recipe") or {}
         out_qty = float(recipe.get("output_qty") or 1) or 1
@@ -611,6 +628,173 @@ async def batch_import_manufacturing(
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)
+
+
+# ---------------------------------------------------------------------------
+# Production-run execution (issue components / receive finished goods)
+# ---------------------------------------------------------------------------
+
+# Item statuses whose stock no longer counts toward a product's on-hand (sold/consumed/etc.).
+_INACTIVE_ITEM_STATUSES = frozenset({"sold", "memo_out", "archived", "merged", "expired"})
+
+
+def _component_unit_cost(state: dict | None) -> float:
+    """Standard unit cost of a component: cost_price if set, else cost_total / quantity."""
+    if not state:
+        return 0.0
+    cp = state.get("cost_price")
+    try:
+        if cp is not None:
+            return float(cp)
+        total = state.get("cost_total")
+        qty = float(state.get("quantity") or 0)
+        if total is not None and qty > 0:
+            return float(total) / qty
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
+def _run_input_cost(run_state: dict, states: dict[str, dict]) -> float:
+    """Total standard input cost of a run = sum(required qty x component unit cost)."""
+    return round(sum(
+        float(inp.get("quantity") or 0) * _component_unit_cost(states.get(inp.get("item_id")))
+        for inp in run_state.get("inputs", [])
+    ), 2)
+
+
+def _lot_qty_by_parent(states: dict[str, dict]) -> dict[str, float]:
+    """Sum on-hand quantity of every lot (non-splittable produced entry) by its parent product id."""
+    out: dict[str, float] = {}
+    for st in states.values():
+        pid = st.get("parent_item_id")
+        if pid and str(st.get("status") or "available") not in _INACTIVE_ITEM_STATUSES:
+            out[pid] = out.get(pid, 0.0) + float(st.get("quantity") or 0)
+    return out
+
+
+async def _consume_components(session: AsyncSession, company_id, user, order_id: str,
+                              items: list[dict]) -> list[dict]:
+    """Emit item.consumed for each issued component (the projection floors quantity at zero, which
+    keeps made-to-order producible even when a component is briefly short). Returns what was issued."""
+    consumed: list[dict] = []
+    for it in items:
+        item_id = it.get("item_id")
+        qty = float(it.get("quantity") or 0)
+        if not item_id or qty <= 0:
+            continue
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+        if row is None or row.entity_type != "item":
+            raise HTTPException(status_code=404, detail=f"Component not found: {item_id}")
+        await emit_event(
+            session, company_id=company_id, entity_id=item_id, entity_type="item",
+            event_type="item.consumed", data={"quantity_consumed": qty}, actor_id=user.id,
+            location_id=None, source="api", idempotency_key=str(uuid.uuid4()),
+            metadata_={"manufacturing_order_id": order_id},
+        )
+        consumed.append({"item_id": item_id, "quantity": qty})
+    return consumed
+
+
+async def _issue_and_record(session: AsyncSession, company_id, user, order_id: str,
+                            items: list[dict], states: dict[str, dict]) -> list[dict]:
+    """Consume the given components and record the issue on the run (auto-advances to In Progress)."""
+    consumed = await _consume_components(session, company_id, user, order_id, items)
+    if consumed:
+        await emit_event(
+            session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+            event_type="mfg.order.issued", data={"items": consumed, "issued_by": str(user.id)},
+            actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+    return consumed
+
+
+async def _receive(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
+                   qty: float, states: dict[str, dict]) -> str | None:
+    """Restock `qty` of the run's output product and record the receipt on the run.
+
+    Keyed on the product's `allow_splitting`: True increments the existing product SKU's quantity;
+    False creates a new discrete lot entry linked to the product. Returns the lot id (or None).
+    """
+    out_id = run_state.get("output_item_id")
+    product = states.get(out_id) if out_id else None
+    if out_id and product is None:
+        row = await session.get(Projection, {"company_id": company_id, "entity_id": out_id})
+        product = row.state if row is not None and row.entity_type == "item" else None
+
+    lot_id: str | None = None
+    if out_id and product is not None:
+        loc = product.get("location_id")
+        if bool(product.get("allow_splitting", True)):
+            # Fungible / bulk: add to the existing product's pile.
+            await emit_event(
+                session, company_id=company_id, entity_id=out_id, entity_type="item",
+                event_type="item.produced", data={"quantity_produced": qty}, actor_id=user.id,
+                location_id=loc, source="api", idempotency_key=str(uuid.uuid4()),
+                metadata_={"manufacturing_order_id": order_id},
+            )
+        else:
+            # Discrete / unique: a new lot under the same product, with its own cost and trace.
+            lot_id = f"item:{uuid.uuid4()}"
+            expected = float((run_state.get("expected_outputs") or [{}])[0].get("quantity") or 0) or qty
+            unit_cost = _run_input_cost(run_state, states) / (expected or 1)
+            await emit_event(
+                session, company_id=company_id, entity_id=lot_id, entity_type="item",
+                event_type="item.created",
+                data={
+                    "sku": product.get("sku"), "name": product.get("name"),
+                    "sell_by": product.get("sell_by"), "category": product.get("category"),
+                    "inventory_type": product.get("inventory_type"), "allow_splitting": False,
+                    "quantity": 0, "location_id": loc, "parent_item_id": out_id, "lot": True,
+                    "manufacturing_order_id": order_id, "cost_total": round(unit_cost * qty, 2),
+                },
+                actor_id=user.id, location_id=loc, source="api", idempotency_key=str(uuid.uuid4()),
+                metadata_={"manufacturing_order_id": order_id},
+            )
+            await emit_event(
+                session, company_id=company_id, entity_id=lot_id, entity_type="item",
+                event_type="item.produced", data={"quantity_produced": qty}, actor_id=user.id,
+                location_id=loc, source="api", idempotency_key=str(uuid.uuid4()),
+                metadata_={"manufacturing_order_id": order_id},
+            )
+
+    await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.received",
+        data={"quantity": qty, "lot_item_id": lot_id, "received_by": str(user.id)},
+        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    return lot_id
+
+
+async def _close_run(session: AsyncSession, company_id, user, order_id: str, run_state: dict,
+                     states: dict[str, dict], payload: "CompleteBody | None" = None) -> None:
+    """Emit mfg.order.completed (with actuals/waste/labor) and post the completion journal entry."""
+    input_cost = _run_input_cost(run_state, states)
+    waste = None
+    waste_cost = 0.0
+    if payload is not None and payload.waste_quantity is not None:
+        waste = {"quantity": payload.waste_quantity, "unit": payload.waste_unit, "reason": payload.waste_reason}
+        total_in = sum(float(i.get("quantity", 0) or 0) for i in run_state.get("inputs", [])) or 0.0
+        if payload.waste_quantity and total_in > 0:
+            waste_cost = input_cost * (float(payload.waste_quantity) / total_in)
+    await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.completed",
+        data={
+            "completed_by": str(user.id),
+            "actual_outputs": run_state.get("expected_outputs", []),
+            "waste": waste,
+            "labor_hours": payload.labor_hours if payload is not None else None,
+        },
+        actor_id=user.id, location_id=None, source="api",
+        idempotency_key=(payload.idempotency_key if payload is not None else None) or str(uuid.uuid4()),
+        metadata_={},
+    )
+    await auto_je.create_for_mfg_completed(
+        session, company_id=company_id, user_id=user.id, order_id=order_id,
+        input_cost=input_cost, waste_cost=waste_cost,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -778,179 +962,98 @@ async def resume_order(
     return {"event_id": entry.id}
 
 
-@router.post("/{order_id}/consume")
-async def consume_input(
+def _outstanding_inputs(run_state: dict) -> list[dict]:
+    """Per input, the quantity still to issue (required - already issued)."""
+    out = []
+    for inp in run_state.get("inputs", []):
+        rem = float(inp.get("quantity") or 0) - float(inp.get("issued_qty") or 0)
+        if rem > 1e-9:
+            out.append({"item_id": inp.get("item_id"), "quantity": round(rem, 6)})
+    return out
+
+
+def _outstanding_output(run_state: dict) -> float:
+    """Finished-goods quantity still to receive (expected - already received)."""
+    expected = float((run_state.get("expected_outputs") or [{}])[0].get("quantity") or 0)
+    return max(0.0, expected - float(run_state.get("received_qty") or 0))
+
+
+@router.post("/{order_id}/issue")
+async def issue_order(
     order_id: str,
-    payload: ConsumeBody,
+    payload: IssueBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Issue components from stock into a run (decrements them). Partial issues are allowed; omitting
+    `items` issues everything still outstanding. Issuing auto-advances a planned run to In Progress."""
     row = await _get_order(session, company_id, order_id)
     if row.state.get("status") in {"completed", "cancelled"}:
-        raise HTTPException(status_code=409, detail="Cannot consume for closed order")
-
-    item = await session.get(Projection, {"company_id": company_id, "entity_id": payload.item_id})
-    if item is None or item.entity_type != "item":
-        raise HTTPException(status_code=404, detail="Input item not found")
-    available = float(item.state.get("quantity", 0) or 0)
-    reserved = float(item.state.get("reserved_quantity", 0) or 0)
-    if payload.quantity > max(0.0, available - reserved) + 1e-9:
-        raise HTTPException(status_code=409, detail="Cannot consume more than available quantity")
-
-    item_ev = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=payload.item_id,
-        entity_type="item",
-        event_type="item.consumed",
-        data={"quantity_consumed": payload.quantity},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={"manufacturing_order_id": order_id},
-    )
-    await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=order_id,
-        entity_type="mfg_order",
-        event_type="mfg.step.completed",
-        data={"step_id": f"consume:{payload.item_id}", "notes": f"qty={payload.quantity}"},
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=str(uuid.uuid4()),
-        metadata_={},
-    )
+        raise HTTPException(status_code=409, detail="Cannot issue to a closed run")
+    states = await _all_item_states(session, company_id)
+    items = ([{"item_id": i.item_id, "quantity": i.quantity} for i in payload.items]
+             if (payload and payload.items) else _outstanding_inputs(row.state))
+    consumed = await _issue_and_record(session, company_id, user, order_id, items, states)
     await session.commit()
-    return {"event_id": item_ev.id}
+    return {"issued": consumed}
 
 
-@router.post("/{order_id}/step")
-async def complete_step(
+@router.post("/{order_id}/receive")
+async def receive_order(
     order_id: str,
-    payload: StepBody,
+    payload: ReceiveBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    await _get_order(session, company_id, order_id)
-    entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=order_id,
-        entity_type="mfg_order",
-        event_type="mfg.step.completed",
-        data=payload.model_dump(exclude_none=True),
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
-    )
+    """Receive finished goods from a run — restocks the output per `allow_splitting`. Omitting
+    `quantity` receives everything still outstanding; once fully received the run auto-completes."""
+    row = await _get_order(session, company_id, order_id)
+    if row.state.get("status") in {"completed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Cannot receive into a closed run")
+    qty = (payload.quantity if (payload and payload.quantity is not None)
+           else _outstanding_output(row.state))
+    if qty <= 0:
+        raise HTTPException(status_code=422, detail="Receive quantity must be greater than zero")
+    states = await _all_item_states(session, company_id)
+    lot_id = await _receive(session, company_id, user, order_id, row.state, qty, states)
+    # Auto-complete once the full expected output has been received.
+    row = await _get_order(session, company_id, order_id)
+    if _outstanding_output(row.state) <= 1e-9:
+        await _close_run(session, company_id, user, order_id, row.state, states)
     await session.commit()
-    return {"event_id": entry.id}
+    return {"received": qty, "lot_item_id": lot_id}
 
 
 @router.post("/{order_id}/complete")
 async def complete_order(
     order_id: str,
-    payload: CompleteBody,
+    payload: CompleteBody | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Finish a run now: issue any outstanding components, receive all outstanding output, and close.
+
+    This is the one-tap close used by the product hub's Complete action; the output is restocked per
+    `allow_splitting` (incrementing the SKU or creating a new lot) — never a nameless throwaway item.
+    """
     row = await _get_order(session, company_id, order_id)
-    state = row.state
-    if state.get("status") == "completed":
-        raise HTTPException(status_code=409, detail="Cannot complete an order twice")
-
-    consumed_item_ids = set()
-    for step in state.get("steps_completed", []):
-        if isinstance(step, str) and step.startswith("consume:"):
-            consumed_item_ids.add(step.split(":", 1)[1])
-    required_item_ids = {x.get("item_id") for x in state.get("inputs", []) if x.get("item_id")}
-    if required_item_ids and not required_item_ids.issubset(consumed_item_ids):
-        raise HTTPException(status_code=409, detail="Cannot complete order without consuming all inputs")
-
-    outputs = payload.actual_outputs or [MfgOutput(**o) for o in state.get("expected_outputs", [])]
-    for out in outputs:
-        new_item_id = f"item:{uuid.uuid4()}"
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=new_item_id,
-            entity_type="item",
-            event_type="item.created",
-            data={
-                "sku": out.sku,
-                "name": out.name,
-                "quantity": 0,
-                "category": out.category,
-                "location_id": state.get("location_id"),
-                "manufacturing_order_id": order_id,
-            },
-            actor_id=user.id,
-            location_id=state.get("location_id"),
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"manufacturing_order_id": order_id},
-        )
-        await emit_event(
-            session,
-            company_id=company_id,
-            entity_id=new_item_id,
-            entity_type="item",
-            event_type="item.produced",
-            data={"quantity_produced": out.quantity},
-            actor_id=user.id,
-            location_id=state.get("location_id"),
-            source="api",
-            idempotency_key=str(uuid.uuid4()),
-            metadata_={"manufacturing_order_id": order_id},
-        )
-
-    mfg_entry = await emit_event(
-        session,
-        company_id=company_id,
-        entity_id=order_id,
-        entity_type="mfg_order",
-        event_type="mfg.order.completed",
-        data={
-            "completed_by": str(user.id),
-            "actual_outputs": [o.model_dump(exclude_none=True) for o in outputs],
-            "waste": (
-                {"quantity": payload.waste_quantity, "unit": payload.waste_unit, "reason": payload.waste_reason}
-                if payload.waste_quantity is not None else None
-            ),
-            "labor_hours": payload.labor_hours,
-        },
-        actor_id=user.id,
-        location_id=None,
-        source="api",
-        idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
-        metadata_={},
-    )
-
-    input_cost = float(state.get("estimated_cost", 0) or 0)
-    waste_cost = 0.0
-    if payload.waste_quantity and payload.waste_quantity > 0:
-        total_input_qty = sum(float(i.get("quantity", 0) or 0) for i in state.get("inputs", [])) or 0.0
-        if total_input_qty > 0:
-            waste_cost = input_cost * (float(payload.waste_quantity) / total_input_qty)
-
-    await auto_je.create_for_mfg_completed(
-        session,
-        company_id=company_id,
-        user_id=user.id,
-        order_id=order_id,
-        input_cost=input_cost,
-        waste_cost=waste_cost,
-    )
+    if row.state.get("status") in {"completed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Cannot complete a closed run")
+    states = await _all_item_states(session, company_id)
+    outstanding = _outstanding_inputs(row.state)
+    if outstanding:
+        await _issue_and_record(session, company_id, user, order_id, outstanding, states)
+        row = await _get_order(session, company_id, order_id)
+    qty = _outstanding_output(row.state)
+    if qty > 0:
+        await _receive(session, company_id, user, order_id, row.state, qty, states)
+        row = await _get_order(session, company_id, order_id)
+    await _close_run(session, company_id, user, order_id, row.state, states, payload)
     await session.commit()
-    return {"event_id": mfg_entry.id}
+    return {"status": "completed"}
 
 
 @router.post("/{order_id}/cancel")
@@ -962,8 +1065,8 @@ async def cancel_order(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_order(session, company_id, order_id)
-    if row.state.get("status") == "completed":
-        raise HTTPException(status_code=409, detail="Cannot cancel completed order")
+    if row.state.get("status") in {"completed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Cannot cancel a closed run")
     entry = await emit_event(
         session,
         company_id=company_id,

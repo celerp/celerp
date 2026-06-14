@@ -1060,9 +1060,10 @@ async def recost_dependents(token: str, entity_id: str) -> dict:
         return _raise(await c.post(f"/manufacturing/items/{entity_id}/recost-dependents")).json()
 
 
-async def build_item(token: str, item_id: str, quantity: float) -> dict:
+async def build_item(token: str, item_id: str, quantity: float, complete: bool = False) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/items/{item_id}/build", json={"quantity": quantity})).json()
+        return _raise(await c.post(f"/manufacturing/items/{item_id}/build",
+                                   json={"quantity": quantity, "complete": complete})).json()
 
 
 async def document_components_summary(token: str, doc_id: str) -> dict:
@@ -1075,14 +1076,16 @@ async def start_mfg_order(token: str, order_id: str) -> dict:
         return _raise(await c.post(f"/manufacturing/{order_id}/start")).json()
 
 
-async def complete_mfg_step(token: str, order_id: str, step_id: str, notes: str | None = None) -> dict:
+async def issue_mfg_order(token: str, order_id: str, items: list[dict] | None = None) -> dict:
+    """Issue components into a run (decrements them; auto-advances to In Progress). None = issue all."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/step", json={"step_id": step_id, "notes": notes})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/issue", json={"items": items})).json()
 
 
-async def consume_mfg_input(token: str, order_id: str, item_id: str, quantity: float) -> dict:
+async def receive_mfg_order(token: str, order_id: str, quantity: float | None = None) -> dict:
+    """Receive finished goods from a run (restocks per allow_splitting). None = receive all remaining."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/consume", json={"item_id": item_id, "quantity": quantity})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/receive", json={"quantity": quantity})).json()
 
 
 async def complete_mfg_order(token: str, order_id: str, data: dict | None = None) -> dict:

@@ -58,13 +58,7 @@ _DOC_QUOT = {"entity_id": "doc:quo1", "doc_type": "quotation", "ref": "QUO202600
 _SUB = {"entity_id": "sub:1", "name": "Monthly Invoice", "frequency": "monthly",
         "status": "active", "doc_type": "invoice", "contact_id": "contact:1",
         "start_date": "2026-01-01", "next_date": "2026-03-01", "line_items": []}
-_MFG = {"entity_id": "mfg:1", "name": "Ring Assembly", "status": "planned",
-        "order_type": "manufacturing", "steps": [{"id": "s1", "name": "Cut", "status": "pending"}],
-        "inputs": [{"item_id": "item:1", "name": "Ruby", "quantity": 1, "consumed": False}],
-        "created_at": "2026-02-01"}
-_BOM = {"entity_id": "bom:1", "name": "Gold Ring", "items": [
-    {"item_id": "item:1", "name": "Ruby", "quantity": 1}], "output_description": "18k Gold Ring"}
-_DEAL = {"entity_id": "deal:1", "name": "Big Sale", "stage": "lead", "value": 10000,
+_DEAL ={"entity_id": "deal:1", "name": "Big Sale", "stage": "lead", "value": 10000,
          "contact_id": "contact:1", "status": "active"}
 _VALUATION = {"item_count": 100, "active_item_count": 95, "cost_total": 50000,
               "retail_total": 200000, "wholesale_total": 120000,
@@ -363,8 +357,8 @@ class TestDiscovery:
 
     @pytest.mark.asyncio
     async def test_manufacturing_page_loads(self, ui):
-        with _Patches({"ui.api_client.list_mfg_orders": AsyncMock(return_value={"items": [_MFG], "total": 1}),
-                       "ui.api_client.list_boms": AsyncMock(return_value={"items": [_BOM], "total": 1})}):
+        with _Patches({"ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
+                       "ui.api_client.manufacturing_to_make": AsyncMock(return_value={"items": [], "total": 0})}):
             r = await ui.get("/manufacturing", cookies=_c())
         assert r.status_code == 200
 
@@ -478,8 +472,11 @@ class TestCRUDRead:
 
     @pytest.mark.asyncio
     async def test_mfg_order_list(self, ui):
-        with _Patches({"ui.api_client.list_mfg_orders": AsyncMock(return_value={"items": [_MFG], "total": 1}),
-                       "ui.api_client.list_boms": AsyncMock(return_value={"items": [_BOM], "total": 1})}):
+        with _Patches({"ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
+                       "ui.api_client.manufacturing_to_make": AsyncMock(
+                           return_value={"items": [{"item_id": "item:1", "sku": "RING", "name": "Ring",
+                                                     "to_make": 2, "demand": 2, "on_hand": 0, "doc_count": 1,
+                                                     "est_cost": 100, "est_hours": 1, "due": None}], "total": 1})}):
             r = await ui.get("/manufacturing", cookies=_c())
         assert r.status_code == 200
 
@@ -571,14 +568,6 @@ class TestCRUDCreate:
                              data={"name": "Test Sub", "frequency": "monthly", "doc_type": "invoice",
                                    "start_date": "2026-03-01"})
         assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
-    async def test_create_bom(self, ui):
-        with _Patches({"ui.api_client.create_bom": AsyncMock(return_value={"bom_id": "bom:new", "event_id": 1})}):
-            r = await ui.post("/manufacturing/boms/new", cookies=_c(),
-                             data={"name": "Test BOM"})
-        assert r.status_code in (200, 204, 302, 303)
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 3. WORKFLOWS - End-to-end business processes (30+ scenarios)
@@ -683,41 +672,6 @@ class TestWorkflows:
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
-    async def test_mfg_order_start(self, ui):
-        with _Patches({"ui.api_client.start_mfg_order": AsyncMock(return_value={"ok": True}),
-                       "ui.api_client.get_mfg_order": AsyncMock(return_value=_MFG)}):
-            r = await ui.post("/manufacturing/mfg:1/start", cookies=_c())
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
-    async def test_mfg_order_complete(self, ui):
-        with _Patches({"ui.api_client.complete_mfg_order": AsyncMock(return_value={"ok": True}),
-                       "ui.api_client.get_mfg_order": AsyncMock(return_value=_MFG)}):
-            r = await ui.post("/manufacturing/mfg:1/complete", cookies=_c())
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
-    async def test_mfg_order_cancel(self, ui):
-        with _Patches({"ui.api_client.cancel_mfg_order": AsyncMock(return_value={"ok": True}),
-                       "ui.api_client.get_mfg_order": AsyncMock(return_value=_MFG)}):
-            r = await ui.post("/manufacturing/mfg:1/cancel", cookies=_c(), data={"reason": "out of stock"})
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
-    async def test_mfg_step_complete(self, ui):
-        with _Patches({"ui.api_client.complete_mfg_step": AsyncMock(return_value={"ok": True}),
-                       "ui.api_client.get_mfg_order": AsyncMock(return_value=_MFG)}):
-            r = await ui.post("/manufacturing/mfg:1/step", cookies=_c(), data={"step_id": "s1"})
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
-    async def test_mfg_consume_input(self, ui):
-        with _Patches({"ui.api_client.consume_mfg_input": AsyncMock(return_value={"ok": True}),
-                       "ui.api_client.get_mfg_order": AsyncMock(return_value=_MFG)}):
-            r = await ui.post("/manufacturing/mfg:1/consume", cookies=_c(), data={"item_id": "item:1", "quantity": "1"})
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
     async def test_subscription_pause(self, ui):
         with _Patches({"ui.api_client.pause_subscription": AsyncMock(return_value={"ok": True}),
                        "ui.api_client.get_subscription": AsyncMock(return_value=_SUB)}):
@@ -759,7 +713,7 @@ class TestNavigation:
             **_crm_mocks(), **_settings_mocks(), **_reports_mocks(),
             **_accounting_mocks(),
             "ui.api_client.list_mfg_orders": AsyncMock(return_value={"items": [], "total": 0}),
-            "ui.api_client.list_boms": AsyncMock(return_value={"items": [], "total": 0}),
+            "ui.api_client.manufacturing_to_make": AsyncMock(return_value={"items": [], "total": 0}),
             "ui.api_client.list_subscriptions": AsyncMock(return_value=[]),
         }
         with _Patches(mocks):
@@ -933,8 +887,8 @@ class TestEdgeCases:
 
     @pytest.mark.asyncio
     async def test_empty_manufacturing(self, ui):
-        with _Patches({"ui.api_client.list_mfg_orders": AsyncMock(return_value={"items": [], "total": 0}),
-                       "ui.api_client.list_boms": AsyncMock(return_value={"items": [], "total": 0})}):
+        with _Patches({"ui.api_client.get_company": AsyncMock(return_value=_COMPANY),
+                       "ui.api_client.manufacturing_to_make": AsyncMock(return_value={"items": [], "total": 0})}):
             r = await ui.get("/manufacturing", cookies=_c())
         assert r.status_code == 200
 

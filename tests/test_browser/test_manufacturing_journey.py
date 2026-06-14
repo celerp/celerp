@@ -104,27 +104,33 @@ def test_full_manufacturing_journey(page, ui_server, api):
     board = {r["item_id"]: r for r in api.get("/manufacturing/to-make").json()["items"]}
     assert board[ring]["to_make"] == 2.0 and board[ring]["demand"] == 2.0
 
-    # 5. Ad-hoc build via the repurposed /manufacturing/new (Phase 4).
-    page.goto(f"{ui_server}/manufacturing/new", wait_until="domcontentloaded")
-    page.wait_for_selector(".combobox-input", timeout=8000)
-    _combo_pick(page, "form", "JNY-RING")
-    page.fill("input[name=quantity]", "3")
-    page.click("button:has-text('Create order')")
-    page.wait_for_load_state("domcontentloaded")
-    build_orders = [o for o in api.get("/manufacturing").json()["items"]
-                    if any(i.get("item_id") == gold and i.get("quantity") == 15.0 for i in o.get("inputs", []))]
-    assert len(build_orders) == 1
+    # 5. Make the ring from its own Manufacturing tab — the product hub (Phase 2/3).
+    page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#production-block", timeout=10000)
+    page.fill("#production-block .make-form input[name=quantity]", "3")
+    page.locator("#production-block .make-form button:has-text('Make')").click()
+    page.wait_for_selector("#production-block:has-text('Planned')", timeout=8000)
+    run_id = api.get(f"/manufacturing/items/{ring}/hub").json()["runs"][0]["id"]
 
-    # 6. Run the build order to completion (existing lifecycle) → produces a finished ring.
-    order_id = build_orders[0]["id"]
-    assert api.post(f"/manufacturing/{order_id}/consume", json={"item_id": gold, "quantity": 15}).status_code == 200
-    assert api.post(f"/manufacturing/{order_id}/start").status_code == 200
-    assert api.post(f"/manufacturing/{order_id}/complete", json={}).status_code == 200
-    produced = [i for i in api.get("/items").json()["items"]
-                if i.get("sku") == "JNY-RING" and i.get("manufacturing_order_id") == order_id]
-    assert len(produced) == 1 and produced[0]["quantity"] == 3.0
+    # 6. Start, then Complete — Complete issues the components and receives the finished goods.
+    #    allow_splitting is true (default) so the ring is restocked IN PLACE (no nameless item).
+    page.locator("#production-block button:has-text('Start')").click()
+    page.wait_for_selector("#production-block:has-text('In Progress')", timeout=8000)
+    page.locator("#production-block button:has-text('Complete')").click()
+    page.wait_for_selector("#production-block:has-text('Completed')", timeout=8000)
+    page.screenshot(path=str(SHOTS / "run-completed.png"), full_page=True)
 
-    # 7. No standalone BOM anywhere.
+    assert api.get(f"/manufacturing/{run_id}").json()["status"] == "completed"
+    rings = [i for i in api.get("/items").json()["items"] if i.get("sku") == "JNY-RING"]
+    assert len(rings) == 1 and rings[0]["id"] == ring  # restocked in place — one ring item, no clone
+    assert rings[0]["quantity"] == 3.0
+    assert api.get(f"/items/{gold}").json()["quantity"] == 85.0  # 100 - 5*3 issued
+
+    # 7. The board now shows zero to-make for the ring (3 on hand >= 2 demanded).
+    board = {r["item_id"]: r for r in api.get("/manufacturing/to-make").json()["items"]}
+    assert board[ring]["on_hand"] == 3.0 and board[ring]["to_make"] == 0.0
+
+    # 8. No standalone BOM anywhere.
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("body", timeout=8000)
     assert "Bills of Materials" not in page.content()

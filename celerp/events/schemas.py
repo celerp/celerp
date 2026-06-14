@@ -541,9 +541,18 @@ class MfgOrderResumed(BaseModel):
     resumed_by: str | None = None
 
 
-class MfgStepCompleted(BaseModel):
-    step_id: str
-    notes: str | None = None
+class MfgOrderIssued(BaseModel):
+    # Components issued from stock into a run (decrements the components). Partial issues allowed.
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    issued_by: str | None = None
+
+
+class MfgOrderReceived(BaseModel):
+    # Finished goods received from a run. quantity restocks the output (per allow_splitting);
+    # lot_item_id is set when a non-splittable output created a new lot under the product.
+    quantity: float
+    lot_item_id: str | None = None
+    received_by: str | None = None
 
 
 # -----------------
@@ -907,7 +916,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.cancelled": MfgOrderCancelled,
     "mfg.order.on_hold": MfgOrderOnHold,
     "mfg.order.resumed": MfgOrderResumed,
-    "mfg.step.completed": MfgStepCompleted,
+    "mfg.order.issued": MfgOrderIssued,
+    "mfg.order.received": MfgOrderReceived,
 
     # BOM
     "bom.created": BOMCreated,

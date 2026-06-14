@@ -3553,23 +3553,6 @@ _DEAL = {
 }
 
 
-_MFG_ORDER_WITH_STEPS = {
-    "entity_id": "mfg:abc123",
-    "order_type": "assembly",
-    "status": "in_progress",
-    "description": "Test assembly",
-    "inputs": [
-        {"item_id": "item:x1", "quantity": 5, "consumed_qty": 0},
-    ],
-    "expected_outputs": [{"sku": "OUT-1", "name": "Widget", "quantity": 2}],
-    "steps_completed": [],
-    "steps": [
-        {"step_id": "step1", "name": "Cut", "status": "pending"},
-        {"step_id": "step2", "name": "Polish", "status": "pending"},
-    ],
-}
-
-
 class TestSprint5POReceive:
     """T2: PO Receive flow."""
 

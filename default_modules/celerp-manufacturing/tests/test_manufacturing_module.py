@@ -80,7 +80,8 @@ class TestManufacturingManifest:
         assert isinstance(handlers, list)
         prefixes = {h["prefix"] for h in handlers}
         assert "mfg." in prefixes
-        assert "bom." in prefixes
+        # The retired bom.* prefix is no longer routed here (it falls through to the engine default).
+        assert "bom." not in prefixes
 
     def test_manifest_handler_paths_are_importable(self):
         import importlib.util
@@ -121,11 +122,13 @@ class TestManufacturingProjectionHandler:
 
     def test_order_created(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        s = apply_manufacturing_event({}, "mfg.order.created", {"description": "Test"})
+        s = apply_manufacturing_event({}, "mfg.order.created",
+                                      {"description": "Test", "inputs": [{"item_id": "item:g", "quantity": 5}]})
         assert s["entity_type"] == "mfg_order"
         assert s["status"] == "planned"
         assert s["is_in_production"] is False
-        assert s["steps_completed"] == []
+        assert s["received_qty"] == 0.0
+        assert s["inputs"][0]["issued_qty"] == 0.0
         assert s["actual_outputs"] == []
 
     def test_order_started(self):
@@ -134,18 +137,17 @@ class TestManufacturingProjectionHandler:
         assert s["status"] == "in_progress"
         assert s["is_in_production"] is True
 
-    def test_step_completed_appends(self):
+    def test_issued_tracks_qty_and_advances(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        s = {"steps_completed": ["step1"]}
-        s = apply_manufacturing_event(s, "mfg.step.completed", {"step_id": "step2"})
-        assert "step2" in s["steps_completed"]
-        assert "step1" in s["steps_completed"]
+        s = {"status": "planned", "inputs": [{"item_id": "item:g", "quantity": 5, "issued_qty": 0}]}
+        s = apply_manufacturing_event(s, "mfg.order.issued", {"items": [{"item_id": "item:g", "quantity": 3}]})
+        assert s["status"] == "in_progress" and s["is_in_production"] is True
+        assert s["inputs"][0]["issued_qty"] == 3.0
 
-    def test_step_completed_no_duplicate(self):
+    def test_received_accumulates(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        s = {"steps_completed": ["step1"]}
-        s = apply_manufacturing_event(s, "mfg.step.completed", {"step_id": "step1"})
-        assert s["steps_completed"].count("step1") == 1
+        s = apply_manufacturing_event({"received_qty": 1.0}, "mfg.order.received", {"quantity": 2})
+        assert s["received_qty"] == 3.0
 
     def test_order_completed(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
@@ -196,13 +198,13 @@ class TestManufacturingProjectionHandler:
         assert s["status"] == "cancelled"
         assert "cancel_reason" not in s
 
-    def test_legacy_bom_events_are_inert(self):
-        # The standalone BOM entity was removed (recipes live on the item). Historical
-        # bom.* events stay in the ledger but are inert on replay — see test_bom_removed.
+    def test_bom_events_no_longer_routed_to_this_handler(self):
+        # The standalone BOM entity was retired and the bom.* prefix is no longer registered to
+        # this handler; historical bom.* events fall through to the engine's default merge on
+        # replay (see test_bom_removed). Calling this handler with one is now an error.
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        state = {"sku": "X", "quantity": 1}
-        for et in ("bom.created", "bom.updated", "bom.deleted"):
-            assert apply_manufacturing_event(state, et, {"name": "old"}) == state
+        with pytest.raises(ValueError, match="Unsupported mfg event"):
+            apply_manufacturing_event({"sku": "X", "quantity": 1}, "bom.created", {"name": "old"})
 
     def test_unknown_event_raises(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
@@ -211,7 +213,7 @@ class TestManufacturingProjectionHandler:
 
     def test_state_is_copied_not_mutated(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        original = {"status": "planned", "steps_completed": []}
+        original = {"status": "planned", "inputs": []}
         apply_manufacturing_event(original, "mfg.order.started", {})
         assert original["status"] == "planned"  # Original not mutated
 
@@ -391,21 +393,14 @@ class TestManufacturingModuleHTTP:
         assert order_r.status_code == 200
         oid = order_r.json()["id"]
 
-        # Start
-        assert (await client.post(f"/manufacturing/{oid}/start", headers=_h(token))).status_code == 200
+        # Issue components -> In Progress; components decrement.
+        assert (await client.post(f"/manufacturing/{oid}/issue", headers=_h(token))).status_code == 200
+        assert (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()["status"] == "in_progress"
+        assert (await client.get(f"/items/{item_id}", headers=_h(token))).json()["quantity"] == 7  # 10 - 3
 
-        # Consume
-        c = await client.post(f"/manufacturing/{oid}/consume", headers=_h(token),
-                               json={"item_id": item_id, "quantity": 3})
-        assert c.status_code == 200
-
-        # Complete
-        comp = await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
-        assert comp.status_code == 200
-
-        # Status check
-        final = await client.get(f"/manufacturing/{oid}", headers=_h(token))
-        assert final.json()["status"] == "completed"
+        # Complete -> finishes the run.
+        assert (await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})).status_code == 200
+        assert (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()["status"] == "completed"
 
     @pytest.mark.asyncio
     async def test_cannot_complete_order_twice(self, client):
@@ -419,8 +414,6 @@ class TestManufacturingModuleHTTP:
                   "expected_outputs": [{"sku": "OUT-T", "name": "Out T", "quantity": 1}]},
         )
         oid = order_r.json()["id"]
-        await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
-        await client.post(f"/manufacturing/{oid}/consume", headers=_h(token), json={"item_id": item_id, "quantity": 2})
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
         r2 = await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
         assert r2.status_code == 409
@@ -437,46 +430,20 @@ class TestManufacturingModuleHTTP:
                   "expected_outputs": [{"sku": "OUT-CC", "name": "Out CC", "quantity": 1}]},
         )
         oid = order_r.json()["id"]
-        await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
-        await client.post(f"/manufacturing/{oid}/consume", headers=_h(token), json={"item_id": item_id, "quantity": 1})
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
         r = await client.post(f"/manufacturing/{oid}/cancel", headers=_h(token), json={})
         assert r.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_consume_more_than_available_rejected(self, client):
-        token = await _register(client, "overcons")
-        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-OV", "name": "Raw OV", "quantity": 3, "sell_by": "piece"})
-        item_id = item_r.json()["id"]
-
-        order_r = await client.post(
-            "/manufacturing", headers=_h(token),
-            json={"description": "Over", "inputs": [{"item_id": item_id, "quantity": 3}],
-                  "expected_outputs": [{"sku": "OUT-OV", "name": "Out OV", "quantity": 1}]},
-        )
-        oid = order_r.json()["id"]
-        await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
-        r = await client.post(f"/manufacturing/{oid}/consume", headers=_h(token),
-                               json={"item_id": item_id, "quantity": 100})
-        assert r.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_complete_without_consuming_all_inputs_rejected(self, client):
-        token = await _register(client, "unconsumed")
-        item1 = (await client.post("/items", headers=_h(token), json={"sku": "R-UC1", "name": "UC1", "quantity": 5, "sell_by": "piece"})).json()["id"]
-        item2 = (await client.post("/items", headers=_h(token), json={"sku": "R-UC2", "name": "UC2", "quantity": 5, "sell_by": "piece"})).json()["id"]
-
-        order_r = await client.post(
-            "/manufacturing", headers=_h(token),
-            json={"description": "Partial", "inputs": [{"item_id": item1, "quantity": 1}, {"item_id": item2, "quantity": 1}],
-                  "expected_outputs": [{"sku": "OUT-UC", "name": "Out UC", "quantity": 1}]},
-        )
-        oid = order_r.json()["id"]
-        await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
-        # Only consume item1, not item2
-        await client.post(f"/manufacturing/{oid}/consume", headers=_h(token), json={"item_id": item1, "quantity": 1})
-        r = await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
-        assert r.status_code == 409
+    async def test_issue_to_closed_run_rejected(self, client):
+        token = await _register(client, "issueclosed")
+        item_id = (await client.post("/items", headers=_h(token),
+                                     json={"sku": "RAW-IC", "name": "Raw IC", "quantity": 5, "sell_by": "piece"})).json()["id"]
+        oid = (await client.post("/manufacturing", headers=_h(token),
+               json={"description": "IC", "inputs": [{"item_id": item_id, "quantity": 1}],
+                     "expected_outputs": [{"sku": "OUT-IC", "name": "Out IC", "quantity": 1}]})).json()["id"]
+        await client.post(f"/manufacturing/{oid}/cancel", headers=_h(token), json={"reason": "x"})
+        assert (await client.post(f"/manufacturing/{oid}/issue", headers=_h(token))).status_code == 409
 
     @pytest.mark.asyncio
     async def test_start_already_completed_order_rejected(self, client):
@@ -490,8 +457,6 @@ class TestManufacturingModuleHTTP:
                   "expected_outputs": [{"sku": "OUT-SC", "name": "Out SC", "quantity": 1}]},
         )
         oid = order_r.json()["id"]
-        await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
-        await client.post(f"/manufacturing/{oid}/consume", headers=_h(token), json={"item_id": item_id, "quantity": 1})
         await client.post(f"/manufacturing/{oid}/complete", headers=_h(token), json={})
         r = await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
         assert r.status_code == 409

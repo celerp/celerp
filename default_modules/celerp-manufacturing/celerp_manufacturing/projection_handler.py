@@ -15,9 +15,11 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         # `data` may carry an explicit status (e.g. a one-tap build that completes immediately);
         # otherwise a new run starts Planned.
         current.setdefault("status", "planned")
-        current.setdefault("steps_completed", [])
         current.setdefault("is_in_production", False)
         current.setdefault("actual_outputs", [])
+        # Execution progress: how much of each input has been issued, and how much output received.
+        current.setdefault("received_qty", 0.0)
+        current["inputs"] = [{**i, "issued_qty": float(i.get("issued_qty") or 0)} for i in current.get("inputs", [])]
     elif event_type == "mfg.order.started":
         current["status"] = "in_progress"
         current["is_in_production"] = True
@@ -30,10 +32,18 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         current["status"] = "in_progress"
         current["is_in_production"] = True
         current.pop("hold_reason", None)
-    elif event_type == "mfg.step.completed":
-        current.setdefault("steps_completed", [])
-        if data["step_id"] not in current["steps_completed"]:
-            current["steps_completed"].append(data["step_id"])
+    elif event_type == "mfg.order.issued":
+        # Issuing components auto-advances a planned/on-hold run to In Progress.
+        if current.get("status") in (None, "planned", "on_hold"):
+            current["status"] = "in_progress"
+            current["is_in_production"] = True
+        current.pop("hold_reason", None)
+        issued = {i.get("item_id"): float(i.get("quantity") or 0) for i in data.get("items", [])}
+        for inp in current.get("inputs", []):
+            if inp.get("item_id") in issued:
+                inp["issued_qty"] = float(inp.get("issued_qty") or 0) + issued[inp["item_id"]]
+    elif event_type == "mfg.order.received":
+        current["received_qty"] = float(current.get("received_qty") or 0) + float(data.get("quantity") or 0)
     elif event_type == "mfg.order.completed":
         current["status"] = "completed"
         current["is_in_production"] = False
@@ -48,11 +58,6 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
         current["is_in_production"] = False
         if data.get("reason"):
             current["cancel_reason"] = data["reason"]
-    elif event_type.startswith("bom."):
-        # Retired event family. The standalone BOM entity was removed — recipes now live
-        # on the inventory item (item.recipe.set). Historical bom.* events remain in the
-        # immutable ledger but are inert on replay, so projections still rebuild cleanly.
-        return current
     else:
         raise ValueError(f"Unsupported mfg event: {event_type}")
 

@@ -30,9 +30,16 @@ def _h(t):
 # --- inert replay (pure) ----------------------------------------------------
 
 def test_legacy_bom_event_replay_inert() -> None:
+    # bom.* is no longer routed to the manufacturing handler (the prefix was unregistered)...
+    with pytest.raises(ValueError):
+        apply_manufacturing_event({"sku": "X"}, "bom.created", {"name": "old"})
+    # ...so on replay the projection engine falls through to its default merge handler, which never
+    # raises — historical bom.* events stay replayable without a dead branch to maintain.
+    from celerp.projections.engine import ProjectionEngine
     state = {"sku": "X", "quantity": 5}
     for et in ("bom.created", "bom.updated", "bom.deleted"):
-        assert apply_manufacturing_event(state, et, {"name": "old", "components": [{"sku": "Y"}]}) == state
+        out = ProjectionEngine._apply(state, et, {"name": "old"})
+        assert out["sku"] == "X" and out["quantity"] == 5
 
 
 def test_unknown_mfg_event_still_raises() -> None:

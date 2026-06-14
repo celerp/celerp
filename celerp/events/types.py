@@ -85,7 +85,8 @@ class EventType(StrEnum):
     MFG_ORDER_CANCELLED = "mfg.order.cancelled"
     MFG_ORDER_ON_HOLD = "mfg.order.on_hold"
     MFG_ORDER_RESUMED = "mfg.order.resumed"
-    MFG_STEP_COMPLETED = "mfg.step.completed"
+    MFG_ORDER_ISSUED = "mfg.order.issued"
+    MFG_ORDER_RECEIVED = "mfg.order.received"
 
     # Scanning
     SCAN_BARCODE = "scan.barcode"

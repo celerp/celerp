@@ -1171,22 +1171,13 @@ async def test_wf_manufacturing_full_cycle(client):
     token = await _reg(client)
     h = _h(token)
     raw_id = await _item(client, token, qty=20, sku="RAW-WF")
+    fg_id = await _item(client, token, qty=0, sku="FG-WF")
+    await client.put(f"/manufacturing/items/{fg_id}/recipe", headers=h,
+                     json={"output_qty": 2, "components": [{"item_id": raw_id, "quantity": 5}], "labor": [], "overhead": []})
 
-    order = await client.post(
-        "/manufacturing",
-        headers=h,
-        json={
-            "description": "WF Assembly",
-            "estimated_cost": 500,
-            "inputs": [{"item_id": raw_id, "quantity": 5}],
-            "expected_outputs": [{"sku": "FG-WF", "name": "Finished WF", "quantity": 2}],
-        },
-    )
-    assert order.status_code == 200
-    oid = order.json()["id"]
-
-    assert (await client.post(f"/manufacturing/{oid}/consume", headers=h, json={"item_id": raw_id, "quantity": 5})).status_code == 200
-    assert (await client.post(f"/manufacturing/{oid}/start", headers=h)).status_code == 200
+    # Build 2 of the finished good, then issue components and complete (restocks the FG in place).
+    oid = (await client.post(f"/manufacturing/items/{fg_id}/build", headers=h, json={"quantity": 2})).json()["id"]
+    assert (await client.post(f"/manufacturing/{oid}/issue", headers=h)).status_code == 200
     assert (await client.post(f"/manufacturing/{oid}/complete", headers=h, json={})).status_code == 200
 
     state = (await client.get(f"/manufacturing/{oid}", headers=h)).json()
@@ -1195,8 +1186,8 @@ async def test_wf_manufacturing_full_cycle(client):
     raw_state = (await client.get(f"/items/{raw_id}", headers=h)).json()
     assert raw_state["quantity"] == 15  # 20 - 5
 
-    items = (await client.get("/items", headers=h)).json()["items"]
-    assert any(i.get("sku") == "FG-WF" for i in items)
+    fg = (await client.get(f"/items/{fg_id}", headers=h)).json()
+    assert fg["sku"] == "FG-WF" and fg["quantity"] == 2  # restocked in place
 
 
 
@@ -1740,21 +1731,16 @@ async def test_edge_receive_non_po_doc_rejected(client):
 
 
 @pytest.mark.asyncio
-async def test_edge_mfg_complete_without_all_inputs_rejected(client):
+async def test_edge_mfg_complete_on_closed_run_rejected(client):
     token = await _reg(client)
     h = _h(token)
     raw_id = await _item(client, token, qty=10, sku="RAW-GUARD")
-    order = await client.post(
-        "/manufacturing",
-        headers=h,
-        json={
-            "description": "Guard Test",
-            "inputs": [{"item_id": raw_id, "quantity": 5}],
-            "expected_outputs": [{"sku": "FG-GUARD", "name": "Guard FG", "quantity": 1}],
-        },
-    )
-    oid = order.json()["id"]
-    # Try to complete without consuming
+    fg_id = await _item(client, token, qty=0, sku="FG-GUARD")
+    await client.put(f"/manufacturing/items/{fg_id}/recipe", headers=h,
+                     json={"output_qty": 1, "components": [{"item_id": raw_id, "quantity": 5}], "labor": [], "overhead": []})
+    oid = (await client.post(f"/manufacturing/items/{fg_id}/build", headers=h, json={"quantity": 1})).json()["id"]
+    # Cancelling closes the run; completing a closed run is rejected.
+    await client.post(f"/manufacturing/{oid}/cancel", headers=h, json={"reason": "x"})
     r = await client.post(f"/manufacturing/{oid}/complete", headers=h, json={})
     assert r.status_code == 409
 

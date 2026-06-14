@@ -50,8 +50,7 @@ async def test_manufacturing_flow_and_dashboard(client):
     assert order.status_code == 200
     order_id = order.json()["id"]
 
-    assert (await client.post(f"/manufacturing/{order_id}/start", headers=_auth(token))).status_code == 200
-    assert (await client.post(f"/manufacturing/{order_id}/consume", headers=_auth(token), json={"item_id": item_id, "quantity": 2})).status_code == 200
+    assert (await client.post(f"/manufacturing/{order_id}/issue", headers=_auth(token))).status_code == 200
     assert (await client.post(f"/manufacturing/{order_id}/complete", headers=_auth(token), json={})).status_code == 200
 
     kpis = (await client.get("/dashboard/kpis", headers=_auth(token))).json()
