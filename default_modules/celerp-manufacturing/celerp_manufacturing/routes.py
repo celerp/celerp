@@ -392,6 +392,20 @@ async def _get_document(session: AsyncSession, company_id, doc_id: str) -> Proje
 _CLOSED_DOC_STATUSES = {"void", "cancelled", "converted", "expired"}
 
 
+def _skip_as_demand(doc_state: dict) -> bool:
+    """Should this document's lines be ignored as production demand?
+
+    Closed docs never drive production. Customer invoices count even as drafts (a draft invoice is
+    a pro forma = committed demand), but an internal production order is only active demand once it
+    is finalized (a draft production order is still being composed)."""
+    status = (doc_state.get("status") or "")
+    if status in _CLOSED_DOC_STATUSES:
+        return True
+    if doc_state.get("doc_type") == "production_order" and status == "draft":
+        return True
+    return False
+
+
 @router.get("/documents/{doc_id}/components-summary")
 async def document_components_summary(
     doc_id: str,
@@ -449,8 +463,7 @@ async def to_make(
     agg: dict[str, dict] = {}
     for doc in docs:
         st = doc.state or {}
-        # Skip only closed docs; invoice drafts are pro formas (real demand) and are included.
-        if (st.get("status") or "") in _CLOSED_DOC_STATUSES:
+        if _skip_as_demand(st):
             continue
         ref = st.get("ref_id") or doc.entity_id
         due = st.get("due_date") or st.get("promised_date") or None
@@ -523,7 +536,7 @@ async def item_manufacturing_hub(
     demand = []
     for doc in docs:
         st = doc.state or {}
-        if (st.get("status") or "") in _CLOSED_DOC_STATUSES:
+        if _skip_as_demand(st):
             continue
         for _idx, lid, _line_id, qty, _label in _doc_lines(st):
             if lid == item_id and qty > 0:

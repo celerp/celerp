@@ -554,14 +554,6 @@ class TestCRUDCreate:
         assert r.status_code in (200, 204, 302, 303)
 
     @pytest.mark.asyncio
-    @pytest.mark.asyncio
-    async def test_create_mfg_order(self, ui):
-        with _Patches({"ui.api_client.create_mfg_order": AsyncMock(return_value={"id": "mfg:new", "event_id": 1})}):
-            r = await ui.post("/manufacturing/new", cookies=_c(),
-                             data={"name": "Test Order", "order_type": "manufacturing"})
-        assert r.status_code in (200, 204, 302, 303)
-
-    @pytest.mark.asyncio
     async def test_create_subscription(self, ui):
         with _Patches({"ui.api_client.create_subscription": AsyncMock(return_value={"id": "sub:new", "event_id": 1})}):
             r = await ui.post("/subscriptions/new", cookies=_c(),

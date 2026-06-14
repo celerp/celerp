@@ -95,7 +95,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
             "ap_outstanding": ap_outstanding,
         },
         "manufacturing": {
-            "orders_in_progress": sum(1 for o in mfg if o.state.get("status") == "started"),
+            "orders_in_progress": sum(1 for o in mfg if o.state.get("status") == "in_progress"),
             "orders_completed_mtd": sum(1 for o in mfg if o.state.get("status") == "completed"),
             "orders_overdue": sum(1 for o in mfg if o.state.get("due_date") and o.state.get("due_date") < now and o.state.get("status") != "completed"),
         },

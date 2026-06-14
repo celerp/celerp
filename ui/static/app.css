@@ -613,6 +613,12 @@ a:hover { text-decoration: underline; }
 .doc-lines th.col-qty,         .doc-lines td.col-qty         { width: 45px;  text-align: right; }
 .doc-lines th.col-pcs,         .doc-lines td.col-pcs         { width: 45px;  text-align: right; }
 .doc-lines th.col-weight,      .doc-lines td.col-weight      { width: 45px;  text-align: right; }
+/* Internal demand docs (production orders) carry no money: hide the price/discount/tax/total
+   columns entirely. Header and cell share the col-* class, so one rule covers both. */
+.doc-lines--no-money th.col-unit-price, .doc-lines--no-money td.col-unit-price,
+.doc-lines--no-money th.col-disc,       .doc-lines--no-money td.col-disc,
+.doc-lines--no-money th.col-tax,        .doc-lines--no-money td.col-tax,
+.doc-lines--no-money th.col-total,      .doc-lines--no-money td.col-total { display: none; }
 /* Invoice draft: the description cell holds the desc input plus inline editable
    PCS / WEIGHT for the secondary measure; the column is bordered off. */
 .doc-lines--invoice th.col-desc, .doc-lines--invoice td.col-desc {

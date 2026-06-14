@@ -31,7 +31,7 @@ from celerp.services.fulfill import execute_fulfill, execute_unfulfill
 from celerp.services.pick import PickResult, compute_pick_plan
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -1184,6 +1184,8 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     # (emit_event -> flush() -> ORM expires row -> MissingGreenlet on subsequent row.state access).
     _doc_state = dict(row.state)
     _user_id = user.id
+    if _doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
+        raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
     if _doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
         raise HTTPException(status_code=409, detail="Cannot record payment in current status")
     outstanding = float(_doc_state.get("amount_outstanding", _doc_state.get("total", 0)) or 0)

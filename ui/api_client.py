@@ -1040,14 +1040,6 @@ async def manufacturing_item_hub(token: str, item_id: str) -> dict:
         return _raise(await c.get(f"/manufacturing/items/{item_id}/hub")).json()
 
 
-async def get_mfg_order(token: str, order_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/manufacturing/{order_id}")).json()
-
-
-async def create_mfg_order(token: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing", json=data)).json()
 
 
 async def set_item_recipe(token: str, entity_id: str, recipe: dict) -> dict:

@@ -107,6 +107,9 @@ _FULFILLABLE_DOC_TYPES: frozenset[str] = frozenset({"memo", "invoice"})
 # merged into the quantity cell, and no standalone UNIT/PCS/WEIGHT columns.
 # memo = "Consignment Out", list = "Lists".
 _INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"})
+# Internal demand docs that carry no money: hide price / discount / tax / total columns and the
+# financial totals panel. A production order is invoice-to-self demand, not a sale.
+_NO_MONEY_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
 # show the button on statuses the backend will reject.  Update when backend allowlist changes.
 # Inbound doc types (bill, consignment_in) are excluded - they use POST /receive.
@@ -123,6 +126,7 @@ _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "memo": "Consignment Out",
     "consignment_in": "Consignment In",
     "list": "Lists",
+    "production_order": "Production Orders",
     "subscription_invoice": "Subscription Templates",
     "subscription_po": "Subscription PO Templates",
 }
@@ -135,6 +139,7 @@ _DOC_TYPE_NEW_LABEL_KEYS: dict[str, str] = {
     "memo": "btn.new_memo",
     "consignment_in": "btn.new_consignment_in",
     "list": "btn.new_list",
+    "production_order": "btn.new_production_order",
 }
 
 
@@ -156,6 +161,7 @@ _DOC_TYPE_SINGULAR: dict[str, str] = {
     "memo": "Consignment Out",
     "consignment_in": "Consignment In",
     "list": "List",
+    "production_order": "Production Order",
     "subscription_invoice": "Subscription Template",
     "subscription_po": "Subscription PO Template",
 }
@@ -172,6 +178,7 @@ _DOC_TYPE_NAV_KEY: dict[str, str] = {
     "credit_note": "credit-notes",
     "receipt": "receipts",
     "list": "lists",
+    "production_order": "production-orders",
     "subscription_invoice": "subscriptions_sales",
     "subscription_po": "subscriptions_purchasing",
 }
@@ -3877,6 +3884,7 @@ def _doc_table(
         "receipt": ("label.no_receipts_yet", "btn.new_receipt"),
         "credit_note": ("label.no_credit_notes_yet", "btn.new_credit_note"),
         "list": ("label.no_lists_yet", "btn.new_list"),
+        "production_order": ("label.no_documents_yet", "btn.new_production_order"),
     }
     if not docs:
         dt_slug = doc_type if doc_type else "invoice"
@@ -3886,6 +3894,8 @@ def _doc_table(
             id="doc-table",
         )
 
+    # Internal demand docs carry no money: drop the Total / Outstanding columns.
+    no_money = doc_type in _NO_MONEY_DOC_TYPES
     # Checkboxes: invoice/bill for bulk payment; any doc type in draft view for bulk delete
     show_checkboxes = doc_type in ("invoice", "bill") or is_drafts_view
 
@@ -3929,6 +3939,13 @@ def _doc_table(
                      data_contact_id=d.get("contact_id") or "",
                      data_outstanding=str(outstanding)),
                      cls="col-checkbox")] if show_checkboxes else []
+        money_tds = [] if no_money else [
+            Td(format_value(total_amount, "money", currency), cls="cell--number"),
+            Td(
+                format_value(outstanding_amount, "money", currency),
+                cls=f"cell--number {'cell--alert' if outstanding > 0 and d.get('doc_type') == 'invoice' else ''}",
+            ),
+        ]
         return Tr(
             *checkbox_td,
             Td(A(doc_number or EMPTY, href=f"/docs/{eid}", cls="table-link")),
@@ -3936,11 +3953,7 @@ def _doc_table(
             Td(format_value(contact)),
             Td(format_value(issue_date, "date")),
             *([Td(format_value(d.get("_updated_at"), "date"))] if is_drafts_view else [Td(format_value(due_date, "date"))]),
-            Td(format_value(total_amount, "money", currency), cls="cell--number"),
-            Td(
-                format_value(outstanding_amount, "money", currency),
-                cls=f"cell--number {'cell--alert' if outstanding > 0 and d.get('doc_type') == 'invoice' else ''}",
-            ),
+            *money_tds,
             Td(format_value(d.get("status"), "badge")),
             id=f"doc-{eid}",
             cls="data-row",
@@ -4052,7 +4065,8 @@ def _doc_table(
                 *checkbox_th,
                 _th("Number", "number"), _th("Type", "type"), _th("Contact", "contact"), _th("Date", "date"),
                 _th("Last Updated", "updated") if is_drafts_view else _th("Due", "due"),
-                _th("Total", "total"), _th("Outstanding", "outstanding"), _th("Status", "status"),
+                *([] if no_money else [_th("Total", "total"), _th("Outstanding", "outstanding")]),
+                _th("Status", "status"),
             )),
             Tbody(*[_row(d) for d in docs]),
             cls="data-table",
@@ -4957,7 +4971,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # --- Price list bar (positioned in line items section) ---
     _pl_names = [pl.get("name", "") for pl in (price_lists or []) if pl.get("name")]
     _current_pl = doc.get("price_list") or ""
-    if doc_type in ("purchase_order", "bill"):
+    if doc_type in _NO_MONEY_DOC_TYPES:
+        _pl_bar = ""  # Internal demand docs carry no pricing.
+    elif doc_type in ("purchase_order", "bill"):
         _pl_bar = ""  # Vendor docs use cost price, not price lists
     elif is_draft and _pl_names:
         _pl_select = Select(
@@ -5373,7 +5389,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     *([_line_colgroup] if _line_colgroup else []),
                     _line_thead,
                     Tbody(*rows, id=line_body_id),
-                    cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else ""),
+                    cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else "")
+                        + (" doc-lines--no-money" if doc_type in _NO_MONEY_DOC_TYPES else ""),
                 ),
                 cls="table-scroll-wrap",
             ),
@@ -6197,7 +6214,8 @@ async function celerpCsvImport(input, entityId) {{
                 Tbody(*([_li_row(li, i) for i, li in enumerate(line_items)] if line_items else [
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ]), id=_fin_bulk_id),
-                cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type in _INVOICE_LAYOUT_DOC_TYPES else ""),
+                cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type in _INVOICE_LAYOUT_DOC_TYPES else "")
+                    + (" doc-lines--no-money" if doc_type in _NO_MONEY_DOC_TYPES else ""),
             ),
             Script(f"""
 (function(){{
@@ -6354,6 +6372,10 @@ async function celerpCsvImport(input, entityId) {{
         )] if currency != company_currency and doc.get("conversion_rate") else []),
         cls="total-panel",
     )
+    # Internal demand docs carry no money — no totals panel.
+    is_no_money = doc_type in _NO_MONEY_DOC_TYPES
+    if is_no_money:
+        total_panel = ""
 
     contact_label = {
         "invoice": "Bill to", "purchase_order": "Vendor", "quotation": "Quote to",
@@ -6372,17 +6394,18 @@ async function celerpCsvImport(input, entityId) {{
         Div(Div(t("doc.tax_id"), cls="form-label"), _cell("contact_tax_id", doc.get("contact_tax_id")), cls="form-group"),
         Hr(cls="section-divider"),
     ]
-    if not is_list:
+    if not is_list and not is_no_money:
         _contact_rows.append(Div(Div(t("doc.payment_terms"), cls="form-label"), _cell("payment_terms", doc.get("payment_terms")), cls="form-group"))
     _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _cell("status", status), *_slot_badges, cls="form-group"))
-    # Currency row: always show; rate row shown only when doc currency differs from base
-    _contact_rows.append(Div(Div(t("doc.currency"), cls="form-label"), _cell("currency", currency), cls="form-group"))
-    if currency != company_currency:
-        _rate_val = doc.get("conversion_rate")
-        _rate_display = str(_rate_val) if _rate_val else "--"
-        _contact_rows.append(Div(Div(t("doc.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
-    if not is_list and outstanding_value is not None:
-        _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
+    # Currency row: always show (except money-less internal docs); rate row only when foreign.
+    if not is_no_money:
+        _contact_rows.append(Div(Div(t("doc.currency"), cls="form-label"), _cell("currency", currency), cls="form-group"))
+        if currency != company_currency:
+            _rate_val = doc.get("conversion_rate")
+            _rate_display = str(_rate_val) if _rate_val else "--"
+            _contact_rows.append(Div(Div(t("doc.conversion_rate"), cls="form-label"), _cell("conversion_rate", _rate_display), cls="form-group"))
+        if not is_list and outstanding_value is not None:
+            _contact_rows.append(Div(Div(t("doc.outstanding"), cls="form-label"), Span(fmt_money(float(outstanding_value or 0), currency), cls="meta-value"), cls="form-group"))
 
     _is_sub_template = doc_type in ("subscription_invoice", "subscription_po")
 
@@ -6472,8 +6495,10 @@ async function celerpCsvImport(input, entityId) {{
         ),
         # Payment section (invoices, bills, credit notes - not drafts/voids)
         _payment_section(doc, bank_accounts=bank_accounts, is_operator=_is_operator),
-        # Term & Conditions + Note to customer (2 columns)
-        Div(
+        # Terms & Conditions + Note to customer (2 columns). Both are customer-facing, so an
+        # internal money-less doc (production order) hides them - it uses the Internal Notes
+        # section below instead.
+        ("" if is_no_money else Div(
             Div(
                 Div(Span("📄", cls="section-icon"), H3(t("page.terms_conditions"), cls="section-title"), cls="section-header"),
                 *(_tc_dropdown(entity_id, doc, tc_templates or [], doc_type, is_draft) if is_draft and not is_list else [
@@ -6503,7 +6528,7 @@ async function celerpCsvImport(input, entityId) {{
                 cls="doc-section doc-section--half",
             ),
             cls="doc-row",
-        ),
+        )),
         # Internal information
         Details(
             Summary(
@@ -6760,6 +6785,20 @@ def _doc_status_cards(docs: list[dict], active_status: str, summary: dict | None
             {"label": t("btn.void", lang),              "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
         ]
         return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=False)
+
+    # Production order: internal demand, no money — a simple Draft -> Open -> Cancelled lifecycle.
+    if doc_type == "production_order":
+        _OPEN_STATUSES = "final,sent,awaiting_payment,partial"
+        open_cnt = sum(_cbs.get(s, 0) for s in ("final", "sent", "awaiting_payment", "partial"))
+        if status_in == _OPEN_STATUSES:
+            _active_key = "open"
+        cards = [
+            {"label": t("status.draft", lang), "count": _cbs.get("draft", 0), "total": None, "status": "draft", "color": "gray"},
+            {"label": "Open",                  "count": open_cnt,             "total": None, "status": "open",  "color": "blue",
+             "_url": f"{base_url}&status_in={_OPEN_STATUSES}", "_active_key": "open"},
+            {"label": t("btn.void", lang),     "count": _cbs.get("void", 0),  "total": None, "status": "void",  "color": "gray"},
+        ]
+        return status_cards(cards, base_url, _active_key or None, currency=currency, show_all_card=True)
 
     # Generic fallback for remaining doc types (receipt, etc.)
     _DEFAULT_CARDS = [

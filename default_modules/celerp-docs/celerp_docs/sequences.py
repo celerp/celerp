@@ -21,6 +21,7 @@ _PREFIX_BY_DOC_TYPE = {
     "consignment_in": "CI",
     "subscription_invoice": "SUBI",
     "subscription_po": "SUBP",
+    "production_order": "PRD",
 }
 
 # Default pattern for all new companies

@@ -36,6 +36,14 @@ PLUGIN_MANIFEST = {
                 "order": 10,
                 "min_role": "operator",
             },
+            {
+                "group": "Manufacturing",
+                "icon": "📋",
+                "label": "Production Orders",
+                "href": "/docs?type=production_order",
+                "order": 20,
+                "min_role": "operator",
+            },
         ],
         "projection_handler": [
             {

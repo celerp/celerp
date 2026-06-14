@@ -11,8 +11,8 @@ from starlette.responses import RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
-from ui.components.shell import base_shell, page_header, flash
-from ui.components.table import EMPTY, breadcrumbs, status_cards, empty_state_cta, format_value, add_new_option, searchable_select, search_bar, currency_symbol
+from ui.components.shell import base_shell, page_header
+from ui.components.table import EMPTY, status_cards, empty_state_cta, format_value, search_bar, currency_symbol
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 
@@ -124,7 +124,7 @@ def _to_make_table(rows: list[dict], cur: str) -> FT:
 def _order_table(orders: list[dict]) -> FT:
     if not orders:
         return Div(
-            empty_state_cta("No production orders.", "Create Order", "/manufacturing/new"),
+            empty_state_cta("Nothing in production yet.", "View To Make", "/manufacturing"),
             id="mfg-table",
         )
     return Table(
@@ -273,95 +273,3 @@ def setup_routes(app):
         except APIError:
             orders = []
         return _order_table(orders)
-
-    async def _buildable_items(token: str) -> list[dict]:
-        """Inventory items that have a manufacturing recipe (can be built)."""
-        items = (await api.list_items(token, {"limit": 1000})).get("items", [])
-        return [it for it in items if (it.get("recipe") or {}).get("components")]
-
-    @app.get("/manufacturing/new")
-    async def new_mfg_order(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            buildable = await _buildable_items(token)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            buildable = []
-        return base_shell(
-            page_header("New Manufacturing Order", A(t("btn.cancel"), href="/manufacturing", cls="btn btn--secondary")),
-            _build_order_form(buildable),
-            title="New Manufacturing Order - Celerp",
-            nav_active="manufacturing",
-            request=request,
-        )
-
-    @app.post("/manufacturing/new")
-    async def create_mfg_order(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        item_id = str(form.get("finished_item_id", "")).strip()
-        try:
-            qty = float(str(form.get("quantity", "1")))
-        except ValueError:
-            qty = 0.0
-
-        async def _reshow(msg: str):
-            try:
-                buildable = await _buildable_items(token)
-            except APIError:
-                buildable = []
-            return base_shell(
-                page_header("New Manufacturing Order", A(t("btn.cancel"), href="/manufacturing", cls="btn btn--secondary")),
-                flash(msg),
-                _build_order_form(buildable, {"finished_item_id": item_id, "quantity": str(qty)}),
-                title="New Manufacturing Order - Celerp",
-                nav_active="manufacturing",
-                request=request,
-            )
-
-        if not item_id or qty <= 0:
-            return await _reshow("Select an item to build and a quantity greater than zero.")
-        try:
-            res = await api.build_item(token, item_id, qty)
-            return RedirectResponse(f"/manufacturing/{res['id']}", status_code=302)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return await _reshow(e.detail)
-
-def _build_order_form(items: list[dict], prefill: dict | None = None) -> FT:
-    """Build-order form: pick a manufacturable SKU + quantity; inputs expand from its recipe.
-
-    Replaces the old free-form input-picker — the recipe now lives on the item, so an order
-    is just "build N of this item" (GDR §2g — fewer clicks, no re-keying components).
-    """
-    p = prefill or {}
-    if not items:
-        return Div(
-            P("No items have a manufacturing recipe yet. Define one first: open an inventory item "
-              "and add components on its Manufacturing tab."),
-            A("Go to inventory", href="/inventory", cls="btn btn--secondary"),
-            cls="detail-card recipe-block",
-        )
-    opts = [(it.get("id") or it.get("entity_id"), f"{it.get('sku', '')} - {it.get('name', '')}".strip(" -")) for it in items]
-    return Form(
-        Div(
-            Label("Item to build", For="finished_item_id"),
-            searchable_select("finished_item_id", opts, value=p.get("finished_item_id", ""), placeholder="Search SKU…"),
-            cls="form-group",
-        ),
-        Div(
-            Label("Quantity to build", For="quantity"),
-            Input(type="number", id="quantity", name="quantity", value=p.get("quantity", "1"), min="0.001", step="any", cls="form-input form-input--sm"),
-            cls="form-group",
-        ),
-        P("Inputs are taken automatically from the item's recipe, scaled to this build quantity "
-          "(a recipe that yields more than one unit per batch is divided down accordingly).", cls="hint"),
-        Button("Create order", cls="btn btn--primary", type="submit"),
-        method="post", action="/manufacturing/new", cls="form-card",
-    )
