@@ -595,7 +595,9 @@ def _doc_print_view(doc: dict) -> FT:
         sku = li.get("sku") or ""
         _ls = "margin:0;font-size:8.5pt;"
         _desc_parts = [P(f"- {desc}", style=_ls)]
-        _desc_parts += [P(_ln, style=_ls) for _ln in measure_sublines(li, unit_map=_print_umap)]
+        # Pieces/Weight sub-lines are sales (invoice-layout) only; keep vendor docs clean.
+        if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
+            _desc_parts += [P(_ln, style=_ls) for _ln in measure_sublines(li, unit_map=_print_umap)]
         rows.append(Tr(
             Td(sku, cls="mono"),
             Td(Div(*_desc_parts)),
@@ -6193,8 +6195,14 @@ async function celerpCsvImport(input, entityId) {{
             # Pieces / Weight as compact sub-lines under the description (shared with
             # the print view + PDF): source from the line, else the parcel; skip the
             # measure the quantity already is.
+            # Pieces/Weight sub-lines are an invoice-layout (sales) affordance; vendor documents
+            # (purchase order / bill / consignment in) and other non-invoice layouts omit them -
+            # matching the editable view, which already gates them on _INVOICE_LAYOUT_DOC_TYPES.
             _meta = (item_meta_map or {}).get(li.get("entity_id") or li.get("item_id") or "") or {}
-            _desc_extra = [Div(_ln, cls="li-measure") for _ln in measure_sublines(li, item_meta=_meta)]
+            _desc_extra = (
+                [Div(_ln, cls="li-measure") for _ln in measure_sublines(li, item_meta=_meta)]
+                if doc_type in _INVOICE_LAYOUT_DOC_TYPES else []
+            )
             cells += [
                 Td(format_value(li.get("sku") or None), cls="col-sku"),
                 Td(_li_field_display_cell(entity_id, str(idx), "description", li.get("description") or li.get("name") or ""),
