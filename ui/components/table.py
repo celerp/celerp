@@ -1091,8 +1091,10 @@ function _bulkImmediate(url,extraName,extraValue){
     form.appendChild(ex);
   }
   document.body.appendChild(form);
-  htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'});
-  setTimeout(function(){form.remove()},100);
+  // Remove the form only after the request completes (see merge handler note) so HX-Trigger
+  // events fired on the source element still reach the document-level listeners.
+  htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+    .then(function(){form.remove();},function(){form.remove();});
 }
 function _populateMergeTargets(){
   var sel=document.getElementById('merge-target-select');
@@ -1132,8 +1134,10 @@ function _populateMergeTargets(){
       var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';t.value=sel.value;
       form.appendChild(t);
       document.body.appendChild(form);
-      htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'});
-      setTimeout(function(){form.remove()},100);
+      // Keep the form attached until the request finishes - removing it early detaches the htmx
+      // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
+      htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+        .then(function(){form.remove();},function(){form.remove();});
     });
     var cancel=document.createElement('button');
     cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent='Cancel';

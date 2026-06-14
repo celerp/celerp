@@ -671,6 +671,45 @@ async def test_merge_preserves_allow_splitting_false(client):
 
 
 @pytest.mark.asyncio
+async def test_merge_rejects_different_sell_units(client):
+    """Merging sums quantities, so items measured in different units (e.g. gram vs carat) must be
+    rejected - otherwise 5 g + 3 ct would silently become 8 of nothing."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    a = (await client.post("/items", json={"sku": "WU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"sku": "WU-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"}, headers=h)).json()["id"]
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    assert r.status_code == 422
+    assert "unit" in r.json()["detail"].lower()
+    assert "gram" in r.json()["detail"] and "carat" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_different_net_weight_units(client):
+    """Merging sums net weight too, so a differing weight_unit must also be rejected."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    a = (await client.post("/items", json={"sku": "NWU-A", "name": "A", "quantity": 1, "sell_by": "piece",
+                                           "weight": 2, "weight_unit": "gram"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"sku": "NWU-B", "name": "B", "quantity": 1, "sell_by": "piece",
+                                           "weight": 3, "weight_unit": "carat"}, headers=h)).json()["id"]
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    assert r.status_code == 422
+    assert "weight unit" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_merge_allows_same_weight_unit(client):
+    """Same sell unit (and weight unit) still merges fine."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    a = (await client.post("/items", json={"sku": "SU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"sku": "SU-B", "name": "Gold B", "quantity": 3, "sell_by": "gram"}, headers=h)).json()["id"]
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_split_children_inherit_allow_splitting_from_parent(client):
     """Split children must inherit allow_splitting from the parent item.
     Child items without this key in state suffer the same UI/backend mismatch as the original bug.

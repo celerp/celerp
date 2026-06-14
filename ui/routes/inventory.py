@@ -2321,6 +2321,18 @@ function celerpPrintLabel(entityId, templateId) {
         )
         return HTMLResponse(to_xml(content), headers={"HX-Trigger": "celerpSelectionClear"})
 
+    def _bulk_toast_error(msg: str) -> Response:
+        """Surface a bulk-action error as the standard lower-right toast (no inline swap), so
+        validation failures like a weight-unit mismatch read as a clear popup."""
+        from starlette.responses import HTMLResponse
+        return HTMLResponse(
+            "", status_code=200,
+            headers={
+                "HX-Reswap": "none",
+                "HX-Trigger": json.dumps({"celerpToast": {"message": str(msg), "type": "error"}}),
+            },
+        )
+
     @app.post("/api/items/bulk/status")
     async def bulk_item_status(request: Request):
         token = _token(request)
@@ -2439,7 +2451,8 @@ function celerpPrintLabel(entityId, templateId) {
                 resolved_attributes=resolved_attrs or None,
             )
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+            # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.
+            return _bulk_toast_error(e.detail)
         # Find the target item's SKU for the post-merge filter
         target_item = next((it for it in items if it.get("entity_id") == target_sku_from or it.get("id") == target_sku_from), None)
         target_sku = target_item.get("sku", "") if target_item else ""

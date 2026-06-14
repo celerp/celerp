@@ -1734,6 +1734,26 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
             detail=f"All items must belong to the same category to merge. Found: {sorted(categories)}.",
         )
 
+    # Validate units: merging sums quantities (in the sell unit) and net weights (in the weight
+    # unit), so the sources must agree on both - you cannot add grams to carats.
+    sell_units = {str(p.state.get("sell_by") or "").strip() for p in source_projections}
+    sell_units.discard("")
+    if len(sell_units) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Items measured in different units cannot be merged. Found: {', '.join(sorted(sell_units))}.",
+        )
+    weight_units = {
+        str(p.state.get("weight_unit") or "").strip()
+        for p in source_projections if p.state.get("weight") not in (None, "")
+    }
+    weight_units.discard("")
+    if len(weight_units) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Items with different weight units cannot be merged. Found: {', '.join(sorted(weight_units))}.",
+        )
+
     # Resolve target projection (SKU/barcode/name/prices come from this source).
     target_proj = await session.get(Projection, {"company_id": company_id, "entity_id": payload.target_sku_from})
     if target_proj is None:
