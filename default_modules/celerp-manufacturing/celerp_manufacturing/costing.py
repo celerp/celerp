@@ -85,6 +85,24 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, _path: frozenset[str] = fr
     }
 
 
+def labor_hours(recipe: dict, hours_per_day: float = 8.0) -> float:
+    """Total labor HOURS for one batch (output_qty units) of a recipe.
+
+    Hourly lines contribute their hours; daily lines convert days -> hours via hours_per_day;
+    fixed lines are a flat cost with no time and contribute 0 hours.
+    """
+    total = 0.0
+    for line in recipe.get("labor", []) or []:
+        kind = (line.get("kind") or "hourly")
+        if kind == "fixed":
+            continue
+        h = float(line.get("hours") or 0)
+        if kind == "daily":
+            h *= float(hours_per_day or 0)
+        total += h
+    return total
+
+
 def where_used(target_id: str, deps: dict[str, set[str]]) -> set[str]:
     """Implosion: every item whose recipe references ``target_id`` directly or transitively.
 

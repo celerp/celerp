@@ -37,25 +37,27 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     # Component rows are visually distinct (left accent class).
     assert page.locator("tr.data-row--component").count() >= 1
 
-    # /manufacturing: header search box + the standard date-filter bar with all presets.
+    # /manufacturing: the Production Queue "To Make" board (lead column = item + qty to make).
     gold = api.post("/items", json={"sku": "PL-MGOLD", "name": "Gold", "quantity": 50, "sell_by": "gram",
                                     "cost_total": 500, "inventory_type": "component"}).json()["id"]
     fg = api.post("/items", json={"sku": "PL-MRING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
     api.put(f"/manufacturing/items/{fg}/recipe",
             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 1}], "labor": [], "overhead": []})
-    api.post(f"/manufacturing/items/{fg}/build", json={"quantity": 1})
+    api.post("/docs", json={"doc_type": "invoice", "line_items": [
+        {"item_id": fg, "sku": "PL-MRING", "name": "Ring", "quantity": 3, "unit_price": 10}], "total": 30})
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
-    bar = page.locator(".preset-btn").all_inner_texts()
-    for label in ("This Month", "Last 3 Months", "Last 6 Months", "Last 12 Months", "This Fiscal Year", "Last Fiscal Year", "All Time"):
-        assert any(label.lower() in b.lower() for b in bar), (label, bar)
-    assert page.locator("button:has-text('Apply')").count() >= 1
-    # Search narrows the order table (by output SKU / doc number / description).
-    box = page.get_by_placeholder("Search order, doc number, SKU...")
+    assert page.locator("table.data-table thead").inner_text().upper().find("TO MAKE") >= 0
+    assert "PL-MRING" in page.locator("#mfg-table").inner_text()
+    # Both tabs present; In Production is the runs view.
+    assert page.locator(".category-tabs a:has-text('To Make')").count() == 1
+    assert page.locator(".category-tabs a:has-text('In Production')").count() == 1
+    # Search narrows the board by item / SKU.
+    box = page.get_by_placeholder("Search item / SKU...")
     box.fill("PL-MRING")
-    page.wait_for_selector("#mfg-table:has-text('assembly'), #mfg-table:has-text('Build')", timeout=8000)
-    box.fill("NO-SUCH-DOC-123")
-    page.wait_for_selector("#mfg-table:has-text('No production orders')", timeout=8000)
+    page.wait_for_selector("#mfg-table:has-text('PL-MRING')", timeout=8000)
+    box.fill("NO-SUCH-ITEM-123")
+    page.wait_for_selector("#mfg-table:has-text('Nothing to make')", timeout=8000)
 
     # /lists: the same date-filter bar is present.
     page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")

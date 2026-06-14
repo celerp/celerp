@@ -749,16 +749,17 @@ def _doc_manufacture_mount(doc_id: str, doc_type: str) -> FT | str:
                hx_trigger="load", hx_swap="outerHTML", id="doc-mfg-panel")
 
 
-def _doc_manufacture_panel(doc_id: str, summary: dict, orders: list[dict]) -> FT:
-    """Manufacturing panel for a document: its auto-created orders + the JIT components summary.
-
-    Orders are created automatically for recipe-bearing lines (idempotently, on read), so this
-    panel only shows them; there is nothing to click to create.
+def _doc_manufacture_panel(doc_id: str, summary: dict) -> FT:
+    """Manufacturing panel for a document (product-centric): the manufactured items on this doc,
+    each linking to its product Manufacturing tab (the hub for production), plus the JIT
+    components summary. Production itself is managed from the Production Queue / product tab,
+    not from the document.
     """
+    fgs = summary.get("finished_goods", []) or []
     subs = summary.get("sub_assemblies", []) or []
     raws = summary.get("raw_materials", []) or []
 
-    if not subs and not raws and not orders:
+    if not fgs and not subs and not raws:
         return Div(
             H3("Manufacturing", cls="section-title"),
             P("No items on this document have a manufacturing recipe.", cls="hint"),
@@ -769,22 +770,21 @@ def _doc_manufacture_panel(doc_id: str, summary: dict, orders: list[dict]) -> FT
         return [Tr(Td(it.get("sku") or it.get("item_id")), Td(it.get("name") or EMPTY),
                    Td(f"{float(it.get('quantity', 0)):g}", cls="cell--number")) for it in items]
 
-    order_rows = [
-        Tr(
-            Td(A(f"#{(o.get('id') or '').split(':')[-1][:8]}", href=f"/manufacturing/{o.get('id')}", cls="table-link")),
-            Td(o.get("description") or EMPTY),
-            Td(Span((o.get("status") or "created").title(), cls="badge")),
-            cls="data-row",
-        )
-        for o in orders
-    ]
-    tables = [Div(
-        H3("Manufacturing orders", cls="section-title"),
-        P("Created automatically for the recipe items on this document.", cls="hint"),
-        Table(Thead(Tr(Th("Order"), Th("Description"), Th("Status"))),
-              Tbody(*order_rows) if order_rows else Tbody(Tr(Td("None yet.", colspan="3", cls="empty-row"))),
-              cls="data-table"),
-        cls="recipe-block")]
+    tables = []
+    if fgs:
+        fg_rows = [
+            Tr(Td(A(it.get("sku") or it.get("item_id"),
+                    href=f"/inventory/{it.get('item_id')}?tab=manufacturing", cls="table-link")),
+               Td(it.get("name") or EMPTY),
+               Td(f"{float(it.get('quantity', 0)):g}", cls="cell--number"), cls="data-row")
+            for it in fgs
+        ]
+        tables.append(Div(
+            H3("Items to manufacture", cls="section-title"),
+            P("Open this item's Manufacturing tab to produce it; demand also appears on the Production Queue.", cls="hint"),
+            Table(Thead(Tr(Th("SKU"), Th("Name"), Th("Quantity", cls="cell--number"))),
+                  Tbody(*fg_rows), cls="data-table"),
+            cls="recipe-block"))
     if subs:
         tables.append(Div(
             H3("Sub-assemblies to build", cls="section-title"),
@@ -1897,20 +1897,17 @@ celerpUpdateBulkAlloc();
 
     @app.get("/docs/{entity_id}/manufacture-panel")
     async def doc_manufacture_panel(request: Request, entity_id: str):
-        """The doc's manufacturing orders (auto-created on read) + JIT components summary."""
+        """The doc's manufactured items (linked to their product Manufacturing tab) + JIT summary."""
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         try:
-            # Listing orders ensures missing ones are auto-created first; q narrows to this doc.
-            orders = (await api.list_mfg_orders(token, {"q": entity_id})).get("items", [])
             summary = await api.document_components_summary(token, entity_id)
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="doc-mfg-panel")
-        orders = [o for o in orders if o.get("source_doc_id") == entity_id]
-        return _doc_manufacture_panel(entity_id, summary, orders)
+        return _doc_manufacture_panel(entity_id, summary)
 
     @app.get("/docs/{entity_id}/field/{field}/display")
     async def doc_field_display(request: Request, entity_id: str, field: str):

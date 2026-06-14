@@ -88,18 +88,21 @@ def test_full_manufacturing_journey(page, ui_server, api):
         _t.sleep(0.3)
     assert api.get(f"/items/{ring}").json()["recipe"]["unit_cost"] == 615.0
 
-    # 4. Sell on an invoice; the manufacturing order is created automatically (Phase 3).
+    # 4. Sell on an invoice -> demand appears on the product-centric To-Make board (Phase 1).
     doc = api.post("/docs", json={"doc_type": "invoice", "line_items": [
         {"item_id": ring, "sku": "JNY-RING", "name": "18K Ring", "quantity": 2, "unit_price": 900},
     ], "total": 1800}).json()["id"]
+    # The invoice's Manufacturing panel is product-centric (links to the product tab, no auto orders).
     page.goto(f"{ui_server}/docs/{doc}", wait_until="domcontentloaded")
-    page.wait_for_selector("#doc-mfg-panel:has-text('Manufacturing orders')", timeout=10000)
+    page.wait_for_selector("#doc-mfg-panel:has-text('Items to manufacture')", timeout=10000)
     panel = page.locator("#doc-mfg-panel").inner_text()
-    assert "Create manufacturing order" not in panel  # nothing to click; it already exists
-    assert "10" in panel  # 2 rings -> 10 g gold in the JIT summary
-    page.screenshot(path=str(SHOTS / "doc-order-created.png"), full_page=True)
-    doc_orders = [o for o in api.get("/manufacturing").json()["items"] if o.get("source_doc_id") == doc]
-    assert len(doc_orders) == 1 and doc_orders[0]["inputs"][0]["quantity"] == 10.0
+    assert "Manufacturing orders" not in panel and "10" in panel  # 2 rings -> 10 g gold (JIT summary)
+    # The To-Make board pools that demand by product (lead column = item + qty to make).
+    page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#mfg-table:has-text('JNY-RING')", timeout=10000)
+    page.screenshot(path=str(SHOTS / "to-make-board.png"), full_page=True)
+    board = {r["item_id"]: r for r in api.get("/manufacturing/to-make").json()["items"]}
+    assert board[ring]["to_make"] == 2.0 and board[ring]["demand"] == 2.0
 
     # 5. Ad-hoc build via the repurposed /manufacturing/new (Phase 4).
     page.goto(f"{ui_server}/manufacturing/new", wait_until="domcontentloaded")

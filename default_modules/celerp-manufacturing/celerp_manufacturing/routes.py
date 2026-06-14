@@ -8,7 +8,6 @@ loader's register_api_routes calling setup_api_routes with the app directly).
 """
 from __future__ import annotations
 
-import hashlib
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -24,8 +23,12 @@ from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.auth import get_current_company_id, get_current_user
 
-from .costing import RecipeError, roll_up_cost, where_used
-from .expansion import expand_recipe, explode_demand, is_manufacturable, mfg_idem_key
+from .costing import RecipeError, labor_hours, roll_up_cost, where_used
+
+# Default hours-per-day for converting daily labor lines into the est-hours column.
+# Overridable per company in Manufacturing settings (P6).
+DEFAULT_HOURS_PER_DAY = 8.0
+from .expansion import expand_recipe, explode_demand, is_manufacturable
 from .labor import apply_labor_providers
 
 router = APIRouter(prefix="/manufacturing", dependencies=[Depends(get_current_user)], tags=["manufacturing"])
@@ -349,12 +352,6 @@ async def recost_dependents(
 # Manufacture-from-document endpoints (List / Pro Forma / Invoice → orders)
 # ---------------------------------------------------------------------------
 
-def _order_id_for(doc_id: str, line_id: str, cycle: int) -> str:
-    """Deterministic order entity_id for a (document, line, fulfill-cycle) — idempotent re-runs."""
-    h = hashlib.sha1(f"{doc_id}|{line_id}|{cycle}".encode()).hexdigest()[:20]
-    return f"mfg:{h}"
-
-
 def _doc_lines(doc_state: dict) -> list[tuple[int, str | None, str, float, str]]:
     """Normalize a document's line_items to (index, item_id, line_id, qty, label)."""
     out = []
@@ -378,63 +375,6 @@ async def _get_document(session: AsyncSession, company_id, doc_id: str) -> Proje
 _CLOSED_DOC_STATUSES = {"void", "cancelled", "converted", "expired"}
 
 
-async def _sync_doc_orders(session: AsyncSession, company_id, user, doc: Projection,
-                           states: dict[str, dict]) -> list[str]:
-    """Ensure one manufacturing order exists per recipe-bearing line of one document.
-
-    Orders are created automatically from open sales documents (owner decision 2026-06-12,
-    superseding the earlier manual-click flow). Deterministic order ids + idempotency keys
-    per (doc, line, fulfill-cycle) make this safe to run on every read; a cancelled order's
-    projection still exists, so cancelling never resurrects. Returns created order ids.
-    """
-    st = doc.state or {}
-    if (st.get("status") or "") in _CLOSED_DOC_STATUSES:
-        return []
-    cycle = int(st.get("fulfill_cycle", 0) or 0)
-    ref = st.get("ref_id") or doc.entity_id
-    created: list[str] = []
-    for _idx, item_id, line_id, qty, _label in _doc_lines(st):
-        if not item_id or qty <= 0:
-            continue
-        ist = states.get(item_id)
-        if not is_manufacturable(ist):
-            continue
-        order_id = _order_id_for(doc.entity_id, line_id, cycle)
-        if await session.get(Projection, {"company_id": company_id, "entity_id": order_id}) is not None:
-            continue
-        inputs, outputs = expand_recipe(ist, qty)
-        await emit_event(
-            session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-            event_type="mfg.order.created",
-            data={
-                "description": f"Build {qty:g} x {ist.get('sku', '')} (from {ref})",
-                "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
-                "source_doc_id": doc.entity_id, "source_doc_type": doc.entity_type, "source_line_id": line_id,
-            },
-            actor_id=user.id, location_id=None, source="auto",
-            idempotency_key=mfg_idem_key(doc.entity_id, line_id, cycle), metadata_={},
-        )
-        created.append(order_id)
-    return created
-
-
-async def _ensure_orders_for_open_docs(session: AsyncSession, company_id, user) -> int:
-    """Run _sync_doc_orders across every open sales document; returns count created."""
-    states = await _all_item_states(session, company_id)
-    docs = (await session.execute(
-        select(Projection).where(
-            Projection.company_id == company_id,
-            Projection.entity_type.in_(("doc", "list")),
-        )
-    )).scalars().all()
-    created = 0
-    for doc in docs:
-        created += len(await _sync_doc_orders(session, company_id, user, doc, states))
-    if created:
-        await session.commit()
-    return created
-
-
 @router.get("/documents/{doc_id}/components-summary")
 async def document_components_summary(
     doc_id: str,
@@ -454,7 +394,84 @@ async def document_components_summary(
             for iid, q in sorted(d.items(), key=lambda kv: (states.get(kv[0]) or {}).get("sku") or kv[0])
         ]
 
-    return {"sub_assemblies": _detail(demand["sub_assemblies"]), "raw_materials": _detail(demand["raw_materials"])}
+    # The finished goods on this document that are manufactured (have a recipe), aggregated by
+    # product, so the doc panel can link each to its product Manufacturing tab.
+    fg: dict[str, float] = {}
+    for item_id, qty in lines:
+        if is_manufacturable(states.get(item_id)):
+            fg[item_id] = fg.get(item_id, 0.0) + qty
+
+    return {
+        "finished_goods": _detail(fg),
+        "sub_assemblies": _detail(demand["sub_assemblies"]),
+        "raw_materials": _detail(demand["raw_materials"]),
+    }
+
+
+@router.get("/to-make")
+async def to_make(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The product-centric demand board: open demand aggregated BY PRODUCT across every open
+    demand document (customer invoices/pro formas/lists + internal production orders).
+
+    Each row: the manufacturable product, total open demand, on hand, net to make
+    (demand - on hand, clamped at 0), the soonest due date and demanding-doc count, and the
+    rolled est unit cost / est cost / est hours. Rows where the product is not manufacturable
+    (no recipe) are skipped. Sort: no-due-date first, then earliest due, then name.
+    """
+    states = await _all_item_states(session, company_id)
+    docs = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id,
+            Projection.entity_type.in_(("doc", "list")),
+        )
+    )).scalars().all()
+
+    agg: dict[str, dict] = {}
+    for doc in docs:
+        st = doc.state or {}
+        # Skip only closed docs; invoice drafts are pro formas (real demand) and are included.
+        if (st.get("status") or "") in _CLOSED_DOC_STATUSES:
+            continue
+        ref = st.get("ref_id") or doc.entity_id
+        due = st.get("due_date") or st.get("promised_date") or None
+        for _idx, item_id, _line_id, qty, _label in _doc_lines(st):
+            if not item_id or qty <= 0:
+                continue
+            ist = states.get(item_id)
+            if not is_manufacturable(ist):
+                continue
+            row = agg.setdefault(item_id, {
+                "item_id": item_id, "sku": (ist or {}).get("sku"), "name": (ist or {}).get("name"),
+                "demand": 0.0, "docs": [], "due": None,
+            })
+            row["demand"] += qty
+            row["docs"].append({"doc_id": doc.entity_id, "doc_number": ref, "doc_type": st.get("doc_type") or doc.entity_type, "due": due})
+            if due and (row["due"] is None or due < row["due"]):
+                row["due"] = due
+
+    items: list[dict] = []
+    for item_id, row in agg.items():
+        ist = states.get(item_id) or {}
+        on_hand = float(ist.get("quantity") or 0)
+        to_make_qty = max(0.0, row["demand"] - on_hand)
+        recipe = ist.get("recipe") or {}
+        out_qty = float(recipe.get("output_qty") or 1) or 1
+        unit_cost = float(recipe.get("unit_cost") or 0)
+        hours_per_unit = labor_hours(recipe, DEFAULT_HOURS_PER_DAY) / out_qty
+        items.append({
+            **{k: row[k] for k in ("item_id", "sku", "name", "due")},
+            "demand": row["demand"], "on_hand": on_hand, "to_make": to_make_qty,
+            "doc_count": len(row["docs"]), "docs": row["docs"],
+            "est_unit_cost": round(unit_cost, 4),
+            "est_cost": round(unit_cost * to_make_qty, 2),
+            "est_hours": round(hours_per_unit * to_make_qty, 2),
+        })
+    # No-due first, then earliest due, then name (GDR 2n spirit: act on undated/soonest first).
+    items.sort(key=lambda r: (r["due"] is not None, r["due"] or "", (r["sku"] or r["name"] or "")))
+    return {"items": items, "total": len(items)}
 
 
 # ---------------------------------------------------------------------------
@@ -553,9 +570,8 @@ async def list_orders(
     (doc number) and output SKUs; `status` filters by canonical status or the pseudo-status
     "incomplete" (planned/in_progress/on_hold); dates filter on creation date.
 
-    Runs for open sales documents are ensured (auto-created, idempotently) before listing, so
-    the queue always reflects current demand without a manual step."""
-    await _ensure_orders_for_open_docs(session, company_id, user)
+    Runs are NOT auto-created from documents in the product-centric model; demand lives on the
+    To-Make board (GET /manufacturing/to-make) and a run is created when you choose to produce."""
     rows = (await session.execute(
         select(Projection).where(
             Projection.company_id == company_id,

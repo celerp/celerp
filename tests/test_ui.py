@@ -2905,19 +2905,26 @@ class TestManufacturingPage:
 
     @pytest.mark.asyncio
     async def test_manufacturing_list_renders(self, ui_client):
-        orders = [{"entity_id": "mfg:abc123", "order_type": "assembly", "status": "draft", "created_at": "2026-01-01", "inputs": []}]
-        with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": orders, "total": len(orders)})):
+        rows = [{"item_id": "item:r", "sku": "RING", "name": "Ring", "to_make": 2.0, "demand": 2.0,
+                 "on_hand": 0.0, "due": None, "doc_count": 1, "est_unit_cost": 100.0, "est_cost": 200.0, "est_hours": 4.0}]
+        with (
+            patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": rows, "total": 1})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"currency": "USD"}})),
+        ):
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert r.status_code == 200
-        assert b"Manufacturing" in r.content
-        assert b"mfg-table" in r.content
+        assert b"Production Queue" in r.content
+        assert b"mfg-table" in r.content and b"RING" in r.content
 
     @pytest.mark.asyncio
     async def test_manufacturing_list_empty(self, ui_client):
-        with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": [], "total": 0})):
+        with (
+            patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert r.status_code == 200
-        assert b"No" in r.content  # empty state present in any form
+        assert b"Nothing to make" in r.content  # empty state
 
     @pytest.mark.asyncio
     async def test_manufacturing_unauthed_redirects(self, ui_client):
@@ -2944,7 +2951,10 @@ class TestManufacturingPage:
 
     @pytest.mark.asyncio
     async def test_manufacturing_sidebar_link_present(self, ui_client):
-        with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": [], "total": 0})):
+        with (
+            patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert b"/manufacturing" in r.content
 

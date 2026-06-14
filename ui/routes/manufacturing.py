@@ -12,7 +12,7 @@ from starlette.responses import RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header, flash
-from ui.components.table import EMPTY, breadcrumbs, status_cards, empty_state_cta, format_value, add_new_option, searchable_select, search_bar
+from ui.components.table import EMPTY, breadcrumbs, status_cards, empty_state_cta, format_value, add_new_option, searchable_select, search_bar, currency_symbol
 from ui.config import get_token as _token
 from ui.i18n import t, get_lang
 
@@ -20,6 +20,12 @@ logger = logging.getLogger(__name__)
 
 # Canonical run statuses; "incomplete" = still needs attention (default queue view).
 _INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
+
+
+def _company_cur(company: dict) -> str:
+    """Company currency symbol. Currency lives under settings.currency (top-level is unset)."""
+    code = company.get("currency") or (company.get("settings") or {}).get("currency") or ""
+    return currency_symbol(code)
 
 
 
@@ -62,6 +68,53 @@ def _order_row(order: dict) -> FT:
         Td(_badge(order.get("status", "draft"))),
         Td(format_value((order.get("created_at") or "")[:10])),
         Td(str(len(inputs)), cls="cell--number"),
+    )
+
+
+def _money(v, cur: str) -> str:
+    if v in (None, ""):
+        return EMPTY
+    try:
+        return f"{cur}{float(v):,.2f}"
+    except (TypeError, ValueError):
+        return EMPTY
+
+
+def _to_make_row(r: dict, cur: str) -> FT:
+    item_id = r.get("item_id", "")
+    label = f"{r.get('sku') or item_id} - {r.get('name', '')}".strip(" -")
+    due = r.get("due")
+    return Tr(
+        Td(A(label, href=f"/inventory/{item_id}?tab=manufacturing", cls="table-link")),
+        Td(f"{float(r.get('to_make', 0)):g}", cls="cell--number"),
+        Td(f"{float(r.get('demand', 0)):g} ({r.get('doc_count', 0)})", cls="cell--number",
+           title=f"{float(r.get('demand', 0)):g} demanded across {r.get('doc_count', 0)} open document(s)"),
+        Td(f"{float(r.get('on_hand', 0)):g}", cls="cell--number"),
+        Td(due or EMPTY, cls="cell--center"),
+        Td(_money(r.get("est_cost"), cur), cls="cell--number"),
+        Td(f"{float(r.get('est_hours', 0)):g}", cls="cell--number"),
+        Td(A("Make", href=f"/inventory/{item_id}?tab=manufacturing", cls="btn btn--xs btn--primary"),
+           cls="cell--actions"),
+        cls="data-row",
+    )
+
+
+def _to_make_table(rows: list[dict], cur: str) -> FT:
+    if not rows:
+        return Div(
+            P("Nothing to make. Items appear here when an open invoice, pro forma, list or "
+              "production order needs a product that has a recipe.", cls="hint"),
+            id="mfg-table",
+        )
+    cl = f" ({cur})" if cur else ""
+    # Headers centered (GDR 4a); numeric/currency CELLS right-aligned via cell--number on the td.
+    return Table(
+        Thead(Tr(
+            Th("Item"), Th("To make"), Th("Demand"), Th("On hand"), Th("Due"),
+            Th(f"Est. cost{cl}"), Th("Est. hours"), Th("", cls="cell--actions"),
+        )),
+        Tbody(*[_to_make_row(r, cur) for r in rows]),
+        cls="data-table", id="mfg-table",
     )
 
 
@@ -292,53 +345,105 @@ def setup_routes(app):
             params["date_to"] = date_to
         return params, date_from, date_to, preset
 
+    def _queue_tabs(active_tab: str) -> FT:
+        # Two tabs of one page: "To Make" (product-demand board) and "In Production" (runs).
+        return Div(
+            A("To Make", href="/manufacturing", cls=f"category-tab{' category-tab--active' if active_tab == 'to_make' else ''}"),
+            A("In Production", href="/manufacturing?tab=in_production",
+              cls=f"category-tab{' category-tab--active' if active_tab == 'in_production' else ''}"),
+            cls="category-tabs",
+        )
+
     @app.get("/manufacturing")
     async def manufacturing_list(request: Request):
-        from ui.routes.reports import _date_filter_bar
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        params, date_from, date_to, preset = _order_params(request)
-        q = params.get("q", "")
+        tab = "in_production" if request.query_params.get("tab") == "in_production" else "to_make"
+        q = (request.query_params.get("q") or "").strip().lower()
         try:
-            orders_all = (await api.list_mfg_orders(token, params)).get("items", [])
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            orders_all = []
-        # Default view = incomplete (planned/in_progress/on_hold); cards show true totals over all.
-        active = (request.query_params.get("status") or "incomplete").lower()
-        if active == "all":
-            shown = orders_all
-        elif active == "incomplete":
-            shown = [o for o in orders_all if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+            company = await api.get_company(token)
+        except APIError:
+            company = {}
+        cur = _company_cur(company)
+
+        if tab == "to_make":
+            try:
+                rows = (await api.manufacturing_to_make(token)).get("items", [])
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                rows = []
+            show_covered = request.query_params.get("view") == "all"
+            if not show_covered:
+                rows = [r for r in rows if float(r.get("to_make", 0)) > 0]
+            if q:
+                rows = [r for r in rows if q in f"{r.get('sku', '')} {r.get('name', '')}".lower()]
+            body = (
+                _queue_tabs("to_make"),
+                P("Products with open demand to make, pooled across all open invoices, pro formas, "
+                  "lists and production orders.", cls="hint"),
+                Div(A("Show covered too" if not show_covered else "Hide covered",
+                      href="/manufacturing?view=all" if not show_covered else "/manufacturing",
+                      cls="btn btn--xs btn--ghost",
+                      title="Also show products whose demand is already covered by on-hand stock"),
+                    cls="mfg-filter-row"),
+                _to_make_table(rows, cur),
+            )
         else:
-            shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
-        date_qs = f"&from={date_from}&to={date_to}&preset={preset}" if (date_from or date_to) else ""
+            try:
+                orders_all = (await api.list_mfg_orders(token, {})).get("items", [])
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+                orders_all = []
+            active = (request.query_params.get("status") or "incomplete").lower()
+            if active == "all":
+                shown = orders_all
+            elif active == "incomplete":
+                shown = [o for o in orders_all if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+            else:
+                shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
+            body = (
+                _queue_tabs("in_production"),
+                Div(
+                    _mfg_status_cards(orders_all, "" if active in ("incomplete", "all") else active),
+                    A("All incomplete" if active != "all" else "Show all",
+                      href="/manufacturing?tab=in_production" if active == "all" else "/manufacturing?tab=in_production&status=all",
+                      cls="btn btn--xs btn--ghost"),
+                    cls="mfg-filter-row",
+                ),
+                _order_table(shown),
+            )
+
+        search_url = "/manufacturing/to-make-search" if tab == "to_make" else "/manufacturing/search"
         return base_shell(
             page_header(
-                "Manufacturing",
-                search_bar(placeholder="Search order, doc number, SKU...", target="#mfg-table",
-                           url=f"/manufacturing/search?{date_qs.lstrip('&')}" if date_qs else "/manufacturing/search"),
-                A(t("doc.import_csv"), href="/manufacturing/import", cls="btn btn--secondary"),
-                A("Build to stock", href="/manufacturing/new", cls="btn btn--primary",
-                  title="Create an order without a sales document, e.g. to replenish stock"),
+                "Production Queue",
+                search_bar(placeholder="Search item / SKU...", target="#mfg-table", url=search_url),
             ),
-            _date_filter_bar("/manufacturing", date_from, date_to, preset,
-                             extra_params=f"&q={q}" if q else "", lang=get_lang(request)),
-            P("Orders are created automatically from open invoices, pro formas and lists that contain recipe items.",
-              cls="hint"),
-            Div(
-                _mfg_status_cards(orders_all, "" if active in ("incomplete", "all") else active),
-                A("All incomplete" if active != "all" else "Show all", href="/manufacturing"
-                  if active == "all" else "/manufacturing?status=all", cls="category-tab"),
-                cls="mfg-filter-row",
-            ),
-            _order_table(shown),
-            title="Manufacturing - Celerp",
+            *body,
+            title="Production Queue - Celerp",
             nav_active="manufacturing",
             request=request,
         )
+
+    @app.get("/manufacturing/to-make-search")
+    async def to_make_search(request: Request):
+        """To-Make board fragment for the header search box."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        q = (request.query_params.get("q") or "").strip().lower()
+        try:
+            company = await api.get_company(token)
+            rows = (await api.manufacturing_to_make(token)).get("items", [])
+        except APIError:
+            company, rows = {}, []
+        rows = [r for r in rows if float(r.get("to_make", 0)) > 0]
+        if q:
+            rows = [r for r in rows if q in f"{r.get('sku', '')} {r.get('name', '')}".lower()]
+        return _to_make_table(rows, _company_cur(company))
 
     @app.get("/manufacturing/search")
     async def manufacturing_search(request: Request):

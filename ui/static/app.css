@@ -1454,6 +1454,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .cat-add-input { width: 200px !important; flex: 0 0 200px; }
 .cell--center { text-align: center; }
 .th--center { text-align: center; }
+/* Production Queue filter row: clear separation from the description/tabs above it. */
+.mfg-filter-row { display: flex; align-items: center; gap: 8px; margin: 12px 0 8px; flex-wrap: wrap; }
 
 /* ── Activating / module-load spinner ── */
 .activating-body { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px 0; }
