@@ -27,9 +27,7 @@ from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
-from celerp.services.fulfill import execute_fulfill, execute_unfulfill
-from celerp.services.pick import PickResult, compute_pick_plan
-from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_pieces_unit, is_weight_unit, validate_line_quantity
+from celerp.services.units import DEFAULT_UNITS, SERVICE_SELL_BY, build_unit_map, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 
@@ -3008,12 +3006,18 @@ async def fulfill_lines(
     errors: list[str] = []          # 422: item not found / not available
     blocked: list[str] = []         # 409: stock shortage / non-splittable partial
     to_fulfill: list[str] = []
+    service_eids: set[str] = set()  # service lines: rendered, not picked from stock
     split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial draws)
     fetched: dict[str, Projection] = {}
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         if item_proj is None:
             errors.append(f"{item_eid}: item not found")
+            continue
+        # Service lines have no physical stock: mark them done without any stock/availability guard.
+        if ((item_proj.state.get("inventory_type") or "stocked") == "service"
+                or (item_proj.state.get("sell_by") or "") in SERVICE_SELL_BY):
+            service_eids.add(item_eid)
             continue
         item_status = item_proj.state.get("status", "")
         if item_status != "available":
@@ -3073,10 +3077,10 @@ async def fulfill_lines(
     if blocked:
         raise HTTPException(status_code=409, detail="Cannot fulfill: " + "; ".join(blocked))
 
-    if errors and not to_fulfill:
+    if errors and not to_fulfill and not service_eids:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
-    if not to_fulfill:
+    if not to_fulfill and not service_eids:
         raise HTTPException(status_code=422, detail="No fulfillable items in the provided line_entity_ids")
 
     now = datetime.now(UTC).isoformat()
@@ -3146,15 +3150,16 @@ async def fulfill_lines(
             metadata_={"doc_id": entity_id},
         )
 
-    # Optimistically compute doc fulfillment_status
-    newly_out = set(to_fulfill)
+    # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
+    # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
+    fulfilled_eids = set(to_fulfill) | service_eids
     line_items = state.get("line_items", [])
     all_statuses: list[str] = []
     for li in line_items:
         li_eid = li.get("entity_id") or li.get("item_id") or ""
         if not li_eid:
             continue
-        if li_eid in newly_out:
+        if li_eid in fulfilled_eids:
             all_statuses.append("memo_out")
         else:
             li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
