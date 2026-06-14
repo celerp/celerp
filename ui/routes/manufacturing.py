@@ -59,13 +59,16 @@ def _mfg_status_cards(orders: list[dict], active_status: str) -> FT:
 
 
 def _order_row(order: dict) -> FT:
-    oid = order.get("entity_id") or order.get("id", "")
-    short_id = oid.split(":")[-1][:8] if oid else EMPTY
+    # A run lives on its product's Manufacturing tab; link there (the opaque run page is gone).
+    out_id = order.get("output_item_id")
+    outs = order.get("expected_outputs") or [{}]
+    label = outs[0].get("sku") or outs[0].get("name") or order.get("description") or EMPTY
+    href = f"/inventory/{out_id}?tab=manufacturing" if out_id else None
+    name_cell = A(label, href=href, cls="table-link") if href else Span(label)
     inputs = order.get("inputs", [])
     return Tr(
-        Td(A(f"#{short_id}", href=f"/manufacturing/{oid}", cls="link")),
-        Td(format_value(order.get("order_type", order.get("description", "")))),
-        Td(_badge(order.get("status", "draft"))),
+        Td(name_cell),
+        Td(_badge(order.get("status", "planned"))),
         Td(format_value((order.get("created_at") or "")[:10])),
         Td(str(len(inputs)), cls="cell--number"),
     )
@@ -125,203 +128,16 @@ def _order_table(orders: list[dict]) -> FT:
             id="mfg-table",
         )
     return Table(
-        Thead(Tr(
-            Th(t("th.order")), Th(t("th.doc_type")), Th(t("th.status")), Th(t("msg.created")), Th(t("th.inputs")),
-        )),
+        Thead(Tr(Th("Product"), Th(t("th.status")), Th(t("msg.created")), Th(t("th.inputs")))),
         Tbody(*[_order_row(o) for o in orders]),
         cls="data-table",
         id="mfg-table",
     )
 
 
-def _order_inputs_section(order: dict) -> FT:
-    inputs = order.get("inputs", [])
-    outputs = order.get("expected_outputs", [])
-    steps_done = set(order.get("steps_completed", []))
-    status = order.get("status", "draft")
-    oid = order.get("entity_id", "")
-
-    # T8: Inputs with consume buttons
-    input_rows = []
-    for inp in inputs:
-        iid = inp.get("item_id", "")
-        consumed_qty = float(inp.get("consumed_qty", 0) or 0)
-        required_qty = float(inp.get("quantity", 0) or 0)
-        consumed = f"consume:{iid}" in steps_done or consumed_qty >= required_qty
-
-        consume_btn = ""
-        if status == "in_progress" and not consumed:
-            consume_btn = Details(
-                Summary(t("mfg.consume"), cls="btn btn--primary btn--xs"),
-                Form(
-                    Div(
-                        Label(t("th.qty"), cls="form-label"),
-                        Input(type="number", name="quantity", value=str(required_qty - consumed_qty),
-                              step="any", min="0", cls="form-input form-input--sm"),
-                        cls="form-group",
-                    ),
-                    Input(type="hidden", name="item_id", value=iid),
-                    Button(t("btn.confirm"), type="submit", cls="btn btn--primary btn--xs"),
-                    hx_post=f"/manufacturing/{oid}/consume",
-                    hx_target="#mfg-detail",
-                    hx_swap="outerHTML",
-                    cls="form-card",
-                ),
-            )
-
-        input_rows.append(Tr(
-            Td(format_value(iid)),
-            Td(format_value(required_qty), cls="cell--number"),
-            Td(str(consumed_qty), cls="cell--number"),
-            Td("✓ Consumed" if consumed else "Pending", cls="cell--number"),
-            Td(consume_btn),
-        ))
-
-    output_rows = [
-        Tr(
-            Td(format_value(o.get("sku"))),
-            Td(format_value(o.get("name"))),
-            Td(format_value(o.get("quantity")), cls="cell--number"),
-        )
-        for o in outputs
-    ]
-
-    # T8: Steps checklist
-    steps = order.get("steps", [])
-    step_rows = []
-    for step in steps:
-        sid = step.get("step_id", "")
-        step_status = step.get("status", "pending")
-        step_done = step_status in ("completed", "done")
-
-        complete_btn = ""
-        if status == "in_progress" and not step_done:
-            complete_btn = Details(
-                Summary(t("mfg.complete_step"), cls="btn btn--primary btn--xs"),
-                Form(
-                    Div(
-                        Label(t("label.notes_optional"), cls="form-label"),
-                        Textarea("", name="notes", rows="2", cls="form-input form-input--sm"),
-                        cls="form-group",
-                    ),
-                    Input(type="hidden", name="step_id", value=sid),
-                    Button(t("btn.confirm"), type="submit", cls="btn btn--primary btn--xs"),
-                    hx_post=f"/manufacturing/{oid}/step",
-                    hx_target="#mfg-detail",
-                    hx_swap="outerHTML",
-                    cls="form-card",
-                ),
-            )
-
-        step_rows.append(Tr(
-            Td("✓" if step_done else "○", cls="cell--number"),
-            Td(str(step.get("name", sid))),
-            Td(_badge(step_status)),
-            Td(complete_btn),
-        ))
-
-    steps_section = ""
-    if steps:
-        steps_section = Div(
-            H3(t("page.steps")),
-            Table(
-                Thead(Tr(Th(""), Th(t("th.step")), Th(t("th.status")), Th(""))),
-                Tbody(*step_rows),
-                cls="data-table data-table--compact",
-            ),
-            cls="steps-panel",
-        )
-
-    return Div(
-        steps_section,
-        Div(
-            H3(t("page.inputs_bom")),
-            Table(
-                Thead(Tr(Th(t("label.item_id")), Th(t("th.required")), Th(t("th.consumed")), Th(t("th.status")), Th(""))),
-                Tbody(*input_rows) if input_rows else Tbody(Tr(Td(t("mfg.no_inputs_defined"), colspan="5"))),
-                cls="data-table data-table--compact",
-            ),
-            cls="bom-panel",
-        ),
-        Div(
-            H3(t("page.expected_outputs")),
-            Table(
-                Thead(Tr(Th("SKU"), Th(t("th.name")), Th(t("th.quantity")))),
-                Tbody(*output_rows) if output_rows else Tbody(Tr(Td(t("mfg.no_outputs_defined"), colspan="3"))),
-                cls="data-table data-table--compact",
-            ),
-            cls="bom-panel",
-        ),
-        cls="bom-grid",
-    )
-
-
-def _action_buttons(order: dict, order_id: str) -> FT:
-    status = order.get("status", "planned")
-    btns = []
-
-    def _post_btn(label, action, primary=True):
-        return Form(
-            Button(label, cls=f"btn btn--{'primary' if primary else 'secondary'}", type="submit"),
-            method="post", action=f"/manufacturing/{order_id}/{action}",
-            hx_post=f"/manufacturing/{order_id}/{action}", hx_target="#mfg-detail", hx_swap="outerHTML",
-        )
-
-    if status == "planned":
-        btns.append(_post_btn(t("btn.start_order"), "start"))
-    if status == "in_progress":
-        btns.append(_post_btn(t("btn.complete_order"), "complete"))
-        btns.append(_post_btn("Hold", "hold", primary=False))
-    if status == "on_hold":
-        btns.append(_post_btn("Resume", "resume"))
-    if status not in ("completed", "cancelled"):
-        btns.append(
-            Form(
-                Button(t("btn.cancel_order"), cls="btn btn--secondary", type="submit"),
-                method="post", action=f"/manufacturing/{order_id}/cancel",
-                hx_post=f"/manufacturing/{order_id}/cancel",
-                hx_target="#mfg-detail",
-                hx_swap="outerHTML",
-            )
-        )
-    return Div(*btns, cls="action-bar") if btns else Div()
-
-
-def _detail_panel(order: dict) -> FT:
-    oid = order.get("entity_id", "")
-    short_id = oid.split(":")[-1][:8] if oid else EMPTY
-    return Div(
-        Div(
-            Div(
-                Span(t("th.order"), cls="detail-label"),
-                Span(f"#{short_id}", cls="detail-value"),
-            ),
-            Div(
-                Span(t("th.doc_type"), cls="detail-label"),
-                Span(format_value(order.get("order_type", order.get("description", ""))), cls="detail-value"),
-            ),
-            Div(
-                Span(t("th.status"), cls="detail-label"),
-                _badge(order.get("status", "draft")),
-            ),
-            Div(
-                Span(t("th.description"), cls="detail-label"),
-                Span(format_value(order.get("description")), cls="detail-value"),
-            ),
-            Div(
-                Span(t("th.due_date"), cls="detail-label"),
-                Span(format_value(order.get("due_date")), cls="detail-value"),
-            ),
-            Div(
-                Span(t("mfg.est_cost"), cls="detail-label"),
-                Span(format_value(order.get("estimated_cost")), cls="detail-value"),
-            ),
-            cls="detail-fields",
-        ),
-        _order_inputs_section(order),
-        _action_buttons(order, oid),
-        id="mfg-detail",
-    )
+# The opaque per-run detail page was removed in the product-centric overhaul. A run now lives on
+# its product's Manufacturing tab (the production block) and in the In Production queue; status
+# actions are handled there (see ui/routes/inventory.py production-block routes).
 
 
 def setup_routes(app):
@@ -517,145 +333,6 @@ def setup_routes(app):
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             return await _reshow(e.detail)
-
-    @app.get("/manufacturing/{order_id:path}")
-    async def mfg_order_detail(request: Request, order_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            order = await api.get_mfg_order(token, order_id)
-        except (APIError, Exception) as e:
-            if isinstance(e, APIError) and e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            if isinstance(e, APIError) and e.status == 404:
-                return RedirectResponse("/manufacturing", status_code=302)
-            order = {}
-        oid = order.get("entity_id", order_id)
-        short_id = oid.split(":")[-1][:8] if oid else order_id
-        return base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), ("Manufacturing", "/manufacturing"), (f"Order #{short_id}", None)]),
-            page_header(
-                f"Manufacturing Order",
-                A(t("btn.back_to_settings"), href="/manufacturing", cls="btn btn--secondary"),
-            ),
-            _detail_panel(order),
-            title="Manufacturing Order - Celerp",
-            nav_active="manufacturing",
-            request=request,
-        )
-
-    @app.post("/manufacturing/{order_id:path}/start")
-    async def start_mfg_order(request: Request, order_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.start_mfg_order(token, order_id)
-            order = await api.get_mfg_order(token, order_id)
-            return _detail_panel(order)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Div(flash(e.detail), id="mfg-detail")
-
-    @app.post("/manufacturing/{order_id:path}/complete")
-    async def complete_mfg_order(request: Request, order_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.complete_mfg_order(token, order_id)
-            order = await api.get_mfg_order(token, order_id)
-            return _detail_panel(order)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Div(flash(e.detail), id="mfg-detail")
-
-    @app.post("/manufacturing/{order_id:path}/cancel")
-    async def cancel_mfg_order(request: Request, order_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        reason = str(form.get("reason", "")).strip() or None
-        try:
-            await api.cancel_mfg_order(token, order_id, reason)
-            order = await api.get_mfg_order(token, order_id)
-            return _detail_panel(order)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Div(flash(e.detail), id="mfg-detail")
-
-    @app.post("/manufacturing/{order_id:path}/hold")
-    async def hold_mfg_order(request: Request, order_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        reason = str(form.get("reason", "")).strip() or None
-        try:
-            await api.hold_mfg_order(token, order_id, reason)
-            return _detail_panel(await api.get_mfg_order(token, order_id))
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Div(flash(e.detail), id="mfg-detail")
-
-    @app.post("/manufacturing/{order_id:path}/resume")
-    async def resume_mfg_order(request: Request, order_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        try:
-            await api.resume_mfg_order(token, order_id)
-            return _detail_panel(await api.get_mfg_order(token, order_id))
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Div(flash(e.detail), id="mfg-detail")
-
-    # T8: Complete step
-    @app.post("/manufacturing/{order_id:path}/step")
-    async def complete_step_route(request: Request, order_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        step_id = str(form.get("step_id", "")).strip()
-        notes = str(form.get("notes", "")).strip() or None
-        try:
-            await api.complete_mfg_step(token, order_id, step_id, notes)
-            order = await api.get_mfg_order(token, order_id)
-            return _detail_panel(order)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Div(flash(e.detail), id="mfg-detail")
-
-    # T8: Consume input
-    @app.post("/manufacturing/{order_id:path}/consume")
-    async def consume_input_route(request: Request, order_id: str):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        form = await request.form()
-        item_id = str(form.get("item_id", "")).strip()
-        try:
-            quantity = float(str(form.get("quantity", "0")))
-        except ValueError:
-            quantity = 0.0
-        try:
-            await api.consume_mfg_input(token, order_id, item_id, quantity)
-            order = await api.get_mfg_order(token, order_id)
-            return _detail_panel(order)
-        except APIError as e:
-            if e.status == 401:
-                return RedirectResponse("/login", status_code=302)
-            return Div(flash(e.detail), id="mfg-detail")
-
 
 def _build_order_form(items: list[dict], prefill: dict | None = None) -> FT:
     """Build-order form: pick a manufacturable SKU + quantity; inputs expand from its recipe.

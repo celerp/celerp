@@ -2932,22 +2932,8 @@ class TestManufacturingPage:
         assert r.status_code == 302
         assert "/login" in r.headers["location"]
 
-    @pytest.mark.asyncio
-    async def test_manufacturing_detail_renders(self, ui_client):
-        order = {
-            "entity_id": "mfg:abc123",
-            "order_type": "assembly",
-            "status": "planned",
-            "description": "Test order",
-            "inputs": [{"item_id": "item:x1", "quantity": 5}],
-            "expected_outputs": [{"sku": "OUT-1", "name": "Widget", "quantity": 10}],
-            "steps_completed": [],
-        }
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
-        assert b"Start Order" in r.content
+    # The opaque per-run detail page was removed (product-centric overhaul): a run now lives on
+    # its product's Manufacturing tab (production block) + the In Production queue.
 
     @pytest.mark.asyncio
     async def test_manufacturing_sidebar_link_present(self, ui_client):
@@ -2958,41 +2944,9 @@ class TestManufacturingPage:
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert b"/manufacturing" in r.content
 
-    @pytest.mark.asyncio
-    async def test_manufacturing_detail_shows_bom(self, ui_client):
-        order = {
-            "entity_id": "mfg:abc123",
-            "status": "in_progress",
-            "inputs": [{"item_id": "item:x1", "quantity": 3}],
-            "expected_outputs": [{"sku": "OUT-1", "name": "Widget", "quantity": 2}],
-            "steps_completed": [],
-        }
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert b"Inputs (BOM)" in r.content
-        assert b"Expected Outputs" in r.content
-
-    @pytest.mark.asyncio
-    async def test_manufacturing_start_htmx(self, ui_client):
-        order = {"entity_id": "mfg:abc123", "status": "in_progress", "inputs": [], "expected_outputs": [], "steps_completed": []}
-        with (
-            patch("ui.api_client.start_mfg_order", new=AsyncMock(return_value={"event_id": "ev1"})),
-            patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)),
-        ):
-            r = await ui_client.post("/manufacturing/mfg:abc123/start", cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
-
-    @pytest.mark.asyncio
-    async def test_manufacturing_cancel_htmx(self, ui_client):
-        order = {"entity_id": "mfg:abc123", "status": "cancelled", "inputs": [], "expected_outputs": [], "steps_completed": []}
-        with (
-            patch("ui.api_client.cancel_mfg_order", new=AsyncMock(return_value={"event_id": "ev1"})),
-            patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)),
-        ):
-            r = await ui_client.post("/manufacturing/mfg:abc123/cancel", cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
+    # Detail-page BOM/start/cancel tests removed with the opaque detail page; run status actions
+    # are now driven from the product Manufacturing tab (production-block run_action route) and
+    # covered by the manufacturing API + browser tests.
 
 
 # ── T5: CSV import/export ────────────────────────────────────────────────────
@@ -5722,81 +5676,8 @@ class TestSprint5PaymentRefund:
         assert b"10,000" in r.content
 
 
-class TestSprint5MfgSteps:
-    """T8: Manufacturing step-by-step progression."""
-
-    @pytest.mark.asyncio
-    async def test_mfg_detail_shows_steps(self, ui_client):
-        """Manufacturing detail shows steps checklist."""
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=_MFG_ORDER_WITH_STEPS)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Steps" in r.content
-        assert b"Cut" in r.content
-        assert b"Polish" in r.content
-
-    @pytest.mark.asyncio
-    async def test_mfg_steps_have_complete_button(self, ui_client):
-        """In-progress order steps show Complete Step button."""
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=_MFG_ORDER_WITH_STEPS)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert b"Complete Step" in r.content
-
-    @pytest.mark.asyncio
-    async def test_mfg_inputs_have_consume_button(self, ui_client):
-        """In-progress order inputs show Consume button."""
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=_MFG_ORDER_WITH_STEPS)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert b"Consume" in r.content
-
-    @pytest.mark.asyncio
-    async def test_complete_step_route(self, ui_client):
-        """POST /manufacturing/{id}/step calls api."""
-        completed = {**_MFG_ORDER_WITH_STEPS, "steps": [
-            {"step_id": "step1", "name": "Cut", "status": "completed"},
-            {"step_id": "step2", "name": "Polish", "status": "pending"},
-        ]}
-        with (
-            patch("ui.api_client.complete_mfg_step", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=completed)),
-        ):
-            r = await ui_client.post("/manufacturing/mfg:abc123/step", data={"step_id": "step1", "notes": "done"}, cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
-
-    @pytest.mark.asyncio
-    async def test_consume_input_route(self, ui_client):
-        """POST /manufacturing/{id}/consume calls api."""
-        consumed = {**_MFG_ORDER_WITH_STEPS, "inputs": [
-            {"item_id": "item:x1", "quantity": 5, "consumed_qty": 5},
-        ]}
-        with (
-            patch("ui.api_client.consume_mfg_input", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=consumed)),
-        ):
-            r = await ui_client.post("/manufacturing/mfg:abc123/consume", data={"item_id": "item:x1", "quantity": "5"}, cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
-
-    @pytest.mark.asyncio
-    async def test_draft_order_no_step_buttons(self, ui_client):
-        """Draft order does not show step completion buttons."""
-        draft = {**_MFG_ORDER_WITH_STEPS, "status": "draft"}
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=draft)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert b"Complete Step" not in r.content
-
-    @pytest.mark.asyncio
-    async def test_completed_step_shows_checkmark(self, ui_client):
-        """Completed steps show checkmark."""
-        order = {**_MFG_ORDER_WITH_STEPS, "steps": [
-            {"step_id": "step1", "name": "Cut", "status": "completed"},
-            {"step_id": "step2", "name": "Polish", "status": "pending"},
-        ]}
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert "✓".encode() in r.content
-
+# Removed TestSprint5MfgSteps: the opaque run detail page + consume/step UI were removed in
+# the product-centric overhaul (run execution moves to the product Manufacturing tab in P3).
 
 class TestSprint5NoPopups:
     """Cross-cutting: no popups/modals anywhere."""

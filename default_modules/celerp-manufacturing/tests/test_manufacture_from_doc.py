@@ -126,6 +126,25 @@ async def test_to_make_est_hours_from_labor(client) -> None:
 
 
 @pytest.mark.asyncio
+async def test_item_hub_demand_and_runs(client) -> None:
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDHUB", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RINGHUB")
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    await _doc(client, token, [{"item_id": ring, "sku": "RINGHUB", "name": "Ring", "quantity": 2, "unit_price": 1}])
+    # A run that makes this product (output_item_id stamped by build).
+    assert (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 1})).status_code == 200
+
+    hub = (await client.get(f"/manufacturing/items/{ring}/hub", headers=_h(token))).json()
+    assert len(hub["demand"]) == 1 and hub["demand"][0]["quantity"] == 2.0
+    assert len(hub["runs"]) == 1
+    run = hub["runs"][0]
+    assert run["output_item_id"] == ring and run["status"] == "planned"
+    # Input SKU resolved for display.
+    assert run["inputs"][0]["sku"] == "GOLDHUB" and run["inputs"][0]["quantity"] == 5.0
+
+
+@pytest.mark.asyncio
 async def test_components_summary_nested_and_finished_goods(client) -> None:
     token = await _register(client)
     gold = await _item(client, token, "GOLD3", quantity=100, cost_total=8000)

@@ -268,6 +268,8 @@ async def build_item(
         data={
             "description": f"Build {payload.quantity:g} x {item.state.get('sku', '')}",
             "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
+            # The product this run makes — links the run to its product Manufacturing tab.
+            "output_item_id": item_id,
         },
         actor_id=user.id, location_id=None, source="api",
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
@@ -472,6 +474,70 @@ async def to_make(
     # No-due first, then earliest due, then name (GDR 2n spirit: act on undated/soonest first).
     items.sort(key=lambda r: (r["due"] is not None, r["due"] or "", (r["sku"] or r["name"] or "")))
     return {"items": items, "total": len(items)}
+
+
+def _run_makes(run_state: dict, item_id: str, item_sku: str) -> bool:
+    """Does this run produce the given product? Match on output_item_id, else output SKU."""
+    if run_state.get("output_item_id") == item_id:
+        return True
+    return any((o.get("sku") and o.get("sku") == item_sku) for o in run_state.get("expected_outputs", []))
+
+
+@router.get("/items/{item_id}/hub")
+async def item_manufacturing_hub(
+    item_id: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The product Manufacturing-tab data: open demand for this product (which documents want it)
+    + the production runs that make it. SKUs are resolved for human-readable display."""
+    item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    if item is None or item.entity_type != "item":
+        raise HTTPException(status_code=404, detail="Item not found")
+    item_sku = (item.state or {}).get("sku")
+    states = await _all_item_states(session, company_id)
+
+    # Demand: open document lines for this product.
+    docs = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type.in_(("doc", "list")),
+        )
+    )).scalars().all()
+    demand = []
+    for doc in docs:
+        st = doc.state or {}
+        if (st.get("status") or "") in _CLOSED_DOC_STATUSES:
+            continue
+        for _idx, lid, _line_id, qty, _label in _doc_lines(st):
+            if lid == item_id and qty > 0:
+                demand.append({
+                    "doc_id": doc.entity_id, "doc_number": st.get("ref_id") or doc.entity_id,
+                    "doc_type": st.get("doc_type") or doc.entity_type,
+                    "contact_name": st.get("contact_name") or "", "quantity": qty,
+                    "due": st.get("due_date") or st.get("promised_date") or None,
+                })
+
+    # Runs that make this product, newest first, with input SKUs resolved.
+    run_rows = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type == "mfg_order",
+        )
+    )).scalars().all()
+    runs = []
+    for r in run_rows:
+        if not _run_makes(r.state or {}, item_id, item_sku):
+            continue
+        rs = r.state or {}
+        inputs = [
+            {**i, "sku": (states.get(i.get("item_id")) or {}).get("sku"),
+             "name": (states.get(i.get("item_id")) or {}).get("name")}
+            for i in rs.get("inputs", [])
+        ]
+        runs.append({**rs, "id": r.entity_id, "inputs": inputs,
+                     "created_at": r.created_at.isoformat() if r.created_at else None})
+    runs.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+
+    return {"demand": demand, "runs": runs}
 
 
 # ---------------------------------------------------------------------------
