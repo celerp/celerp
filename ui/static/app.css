@@ -1556,6 +1556,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Editable cells (click-to-edit inline fields) */
 .editable-cell { display: inline-block; min-width: 60px; min-height: 20px; padding: 2px 6px; border-radius: 4px; cursor: pointer; color: var(--c-text); font-size: 13px; border: 1px solid transparent; transition: background 0.1s, border-color 0.1s; }
 .editable-cell:hover { background: var(--c-bg3); border-color: var(--c-border); }
+/* In a centered column the chip's min-width can leave short text (e.g. "--") visually left of the
+   header; center the text inside the chip so cell content sits under its centered header. */
+.cell--center .editable-cell { text-align: center; }
 .editable-cell--editing { display: block; width: 100%; }
 /* Read-only cell (e.g. provisional draft doc number): show a tooltip cursor,
    no click-to-edit hover affordance. */

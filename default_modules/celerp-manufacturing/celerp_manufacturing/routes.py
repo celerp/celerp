@@ -14,11 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
 from celerp.events.schemas import RecipeSpec
+from celerp.models.company import Company, WorkCenter
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.auth import get_current_company_id, get_current_user
@@ -26,7 +28,7 @@ from celerp.services.auth import get_current_company_id, get_current_user
 from .costing import RecipeError, labor_hours, roll_up_cost, where_used
 
 # Default hours-per-day for converting daily labor lines into the est-hours column.
-# Overridable per company in Manufacturing settings (P6).
+# Overridable per company in Manufacturing settings (settings.manufacturing.hours_per_day).
 DEFAULT_HOURS_PER_DAY = 8.0
 from .expansion import expand_recipe, explode_demand, is_manufacturable
 from .labor import apply_labor_providers
@@ -493,6 +495,7 @@ async def to_make(
 
     # Non-splittable outputs restock as discrete lots under the product, so on-hand must include them.
     lot_qty = _lot_qty_by_parent(states)
+    hours_per_day = _hours_per_day(await _mfg_settings(session, company_id))
     items: list[dict] = []
     for item_id, row in agg.items():
         ist = states.get(item_id) or {}
@@ -501,7 +504,7 @@ async def to_make(
         recipe = ist.get("recipe") or {}
         out_qty = float(recipe.get("output_qty") or 1) or 1
         unit_cost = float(recipe.get("unit_cost") or 0)
-        hours_per_unit = labor_hours(recipe, DEFAULT_HOURS_PER_DAY) / out_qty
+        hours_per_unit = labor_hours(recipe, hours_per_day) / out_qty
         items.append({
             **{k: row[k] for k in ("item_id", "sku", "name", "due")},
             "demand": row["demand"], "on_hand": on_hand, "to_make": to_make_qty,
@@ -650,6 +653,133 @@ async def batch_import_manufacturing(
 
     await session.commit()
     return BatchImportResult(created=created, skipped=skipped, errors=errors)
+
+
+# ---------------------------------------------------------------------------
+# Manufacturing settings (stored under company.settings["manufacturing"])
+# ---------------------------------------------------------------------------
+
+async def _mfg_settings(session: AsyncSession, company_id) -> dict:
+    company = await session.get(Company, company_id)
+    return (company.settings or {}).get("manufacturing", {}) if company else {}
+
+
+def _hours_per_day(settings: dict) -> float:
+    try:
+        return float(settings.get("hours_per_day") or DEFAULT_HOURS_PER_DAY)
+    except (TypeError, ValueError):
+        return DEFAULT_HOURS_PER_DAY
+
+
+# ---------------------------------------------------------------------------
+# Work Centers (relational master data, like Location) - registered before the
+# catch-all GET /{order_id} so /work-centers is not swallowed by it.
+# ---------------------------------------------------------------------------
+
+class WorkCenterCreate(BaseModel):
+    name: str
+    wip_location_id: str | None = None
+    labor_rate: float | None = None
+    capacity: float | None = None
+
+
+class WorkCenterPatch(BaseModel):
+    name: str | None = None
+    wip_location_id: str | None = None
+    labor_rate: float | None = None
+    capacity: float | None = None
+
+
+def _wc_dict(wc: WorkCenter) -> dict:
+    return {
+        "id": str(wc.id), "name": wc.name,
+        "wip_location_id": str(wc.wip_location_id) if wc.wip_location_id else None,
+        "labor_rate": wc.labor_rate, "capacity": wc.capacity,
+    }
+
+
+def _parse_loc(value: str | None):
+    if not value:
+        return None
+    try:
+        return uuid.UUID(value)
+    except (TypeError, ValueError):
+        return None
+
+
+@router.get("/work-centers")
+async def list_work_centers(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    rows = (await session.execute(
+        select(WorkCenter).where(WorkCenter.company_id == company_id).order_by(WorkCenter.name)
+    )).scalars().all()
+    return {"items": [_wc_dict(w) for w in rows], "total": len(rows)}
+
+
+@router.post("/work-centers")
+async def create_work_center(
+    payload: WorkCenterCreate,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    if not payload.name.strip():
+        raise HTTPException(status_code=422, detail="Work center name is required")
+    wc = WorkCenter(
+        company_id=company_id, name=payload.name.strip(), wip_location_id=_parse_loc(payload.wip_location_id),
+        labor_rate=payload.labor_rate, capacity=payload.capacity,
+    )
+    session.add(wc)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail=f"A work center named '{payload.name.strip()}' already exists")
+    return {"id": str(wc.id)}
+
+
+@router.patch("/work-centers/{wc_id}")
+async def patch_work_center(
+    wc_id: str,
+    payload: WorkCenterPatch,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    wc = await session.get(WorkCenter, _parse_loc(wc_id))
+    if wc is None or wc.company_id != company_id:
+        raise HTTPException(status_code=404, detail="Work center not found")
+    fields = payload.model_dump(exclude_unset=True)
+    if "name" in fields:
+        if not (fields["name"] or "").strip():
+            raise HTTPException(status_code=422, detail="Work center name is required")
+        wc.name = fields["name"].strip()
+    if "wip_location_id" in fields:
+        wc.wip_location_id = _parse_loc(fields["wip_location_id"])
+    if "labor_rate" in fields:
+        wc.labor_rate = fields["labor_rate"]
+    if "capacity" in fields:
+        wc.capacity = fields["capacity"]
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="A work center with that name already exists")
+    return {"ok": True}
+
+
+@router.delete("/work-centers/{wc_id}")
+async def delete_work_center(
+    wc_id: str,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    wc = await session.get(WorkCenter, _parse_loc(wc_id))
+    if wc is None or wc.company_id != company_id:
+        raise HTTPException(status_code=404, detail="Work center not found")
+    await session.delete(wc)
+    await session.commit()
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
@@ -1092,6 +1222,10 @@ async def complete_order(
     states = await _all_item_states(session, company_id)
     outstanding = _outstanding_inputs(row.state)
     if outstanding:
+        # When the company requires components issued first, completing must not silently auto-issue.
+        if (await _mfg_settings(session, company_id)).get("require_issued_before_complete"):
+            raise HTTPException(status_code=409,
+                                detail="Issue all components before completing this run (required by settings)")
         await _issue_and_record(session, company_id, user, order_id, outstanding, states)
         row = await _get_order(session, company_id, order_id)
     qty = _outstanding_output(row.state)

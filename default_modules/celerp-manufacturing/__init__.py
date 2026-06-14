@@ -35,6 +35,8 @@ PLUGIN_MANIFEST = {
                 "href": "/manufacturing",
                 "order": 10,
                 "min_role": "operator",
+                # Gear-link on the group header -> Manufacturing settings.
+                "settings_href": "/settings/manufacturing",
             },
             {
                 "group": "Manufacturing",
@@ -42,6 +44,14 @@ PLUGIN_MANIFEST = {
                 "label": "Production Orders",
                 "href": "/docs?type=production_order",
                 "order": 20,
+                "min_role": "operator",
+            },
+            {
+                "group": "Manufacturing",
+                "icon": "🛠️",
+                "label": "Work Centers",
+                "href": "/manufacturing/work-centers",
+                "order": 30,
                 "min_role": "operator",
             },
         ],

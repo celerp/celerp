@@ -186,6 +186,48 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
 # actions are handled there (see ui/routes/inventory.py production-block routes).
 
 
+# ── Work Centers (operational stations, master data like Locations) ──────────
+
+def _wc_cell(wc_id: str, field: str, value, *, center: bool = False) -> FT:
+    disp = value if value not in (None, "") else EMPTY
+    return Td(
+        Div(disp, cls="editable-cell",
+            hx_get=f"/manufacturing/work-centers/{wc_id}/edit/{field}?current={'' if value is None else value}",
+            hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick", title="Double-click to edit"),
+        cls="cell--center" if center else "",
+    )
+
+
+def _wc_row(wc: dict, loc_names: dict) -> FT:
+    wid = wc["id"]
+    rate = wc.get("labor_rate")
+    rate_disp = f"{float(rate):g}" if rate not in (None, "") else None
+    cap = wc.get("capacity")
+    cap_disp = f"{float(cap):g}" if cap not in (None, "") else None
+    wip = loc_names.get(wc.get("wip_location_id")) if wc.get("wip_location_id") else None
+    return Tr(
+        _wc_cell(wid, "name", wc.get("name")),
+        _wc_cell(wid, "wip_location_id", wip, center=True),
+        _wc_cell(wid, "labor_rate", rate_disp, center=True),
+        _wc_cell(wid, "capacity", cap_disp, center=True),
+        Td(Button(t("btn.delete"), type="button", cls="btn btn--xs btn--secondary",
+                  hx_post=f"/manufacturing/work-centers/{wid}/delete", hx_target="#wc-table",
+                  hx_swap="outerHTML", hx_confirm="Delete this work center?"), cls="cell--actions"),
+        cls="data-row",
+    )
+
+
+def _wc_table(centers: list[dict], loc_names: dict) -> FT:
+    rows = [_wc_row(w, loc_names) for w in centers]
+    return Table(
+        Thead(Tr(Th("Name"), Th("WIP location", cls="cell--center"),
+                 Th("Labor rate / hr", cls="cell--center"), Th("Capacity", cls="cell--center"),
+                 Th("", cls="cell--actions"))),
+        Tbody(*rows) if rows else Tbody(Tr(Td("No work centers yet.", colspan="5", cls="empty-row"))),
+        cls="data-table", id="wc-table",
+    )
+
+
 def setup_routes(app):
 
     def _order_params(request: Request) -> tuple[dict, str, str, str]:
@@ -362,3 +404,105 @@ def setup_routes(app):
                 if e.status == 401:
                     return P(t("error.unauthorized"), cls="cell-error")
         return await _incomplete_runs_table(token)
+
+    # ── Work Centers ──────────────────────────────────────────────────────
+    async def _wc_table_response(token: str) -> FT:
+        centers, locations = [], []
+        try:
+            centers = (await api.list_work_centers(token)).get("items", [])
+            locations = (await api.get_locations(token)).get("items", [])
+        except APIError:
+            pass
+        loc_names = {l.get("id"): l.get("name") for l in locations}
+        return _wc_table(centers, loc_names)
+
+    @app.get("/manufacturing/work-centers")
+    async def work_centers_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        return base_shell(
+            page_header(
+                "Work Centers",
+                Button("Add work center", type="button", cls="btn btn--sm btn--primary",
+                       hx_post="/manufacturing/work-centers/new", hx_target="#wc-table", hx_swap="outerHTML"),
+            ),
+            P("Operational stations (e.g. Bench, Polishing, Oven). Double-click a cell to edit.", cls="hint"),
+            await _wc_table_response(token),
+            title="Work Centers - Celerp",
+            nav_active="manufacturing",
+            request=request,
+        )
+
+    @app.post("/manufacturing/work-centers/new")
+    async def work_center_new(request: Request):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            await api.create_work_center(token, {"name": "New work center"})
+        except APIError:
+            # A "New work center" already exists - just refresh; the user can rename it.
+            pass
+        return await _wc_table_response(token)
+
+    @app.get("/manufacturing/work-centers/{wc_id}/edit/{field}")
+    async def work_center_edit(request: Request, wc_id: str, field: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        current = request.query_params.get("current", "")
+        post = f"/manufacturing/work-centers/{wc_id}/save/{field}"
+        common = {"hx_post": post, "hx_target": "#wc-table", "hx_swap": "outerHTML", "hx_trigger": "blur, keyup[key=='Enter']"}
+        if field == "wip_location_id":
+            locations = []
+            try:
+                locations = (await api.get_locations(token)).get("items", [])
+            except APIError:
+                pass
+            # current here is the location NAME (as displayed); match by name for the selected option.
+            return Select(
+                Option("--", value="", selected=(current in ("", EMPTY))),
+                *[Option(l.get("name"), value=l.get("id"), selected=(l.get("name") == current)) for l in locations],
+                name="value", cls="cell-input cell-input--select",
+                hx_post=post, hx_target="#wc-table", hx_swap="outerHTML", hx_trigger="change",
+            )
+        if field in ("labor_rate", "capacity"):
+            return Input(type="number", step="any", min="0", name="value",
+                         value="" if current == EMPTY else current, cls="cell-input cell-input--xs", **common)
+        return Input(type="text", name="value", value="" if current == EMPTY else current,
+                     cls="cell-input cell-input--xs", **common)
+
+    @app.post("/manufacturing/work-centers/{wc_id}/save/{field}")
+    async def work_center_save(request: Request, wc_id: str, field: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        raw = str(form.get("value", "")).strip()
+        if field in ("labor_rate", "capacity"):
+            try:
+                value = float(raw) if raw else None
+            except ValueError:
+                value = None
+        else:
+            value = raw or None
+        if field == "name" and not value:
+            return await _wc_table_response(token)  # ignore a blank rename
+        try:
+            await api.patch_work_center(token, wc_id, {field: value})
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+        return await _wc_table_response(token)
+
+    @app.post("/manufacturing/work-centers/{wc_id}/delete")
+    async def work_center_delete(request: Request, wc_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            await api.delete_work_center(token, wc_id)
+        except APIError:
+            pass
+        return await _wc_table_response(token)

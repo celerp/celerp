@@ -1106,6 +1106,33 @@ async def schedule_mfg_order(token: str, order_id: str, fields: dict) -> dict:
         return _raise(await c.post(f"/manufacturing/{order_id}/schedule", json=fields)).json()
 
 
+# ── Work Centers (manufacturing master data) ──────────────────────────────────
+async def list_work_centers(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/manufacturing/work-centers")).json()
+
+
+async def create_work_center(token: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/manufacturing/work-centers", json=data)).json()
+
+
+async def patch_work_center(token: str, wc_id: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/manufacturing/work-centers/{wc_id}", json=data)).json()
+
+
+async def delete_work_center(token: str, wc_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.delete(f"/manufacturing/work-centers/{wc_id}")).json()
+
+
+async def update_mfg_settings(token: str, mfg: dict) -> dict:
+    """Persist the manufacturing settings block under company.settings.manufacturing."""
+    async with _api_client(token) as c:
+        return _raise(await c.patch("/companies/me", json={"settings": {"manufacturing": mfg}})).json()
+
+
 # ---------------------------------------------------------------------------
 # BOM
 # ---------------------------------------------------------------------------
