@@ -562,24 +562,9 @@ class MfgOrderScheduled(BaseModel):
     priority: str | None = None
 
 
-# -----------------
-# BOM
-# -----------------
-
-class BOMCreated(BaseModel):
-    name: str
-    output_item_id: str | None = None
-    output_qty: float = 1.0
-    components: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class BOMUpdated(BaseModel):
-    model_config = {"extra": "allow"}
-
-
-class BOMDeleted(BaseModel):
-    pass
-
+# The standalone BOM entity was retired (recipes live on the inventory item). Its bom.* event
+# schemas are gone too: nothing emits them, and historical bom.* events replay through the
+# projection engine's default merge handler, which does not validate against EVENT_SCHEMA_MAP.
 
 # -----------------
 # Scanning
@@ -926,11 +911,6 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.issued": MfgOrderIssued,
     "mfg.order.received": MfgOrderReceived,
     "mfg.order.scheduled": MfgOrderScheduled,
-
-    # BOM
-    "bom.created": BOMCreated,
-    "bom.updated": BOMUpdated,
-    "bom.deleted": BOMDeleted,
 
     # Scanning
     "scan.barcode": ScanBarcode,
