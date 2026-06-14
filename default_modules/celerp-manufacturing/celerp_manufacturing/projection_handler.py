@@ -11,13 +11,25 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
 
     if event_type == "mfg.order.created":
         current.update({"entity_type": "mfg_order", **data})
-        current.setdefault("status", "created")
+        # Canonical statuses: planned -> in_progress -> on_hold -> completed / cancelled.
+        # `data` may carry an explicit status (e.g. a one-tap build that completes immediately);
+        # otherwise a new run starts Planned.
+        current.setdefault("status", "planned")
         current.setdefault("steps_completed", [])
         current.setdefault("is_in_production", False)
         current.setdefault("actual_outputs", [])
     elif event_type == "mfg.order.started":
-        current["status"] = "started"
+        current["status"] = "in_progress"
         current["is_in_production"] = True
+    elif event_type == "mfg.order.on_hold":
+        current["status"] = "on_hold"
+        current["is_in_production"] = False
+        if data.get("reason"):
+            current["hold_reason"] = data["reason"]
+    elif event_type == "mfg.order.resumed":
+        current["status"] = "in_progress"
+        current["is_in_production"] = True
+        current.pop("hold_reason", None)
     elif event_type == "mfg.step.completed":
         current.setdefault("steps_completed", [])
         if data["step_id"] not in current["steps_completed"]:

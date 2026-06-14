@@ -1085,6 +1085,16 @@ async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None)
         return _raise(await c.post(f"/manufacturing/{order_id}/cancel", json={"reason": reason})).json()
 
 
+async def hold_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/hold", json={"reason": reason})).json()
+
+
+async def resume_mfg_order(token: str, order_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/resume")).json()
+
+
 # ---------------------------------------------------------------------------
 # BOM
 # ---------------------------------------------------------------------------

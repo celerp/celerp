@@ -63,9 +63,12 @@ class TestManufacturingManifest:
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         nav = mod.PLUGIN_MANIFEST["slots"]["nav"]
-        assert nav["href"] == "/manufacturing"
-        assert nav["label"] == "Manufacturing"
-        assert nav.get("order") is not None
+        # nav is a list of entries under the dedicated "Manufacturing" group.
+        assert isinstance(nav, list) and nav
+        queue = next(n for n in nav if n["href"] == "/manufacturing")
+        assert queue["group"] == "Manufacturing"
+        assert queue["label"] == "Production Queue"
+        assert queue.get("order") is not None
 
     def test_manifest_projection_handler_slots(self):
         import importlib.util
@@ -120,15 +123,15 @@ class TestManufacturingProjectionHandler:
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
         s = apply_manufacturing_event({}, "mfg.order.created", {"description": "Test"})
         assert s["entity_type"] == "mfg_order"
-        assert s["status"] == "created"
+        assert s["status"] == "planned"
         assert s["is_in_production"] is False
         assert s["steps_completed"] == []
         assert s["actual_outputs"] == []
 
     def test_order_started(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        s = apply_manufacturing_event({"status": "created", "is_in_production": False}, "mfg.order.started", {})
-        assert s["status"] == "started"
+        s = apply_manufacturing_event({"status": "planned", "is_in_production": False}, "mfg.order.started", {})
+        assert s["status"] == "in_progress"
         assert s["is_in_production"] is True
 
     def test_step_completed_appends(self):
@@ -148,7 +151,7 @@ class TestManufacturingProjectionHandler:
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
         outputs = [{"sku": "FG", "name": "Finished", "quantity": 2}]
         s = apply_manufacturing_event(
-            {"status": "started", "is_in_production": True},
+            {"status": "in_progress", "is_in_production": True},
             "mfg.order.completed",
             {"actual_outputs": outputs, "labor_hours": 4.5},
         )
@@ -179,7 +182,7 @@ class TestManufacturingProjectionHandler:
     def test_order_cancelled(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
         s = apply_manufacturing_event(
-            {"status": "started", "is_in_production": True},
+            {"status": "in_progress", "is_in_production": True},
             "mfg.order.cancelled",
             {"reason": "Too expensive"},
         )
@@ -189,7 +192,7 @@ class TestManufacturingProjectionHandler:
 
     def test_order_cancelled_no_reason(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        s = apply_manufacturing_event({"status": "started"}, "mfg.order.cancelled", {})
+        s = apply_manufacturing_event({"status": "in_progress"}, "mfg.order.cancelled", {})
         assert s["status"] == "cancelled"
         assert "cancel_reason" not in s
 
@@ -208,9 +211,9 @@ class TestManufacturingProjectionHandler:
 
     def test_state_is_copied_not_mutated(self):
         from celerp_manufacturing.projection_handler import apply_manufacturing_event
-        original = {"status": "created", "steps_completed": []}
+        original = {"status": "planned", "steps_completed": []}
         apply_manufacturing_event(original, "mfg.order.started", {})
-        assert original["status"] == "created"  # Original not mutated
+        assert original["status"] == "planned"  # Original not mutated
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +370,7 @@ class TestManufacturingModuleHTTP:
         get_r = await client.get(f"/manufacturing/{order_id}", headers=_h(token))
         assert get_r.status_code == 200
         assert get_r.json()["description"] == "Make FG"
-        assert get_r.json()["status"] == "created"
+        assert get_r.json()["status"] == "planned"
 
     @pytest.mark.asyncio
     async def test_full_order_lifecycle(self, client):
@@ -498,6 +501,50 @@ class TestManufacturingModuleHTTP:
         token = await _register(client, "404")
         r = await client.get("/manufacturing/mfg:doesnotexist", headers=_h(token))
         assert r.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_hold_and_resume_lifecycle(self, client):
+        token = await _register(client, "hold")
+        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-H", "name": "Raw H", "quantity": 5, "sell_by": "piece"})
+        item_id = item_r.json()["id"]
+        oid = (await client.post("/manufacturing", headers=_h(token),
+               json={"description": "Hold flow", "inputs": [{"item_id": item_id, "quantity": 1}],
+                     "expected_outputs": [{"sku": "OUT-H", "name": "Out H", "quantity": 1}]})).json()["id"]
+        await client.post(f"/manufacturing/{oid}/start", headers=_h(token))
+        # Hold -> on_hold; cannot resume something not on hold; resume -> in_progress.
+        assert (await client.post(f"/manufacturing/{oid}/hold", headers=_h(token), json={"reason": "wait"})).status_code == 200
+        assert (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()["status"] == "on_hold"
+        assert (await client.post(f"/manufacturing/{oid}/resume", headers=_h(token))).status_code == 200
+        assert (await client.get(f"/manufacturing/{oid}", headers=_h(token))).json()["status"] == "in_progress"
+        # Resume again (not on hold) -> 409.
+        assert (await client.post(f"/manufacturing/{oid}/resume", headers=_h(token))).status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_list_status_filter(self, client):
+        token = await _register(client, "statusfilter")
+        item_r = await client.post("/items", headers=_h(token), json={"sku": "RAW-SF", "name": "Raw SF", "quantity": 9, "sell_by": "piece"})
+        item_id = item_r.json()["id"]
+
+        def _mk(desc):
+            return client.post("/manufacturing", headers=_h(token),
+                               json={"description": desc, "inputs": [{"item_id": item_id, "quantity": 1}],
+                                     "expected_outputs": [{"sku": f"O-{desc}", "name": desc, "quantity": 1}]})
+        planned = (await _mk("p")).json()["id"]
+        prog = (await _mk("ip")).json()["id"]
+        await client.post(f"/manufacturing/{prog}/start", headers=_h(token))
+        cancelled = (await _mk("c")).json()["id"]
+        await client.post(f"/manufacturing/{cancelled}/cancel", headers=_h(token), json={"reason": "x"})
+
+        def ids(items):
+            return {o["id"] for o in items}
+        all_ = ids((await client.get("/manufacturing", headers=_h(token))).json()["items"])
+        assert {planned, prog, cancelled} <= all_
+        inc = ids((await client.get("/manufacturing?status=incomplete", headers=_h(token))).json()["items"])
+        assert planned in inc and prog in inc and cancelled not in inc
+        only_planned = ids((await client.get("/manufacturing?status=planned", headers=_h(token))).json()["items"])
+        assert planned in only_planned and prog not in only_planned
+        only_cancelled = ids((await client.get("/manufacturing?status=cancelled", headers=_h(token))).json()["items"])
+        assert cancelled in only_cancelled and planned not in only_cancelled
 
     @pytest.mark.asyncio
     async def test_import_template_csv(self, client):

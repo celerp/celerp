@@ -533,6 +533,14 @@ class MfgOrderCancelled(BaseModel):
     reason: str | None = None
 
 
+class MfgOrderOnHold(BaseModel):
+    reason: str | None = None
+
+
+class MfgOrderResumed(BaseModel):
+    resumed_by: str | None = None
+
+
 class MfgStepCompleted(BaseModel):
     step_id: str
     notes: str | None = None
@@ -897,6 +905,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.started": MfgOrderStarted,
     "mfg.order.completed": MfgOrderCompleted,
     "mfg.order.cancelled": MfgOrderCancelled,
+    "mfg.order.on_hold": MfgOrderOnHold,
+    "mfg.order.resumed": MfgOrderResumed,
     "mfg.step.completed": MfgStepCompleted,
 
     # BOM

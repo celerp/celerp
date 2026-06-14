@@ -26,15 +26,16 @@ PLUGIN_MANIFEST = {
 
     # ── Extension slots ───────────────────────────────────────────────────────
     "slots": {
-        "nav": {
-            "group": "Inventory",
-            "icon": "🏭",
-            "label": "Manufacturing",
-            "label_key": "nav.manufacturing",
-            "href": "/manufacturing",
-            "order": 40,
-            "min_role": "operator",
-        },
+        "nav": [
+            {
+                "group": "Manufacturing",
+                "icon": "🏭",
+                "label": "Production Queue",
+                "href": "/manufacturing",
+                "order": 10,
+                "min_role": "operator",
+            },
+        ],
         "projection_handler": [
             {
                 "prefix": "mfg.",

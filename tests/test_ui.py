@@ -2930,7 +2930,7 @@ class TestManufacturingPage:
         order = {
             "entity_id": "mfg:abc123",
             "order_type": "assembly",
-            "status": "draft",
+            "status": "planned",
             "description": "Test order",
             "inputs": [{"item_id": "item:x1", "quantity": 5}],
             "expected_outputs": [{"sku": "OUT-1", "name": "Widget", "quantity": 10}],

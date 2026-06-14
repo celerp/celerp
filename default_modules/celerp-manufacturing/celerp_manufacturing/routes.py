@@ -534,20 +534,27 @@ async def batch_import_manufacturing(
 # Manufacturing order endpoints
 # ---------------------------------------------------------------------------
 
+# Canonical run statuses. "incomplete" = everything still needing attention.
+_RUN_STATUSES = ("planned", "in_progress", "on_hold", "completed", "cancelled")
+_INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
+
+
 @router.get("")
 async def list_orders(
     q: str | None = None,
+    status: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """List manufacturing orders, newest first. q matches the order id, description,
-    source document (doc number) and output SKUs; dates filter on creation date.
+    """List production runs, newest first. q matches the run id, description, source document
+    (doc number) and output SKUs; `status` filters by canonical status or the pseudo-status
+    "incomplete" (planned/in_progress/on_hold); dates filter on creation date.
 
-    Orders for open sales documents are ensured (auto-created, idempotently) before
-    listing, so the queue always reflects current demand without a manual step."""
+    Runs for open sales documents are ensured (auto-created, idempotently) before listing, so
+    the queue always reflects current demand without a manual step."""
     await _ensure_orders_for_open_docs(session, company_id, user)
     rows = (await session.execute(
         select(Projection).where(
@@ -560,6 +567,12 @@ async def list_orders(
                    "created_at": r.created_at.isoformat() if r.created_at else None}
         for r in rows
     ]
+    if status:
+        s = status.lower().strip()
+        if s == "incomplete":
+            items = [o for o in items if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+        else:
+            items = [o for o in items if str(o.get("status") or "").lower() == s]
     if q:
         ql = q.lower().strip().strip(",")
         def _hay(o: dict) -> str:
@@ -637,6 +650,47 @@ async def start_order(
         source="api",
         idempotency_key=str(uuid.uuid4()),
         metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.post("/{order_id}/hold")
+async def hold_order(
+    order_id: str,
+    payload: CancelBody | None = None,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Put an active run on hold (paused). Reversible via /resume."""
+    row = await _get_order(session, company_id, order_id)
+    if row.state.get("status") in {"completed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Cannot hold a closed run")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.on_hold", data={"reason": (payload.reason if payload else None)},
+        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.post("/{order_id}/resume")
+async def resume_order(
+    order_id: str,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Resume an on-hold run (back to In Progress)."""
+    row = await _get_order(session, company_id, order_id)
+    if row.state.get("status") != "on_hold":
+        raise HTTPException(status_code=409, detail="Only an on-hold run can be resumed")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.resumed", data={"resumed_by": str(user.id)},
+        actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
     await session.commit()
     return {"event_id": entry.id}

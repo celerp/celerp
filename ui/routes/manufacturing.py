@@ -18,6 +18,9 @@ from ui.i18n import t, get_lang
 
 logger = logging.getLogger(__name__)
 
+# Canonical run statuses; "incomplete" = still needs attention (default queue view).
+_INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
+
 
 
 
@@ -28,9 +31,12 @@ def _badge(status: str) -> FT:
 
 
 def _mfg_status_cards(orders: list[dict], active_status: str) -> FT:
+    # Cards count the full set returned for the current view; the default view is "incomplete"
+    # (planned + in_progress + on_hold), so completed/cancelled are reached via their own card.
     _CARD_DEFS = [
         ("planned", "Planned", "blue"),
         ("in_progress", "In Progress", "yellow"),
+        ("on_hold", "On Hold", "orange"),
         ("completed", "Completed", "green"),
         ("cancelled", "Cancelled", "gray"),
     ]
@@ -39,9 +45,6 @@ def _mfg_status_cards(orders: list[dict], active_status: str) -> FT:
         s = str(o.get("status") or "").lower()
         if s in counts:
             counts[s] += 1
-        # "draft" / "pending" maps to planned visually
-        elif s in ("draft", "pending"):
-            counts["planned"] += 1
     cards = [
         {"label": label, "count": counts[s], "status": s, "color": color}
         for s, label, color in _CARD_DEFS
@@ -201,28 +204,23 @@ def _order_inputs_section(order: dict) -> FT:
 
 
 def _action_buttons(order: dict, order_id: str) -> FT:
-    status = order.get("status", "draft")
+    status = order.get("status", "planned")
     btns = []
-    if status in ("draft", "pending"):
-        btns.append(
-            Form(
-                Button(t("btn.start_order"), cls="btn btn--primary", type="submit"),
-                method="post", action=f"/manufacturing/{order_id}/start",
-                hx_post=f"/manufacturing/{order_id}/start",
-                hx_target="#mfg-detail",
-                hx_swap="outerHTML",
-            )
+
+    def _post_btn(label, action, primary=True):
+        return Form(
+            Button(label, cls=f"btn btn--{'primary' if primary else 'secondary'}", type="submit"),
+            method="post", action=f"/manufacturing/{order_id}/{action}",
+            hx_post=f"/manufacturing/{order_id}/{action}", hx_target="#mfg-detail", hx_swap="outerHTML",
         )
+
+    if status == "planned":
+        btns.append(_post_btn(t("btn.start_order"), "start"))
     if status == "in_progress":
-        btns.append(
-            Form(
-                Button(t("btn.complete_order"), cls="btn btn--primary", type="submit"),
-                method="post", action=f"/manufacturing/{order_id}/complete",
-                hx_post=f"/manufacturing/{order_id}/complete",
-                hx_target="#mfg-detail",
-                hx_swap="outerHTML",
-            )
-        )
+        btns.append(_post_btn(t("btn.complete_order"), "complete"))
+        btns.append(_post_btn("Hold", "hold", primary=False))
+    if status == "on_hold":
+        btns.append(_post_btn("Resume", "resume"))
     if status not in ("completed", "cancelled"):
         btns.append(
             Form(
@@ -303,11 +301,19 @@ def setup_routes(app):
         params, date_from, date_to, preset = _order_params(request)
         q = params.get("q", "")
         try:
-            orders = (await api.list_mfg_orders(token, params)).get("items", [])
+            orders_all = (await api.list_mfg_orders(token, params)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            orders = []
+            orders_all = []
+        # Default view = incomplete (planned/in_progress/on_hold); cards show true totals over all.
+        active = (request.query_params.get("status") or "incomplete").lower()
+        if active == "all":
+            shown = orders_all
+        elif active == "incomplete":
+            shown = [o for o in orders_all if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+        else:
+            shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
         date_qs = f"&from={date_from}&to={date_to}&preset={preset}" if (date_from or date_to) else ""
         return base_shell(
             page_header(
@@ -322,8 +328,13 @@ def setup_routes(app):
                              extra_params=f"&q={q}" if q else "", lang=get_lang(request)),
             P("Orders are created automatically from open invoices, pro formas and lists that contain recipe items.",
               cls="hint"),
-            _mfg_status_cards(orders, request.query_params.get("status", "")),
-            _order_table(orders),
+            Div(
+                _mfg_status_cards(orders_all, "" if active in ("incomplete", "all") else active),
+                A("All incomplete" if active != "all" else "Show all", href="/manufacturing"
+                  if active == "all" else "/manufacturing?status=all", cls="category-tab"),
+                cls="mfg-filter-row",
+            ),
+            _order_table(shown),
             title="Manufacturing - Celerp",
             nav_active="manufacturing",
             request=request,
@@ -468,6 +479,34 @@ def setup_routes(app):
             await api.cancel_mfg_order(token, order_id, reason)
             order = await api.get_mfg_order(token, order_id)
             return _detail_panel(order)
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return Div(flash(e.detail), id="mfg-detail")
+
+    @app.post("/manufacturing/{order_id:path}/hold")
+    async def hold_mfg_order(request: Request, order_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        reason = str(form.get("reason", "")).strip() or None
+        try:
+            await api.hold_mfg_order(token, order_id, reason)
+            return _detail_panel(await api.get_mfg_order(token, order_id))
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            return Div(flash(e.detail), id="mfg-detail")
+
+    @app.post("/manufacturing/{order_id:path}/resume")
+    async def resume_mfg_order(request: Request, order_id: str):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            await api.resume_mfg_order(token, order_id)
+            return _detail_panel(await api.get_mfg_order(token, order_id))
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
