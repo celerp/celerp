@@ -87,6 +87,7 @@ class EventType(StrEnum):
     MFG_ORDER_RESUMED = "mfg.order.resumed"
     MFG_ORDER_ISSUED = "mfg.order.issued"
     MFG_ORDER_RECEIVED = "mfg.order.received"
+    MFG_ORDER_SCHEDULED = "mfg.order.scheduled"
 
     # Scanning
     SCAN_BARCODE = "scan.barcode"

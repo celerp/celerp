@@ -63,6 +63,15 @@ class MfgOrderCreate(BaseModel):
     idempotency_key: str | None = None
 
 
+class ScheduleBody(BaseModel):
+    # Phase-A scheduling. Each field is optional; only the keys present are written (a blank
+    # string clears that field). priority is a free label (e.g. low / normal / high / urgent).
+    due_date: str | None = None
+    planned_start: str | None = None
+    priority: str | None = None
+    idempotency_key: str | None = None
+
+
 class IssueBody(BaseModel):
     # Components to issue from stock into a run. Omit `items` to issue everything still outstanding.
     items: list[MfgInput] | None = None
@@ -970,6 +979,31 @@ async def resume_order(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
         event_type="mfg.order.resumed", data={"resumed_by": str(user.id)},
         actor_id=user.id, location_id=None, source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id}
+
+
+@router.post("/{order_id}/schedule")
+async def schedule_order(
+    order_id: str,
+    payload: ScheduleBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set scheduling fields (due date / planned start / priority) on a run. Only provided keys are
+    written; a blank value clears that field. A closed run cannot be rescheduled."""
+    row = await _get_order(session, company_id, order_id)
+    if row.state.get("status") in {"completed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Cannot reschedule a closed run")
+    data = payload.model_dump(exclude_unset=True, exclude={"idempotency_key"})
+    if not data:
+        raise HTTPException(status_code=422, detail="No scheduling fields provided")
+    entry = await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.scheduled", data=data, actor_id=user.id, location_id=None,
+        source="api", idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
     await session.commit()
     return {"event_id": entry.id}

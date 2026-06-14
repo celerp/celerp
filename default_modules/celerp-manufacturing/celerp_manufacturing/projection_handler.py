@@ -44,6 +44,11 @@ def apply_manufacturing_event(state: dict, event_type: str, data: dict) -> dict:
                 inp["issued_qty"] = float(inp.get("issued_qty") or 0) + issued[inp["item_id"]]
     elif event_type == "mfg.order.received":
         current["received_qty"] = float(current.get("received_qty") or 0) + float(data.get("quantity") or 0)
+    elif event_type == "mfg.order.scheduled":
+        # Phase-A scheduling: apply only the keys provided (a blank value clears the field).
+        for key in ("due_date", "planned_start", "priority"):
+            if key in data:
+                current[key] = data[key] or None
     elif event_type == "mfg.order.completed":
         current["status"] = "completed"
         current["is_in_production"] = False

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from fasthtml.common import *
 from starlette.requests import Request
@@ -14,7 +15,7 @@ from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
 from ui.components.table import EMPTY, status_cards, empty_state_cta, format_value, search_bar, currency_symbol
 from ui.config import get_token as _token
-from ui.i18n import t, get_lang
+from ui.i18n import t
 
 logger = logging.getLogger(__name__)
 
@@ -58,19 +59,63 @@ def _mfg_status_cards(orders: list[dict], active_status: str) -> FT:
     return status_cards(cards, "/manufacturing", active_status or None)
 
 
-def _order_row(order: dict) -> FT:
+# Run priority labels (Phase-A scheduling). Order = ascending urgency for the picker.
+_PRIORITIES = ("low", "normal", "high", "urgent")
+
+
+def _priority_badge(priority: str | None) -> FT:
+    p = (priority or "").lower()
+    if p not in _PRIORITIES:
+        return Span(EMPTY)
+    return Span(p.title(), cls=f"badge badge--prio-{p}")
+
+
+def _sched_sort(runs: list[dict]) -> list[dict]:
+    """Scheduling order (GDR 2n): no-due-date first, then earliest due, then newest created.
+    Two stable passes compose the key (newest-first then due-asc with undated on top)."""
+    runs = sorted(runs, key=lambda r: r.get("created_at") or "", reverse=True)
+    runs.sort(key=lambda r: (r.get("due_date") is not None, r.get("due_date") or ""))
+    return runs
+
+
+def _order_row(order: dict, today: str = "") -> FT:
     # A run lives on its product's Manufacturing tab; link there (the opaque run page is gone).
+    rid = order.get("id")
     out_id = order.get("output_item_id")
     outs = order.get("expected_outputs") or [{}]
     label = outs[0].get("sku") or outs[0].get("name") or order.get("description") or EMPTY
     href = f"/inventory/{out_id}?tab=manufacturing" if out_id else None
     name_cell = A(label, href=href, cls="table-link") if href else Span(label)
+    status = order.get("status", "planned")
+    due = order.get("due_date")
+    overdue = bool(due and today and due < today and status not in ("completed", "cancelled"))
     inputs = order.get("inputs", [])
+    # Double-click to edit due date / priority (system-standard click-to-edit). The editable-cell
+    # chip lives in an inner Div - it is display:inline-block, so it must NOT be the <td> itself
+    # (that would drop the cell out of the table's column layout). The cell passes its current value
+    # so the edit fragment can prefill without a second fetch.
+    due_cell = Td(
+        Div(due or EMPTY, cls="editable-cell" + (" cell--alert" if overdue else ""),
+            hx_get=f"/manufacturing/runs/{rid}/edit/due_date?current={due or ''}",
+            hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
+            title="Double-click to set a due date"),
+        cls="cell--center",
+    )
+    prio_cell = Td(
+        Div(_priority_badge(order.get("priority")), cls="editable-cell",
+            hx_get=f"/manufacturing/runs/{rid}/edit/priority?current={order.get('priority') or ''}",
+            hx_target="this", hx_swap="innerHTML", hx_trigger="dblclick",
+            title="Double-click to set priority"),
+        cls="cell--center",
+    )
     return Tr(
         Td(name_cell),
-        Td(_badge(order.get("status", "planned"))),
+        Td(_badge(status)),
+        prio_cell,
+        due_cell,
         Td(format_value((order.get("created_at") or "")[:10])),
         Td(str(len(inputs)), cls="cell--number"),
+        cls="data-row",
     )
 
 
@@ -121,15 +166,16 @@ def _to_make_table(rows: list[dict], cur: str) -> FT:
     )
 
 
-def _order_table(orders: list[dict]) -> FT:
+def _order_table(orders: list[dict], today: str = "") -> FT:
     if not orders:
         return Div(
             empty_state_cta("Nothing in production yet.", "View To Make", "/manufacturing"),
             id="mfg-table",
         )
     return Table(
-        Thead(Tr(Th("Product"), Th(t("th.status")), Th(t("msg.created")), Th(t("th.inputs")))),
-        Tbody(*[_order_row(o) for o in orders]),
+        Thead(Tr(Th("Product"), Th(t("th.status")), Th("Priority", cls="cell--center"),
+                 Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs")))),
+        Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",
         id="mfg-table",
     )
@@ -229,7 +275,7 @@ def setup_routes(app):
                       cls="btn btn--xs btn--ghost"),
                     cls="mfg-filter-row",
                 ),
-                _order_table(shown),
+                _order_table(shown, today=date.today().isoformat()),
             )
 
         search_url = "/manufacturing/to-make-search" if tab == "to_make" else "/manufacturing/search"
@@ -272,4 +318,47 @@ def setup_routes(app):
             orders = (await api.list_mfg_orders(token, params)).get("items", [])
         except APIError:
             orders = []
-        return _order_table(orders)
+        return _order_table(orders, today=date.today().isoformat())
+
+    async def _incomplete_runs_table(token: str) -> FT:
+        """The In Production table for the active (incomplete) runs - used after a schedule edit."""
+        try:
+            orders = (await api.list_mfg_orders(token, {})).get("items", [])
+        except APIError:
+            orders = []
+        shown = [o for o in orders if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+        return _order_table(shown, today=date.today().isoformat())
+
+    @app.get("/manufacturing/runs/{run_id}/edit/{field}")
+    async def run_field_edit(request: Request, run_id: str, field: str):
+        """Inline editor for a run's due date / priority (double-click to edit on the queue)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        current = request.query_params.get("current", "")
+        post = f"/manufacturing/runs/{run_id}/schedule"
+        common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML", "hx_trigger": "change"}
+        if field == "priority":
+            return Select(
+                Option("--", value="", selected=(current == "")),
+                *[Option(p.title(), value=p, selected=(p == current)) for p in _PRIORITIES],
+                name="priority", cls="cell-input cell-input--select", **common,
+            )
+        # default: due_date
+        return Input(type="date", name="due_date", value=current, cls="cell-input cell-input--xs", **common)
+
+    @app.post("/manufacturing/runs/{run_id}/schedule")
+    async def run_schedule(request: Request, run_id: str):
+        """Persist a scheduling edit and refresh the In Production table."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        fields = {k: str(form[k]) for k in ("due_date", "priority", "planned_start") if k in form}
+        if fields:
+            try:
+                await api.schedule_mfg_order(token, run_id, fields)
+            except APIError as e:
+                if e.status == 401:
+                    return P(t("error.unauthorized"), cls="cell-error")
+        return await _incomplete_runs_table(token)

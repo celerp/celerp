@@ -140,6 +140,37 @@ async def test_cancel_after_issue_sets_cancelled_not_in_production(client):
 
 
 @pytest.mark.asyncio
+async def test_schedule_run_sets_due_priority_and_guards(client):
+    """Phase-A scheduling: due date / priority persist; only provided keys are written; a closed
+    run cannot be rescheduled; an empty payload is rejected."""
+    token = await _register(client)
+    gold = await _item(client, token, "GOLDS", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RINGS", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 1})).json()["id"]
+
+    # Set due date + priority.
+    assert (await client.post(f"/manufacturing/{run}/schedule", headers=_h(token),
+                              json={"due_date": "2026-07-01", "priority": "high"})).status_code == 200
+    state = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()
+    assert state["due_date"] == "2026-07-01" and state["priority"] == "high"
+
+    # Partial update leaves the untouched field intact.
+    assert (await client.post(f"/manufacturing/{run}/schedule", headers=_h(token),
+                              json={"priority": "urgent"})).status_code == 200
+    state = (await client.get(f"/manufacturing/{run}", headers=_h(token))).json()
+    assert state["due_date"] == "2026-07-01" and state["priority"] == "urgent"
+
+    # Empty payload is rejected.
+    assert (await client.post(f"/manufacturing/{run}/schedule", headers=_h(token), json={})).status_code == 422
+
+    # A closed run cannot be rescheduled.
+    await client.post(f"/manufacturing/{run}/cancel", headers=_h(token), json={"reason": "x"})
+    assert (await client.post(f"/manufacturing/{run}/schedule", headers=_h(token),
+                              json={"due_date": "2026-08-01"})).status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_company_boms_endpoint_removed(client):
     # The core /companies/me/boms surface was purged — recipes live on the item now.
     token = await _register(client)

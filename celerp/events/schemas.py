@@ -555,6 +555,13 @@ class MfgOrderReceived(BaseModel):
     received_by: str | None = None
 
 
+class MfgOrderScheduled(BaseModel):
+    # Scheduling fields for a run (Phase A). All optional; only provided keys are applied.
+    due_date: str | None = None
+    planned_start: str | None = None
+    priority: str | None = None
+
+
 # -----------------
 # BOM
 # -----------------
@@ -918,6 +925,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.resumed": MfgOrderResumed,
     "mfg.order.issued": MfgOrderIssued,
     "mfg.order.received": MfgOrderReceived,
+    "mfg.order.scheduled": MfgOrderScheduled,
 
     # BOM
     "bom.created": BOMCreated,

@@ -1100,6 +1100,12 @@ async def resume_mfg_order(token: str, order_id: str) -> dict:
         return _raise(await c.post(f"/manufacturing/{order_id}/resume")).json()
 
 
+async def schedule_mfg_order(token: str, order_id: str, fields: dict) -> dict:
+    """Set scheduling fields (due_date / planned_start / priority) on a run."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/schedule", json=fields)).json()
+
+
 # ---------------------------------------------------------------------------
 # BOM
 # ---------------------------------------------------------------------------

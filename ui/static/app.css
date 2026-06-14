@@ -1059,6 +1059,13 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Production run statuses (planned -> in_progress -> on_hold -> completed / cancelled). */
 .badge--planned { background: rgba(59,130,246,0.15); color: #2563eb; border: 1px solid rgba(59,130,246,0.3); }
 .badge--on-hold { background: rgba(234,88,12,0.15); color: #ea580c; border: 1px solid rgba(234,88,12,0.3); }
+/* Run scheduling priority (low / normal / high / urgent). */
+.badge--prio-low { background: rgba(139,148,172,0.15); color: var(--c-text2); border: 1px solid rgba(139,148,172,0.3); }
+.badge--prio-normal { background: rgba(59,130,246,0.15); color: #2563eb; border: 1px solid rgba(59,130,246,0.3); }
+.badge--prio-high { background: rgba(234,88,12,0.15); color: #ea580c; border: 1px solid rgba(234,88,12,0.3); }
+.badge--prio-urgent { background: var(--c-red); color: #fff; border: 1px solid var(--c-red); }
+/* Overdue due-date chip: the alert red must win over .editable-cell's default text color. */
+.editable-cell.cell--alert { color: var(--c-red); font-weight: 600; }
 
 /* ─── Kanban deals board ──────────────────────────────────────────────── */
 .kanban-board { display: flex; gap: 16px; overflow-x: auto; padding: 16px 0; }
