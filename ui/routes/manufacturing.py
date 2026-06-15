@@ -128,19 +128,23 @@ def _qty(value, unit: str | None) -> str:
 # Demand-line coverage from FIFO pegging (supply = on hand + in progress), relabelled for the board.
 _STATUS_LABELS = {"short": "Needed", "partial": "Partial", "covered": "Covered"}
 _STATUS_ORDER = {"short": 0, "partial": 1, "covered": 2}  # needed-first sort
-# Status filter values -> the coverage keys they include.
-_STATUS_SETS = {
-    "open": {"short", "partial"}, "needed": {"short"},
-    "partial": {"partial"}, "covered": {"covered"},
-}
 _DTYPE_DEFS = [("all", "All"), ("invoice", "Invoices"),
                ("production_order", "Production Orders"), ("list", "Lists")]
-_STATUS_DEFS = [("open", "Open"), ("needed", "Needed"), ("partial", "Partial"),
-                ("covered", "Covered"), ("all", "All")]
 
 
 def _status_badge(coverage: str) -> FT:
     return Span(_STATUS_LABELS.get(coverage, coverage or EMPTY), cls=f"badge badge--peg-{coverage}")
+
+
+def _filter_th(label: str, col: int, center: bool = False) -> FT:
+    """A column header with an Excel-style filter funnel (client-side checkbox value list).
+    `col` is the 0-based cell index the funnel filters on."""
+    return Th(
+        Span(label),
+        Button("▾", type="button", cls="colfilter", title=f"Filter by {label}",
+               **{"data-col": str(col), "aria-label": f"Filter by {label}"}),
+        cls="colfilter-th" + (" cell--center" if center else ""),
+    )
 
 
 def _doc_href(doc_id: str, doc_type: str) -> str:
@@ -200,67 +204,41 @@ def _demand_table(lines: list[dict]) -> FT:
     return Table(
         Thead(Tr(
             Th(Input(type="checkbox", id="dp-select-all", title="Select all"), cls="col-checkbox"),
-            Th("Product"), Th("Document"), Th("Type"), Th("For"), Th("Due", cls="cell--center"),
-            Th("Ordered"), Th("Short"), Th("Status", cls="cell--center"),
+            Th("Product"), Th("Document"), Th("Type"), _filter_th("For", 4), Th("Due", cls="cell--center"),
+            Th("Ordered"), Th("Short"), _filter_th("Status", 8, center=True),
         )),
         Tbody(*[_demand_row(l) for l in lines]),
         cls="data-table", id="mfg-table",
     )
 
 
-def _demand_filter(lines: list[dict], dtype: str, status: str) -> list[dict]:
-    """Apply the document-type and coverage-status filters to flattened demand lines."""
-    out = lines
-    if dtype != "all":
-        out = [l for l in out if l["doc_type"] == dtype]
-    if status != "all":
-        keep = _STATUS_SETS.get(status, _STATUS_SETS["open"])
-        out = [l for l in out if l["coverage"] in keep]
-    return out
+def _demand_filter(lines: list[dict], dtype: str) -> list[dict]:
+    """Filter flattened demand lines by document type (the board's single main filter).
+    Finer filters (status, customer) are applied client-side via the column funnels."""
+    if dtype == "all":
+        return lines
+    return [l for l in lines if l["doc_type"] == dtype]
 
 
-_STATUS_CHIP_COLOR = {"open": "blue", "needed": "red", "partial": "yellow",
-                      "covered": "green", "all": "gray"}
-
-
-def _demand_filter_bars(all_lines: list[dict], dtype: str, status: str) -> FT:
-    """Two chip bars (document type + coverage status) for the Demand Planning board. Each chip
-    carries both current dimensions in its href; counts reflect the other dimension's filter."""
-    st_keep = _STATUS_SETS.get(status) if status != "all" else None
-    dt_pool = [l for l in all_lines if st_keep is None or l["coverage"] in st_keep]
-    dt_counts = {"all": len(dt_pool)}
+def _type_filter_bar(all_lines: list[dict], dtype: str) -> FT:
+    """The board's main filter: document type, with per-type line counts (cards like the WIP queue)."""
+    counts = {"all": len(all_lines)}
     for key, _ in _DTYPE_DEFS[1:]:
-        dt_counts[key] = sum(1 for l in dt_pool if l["doc_type"] == key)
-    st_pool = [l for l in all_lines if dtype == "all" or l["doc_type"] == dtype]
-    st_counts = {
-        "all": len(st_pool),
-        "open": sum(1 for l in st_pool if l["coverage"] in _STATUS_SETS["open"]),
-        "needed": sum(1 for l in st_pool if l["coverage"] == "short"),
-        "partial": sum(1 for l in st_pool if l["coverage"] == "partial"),
-        "covered": sum(1 for l in st_pool if l["coverage"] == "covered"),
-    }
-    type_cards = [{"label": lbl, "count": dt_counts.get(k, 0), "status": k,
-                   "color": "gray" if k == "all" else "blue",
-                   "_url": f"/manufacturing?type={k}&status={status}", "_active_key": k}
-                  for k, lbl in _DTYPE_DEFS]
-    stat_cards = [{"label": lbl, "count": st_counts.get(k, 0), "status": k,
-                   "color": _STATUS_CHIP_COLOR.get(k, "gray"),
-                   "_url": f"/manufacturing?type={dtype}&status={k}", "_active_key": k}
-                  for k, lbl in _STATUS_DEFS]
-    return Div(
-        Div(Span("Type", cls="filter-label"),
-            status_cards(type_cards, "/manufacturing", dtype, show_all_card=False), cls="dp-filter"),
-        Div(Span("Status", cls="filter-label"),
-            status_cards(stat_cards, "/manufacturing", status, show_all_card=False), cls="dp-filter"),
-        cls="dp-filters",
-    )
+        counts[key] = sum(1 for l in all_lines if l["doc_type"] == key)
+    cards = [{"label": lbl, "count": counts.get(k, 0), "status": k,
+              "color": "gray" if k == "all" else "blue",
+              "_url": f"/manufacturing?type={k}", "_active_key": k}
+             for k, lbl in _DTYPE_DEFS]
+    return status_cards(cards, "/manufacturing", dtype, show_all_card=False)
 
 
 # Demand-Planning row selection: select-all toggle + a live "[N selected]" count that enables the
-# bulk Make button. Only checked .dp-select boxes submit (hx-include), so no hidden field is needed.
+# bulk Make button. Counts only VISIBLE rows (a column filter may hide some). Only checked .dp-select
+# boxes submit (hx-include), so no hidden field is needed.
 _DP_SELECT_JS = """
 (function(){
-  function boxes(){return Array.prototype.slice.call(document.querySelectorAll('#mfg-table .dp-select'));}
+  function boxes(){return Array.prototype.slice.call(
+    document.querySelectorAll('#mfg-table tbody tr.data-row:not(.dp-row-hidden) .dp-select'));}
   function update(){
     var b=boxes(),n=b.filter(function(c){return c.checked}).length;
     var cnt=document.getElementById('dp-count');if(cnt)cnt.textContent=n+' selected';
@@ -268,6 +246,7 @@ _DP_SELECT_JS = """
     var all=document.getElementById('dp-select-all');
     if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
   }
+  window.dpUpdateSelection=update;
   document.addEventListener('change',function(e){
     var t=e.target;if(!t)return;
     if(t.id==='dp-select-all'){boxes().forEach(function(c){c.checked=t.checked});update();}
@@ -280,11 +259,88 @@ _DP_SELECT_JS = """
 })();
 """
 
+# Excel-style column filters: each .colfilter funnel opens a checkbox list of the distinct values
+# in its column (data-col = cell index). Filtering is client-side and instant; multiple columns AND
+# together; hidden rows get a .dp-row-hidden class and are deselected. State resets when the table
+# is re-rendered (a server filter / search / make swaps #mfg-table).
+_DP_FILTER_JS = """
+(function(){
+  var active={};  // colIndex(str) -> Set of allowed values; absent = all allowed
+  function tbl(){return document.getElementById('mfg-table');}
+  function rows(){var t=tbl();return t?Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row')):[];}
+  function cellText(r,col){var c=r.children[col];return c?c.textContent.trim():'';}
+  function distinct(col){var out=[],seen={};rows().forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}
+  function apply(){
+    rows().forEach(function(r){
+      var show=true;
+      for(var col in active){var s=active[col];if(s&&!s.has(cellText(r,+col))){show=false;break;}}
+      r.classList.toggle('dp-row-hidden',!show);
+      if(!show){var cb=r.querySelector('.dp-select');if(cb&&cb.checked)cb.checked=false;}
+    });
+    var t=tbl();if(t){t.querySelectorAll('.colfilter').forEach(function(b){
+      b.classList.toggle('colfilter--active',!!active[b.getAttribute('data-col')]);});}
+    if(window.dpUpdateSelection)window.dpUpdateSelection();
+  }
+  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
+  function open(btn){
+    var col=btn.getAttribute('data-col');
+    var wasOpen=!!document.querySelector('.colfilter-pop[data-col="'+col+'"]');
+    closeAll(); if(wasOpen)return;                     // toggle off
+    var values=distinct(+col);
+    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);
+    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder='Search\\u2026';
+    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';
+    var selAllCb=document.createElement('input');selAllCb.type='checkbox';
+    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' (Select all)'));
+    var list=document.createElement('div');list.className='colfilter-list';
+    function commit(){
+      var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});
+      if(checked.length===values.length){delete active[col];}else{active[col]=new Set(checked);}
+      selAllCb.checked=(checked.length===values.length);
+      selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);
+      apply();
+    }
+    values.forEach(function(v){
+      var lbl=document.createElement('label');lbl.className='colfilter-item';
+      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;
+      cb.checked=!active[col]||active[col].has(v);
+      cb.addEventListener('change',commit);
+      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||'(blank)')));
+      list.appendChild(lbl);
+    });
+    selAllCb.checked=!active[col];selAllCb.indeterminate=!!active[col];
+    selAllCb.addEventListener('change',function(){
+      list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});
+    search.addEventListener('input',function(){var q=search.value.toLowerCase();
+      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
+    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent='Clear filter';
+    clear.addEventListener('click',function(){delete active[col];closeAll();apply();});
+    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);
+    // Anchor to document.body with fixed positioning so table-cell stacking never clips it, and
+    // clamp within the viewport (rightmost columns flip left instead of overflowing off-screen).
+    pop.style.position='fixed';
+    document.body.appendChild(pop);
+    var br=btn.getBoundingClientRect();
+    pop.style.top=(br.bottom+2)+'px';
+    pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';
+    search.focus();
+  }
+  document.addEventListener('click',function(e){
+    var btn=e.target.closest&&e.target.closest('.colfilter');
+    if(btn){e.preventDefault();e.stopPropagation();open(btn);return;}
+    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+  document.addEventListener('htmx:afterSwap',function(e){
+    if(e.detail&&e.detail.target&&e.detail.target.id==='mfg-table'){active={};closeAll();apply();}});
+})();
+"""
+
 
 def _order_table(orders: list[dict], today: str = "") -> FT:
     if not orders:
         return Div(
-            empty_state_cta("Nothing in production yet.", "View To Make", "/manufacturing"),
+            empty_state_cta("Nothing in production yet.", "Go to Demand Planning", "/manufacturing"),
             id="mfg-table",
         )
     return Table(
@@ -367,12 +423,12 @@ def setup_routes(app):
     def _intro(icon: str, text: str) -> FT:
         return Div(Span(icon, cls="info-banner-icon"), Span(text), cls="info-banner")
 
-    def _dp_filter_args(request: Request) -> tuple[str, str, str]:
-        """(document-type, coverage-status, search) from the query string, with defaults."""
+    def _dp_filter_args(request: Request) -> tuple[str, str]:
+        """(document-type, search) from the query string. Type is the board's main filter; finer
+        filters (status, customer) are client-side column funnels."""
         dtype = (request.query_params.get("type") or "all").lower()
-        status = (request.query_params.get("status") or "open").lower()
         q = (request.query_params.get("q") or "").strip().lower()
-        return dtype, status, q
+        return dtype, q
 
     def _dp_search(lines: list[dict], q: str) -> list[dict]:
         if not q:
@@ -383,8 +439,8 @@ def setup_routes(app):
     @app.get("/manufacturing")
     async def demand_planning(request: Request):
         """Demand Planning board: one line per open demand document, with the product it needs and
-        how well current supply (on hand + in progress) covers it. Filter by document type and
-        coverage status; tick lines and Make to start runs for the products that are short."""
+        how well current supply (on hand + in progress) covers it. Document type is the main filter;
+        the Status and For columns have Excel-style funnels. Tick lines and Make to start runs."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -393,7 +449,7 @@ def setup_routes(app):
             status = request.query_params.get("status")
             return RedirectResponse(
                 "/manufacturing/production" + (f"?status={status}" if status else ""), status_code=302)
-        dtype, status, q = _dp_filter_args(request)
+        dtype, q = _dp_filter_args(request)
         try:
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
@@ -401,29 +457,31 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             rows = []
         all_lines = _demand_lines(rows)
-        lines = _dp_search(_demand_filter(all_lines, dtype, status), q)
+        lines = _dp_search(_demand_filter(all_lines, dtype), q)
         body = (
-            _intro("📊", "Every open order that needs something made, with how well current stock and "
-                         "in-progress runs cover it. Filter by document type or coverage status; tick "
-                         "the lines you want and choose Make to start runs for the products that are short."),
-            _demand_filter_bars(all_lines, dtype, status),
+            _intro("📊", "Every open order that needs something made, and how well current stock and "
+                         "in-progress runs cover it. Pick a document type below, or use the column "
+                         "filters to narrow by status or customer; tick the lines you want and choose "
+                         "Make to start a production run for each product that is short."),
+            _type_filter_bar(all_lines, dtype),
             Div(
                 Span("0 selected", id="dp-count", cls="bulk-count"),
                 Button("Make selected", id="dp-make-btn", type="button", disabled=True,
                        cls="btn btn--sm btn--primary",
-                       hx_post=f"/manufacturing/make-selected?type={dtype}&status={status}",
+                       hx_post=f"/manufacturing/make-selected?type={dtype}",
                        hx_include=".dp-select", hx_target="#mfg-table", hx_swap="outerHTML",
                        title="Start a production run for each selected product at its shortfall"),
                 cls="bulk-action-bar mfg-filter-row", id="dp-bulkbar",
             ),
             _demand_table(lines),
             Script(_DP_SELECT_JS),
+            Script(_DP_FILTER_JS),
         )
         return base_shell(
             page_header(
                 "Demand Planning",
                 search_bar(placeholder="Search product / document...", target="#mfg-table",
-                           url=f"/manufacturing/to-make-search?type={dtype}&status={status}"),
+                           url=f"/manufacturing/to-make-search?type={dtype}"),
             ),
             *body,
             title="Demand Planning - Celerp",
@@ -483,7 +541,7 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        dtype, status, _q = _dp_filter_args(request)
+        dtype, _q = _dp_filter_args(request)
         form = await request.form()
         ids = list(dict.fromkeys(form.getlist("selected")))  # distinct products, order preserved
         result: dict = {"built": []}
@@ -495,7 +553,7 @@ def setup_routes(app):
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-        lines = _demand_filter(_demand_lines(rows), dtype, status)
+        lines = _demand_filter(_demand_lines(rows), dtype)
         built = len(result.get("built", []))
         msg = (f"Started {built} production run(s)." if built
                else "Nothing to make for the selected products.")
@@ -507,16 +565,16 @@ def setup_routes(app):
 
     @app.get("/manufacturing/to-make-search")
     async def to_make_search(request: Request):
-        """Demand-board fragment for the header search box (keeps the active type/status filter)."""
+        """Demand-board fragment for the header search box (keeps the active document-type filter)."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        dtype, status, q = _dp_filter_args(request)
+        dtype, q = _dp_filter_args(request)
         try:
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError:
             rows = []
-        lines = _dp_search(_demand_filter(_demand_lines(rows), dtype, status), q)
+        lines = _dp_search(_demand_filter(_demand_lines(rows), dtype), q)
         return _demand_table(lines)
 
     @app.get("/manufacturing/search")

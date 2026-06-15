@@ -34,6 +34,7 @@ PLUGIN_MANIFEST = {
         "nav": [
             {
                 "group": "Manufacturing",
+                "key": "manufacturing",
                 "icon": "📊",
                 "label": "Demand Planning",
                 "href": "/manufacturing",
@@ -44,6 +45,7 @@ PLUGIN_MANIFEST = {
             },
             {
                 "group": "Manufacturing",
+                "key": "work_in_progress",
                 "icon": "🏭",
                 "label": "Work In Progress",
                 "href": "/manufacturing/production",
@@ -52,6 +54,7 @@ PLUGIN_MANIFEST = {
             },
             {
                 "group": "Manufacturing",
+                "key": "production_orders",
                 "icon": "📋",
                 "label": "Production Orders",
                 "href": "/docs?type=production_order",
