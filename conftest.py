@@ -248,7 +248,8 @@ _SLOT_CONTRIBUTIONS = [
     {"slot": "nav", "contrib": {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "order": 50, "settings_href": "/settings/accounting", "_module": "celerp-accounting"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "order": 52, "_module": "celerp-accounting"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "order": 53, "_module": "celerp-reports"}},
-    {"slot": "nav", "contrib": {"group": "Inventory", "key": "manufacturing", "href": "/manufacturing", "label": "Manufacturing", "order": 40, "_module": "celerp-manufacturing"}},
+    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "manufacturing", "href": "/manufacturing", "label": "Production Queue", "order": 35, "settings_href": "/settings/manufacturing", "_module": "celerp-manufacturing"}},
+    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "production_orders", "href": "/docs?type=production_order", "label": "Production Orders", "order": 36, "_module": "celerp-manufacturing"}},
     # --- projection_handler slots ---
     {
         "slot": "projection_handler",

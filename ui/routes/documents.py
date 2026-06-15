@@ -130,6 +130,21 @@ _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "subscription_invoice": "Subscription Templates",
     "subscription_po": "Subscription PO Templates",
 }
+# Short explanatory banner shown above certain doc-type lists where the purpose isn't obvious.
+_DOC_TYPE_INTRO: dict[str, str] = {
+    "production_order": (
+        "Production Orders are internal orders to build stock - demand you create yourself, not tied to "
+        "a customer. Use them to plan production ahead of (or independent of) sales; once finalized, their "
+        "items appear on the Manufacturing To-Make board."
+    ),
+}
+
+
+def _doc_type_intro(doc_type: str) -> FT:
+    text = _DOC_TYPE_INTRO.get(doc_type)
+    return Div(Span("ℹ️", cls="info-banner-icon"), Span(text), cls="info-banner") if text else ""
+
+
 _DOC_TYPE_NEW_LABEL_KEYS: dict[str, str] = {
     "invoice": "btn.new_invoice",
     "purchase_order": "btn.new_purchase_order",
@@ -954,6 +969,7 @@ def setup_routes(app):
                 A(t("btn.export_csv"), href="/docs/export/csv", cls="btn btn--secondary"),
                 A(t("doc.import_csv"), href="/docs/import", cls="btn btn--secondary"),
             ),
+            _doc_type_intro(doc_type),
             _date_filter_bar("/docs", date_from, date_to, preset, extra_params=f"&{extra}" if extra else "", lang=lang),
             _summary_bar(summary, doc_type, currency, lang),
             _doc_status_cards(docs, status, summary, currency, doc_type=doc_type, lang=lang, status_in=status_in, overdue_only=overdue_only, unfulfilled_only=unfulfilled_only, not_restocked=not_restocked, not_stocked=not_stocked, all_issued=all_issued, converted_to_type=converted_to_type),

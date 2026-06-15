@@ -2640,3 +2640,24 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .badge--unaudited { background: rgba(139,148,172,0.15); color: var(--c-text2); border: 1px solid rgba(139,148,172,0.3); }
 .badge--audited { background: rgba(59,130,246,0.15); color: var(--c-blue); border: 1px solid rgba(59,130,246,0.3); }
 .badge--stock-adjusted { background: rgba(34,197,94,0.15); color: var(--c-green); border: 1px solid rgba(34,197,94,0.3); }
+
+/* --- Manufacturing settings: info tooltip, narrow input, toggle --- */
+.settings-card-header { margin-bottom: 12px; }
+.input--narrow { max-width: 120px; }
+.settings-toggle { display: flex; align-items: flex-start; gap: 6px; cursor: pointer; }
+.settings-toggle input[type="checkbox"] { margin-top: 3px; flex: none; }
+.info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px;
+  margin-left: 5px; border-radius: 50%; font-size: 10px; line-height: 1; color: var(--c-text2);
+  border: 1px solid var(--c-border); cursor: help; position: relative; user-select: none; vertical-align: middle; flex: none; }
+.info-tip:hover, .info-tip:focus { color: var(--c-accent); border-color: var(--c-accent); outline: none; }
+.info-tip::after { content: attr(data-tip); position: absolute; left: 50%; bottom: 140%; transform: translateX(-50%);
+  width: 250px; max-width: 60vw; padding: 8px 10px; border-radius: 6px; background: var(--c-text); color: #fff;
+  font-size: 12px; line-height: 1.45; text-align: left; white-space: normal; box-shadow: 0 2px 10px rgba(0,0,0,.2);
+  opacity: 0; visibility: hidden; transition: opacity .12s ease; z-index: 50; pointer-events: none; }
+.info-tip:hover::after, .info-tip:focus::after { opacity: 1; visibility: visible; }
+
+/* --- Doc-type explanatory banner --- */
+.info-banner { display: flex; align-items: flex-start; gap: 8px; padding: 10px 14px; margin-bottom: 14px;
+  background: var(--c-blue-light); border: 1px solid var(--c-blue-border); border-radius: 6px;
+  font-size: 13px; color: var(--c-text); line-height: 1.45; max-width: 820px; }
+.info-banner-icon { flex: none; }

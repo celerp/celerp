@@ -38,7 +38,12 @@ async def _recipe(client, token, item_id, components):
 async def _doc(client, token, line_items, doc_type="invoice") -> str:
     r = await client.post("/docs", headers=_h(token), json={"doc_type": doc_type, "line_items": line_items, "total": 0})
     assert r.status_code in (200, 201), r.text
-    return r.json()["id"]
+    doc_id = r.json()["id"]
+    # A draft invoice is a pro-forma (tentative) and is excluded from demand; finalize it so it
+    # represents committed demand. Other open doc types (e.g. list) count while still in draft.
+    if doc_type == "invoice":
+        assert (await client.post(f"/docs/{doc_id}/finalize", headers=_h(token))).status_code == 200
+    return doc_id
 
 
 async def _to_make(client, token) -> dict:

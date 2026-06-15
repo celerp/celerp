@@ -27,13 +27,15 @@ PLUGIN_MANIFEST = {
 
     # ── Extension slots ───────────────────────────────────────────────────────
     "slots": {
+        # Ordered 35-36 so the group sorts immediately after the Inventory group (orders 30-34)
+        # and before Contacts (order 40). Work Centers is configured in Manufacturing Settings.
         "nav": [
             {
                 "group": "Manufacturing",
                 "icon": "🏭",
                 "label": "Production Queue",
                 "href": "/manufacturing",
-                "order": 10,
+                "order": 35,
                 "min_role": "operator",
                 # Gear-link on the group header -> Manufacturing settings.
                 "settings_href": "/settings/manufacturing",
@@ -43,15 +45,7 @@ PLUGIN_MANIFEST = {
                 "icon": "📋",
                 "label": "Production Orders",
                 "href": "/docs?type=production_order",
-                "order": 20,
-                "min_role": "operator",
-            },
-            {
-                "group": "Manufacturing",
-                "icon": "🛠️",
-                "label": "Work Centers",
-                "href": "/manufacturing/work-centers",
-                "order": 30,
+                "order": 36,
                 "min_role": "operator",
             },
         ],

@@ -406,13 +406,13 @@ _CLOSED_DOC_STATUSES = {"void", "cancelled", "converted", "expired"}
 def _skip_as_demand(doc_state: dict) -> bool:
     """Should this document's lines be ignored as production demand?
 
-    Closed docs never drive production. Customer invoices count even as drafts (a draft invoice is
-    a pro forma = committed demand), but an internal production order is only active demand once it
-    is finalized (a draft production order is still being composed)."""
+    Closed docs never drive production. A draft invoice is a pro forma - a tentative, pre-sale
+    document - so it is NOT counted as committed demand. An internal production order is likewise
+    only active demand once finalized (a draft production order is still being composed)."""
     status = (doc_state.get("status") or "")
     if status in _CLOSED_DOC_STATUSES:
         return True
-    if doc_state.get("doc_type") == "production_order" and status == "draft":
+    if status == "draft" and doc_state.get("doc_type") in ("production_order", "invoice"):
         return True
     return False
 
@@ -507,6 +507,7 @@ async def to_make(
         hours_per_unit = labor_hours(recipe, hours_per_day) / out_qty
         items.append({
             **{k: row[k] for k in ("item_id", "sku", "name", "due")},
+            "unit": ist.get("sell_by") or ist.get("unit"),
             "demand": row["demand"], "on_hand": on_hand, "to_make": to_make_qty,
             "doc_count": len(row["docs"]), "docs": row["docs"],
             "est_unit_cost": round(unit_cost, 4),

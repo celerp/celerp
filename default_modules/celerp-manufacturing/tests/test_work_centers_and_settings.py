@@ -72,8 +72,11 @@ async def _ring_with_daily_labor(client, token):
     await client.put(f"/manufacturing/items/{ring}/recipe", headers=_h(token),
                      json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 1}],
                            "labor": [{"operation": "Cast", "kind": "daily", "hours": 1, "rate": 100}], "overhead": []})
-    await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "line_items": [
-        {"item_id": ring, "sku": "R", "name": "Ring", "quantity": 1, "unit_price": 1}], "total": 1})
+    # Finalize the invoice so it counts as demand. A draft invoice is a pro-forma (tentative)
+    # and is intentionally excluded from the To-Make board.
+    inv = (await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "line_items": [
+        {"item_id": ring, "sku": "R", "name": "Ring", "quantity": 1, "unit_price": 1}], "total": 1})).json()
+    assert (await client.post(f"/docs/{inv['id']}/finalize", headers=_h(token))).status_code == 200
     return ring
 
 

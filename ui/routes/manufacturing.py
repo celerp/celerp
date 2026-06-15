@@ -128,16 +128,23 @@ def _money(v, cur: str) -> str:
         return EMPTY
 
 
+def _qty(value, unit: str | None) -> str:
+    """Format a quantity with the product's sell unit, e.g. '2 Pieces'."""
+    n = f"{float(value or 0):g}"
+    return f"{n} {unit}" if unit else n
+
+
 def _to_make_row(r: dict, cur: str) -> FT:
     item_id = r.get("item_id", "")
     label = f"{r.get('sku') or item_id} - {r.get('name', '')}".strip(" -")
     due = r.get("due")
+    unit = r.get("unit")
     return Tr(
         Td(A(label, href=f"/inventory/{item_id}?tab=manufacturing", cls="table-link")),
-        Td(f"{float(r.get('to_make', 0)):g}", cls="cell--number"),
-        Td(f"{float(r.get('demand', 0)):g} ({r.get('doc_count', 0)})", cls="cell--number",
+        Td(_qty(r.get("to_make", 0), unit), cls="cell--number"),
+        Td(f"{_qty(r.get('demand', 0), unit)} ({r.get('doc_count', 0)})", cls="cell--number",
            title=f"{float(r.get('demand', 0)):g} demanded across {r.get('doc_count', 0)} open document(s)"),
-        Td(f"{float(r.get('on_hand', 0)):g}", cls="cell--number"),
+        Td(_qty(r.get("on_hand", 0), unit), cls="cell--number"),
         Td(due or EMPTY, cls="cell--center"),
         Td(_money(r.get("est_cost"), cur), cls="cell--number"),
         Td(f"{float(r.get('est_hours', 0)):g}", cls="cell--number"),
@@ -379,7 +386,16 @@ def setup_routes(app):
             return P(t("error.unauthorized"), cls="cell-error")
         current = request.query_params.get("current", "")
         post = f"/manufacturing/runs/{run_id}/schedule"
-        common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML", "hx_trigger": "change"}
+        # ESC cancels the edit: restore the cell's display chip (innerHTML of the editable-cell)
+        # without persisting. Mirrors the inventory inline-edit escape pattern.
+        escape_js = (
+            f"if(event.key==='Escape'){{"
+            f"htmx.ajax('GET','/manufacturing/runs/{run_id}/cell/{field}?current={current}',"
+            f"{{target:this.closest('.editable-cell'),swap:'innerHTML'}});"
+            f"event.preventDefault();event.stopPropagation();}}"
+        )
+        common = {"hx_post": post, "hx_target": "#mfg-table", "hx_swap": "outerHTML",
+                  "hx_trigger": "change", "onkeydown": escape_js}
         if field == "priority":
             return Select(
                 Option("--", value="", selected=(current == "")),
@@ -388,6 +404,14 @@ def setup_routes(app):
             )
         # default: due_date
         return Input(type="date", name="due_date", value=current, cls="cell-input cell-input--xs", **common)
+
+    @app.get("/manufacturing/runs/{run_id}/cell/{field}")
+    async def run_field_cell(request: Request, run_id: str, field: str):
+        """Restore an inline cell to its display chip (ESC-cancel from the editor)."""
+        current = request.query_params.get("current", "")
+        if field == "priority":
+            return _priority_badge(current or None)
+        return current or EMPTY
 
     @app.post("/manufacturing/runs/{run_id}/schedule")
     async def run_schedule(request: Request, run_id: str):
@@ -418,21 +442,8 @@ def setup_routes(app):
 
     @app.get("/manufacturing/work-centers")
     async def work_centers_page(request: Request):
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        return base_shell(
-            page_header(
-                "Work Centers",
-                Button("Add work center", type="button", cls="btn btn--sm btn--primary",
-                       hx_post="/manufacturing/work-centers/new", hx_target="#wc-table", hx_swap="outerHTML"),
-            ),
-            P("Operational stations (e.g. Bench, Polishing, Oven). Double-click a cell to edit.", cls="hint"),
-            await _wc_table_response(token),
-            title="Work Centers - Celerp",
-            nav_active="manufacturing",
-            request=request,
-        )
+        # Work centers are now configured in Manufacturing Settings; keep the old URL working.
+        return RedirectResponse("/settings/manufacturing#work-centers", status_code=302)
 
     @app.post("/manufacturing/work-centers/new")
     async def work_center_new(request: Request):
