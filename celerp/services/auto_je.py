@@ -298,6 +298,37 @@ async def landed_account_for_line(session, company_id, li: dict) -> str | None:
     return _LANDED_CLEARING_ACCT[kind]
 
 
+async def create_for_landed_capitalisation(
+    session, *, company_id, user_id, doc_id: str, landed_by_kind: dict[str, float], receive_suffix: str,
+) -> None:
+    """Capitalise received landed cost from the clearing accounts into goods inventory on receipt:
+    Dr 1130-P (total) / Cr each kind's clearing account. Balances by construction.
+
+    The bill posting (create_for_bill_conversion) parks freight/insurance/duty/non-recoverable-VAT in
+    the clearing accounts; this draws the received portion down into 1130-P so that COGS, which relieves
+    the item's full cost_total (base + landed) from 1130-P, reconciles against the same account.
+    """
+    total = round(sum(float(v or 0) for v in landed_by_kind.values()), 2)
+    if total <= 0:
+        return
+    entries: list[dict] = [{"account": _INVENTORY_ACCT, "debit": total, "credit": 0.0}]
+    for kind, amt in landed_by_kind.items():
+        amt = round(float(amt or 0), 2)
+        if amt:
+            entries.append({"account": _LANDED_CLEARING_ACCT[kind], "debit": 0.0, "credit": amt})
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:landed-cap:{receive_suffix}",
+        idem_create=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "p"),
+        memo=f"Auto JE for {doc_id} landed-cost capitalisation",
+        entries=entries,
+        metadata_={"trigger": "doc.landed_capitalised", "doc_id": doc_id},
+    )
+
+
 async def create_for_bill_conversion(
     session,
     *,

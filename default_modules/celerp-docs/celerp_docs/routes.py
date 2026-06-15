@@ -1709,6 +1709,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
     # across its stocked goods lines (by value). Received parcels carry their per-unit share so each
     # item's cost reflects landed cost; per-unit storage prorates naturally to the received quantity.
     bill_alloc: dict[str, dict[str, float]] = {}
+    landed_drawdown: dict[str, float] = {}   # per-kind landed cost capitalised by this receipt
     if doc_type == "bill":
         bill_alloc = await compute_bill_landed_allocation(session, company_id, row.state)
 
@@ -1800,6 +1801,9 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             _landed = bill_alloc.get(_sku.strip(), {})
             if _landed:
                 item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
+                _recv_qty_total = float(it.quantity_received) * conversion
+                for _k, _u in _landed.items():
+                    landed_drawdown[_k] = round(landed_drawdown.get(_k, 0.0) + _u * _recv_qty_total, 2)
             if is_consignment:
                 item_data["consignment_flag"] = "in"
             new_eid = f"item:{uuid.uuid4()}"
@@ -1831,8 +1835,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
 
-    if not is_consignment:
-        # PO/Bill: create accounting journal entry; consignment_in has no JE (goods not owned)
+    if doc_type == "purchase_order":
+        # A purchase order recognises goods + AP at receipt (its accounting point): Dr inventory / Cr AP.
         po_total = float(row.state.get("total", 0) or 0)
         if po_total == 0:
             po_total = sum(
@@ -1852,6 +1856,15 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             base_currency=_rcv_base_currency,
             receive_date=datetime.now(UTC).date().isoformat(),
         )
+    elif doc_type == "bill" and landed_drawdown:
+        # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
+        # NOT re-post that JE (it would double-count inventory and AP). Receipt only capitalises the
+        # received landed cost from the clearing accounts into 1130-P (Dr 1130-P / Cr clearing).
+        await auto_je.create_for_landed_capitalisation(
+            session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+            landed_by_kind=landed_drawdown, receive_suffix=str(uuid.uuid4()),
+        )
+    # consignment_in: no JE (goods not owned).
     await session.commit()
     return {"event_id": entry.id}
 
