@@ -323,6 +323,28 @@ if _backup_pkg.exists() and str(_backup_pkg) not in sys.path:
 from celerp_backup.setup import setup_api_routes as _setup_backup  # noqa: E402
 _setup_backup(app)
 
+# AI and Connectors are proprietary cloud-gated core (not pluggable modules): wire them directly at
+# app-construction time and register their slots, the same way backup is wired. They are not loaded via
+# the module loader, so they cannot be replaced by a user-supplied module of the same name.
+_ai_pkg = _Path(__file__).parent.parent / "default_modules" / "celerp-ai"
+if _ai_pkg.exists() and str(_ai_pkg) not in sys.path:
+    sys.path.insert(0, str(_ai_pkg))
+from celerp_ai.setup import setup_api_routes as _setup_ai  # noqa: E402
+_setup_ai(app)
+
+_connectors_pkg = _Path(__file__).parent.parent / "default_modules" / "celerp-connectors"
+if _connectors_pkg.exists() and str(_connectors_pkg) not in sys.path:
+    sys.path.insert(0, str(_connectors_pkg))
+from celerp_connectors.routes import setup_api_routes as _setup_connectors  # noqa: E402
+_setup_connectors(app)
+# Connectors' marketplace projection handler is registered directly (its handler lives in the kernel).
+from celerp.modules.slots import register as _register_slot  # noqa: E402
+_register_slot("projection_handler", {
+    "prefix": "mp.",
+    "handler": "celerp.projections.handlers.marketplace:apply_marketplace_event",
+    "_module": "celerp-connectors",
+})
+
 # Debug router — only active when CELERP_DEBUG=1 (never in production by default)
 if _os.environ.get("CELERP_DEBUG") == "1":
     from celerp.routers import debug as _debug

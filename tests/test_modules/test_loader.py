@@ -672,9 +672,13 @@ class TestElectronTrustedModuleDirs:
         )
 
     def test_bundled_first_party_modules_load_with_bsl_imports(self):
-        """celerp-ai, celerp-backup, celerp-admin must all load from the real
-        default_modules directory (trusted=True, no AST scan). celerp-connectors
-        is also tested but requires celerp-inventory as a dependency.
+        """A first-party module that imports BSL internals must load from the real default_modules
+        directory (trusted=True, no AST scan). celerp-admin is the regression subject: it imports
+        kernel internals (celerp.gateway.client) yet must be trusted when loaded from default_modules.
+
+        celerp-ai/backup/connectors are NOT pluggable modules - they are folded into the proprietary
+        core (wired directly in celerp/main.py and ui/app.py) and the loader explicitly skips them, so
+        this test also asserts they are NOT loaded as modules.
 
         This is the full end-to-end regression test for the Electron trust bug.
         """
@@ -707,18 +711,18 @@ class TestElectronTrustedModuleDirs:
                 },
             )
             loaded_names = {m["name"] for m in result}
-            # These three have no extra deps and directly import BSL internals
-            for mod_name in ("celerp-ai", "celerp-backup", "celerp-admin"):
-                assert mod_name in loaded_names, (
-                    f"{mod_name} failed to load from default_modules — "
-                    f"it likely imports BSL internals and is being wrongly treated as untrusted. "
-                    f"This is the Electron trust bug."
-                )
-            # celerp-connectors also imports BSL internals but needs celerp-inventory + celerp-docs
-            assert "celerp-connectors" in loaded_names, (
-                "celerp-connectors failed to load — imports BSL internals (celerp.session_gate, "
-                "celerp.connectors.base) and must be trusted when loaded from default_modules"
+            # celerp-admin imports kernel/BSL internals yet must be trusted when bundled (the trust bug).
+            assert "celerp-admin" in loaded_names, (
+                "celerp-admin failed to load from default_modules — "
+                "it imports BSL internals and is being wrongly treated as untrusted. "
+                "This is the Electron trust bug."
             )
+            # The proprietary cloud components are folded into core and must NOT load as pluggable
+            # modules (the loader skips them; they are direct-wired in celerp/main.py and ui/app.py).
+            for folded in ("celerp-ai", "celerp-backup", "celerp-connectors"):
+                assert folded not in loaded_names, (
+                    f"{folded} is core-folded and must not be loaded by the module loader"
+                )
         finally:
             _loader._loaded.clear()
             _slots.clear()

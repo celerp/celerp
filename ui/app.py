@@ -369,6 +369,23 @@ for _backend_mod, _ui_mod_path in _CONDITIONAL_UI:
         except ImportError:
             pass  # UI route module not present — skip silently
 
+# AI is proprietary cloud-gated core (not a pluggable module): register its UI + nav directly so it is
+# always present and cannot be replaced by a user-supplied module. Mirrors the API wiring in main.py.
+import sys as _sys
+_ai_ui_pkg = os.path.join(os.path.dirname(os.path.dirname(__file__)), "default_modules", "celerp-ai")
+if os.path.isdir(_ai_ui_pkg) and _ai_ui_pkg not in _sys.path:
+    _sys.path.insert(0, _ai_ui_pkg)
+try:
+    from celerp.modules.slots import register as _register_ui_slot
+    _register_ui_slot("nav", {
+        "group": "AI", "key": "ai", "href": "/ai", "label": "AI Assistant",
+        "label_key": "nav.ai_assistant", "order": 90, "settings_href": "/ai/settings",
+        "min_role": "operator", "_module": "celerp-ai",
+    })
+    _importlib.import_module("celerp_ai.ui_routes").setup_ui_routes(app)
+except ImportError:
+    pass  # AI package not present — skip silently
+
 # Register UI routes from external loaded modules (opt-in: no-op if MODULE_DIR not set)
 _MODULE_DIR = os.environ.get("MODULE_DIR", "")
 if _MODULE_DIR and _ENABLED_MODULES:
