@@ -1035,6 +1035,12 @@ async def manufacturing_to_make(token: str) -> dict:
         return _raise(await c.get("/manufacturing/to-make")).json()
 
 
+async def manufacturing_bulk_build(token: str, item_ids: list[str]) -> dict:
+    """Create a production run for each selected product at its net shortfall (To-Make qty)."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/manufacturing/to-make/build", json={"item_ids": item_ids})).json()
+
+
 async def manufacturing_item_hub(token: str, item_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get(f"/manufacturing/items/{item_id}/hub")).json()

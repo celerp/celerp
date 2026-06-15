@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date
 
 from fasthtml.common import *
 from starlette.requests import Request
-from starlette.responses import RedirectResponse
+from starlette.responses import HTMLResponse, RedirectResponse
 
 import ui.api_client as api
 from ui.api_client import APIError
@@ -37,26 +38,31 @@ def _badge(status: str) -> FT:
     return Span(label or EMPTY, cls=f"badge badge--{key}")
 
 
-def _mfg_status_cards(orders: list[dict], active_status: str) -> FT:
-    # Cards count the full set returned for the current view; the default view is "incomplete"
-    # (planned + in_progress + on_hold), so completed/cancelled are reached via their own card.
+def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> FT:
+    """Status filter cards for the Work In Progress queue. 'Active' = planned+in_progress+on_hold
+    (the default view); 'All' shows every run including completed/cancelled. Cards link within
+    base_url (carrying the status) so the queue stays put when filtering."""
     _CARD_DEFS = [
+        ("all", "All", "gray"),
+        ("active", "Active", "blue"),
         ("planned", "Planned", "blue"),
         ("in_progress", "In Progress", "yellow"),
         ("on_hold", "On Hold", "orange"),
         ("completed", "Completed", "green"),
         ("cancelled", "Cancelled", "gray"),
     ]
-    counts: dict[str, int] = {s: 0 for s, _, _ in _CARD_DEFS}
-    for o in orders:
-        s = str(o.get("status") or "").lower()
-        if s in counts:
-            counts[s] += 1
+    statuses = [str(o.get("status") or "").lower() for o in orders]
+    counts: dict[str, int] = {
+        "all": len(statuses),
+        "active": sum(1 for s in statuses if s in _INCOMPLETE_STATUSES),
+    }
+    for s, _, _ in _CARD_DEFS:
+        counts.setdefault(s, sum(1 for x in statuses if x == s))
     cards = [
         {"label": label, "count": counts[s], "status": s, "color": color}
         for s, label, color in _CARD_DEFS
     ]
-    return status_cards(cards, "/manufacturing", active_status or None)
+    return status_cards(cards, base_url, active_status or None, show_all_card=False)
 
 
 # Run priority labels (Phase-A scheduling). Order = ascending urgency for the picker.
@@ -134,43 +140,122 @@ def _qty(value, unit: str | None) -> str:
     return f"{n} {unit}" if unit else n
 
 
-def _to_make_row(r: dict, cur: str) -> FT:
+def _safe(entity_id: str) -> str:
+    """DOM-id-safe form of an entity id (colons break CSS selectors)."""
+    return (entity_id or "").replace(":", "-")
+
+
+_PEG_LABELS = {"covered": "Covered", "partial": "Partial", "short": "Short"}
+
+
+def _peg_badge(coverage: str) -> FT:
+    return Span(_PEG_LABELS.get(coverage, coverage or EMPTY), cls=f"badge badge--peg-{coverage}")
+
+
+def _docs_fragment(docs: list[dict], unit: str | None) -> FT:
+    """The pegging drill-down: each demanding document with how much of it is covered by available
+    supply (on hand + in progress), pegged soonest-due first."""
+    if not docs:
+        return P("No open documents drive this demand.", cls="hint")
+    rows = []
+    for d in sorted(docs, key=lambda x: (x.get("due") is None, x.get("due") or "")):
+        rows.append(Tr(
+            Td(d.get("doc_number") or EMPTY),
+            Td((d.get("doc_type") or "").replace("_", " ").title()),
+            Td(d.get("contact_name") or EMPTY),
+            Td(d.get("due") or EMPTY, cls="cell--center"),
+            Td(_qty(d.get("quantity", 0), unit), cls="cell--number"),
+            Td(_qty(d.get("covered", 0), unit), cls="cell--number"),
+            Td(_qty(d.get("shortfall", 0), unit), cls="cell--number"),
+            Td(_peg_badge(d.get("coverage", "")), cls="cell--center"),
+            cls="data-row",
+        ))
+    return Table(
+        Thead(Tr(Th("Document"), Th("Type"), Th("For"), Th("Due", cls="cell--center"),
+                 Th("Ordered"), Th("Covered"), Th("Short"), Th("Status", cls="cell--center"))),
+        Tbody(*rows), cls="data-table data-table--nested",
+    )
+
+
+def _to_make_rows(r: dict, cur: str) -> list[FT]:
+    """A product's data row plus its (hidden) pegging drill-down row, lazy-loaded on expand."""
     item_id = r.get("item_id", "")
+    sid = _safe(item_id)
     label = f"{r.get('sku') or item_id} - {r.get('name', '')}".strip(" -")
     due = r.get("due")
     unit = r.get("unit")
-    return Tr(
+    expand = Button(
+        "▸", type="button", cls="dp-expand", title="Show the orders behind this demand",
+        hx_get=f"/manufacturing/to-make/{item_id}/docs?unit={unit or ''}",
+        hx_target=f"#dp-docs-{sid}", hx_swap="innerHTML",
+        onclick=(f"this.classList.toggle('dp-expand--open');"
+                 f"var r=document.getElementById('dp-docs-row-{sid}');if(r)r.hidden=!r.hidden;"),
+    ) if r.get("docs") else Span(EMPTY)
+    data_row = Tr(
+        Td(Input(type="checkbox", cls="dp-select", name="selected", value=item_id), cls="col-checkbox"),
         Td(A(label, href=f"/inventory/{item_id}?tab=manufacturing", cls="table-link")),
         Td(_qty(r.get("to_make", 0), unit), cls="cell--number"),
         Td(f"{_qty(r.get('demand', 0), unit)} ({r.get('doc_count', 0)})", cls="cell--number",
            title=f"{float(r.get('demand', 0)):g} demanded across {r.get('doc_count', 0)} open document(s)"),
         Td(_qty(r.get("on_hand", 0), unit), cls="cell--number"),
+        Td(_qty(r.get("in_progress", 0), unit), cls="cell--number"),
         Td(due or EMPTY, cls="cell--center"),
         Td(_money(r.get("est_cost"), cur), cls="cell--number"),
         Td(f"{float(r.get('est_hours', 0)):g}", cls="cell--number"),
-        Td(A("Make", href=f"/inventory/{item_id}?tab=manufacturing", cls="btn btn--xs btn--primary"),
-           cls="cell--actions"),
+        Td(expand, cls="cell--center"),
         cls="data-row",
     )
+    detail_row = Tr(
+        Td(Div(id=f"dp-docs-{sid}"), colspan="10", cls="dp-docs-cell"),
+        id=f"dp-docs-row-{sid}", cls="dp-docs-row", hidden=True,
+    )
+    return [data_row, detail_row]
 
 
 def _to_make_table(rows: list[dict], cur: str) -> FT:
     if not rows:
         return Div(
-            P("Nothing to make. Items appear here when an open invoice, pro forma, list or "
-              "production order needs a product that has a recipe.", cls="hint"),
+            P("Nothing to make. Items appear here when an open invoice, list or production order "
+              "needs more of a product than you have in stock or already in production.", cls="hint"),
             id="mfg-table",
         )
     cl = f" ({cur})" if cur else ""
+    body = [el for r in rows for el in _to_make_rows(r, cur)]
     # Headers centered (GDR 4a); numeric/currency CELLS right-aligned via cell--number on the td.
     return Table(
         Thead(Tr(
-            Th("Item"), Th("To make"), Th("Demand"), Th("On hand"), Th("Due"),
+            Th(Input(type="checkbox", id="dp-select-all", title="Select all"), cls="col-checkbox"),
+            Th("Item"), Th("To make"), Th("Demand"), Th("On hand"), Th("In progress"), Th("Due"),
             Th(f"Est. cost{cl}"), Th("Est. hours"), Th("", cls="cell--actions"),
         )),
-        Tbody(*[_to_make_row(r, cur) for r in rows]),
+        Tbody(*body),
         cls="data-table", id="mfg-table",
     )
+
+
+# Demand-Planning row selection: select-all toggle + a live "[N selected]" count that enables the
+# bulk Make button. Only checked .dp-select boxes submit (hx-include), so no hidden field is needed.
+_DP_SELECT_JS = """
+(function(){
+  function boxes(){return Array.prototype.slice.call(document.querySelectorAll('#mfg-table .dp-select'));}
+  function update(){
+    var b=boxes(),n=b.filter(function(c){return c.checked}).length;
+    var cnt=document.getElementById('dp-count');if(cnt)cnt.textContent=n+' selected';
+    var btn=document.getElementById('dp-make-btn');if(btn)btn.disabled=n===0;
+    var all=document.getElementById('dp-select-all');
+    if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
+  }
+  document.addEventListener('change',function(e){
+    var t=e.target;if(!t)return;
+    if(t.id==='dp-select-all'){boxes().forEach(function(c){c.checked=t.checked});update();}
+    else if(t.classList&&t.classList.contains('dp-select')){update();}
+  });
+  document.addEventListener('htmx:afterSwap',function(e){
+    if(e.detail&&e.detail.target&&e.detail.target.id==='mfg-table')update();
+  });
+  update();
+})();
+"""
 
 
 def _order_table(orders: list[dict], today: str = "") -> FT:
@@ -256,87 +341,158 @@ def setup_routes(app):
             params["date_to"] = date_to
         return params, date_from, date_to, preset
 
-    def _queue_tabs(active_tab: str) -> FT:
-        # Two tabs of one page: "To Make" (product-demand board) and "In Production" (runs).
-        return Div(
-            A("To Make", href="/manufacturing", cls=f"category-tab{' category-tab--active' if active_tab == 'to_make' else ''}"),
-            A("In Production", href="/manufacturing?tab=in_production",
-              cls=f"category-tab{' category-tab--active' if active_tab == 'in_production' else ''}"),
-            cls="category-tabs",
-        )
+    def _intro(icon: str, text: str) -> FT:
+        return Div(Span(icon, cls="info-banner-icon"), Span(text), cls="info-banner")
 
     @app.get("/manufacturing")
-    async def manufacturing_list(request: Request):
+    async def demand_planning(request: Request):
+        """Demand Planning board: products with more open demand than on-hand + in-progress supply.
+        Tick products and Make to start runs; expand a row for the per-order pegging breakdown."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        tab = "in_production" if request.query_params.get("tab") == "in_production" else "to_make"
+        # Legacy deep links to the runs queue moved to /manufacturing/production.
+        if request.query_params.get("tab") == "in_production":
+            status = request.query_params.get("status")
+            return RedirectResponse(
+                "/manufacturing/production" + (f"?status={status}" if status else ""), status_code=302)
         q = (request.query_params.get("q") or "").strip().lower()
         try:
             company = await api.get_company(token)
         except APIError:
             company = {}
         cur = _company_cur(company)
-
-        if tab == "to_make":
-            try:
-                rows = (await api.manufacturing_to_make(token)).get("items", [])
-            except APIError as e:
-                if e.status == 401:
-                    return RedirectResponse("/login", status_code=302)
-                rows = []
-            show_covered = request.query_params.get("view") == "all"
-            if not show_covered:
-                rows = [r for r in rows if float(r.get("to_make", 0)) > 0]
-            if q:
-                rows = [r for r in rows if q in f"{r.get('sku', '')} {r.get('name', '')}".lower()]
-            body = (
-                _queue_tabs("to_make"),
-                P("Products with open demand to make, pooled across all open invoices, pro formas, "
-                  "lists and production orders.", cls="hint"),
-                Div(A("Show covered too" if not show_covered else "Hide covered",
-                      href="/manufacturing?view=all" if not show_covered else "/manufacturing",
-                      cls="btn btn--xs btn--ghost",
-                      title="Also show products whose demand is already covered by on-hand stock"),
-                    cls="mfg-filter-row"),
-                _to_make_table(rows, cur),
-            )
-        else:
-            try:
-                orders_all = (await api.list_mfg_orders(token, {})).get("items", [])
-            except APIError as e:
-                if e.status == 401:
-                    return RedirectResponse("/login", status_code=302)
-                orders_all = []
-            active = (request.query_params.get("status") or "incomplete").lower()
-            if active == "all":
-                shown = orders_all
-            elif active == "incomplete":
-                shown = [o for o in orders_all if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
-            else:
-                shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
-            body = (
-                _queue_tabs("in_production"),
-                Div(
-                    _mfg_status_cards(orders_all, "" if active in ("incomplete", "all") else active),
-                    A("All incomplete" if active != "all" else "Show all",
-                      href="/manufacturing?tab=in_production" if active == "all" else "/manufacturing?tab=in_production&status=all",
-                      cls="btn btn--xs btn--ghost"),
-                    cls="mfg-filter-row",
-                ),
-                _order_table(shown, today=date.today().isoformat()),
-            )
-
-        search_url = "/manufacturing/to-make-search" if tab == "to_make" else "/manufacturing/search"
+        try:
+            rows = (await api.manufacturing_to_make(token)).get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            rows = []
+        show_covered = request.query_params.get("view") == "all"
+        if not show_covered:
+            rows = [r for r in rows if float(r.get("to_make", 0)) > 0]
+        if q:
+            rows = [r for r in rows if q in f"{r.get('sku', '')} {r.get('name', '')}".lower()]
+        body = (
+            _intro("📊", "What you need to make to fill open orders. Each row is a product with more "
+                         "demand (from invoices, lists and production orders) than you have in stock or "
+                         "already in production. Tick products and choose Make to start runs; click the "
+                         "arrow to see which orders drive each shortfall."),
+            Div(
+                Span("0 selected", id="dp-count", cls="bulk-count"),
+                Button("Make selected", id="dp-make-btn", type="button", disabled=True,
+                       cls="btn btn--sm btn--primary",
+                       hx_post="/manufacturing/make-selected", hx_include=".dp-select",
+                       hx_target="#mfg-table", hx_swap="outerHTML",
+                       title="Start a production run for each selected product at its shortfall"),
+                A("Show covered too" if not show_covered else "Hide covered",
+                  href="/manufacturing?view=all" if not show_covered else "/manufacturing",
+                  cls="btn btn--xs btn--ghost",
+                  title="Also show products already covered by stock or in-progress runs"),
+                cls="bulk-action-bar mfg-filter-row", id="dp-bulkbar",
+            ),
+            _to_make_table(rows, cur),
+            Script(_DP_SELECT_JS),
+        )
         return base_shell(
             page_header(
-                "Production Queue",
-                search_bar(placeholder="Search item / SKU...", target="#mfg-table", url=search_url),
+                "Demand Planning",
+                search_bar(placeholder="Search item / SKU...", target="#mfg-table",
+                           url="/manufacturing/to-make-search"),
             ),
             *body,
-            title="Production Queue - Celerp",
+            title="Demand Planning - Celerp",
             nav_active="manufacturing",
             request=request,
+        )
+
+    @app.get("/manufacturing/production")
+    async def work_in_progress(request: Request):
+        """Work In Progress: the production-run queue (issue components, then receive finished goods).
+        Status cards are the single filter; the default view is Active (planned/in_progress/on_hold)."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        q = (request.query_params.get("q") or "").strip().lower()
+        try:
+            orders_all = (await api.list_mfg_orders(token, {})).get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            orders_all = []
+        active = (request.query_params.get("status") or "active").lower()
+        if active in ("active", "incomplete"):
+            active = "active"
+            shown = [o for o in orders_all if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+        elif active == "all":
+            shown = orders_all
+        else:
+            shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
+        if q:
+            shown = [o for o in shown
+                     if q in " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])).lower()
+                     or q in str(o.get("description", "")).lower()]
+        body = (
+            _intro("🏭", "Production runs on the floor. Issue components to start a run, then receive "
+                         "finished goods to restock. Runs you start from Demand Planning appear here. "
+                         "Double-click a due date or priority to edit; press Esc to cancel."),
+            _mfg_status_cards(orders_all, active, "/manufacturing/production"),
+            _order_table(shown, today=date.today().isoformat()),
+        )
+        return base_shell(
+            page_header(
+                "Work In Progress",
+                search_bar(placeholder="Search run / SKU...", target="#mfg-table",
+                           url="/manufacturing/search"),
+            ),
+            *body,
+            title="Work In Progress - Celerp",
+            nav_active="manufacturing",
+            request=request,
+        )
+
+    @app.get("/manufacturing/to-make/{item_id}/docs")
+    async def to_make_docs(request: Request, item_id: str):
+        """The pegging drill-down fragment for one product on the Demand Planning board."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        unit = request.query_params.get("unit") or None
+        try:
+            rows = (await api.manufacturing_to_make(token)).get("items", [])
+        except APIError:
+            rows = []
+        row = next((r for r in rows if r.get("item_id") == item_id), None)
+        return _docs_fragment((row or {}).get("docs", []), unit)
+
+    @app.post("/manufacturing/make-selected")
+    async def make_selected(request: Request):
+        """Bulk 'Make selected': build each ticked product at its shortfall, then refresh the board."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        ids = form.getlist("selected")
+        cur = ""
+        result: dict = {"built": []}
+        rows: list[dict] = []
+        try:
+            company = await api.get_company(token)
+            cur = _company_cur(company)
+            if ids:
+                result = await api.manufacturing_bulk_build(token, ids)
+            rows = (await api.manufacturing_to_make(token)).get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+        rows = [r for r in rows if float(r.get("to_make", 0)) > 0]
+        built = len(result.get("built", []))
+        msg = (f"Started {built} production run(s)." if built
+               else "Nothing to make for the selected products.")
+        return HTMLResponse(
+            to_xml(_to_make_table(rows, cur)),
+            headers={"HX-Trigger": json.dumps(
+                {"celerpToast": {"message": msg, "type": "success" if built else "info"}})},
         )
 
     @app.get("/manufacturing/to-make-search")

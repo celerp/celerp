@@ -142,7 +142,7 @@ def test_subscription_pause_resume(page, ui_server, api):
 # ── Manufacturing order lifecycle ─────────────────────────────────────────────
 
 def test_manufacturing_order_issue_complete(page, ui_server, api):
-    """MFG-LIFECYCLE-01: Create run → issue components → complete → Production Queue loads."""
+    """MFG-LIFECYCLE-01: Create run → issue components → complete → Demand Planning page loads."""
     item_r = api.post("/items", json={
         "sku": _unique("MFG-LC-IN"),
         "sell_by": "piece",

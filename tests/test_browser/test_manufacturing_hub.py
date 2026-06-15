@@ -20,8 +20,10 @@ def test_product_hub_demand_make_and_run_actions(page, ui_server, api):
     ring = api.post("/items", json={"sku": "HUB-RING", "name": "18K Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
     api.put(f"/manufacturing/items/{ring}/recipe",
             json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
-    api.post("/docs", json={"doc_type": "invoice", "line_items": [
-        {"item_id": ring, "sku": "HUB-RING", "name": "18K Ring", "quantity": 2, "unit_price": 900}], "total": 1800})
+    # Finalize the invoice so it counts as demand (a draft invoice is a pro-forma, excluded).
+    inv = api.post("/docs", json={"doc_type": "invoice", "line_items": [
+        {"item_id": ring, "sku": "HUB-RING", "name": "18K Ring", "quantity": 2, "unit_price": 900}], "total": 1800}).json()
+    api.post(f"/docs/{inv['id']}/finalize")
 
     page.set_viewport_size({"width": 1440, "height": 1000})
     page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")

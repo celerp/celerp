@@ -2661,3 +2661,17 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
   background: var(--c-blue-light); border: 1px solid var(--c-blue-border); border-radius: 6px;
   font-size: 13px; color: var(--c-text); line-height: 1.45; max-width: 820px; }
 .info-banner-icon { flex: none; }
+
+/* ── Demand Planning board: expand toggle, pegging drill-down, coverage badges ── */
+.dp-expand {
+  background: none; border: none; cursor: pointer; color: var(--c-text2);
+  font-size: 0.9rem; line-height: 1; padding: 2px 6px; transition: transform 0.15s;
+}
+.dp-expand:hover { color: var(--c-accent); }
+.dp-expand--open { transform: rotate(90deg); }
+.dp-docs-cell { padding: 0.25rem 0.5rem 0.5rem 2.5rem !important; background: var(--c-bg-alt, #f8f9fa); }
+.data-table--nested { margin: 0.25rem 0; box-shadow: none; }
+.data-table--nested th { font-size: 0.75rem; }
+.badge--peg-covered { background: var(--c-green); color: #fff; border: 1px solid var(--c-green-dark); }
+.badge--peg-partial { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }
+.badge--peg-short { background: rgba(239,68,68,0.15); color: #dc2626; border: 1px solid rgba(239,68,68,0.3); }

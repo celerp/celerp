@@ -27,13 +27,15 @@ PLUGIN_MANIFEST = {
 
     # ── Extension slots ───────────────────────────────────────────────────────
     "slots": {
-        # Ordered 35-36 so the group sorts immediately after the Inventory group (orders 30-34)
+        # Ordered 35-37 so the group sorts immediately after the Inventory group (orders 30-34)
         # and before Contacts (order 40). Work Centers is configured in Manufacturing Settings.
+        # Demand Planning (what to make) -> Work In Progress (runs on the floor) -> Production Orders
+        # (create internal build demand): the natural left-to-right production flow.
         "nav": [
             {
                 "group": "Manufacturing",
-                "icon": "🏭",
-                "label": "Production Queue",
+                "icon": "📊",
+                "label": "Demand Planning",
                 "href": "/manufacturing",
                 "order": 35,
                 "min_role": "operator",
@@ -42,10 +44,18 @@ PLUGIN_MANIFEST = {
             },
             {
                 "group": "Manufacturing",
+                "icon": "🏭",
+                "label": "Work In Progress",
+                "href": "/manufacturing/production",
+                "order": 36,
+                "min_role": "operator",
+            },
+            {
+                "group": "Manufacturing",
                 "icon": "📋",
                 "label": "Production Orders",
                 "href": "/docs?type=production_order",
-                "order": 36,
+                "order": 37,
                 "min_role": "operator",
             },
         ],

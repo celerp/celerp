@@ -2913,7 +2913,7 @@ class TestManufacturingPage:
         ):
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert r.status_code == 200
-        assert b"Production Queue" in r.content
+        assert b"Demand Planning" in r.content
         assert b"mfg-table" in r.content and b"RING" in r.content
 
     @pytest.mark.asyncio

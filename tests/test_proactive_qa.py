@@ -620,7 +620,7 @@ class TestMultiTenantTokenThreading:
 
     @pytest.mark.asyncio
     async def test_manufacturing_passes_token(self, ui_client):
-        """The Production Queue page (To Make tab) must pass the request's auth token."""
+        """The Demand Planning page must pass the request's auth token."""
         calls = []
         async def _capture(token):
             calls.append(token)

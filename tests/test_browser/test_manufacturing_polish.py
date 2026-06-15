@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Verify the review-pass polish: Components inventory filter (item 3) + split box one-line (item 4).
-Also covers: ESC-to-cancel on the In Production inline editor (bug fix #8) + manufacturing UI screenshots."""
+Also covers: ESC-to-cancel on the Work In Progress inline editor + manufacturing UI screenshots."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,7 +39,7 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     # Component rows are visually distinct (left accent class).
     assert page.locator("tr.data-row--component").count() >= 1
 
-    # /manufacturing: the Production Queue "To Make" board (lead column = item + qty to make).
+    # /manufacturing: the Demand Planning board (lead column = item + qty to make).
     gold = api.post("/items", json={"sku": "PL-MGOLD", "name": "Gold", "quantity": 50, "sell_by": "gram",
                                     "cost_total": 500, "inventory_type": "component"}).json()["id"]
     fg = api.post("/items", json={"sku": "PL-MRING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
@@ -54,9 +54,11 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     page.wait_for_selector("#mfg-table", timeout=10000)
     assert page.locator("table.data-table thead").inner_text().upper().find("TO MAKE") >= 0
     assert "PL-MRING" in page.locator("#mfg-table").inner_text()
-    # Both tabs present; In Production is the runs view.
-    assert page.locator(".category-tabs a:has-text('To Make')").count() == 1
-    assert page.locator(".category-tabs a:has-text('In Production')").count() == 1
+    # No category-tabs on the restructured page; it is now two separate pages.
+    assert page.locator(".category-tabs").count() == 0, "category-tabs should be gone after restructure"
+    # Bulk-action bar and select-all are present on the Demand Planning page.
+    assert page.locator("#dp-bulkbar").count() == 1, "#dp-bulkbar not found on /manufacturing"
+    assert page.locator("#dp-select-all").count() == 1, "#dp-select-all header checkbox not found"
     # Search narrows the board by item / SKU.
     box = page.get_by_placeholder("Search item / SKU...")
     box.fill("PL-MRING")
@@ -89,11 +91,11 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
 
 
 def test_in_production_esc_cancels_inline_edit(page, ui_server, api):
-    """Bug fix #8: pressing ESC in the inline editor on the In Production tab restores the
-    display chip without saving. Previously ESC did nothing.
+    """Pressing ESC in the inline editor on the Work In Progress page restores the
+    display chip without saving.
 
     Flow: create item + recipe -> build (planned) -> issue (in_progress) -> navigate to
-    /manufacturing?tab=in_production&status=all -> double-click Due cell -> verify editor
+    /manufacturing/production?status=all -> double-click Due cell -> verify editor
     appears -> press ESC -> verify editor is gone and display chip is restored.
     """
     MFG_SHOTS.mkdir(parents=True, exist_ok=True)
@@ -119,8 +121,8 @@ def test_in_production_esc_cancels_inline_edit(page, ui_server, api):
     state = api.get(f"/manufacturing/{run_id}").json()
     assert state["status"] == "in_progress", f"Expected in_progress, got: {state['status']}"
 
-    # Navigate to the In Production tab (status=all so our run is visible).
-    page.goto(f"{ui_server}/manufacturing?tab=in_production&status=all",
+    # Navigate to Work In Progress (status=all so our run is visible).
+    page.goto(f"{ui_server}/manufacturing/production?status=all",
               wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
 
@@ -208,8 +210,8 @@ def test_manufacturing_ui_screenshots(page, ui_server, api):
     # The _qty helper formats as "N unit" e.g. "5 piece"; "piece" should appear in the qty cells.
     assert "piece" in table_text.lower(), f"'piece' unit not visible in table: {table_text[:300]}"
 
-    # 5. In Production tab screenshot.
-    page.goto(f"{ui_server}/manufacturing?tab=in_production&status=all",
+    # 5. Work In Progress page screenshot (canonical URL).
+    page.goto(f"{ui_server}/manufacturing/production?status=all",
               wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
     page.screenshot(path=str(MFG_SHOTS / "in-production-tab.png"), full_page=True)

@@ -30,6 +30,7 @@ _NAV_ROUTES = [
     ("/subscriptions", None),
     ("/subscriptions/new", None),
     ("/manufacturing", None),
+    ("/manufacturing/production", None),
     ("/docs?type=production_order", None),
     ("/dashboard", None),
     ("/scanning", None),

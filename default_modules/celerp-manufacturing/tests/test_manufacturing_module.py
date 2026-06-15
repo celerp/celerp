@@ -67,8 +67,10 @@ class TestManufacturingManifest:
         assert isinstance(nav, list) and nav
         queue = next(n for n in nav if n["href"] == "/manufacturing")
         assert queue["group"] == "Manufacturing"
-        assert queue["label"] == "Production Queue"
+        assert queue["label"] == "Demand Planning"
         assert queue.get("order") is not None
+        # The runs queue is its own page under the same group.
+        assert any(n["href"] == "/manufacturing/production" and n["label"] == "Work In Progress" for n in nav)
 
     def test_manifest_projection_handler_slots(self):
         import importlib.util

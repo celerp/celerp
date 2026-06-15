@@ -450,19 +450,46 @@ async def document_components_summary(
     }
 
 
-@router.get("/to-make")
-async def to_make(
-    company_id=Depends(get_current_company_id),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """The product-centric demand board: open demand aggregated BY PRODUCT across every open
-    demand document (customer invoices/pro formas/lists + internal production orders).
+def _peg(supply: float, docs: list[dict]) -> None:
+    """FIFO-assign available supply (on hand + in progress) to demand documents by due date —
+    soonest due first, undated last — so each doc shows how much of its demand is covered.
+    Annotates each doc in place with covered / shortfall / coverage (covered|partial|short)."""
+    remaining = max(0.0, supply)
+    for d in sorted(docs, key=lambda x: (x.get("due") is None, x.get("due") or "")):
+        q = float(d.get("quantity") or 0)
+        cov = min(remaining, q)
+        remaining -= cov
+        d["covered"] = round(cov, 4)
+        d["shortfall"] = round(max(0.0, q - cov), 4)
+        d["coverage"] = "covered" if cov >= q else ("partial" if cov > 0 else "short")
 
-    Each row: the manufacturable product, total open demand, on hand, net to make
-    (demand - on hand, clamped at 0), the soonest due date and demanding-doc count, and the
-    rolled est unit cost / est cost / est hours. Rows where the product is not manufacturable
-    (no recipe) are skipped. Sort: no-due-date first, then earliest due, then name.
-    """
+
+def _in_progress_by_item(runs: list) -> dict[str, float]:
+    """Expected output still coming from open production runs (planned/in_progress/on_hold),
+    summed per product. This is supply already committed, so it offsets net demand."""
+    out: dict[str, float] = {}
+    for r in runs:
+        rs = r.state or {}
+        if (rs.get("status") or "").lower() not in _INCOMPLETE_STATUSES:
+            continue
+        item_id = rs.get("output_item_id")
+        if not item_id:
+            continue
+        out[item_id] = out.get(item_id, 0.0) + sum(
+            float(o.get("quantity") or 0) for o in rs.get("expected_outputs", []))
+    return out
+
+
+async def _compute_to_make(session: AsyncSession, company_id) -> list[dict]:
+    """Open demand aggregated BY PRODUCT across every open demand document (customer
+    invoices/pro formas/lists + internal production orders), netted against on-hand stock AND
+    in-progress production, with each demanding document FIFO-pegged to available supply.
+
+    Each row: the manufacturable product, total open demand, on hand, in progress, net to make
+    (demand - on hand - in progress, clamped at 0), the soonest due date, the per-document
+    breakdown with pegged coverage, and the rolled est unit cost / est cost / est hours. Rows
+    where the product is not manufacturable (no recipe) are skipped. Sort: no-due-date first,
+    then earliest due, then name (act on undated/soonest first)."""
     states = await _all_item_states(session, company_id)
     docs = (await session.execute(
         select(Projection).where(
@@ -486,12 +513,24 @@ async def to_make(
                 continue
             row = agg.setdefault(item_id, {
                 "item_id": item_id, "sku": (ist or {}).get("sku"), "name": (ist or {}).get("name"),
-                "demand": 0.0, "docs": [], "due": None,
+                "demand": 0.0, "docs": {}, "due": None,
             })
             row["demand"] += qty
-            row["docs"].append({"doc_id": doc.entity_id, "doc_number": ref, "doc_type": st.get("doc_type") or doc.entity_type, "due": due})
+            d = row["docs"].setdefault(doc.entity_id, {
+                "doc_id": doc.entity_id, "doc_number": ref,
+                "doc_type": st.get("doc_type") or doc.entity_type,
+                "contact_name": st.get("contact_name") or "", "due": due, "quantity": 0.0,
+            })
+            d["quantity"] += qty
             if due and (row["due"] is None or due < row["due"]):
                 row["due"] = due
+
+    runs = (await session.execute(
+        select(Projection).where(
+            Projection.company_id == company_id, Projection.entity_type == "mfg_order",
+        )
+    )).scalars().all()
+    in_progress = _in_progress_by_item(runs)
 
     # Non-splittable outputs restock as discrete lots under the product, so on-hand must include them.
     lot_qty = _lot_qty_by_parent(states)
@@ -500,7 +539,11 @@ async def to_make(
     for item_id, row in agg.items():
         ist = states.get(item_id) or {}
         on_hand = float(ist.get("quantity") or 0) + lot_qty.get(item_id, 0.0)
-        to_make_qty = max(0.0, row["demand"] - on_hand)
+        wip = in_progress.get(item_id, 0.0)
+        supply = on_hand + wip
+        to_make_qty = max(0.0, row["demand"] - supply)
+        docs_list = list(row["docs"].values())
+        _peg(supply, docs_list)
         recipe = ist.get("recipe") or {}
         out_qty = float(recipe.get("output_qty") or 1) or 1
         unit_cost = float(recipe.get("unit_cost") or 0)
@@ -508,15 +551,69 @@ async def to_make(
         items.append({
             **{k: row[k] for k in ("item_id", "sku", "name", "due")},
             "unit": ist.get("sell_by") or ist.get("unit"),
-            "demand": row["demand"], "on_hand": on_hand, "to_make": to_make_qty,
-            "doc_count": len(row["docs"]), "docs": row["docs"],
+            "demand": row["demand"], "on_hand": on_hand, "in_progress": wip,
+            "to_make": to_make_qty,
+            "doc_count": len(docs_list), "docs": docs_list,
             "est_unit_cost": round(unit_cost, 4),
             "est_cost": round(unit_cost * to_make_qty, 2),
             "est_hours": round(hours_per_unit * to_make_qty, 2),
         })
-    # No-due first, then earliest due, then name (GDR 2n spirit: act on undated/soonest first).
     items.sort(key=lambda r: (r["due"] is not None, r["due"] or "", (r["sku"] or r["name"] or "")))
+    return items
+
+
+@router.get("/to-make")
+async def to_make(
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """The product-centric demand board (see _compute_to_make)."""
+    items = await _compute_to_make(session, company_id)
     return {"items": items, "total": len(items)}
+
+
+class BulkBuildBody(BaseModel):
+    item_ids: list[str] = Field(default_factory=list)
+
+
+@router.post("/to-make/build")
+async def bulk_build(
+    payload: BulkBuildBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a production run for each selected product at its current net shortfall (the To-Make
+    quantity). Products with nothing left to make (covered by stock or in-progress runs) are
+    skipped. This is the To-Make board's bulk 'Make selected' action."""
+    if not payload.item_ids:
+        return {"built": [], "skipped": []}
+    rows = {r["item_id"]: r for r in await _compute_to_make(session, company_id)}
+    states = await _all_item_states(session, company_id)
+    built: list[dict] = []
+    skipped: list[str] = []
+    for item_id in payload.item_ids:
+        qty = float((rows.get(item_id) or {}).get("to_make") or 0)
+        st = states.get(item_id)
+        if qty <= 0 or not is_manufacturable(st):
+            skipped.append(item_id)
+            continue
+        inputs, outputs = expand_recipe(st, qty)
+        order_id = f"mfg:{uuid.uuid4()}"
+        await emit_event(
+            session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+            event_type="mfg.order.created",
+            data={
+                "description": f"Build {qty:g} x {st.get('sku', '')}",
+                "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
+                "output_item_id": item_id,
+            },
+            actor_id=user.id, location_id=None, source="api",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        built.append({"item_id": item_id, "run_id": order_id, "quantity": qty})
+    await session.commit()
+    return {"built": built, "skipped": skipped}
 
 
 def _run_makes(run_state: dict, item_id: str, item_sku: str) -> bool:

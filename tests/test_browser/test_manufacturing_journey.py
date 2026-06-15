@@ -89,9 +89,11 @@ def test_full_manufacturing_journey(page, ui_server, api):
     assert api.get(f"/items/{ring}").json()["recipe"]["unit_cost"] == 615.0
 
     # 4. Sell on an invoice -> demand appears on the product-centric To-Make board (Phase 1).
+    #    Finalize it so it counts as demand (a draft invoice is a pro-forma, excluded from the board).
     doc = api.post("/docs", json={"doc_type": "invoice", "line_items": [
         {"item_id": ring, "sku": "JNY-RING", "name": "18K Ring", "quantity": 2, "unit_price": 900},
     ], "total": 1800}).json()["id"]
+    api.post(f"/docs/{doc}/finalize")
     # The invoice's Manufacturing panel is product-centric (links to the product tab, no auto orders).
     page.goto(f"{ui_server}/docs/{doc}", wait_until="domcontentloaded")
     page.wait_for_selector("#doc-mfg-panel:has-text('Items to manufacture')", timeout=10000)
