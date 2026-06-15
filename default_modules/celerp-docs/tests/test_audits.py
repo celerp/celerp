@@ -136,7 +136,7 @@ async def test_adjust_posts_je_and_is_undoable(client):
     cr = sum(float(x.get("credit", 0) or 0) for x in entries)
     assert abs(d - cr) < 1e-6
     accts = {x["account"] for x in entries}
-    assert {"5100", "1130", "4300"} <= accts
+    assert {"5100", "1130-P", "4300"} <= accts
 
     # Undo: quantities restored, status back to audited.
     assert (await client.post(f"/audits/{audit}/undo-adjust", headers=_h(t))).status_code == 200

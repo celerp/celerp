@@ -18,6 +18,14 @@ from celerp.services.je_keys import je_idempotency_key
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from sqlalchemy import select as _select
 
+# Canonical goods-inventory account. Every goods movement - purchase/receive, bill, manufacturing,
+# COGS relief, audit adjustment, landed-cost capitalisation - posts here so the asset account and its
+# COGS relief reconcile against the SAME account. 1130 is the parent rollup; 1130-P is the postable
+# leaf where goods actually live (receive/bill/mfg all debit it). The previous COGS-side "1300" was a
+# placeholder that is not in the chart of accounts, so COGS credits were stranded and 1130-P was never
+# relieved on sale.
+_INVENTORY_ACCT = "1130-P"
+
 
 def _to_base(amount: float, rate: _Dec, base_cur: str) -> float:
     """Convert a doc-currency amount to base currency for JE entry.
@@ -485,7 +493,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
 
 
 async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0) -> None:
-    """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1300).
+    """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1130-P).
 
     cycle must be incremented each time a doc is re-fulfilled (e.g. use doc revert_count so that
     fulfill → revert → re-fulfill produces distinct JE idempotency keys and entity IDs).
@@ -506,7 +514,7 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
-            {"account": "1300", "debit": 0.0, "credit": float(total_cogs)},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
         ],
         metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id},
     )
@@ -537,7 +545,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
 
 
 async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float, je_suffix: str) -> None:
-    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1300) / Credit COGS (5100).
+    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1130-P) / Credit COGS (5100).
 
     je_suffix must be unique per receive-return call (e.g. first item_id) to avoid idempotency key collisions
     when receive-return is called multiple times on the same CN.
@@ -553,7 +561,7 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
         entries=[
-            {"account": "1300", "debit": float(total_cogs), "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": float(total_cogs), "credit": 0.0},
             {"account": "5100", "debit": 0.0, "credit": float(total_cogs)},
         ],
         metadata_={"trigger": "doc.return_received", "cn_id": cn_id},
@@ -561,7 +569,7 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
 
 
 async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, total_cogs: float, unique_suffix: str) -> None:
-    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1300).
+    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1130-P).
 
     unique_suffix must be unique per call (e.g. a UUID) so repeated undo attempts each get their own JE.
     """
@@ -577,7 +585,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
-            {"account": "1300", "debit": 0.0, "credit": float(total_cogs)},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
         ],
         metadata_={"trigger": "doc.return_undone", "cn_id": cn_id},
     )
@@ -641,11 +649,11 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
 
 
 # Inventory-audit stock adjustment accounts (O1 default - overridable later via settings):
-#   shrinkage (count < system): Dr 5100 Cost of Goods Sold / Cr 1130 Inventory
-#   overage   (count > system): Dr 1130 Inventory          / Cr 4300 Other Income
+#   shrinkage (count < system): Dr 5100 Cost of Goods Sold / Cr 1130-P Inventory
+#   overage   (count > system): Dr 1130-P Inventory          / Cr 4300 Other Income
 _AUDIT_SHRINKAGE_ACCT = "5100"
 _AUDIT_OVERAGE_ACCT = "4300"
-_AUDIT_INVENTORY_ACCT = "1130"
+_AUDIT_INVENTORY_ACCT = _INVENTORY_ACCT
 
 
 def _audit_je_id(list_id: str, cycle: int) -> str:
@@ -762,7 +770,10 @@ async def upsert_opening_inventory_je(
         )
     ).scalars().all()
 
-    inv_codes = {"1130", "1130-P", "1130-OB"}
+    # Every 1130* account is inventory asset value: goods (1130-P), opening balance (1130-OB), and the
+    # landed-cost clearing sub-accounts (1130-FRT/INS/DTY/IVT). catalog cost_total now includes
+    # capitalised landed cost, so the JE-backed sum must cover the clearing accounts too or the landed
+    # amount would show up as a spurious opening-balance gap.
     ob_je_id = f"je:auto:opening-inventory:{company_id}"
     je_backed = _Dec("0")
     ob_proj = None
@@ -774,7 +785,7 @@ async def upsert_opening_inventory_je(
         if s.get("status") != "posted":
             continue
         for entry in s.get("entries", []):
-            if entry.get("account") in inv_codes:
+            if str(entry.get("account") or "").startswith("1130"):
                 je_backed += _Dec(str(entry.get("debit") or 0))
                 je_backed -= _Dec(str(entry.get("credit") or 0))
 
@@ -837,8 +848,9 @@ async def upsert_opening_inventory_je(
 
 
 def _category_inventory_account(category: str) -> str:
-    """Placeholder: all categories map to 1300 until category-level CoA mapping is built."""
-    return "1300"
+    """All categories map to the canonical goods-inventory account until category-level CoA mapping
+    is built. (Was a 1300 placeholder that is not in the chart of accounts.)"""
+    return _INVENTORY_ACCT
 
 
 async def create_for_item_transform(
