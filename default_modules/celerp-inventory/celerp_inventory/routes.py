@@ -21,7 +21,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
-from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit
+from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp_inventory.projections import is_item_available
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -31,7 +31,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service"})
+VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service", "freight"})
 
 _DEFAULT_UNITS = DEFAULT_UNITS  # backwards-compat alias for any internal callers
 
@@ -172,7 +172,10 @@ class ItemCreate(BaseModel):
     allow_splitting: bool = True
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
-    inventory_type: str = "stocked"  # stocked | non_stocked | service
+    inventory_type: str = "stocked"  # stocked | component | non_stocked | service | freight
+    # Landed-cost charge lines (inventory_type=freight): refines reporting/GL routing.
+    landed_cost_kind: str | None = None      # freight | insurance | duty | import_vat
+    recoverable: bool | None = None          # import_vat only: recoverable VAT does not capitalise
 
 
 class ItemPatch(BaseModel):
@@ -672,6 +675,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
 
+    if payload.landed_cost_kind is not None and payload.landed_cost_kind not in LANDED_COST_KINDS:
+        raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
+
     # Validate sell_by against company units
     units = await _get_company_units(session, company_id)
     unit_map = {u["name"]: u for u in units}
@@ -868,6 +874,12 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         new_inv_type = (payload.fields_changed["inventory_type"] or {}).get("new")
         if new_inv_type not in VALID_INVENTORY_TYPES:
             raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
+
+    # Validate landed_cost_kind if changing
+    if "landed_cost_kind" in changed_keys:
+        new_kind = (payload.fields_changed["landed_cost_kind"] or {}).get("new")
+        if new_kind is not None and new_kind not in LANDED_COST_KINDS:
+            raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
 
     # Validate weight is non-negative
     if "weight" in changed_keys:

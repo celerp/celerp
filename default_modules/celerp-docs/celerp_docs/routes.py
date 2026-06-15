@@ -27,7 +27,7 @@ from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
-from celerp.services.units import DEFAULT_UNITS, SERVICE_SELL_BY, build_unit_map, is_pieces_unit, is_weight_unit, validate_line_quantity
+from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 
@@ -3016,9 +3016,9 @@ async def fulfill_lines(
         if item_proj is None:
             errors.append(f"{item_eid}: item not found")
             continue
-        # Service lines have no physical stock: mark them done without any stock/availability guard.
-        if ((item_proj.state.get("inventory_type") or "stocked") == "service"
-                or (item_proj.state.get("sell_by") or "") in SERVICE_SELL_BY):
+        # Non-stock lines (service or freight charge) have no physical stock: mark them done
+        # without any stock/availability guard.
+        if is_non_stock_line(item_proj.state.get("inventory_type"), item_proj.state.get("sell_by")):
             service_eids.add(item_eid)
             continue
         item_status = item_proj.state.get("status", "")

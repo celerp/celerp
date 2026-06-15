@@ -4188,6 +4188,7 @@ _INVENTORY_TYPE_LABELS: dict[str, str] = {
     "component": "Component",
     "service": "Service",
     "non_stocked": "Non-Stocked Inventory",
+    "freight": "Freight",
 }
 
 
@@ -4195,7 +4196,7 @@ def _inventory_type_tabs(p: dict) -> FT:
     """Filter tabs for inventory_type (all / stocked / component / service / non_stocked)."""
     active = p.get("inventory_type", "")
     _TABS = [("", "All Types")] + [(k, _INVENTORY_TYPE_LABELS[k])
-                                   for k in ("stocked", "component", "service", "non_stocked")]
+                                   for k in ("stocked", "component", "service", "non_stocked", "freight")]
     base = {k: v for k, v in _base_state(p).items() if k != "inventory_type"}
 
     def _tab(it: str, label: str) -> FT:
@@ -4859,7 +4860,7 @@ def _attachments_panel(entity_id: str, item: dict) -> FT:
 
 
 _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
-    "inventory_type": ["stocked", "component", "non_stocked", "service"],
+    "inventory_type": ["stocked", "component", "non_stocked", "service", "freight"],
 }
 
 
