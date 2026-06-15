@@ -21,28 +21,33 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _restore_config_module():
-    """Reload celerp.config after each test to undo any module-level mutations.
+    """Restore celerp.config after each test to undo any module-level mutations.
 
-    Tests in this file call importlib.reload(celerp.config), which replaces the
-    module-level `settings` singleton. Without this fixture, the mutated singleton
-    leaks into subsequent test files and causes failures in tests that depend on
-    the original settings values (e.g. test_main.py gateway_token checks).
+    Tests in this file call importlib.reload(celerp.config), which rebinds the
+    module-level `settings` singleton to a NEW instance. Other test modules capture
+    the ORIGINAL instance at import time via `from celerp.config import settings`
+    (e.g. test_quota.py), and monkeypatch it; if celerp.config.settings is left
+    pointing at a different instance, those patches no longer affect what the code
+    reads (relay_http_url() reads celerp.config.settings live). So we restore the
+    exact original instance, not merely a freshly-reloaded one.
     """
     import celerp.config as mod
+    original_settings = mod.settings
     original_env = os.environ.get("CELERP_CONFIG")
     yield
-    # Restore the env var and reload so settings is fresh for the next file.
+    # Restore the env var and reload so module-level functions/paths are fresh.
     if original_env is None:
         os.environ.pop("CELERP_CONFIG", None)
     else:
         os.environ["CELERP_CONFIG"] = original_env
     importlib.reload(mod)
-    # Re-bind the `settings` reference in celerp.main (which imports it at
-    # module level) so it points to the freshly reloaded settings object.
-    # We must NOT reload celerp.main itself because that recreates `app`,
-    # breaking any conftest fixtures that captured it at import time.
+    # Restore the ORIGINAL settings instance so every module that captured it at
+    # import time (and any monkeypatch on it) stays consistent with what the code
+    # reads via celerp.config.settings. We must NOT reload celerp.main itself
+    # because that recreates `app`, breaking conftest fixtures that captured it.
+    mod.settings = original_settings
     import celerp.main as _main_mod
-    _main_mod.settings = mod.settings
+    _main_mod.settings = original_settings
 
 
 # ---------------------------------------------------------------------------

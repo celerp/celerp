@@ -1251,7 +1251,7 @@ function sendToTypeChanged(docType){
     var path=(e.detail.requestConfig&&e.detail.requestConfig.path)||
              (e.detail.pathInfo&&e.detail.pathInfo.requestPath)||'';
     if(!path){return;}
-    var m=path.match(/\/api\/items\/([^/]+)\/field\/quantity/);
+    var m=path.match(/\\/api\\/items\\/([^/]+)\\/field\\/quantity/);
     if(!m){return;}
     var eid=m[1];
     var safeId=eid.replace(/:/g,'-');
