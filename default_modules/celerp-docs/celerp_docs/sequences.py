@@ -22,6 +22,7 @@ _PREFIX_BY_DOC_TYPE = {
     "subscription_invoice": "SUBI",
     "subscription_po": "SUBP",
     "production_order": "PRD",
+    "audit": "AUD",
 }
 
 # Default pattern for all new companies

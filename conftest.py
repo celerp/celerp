@@ -244,6 +244,7 @@ _SLOT_CONTRIBUTIONS = [
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_sold", "href": "/inventory?status=sold", "label": "Sold Inventory", "order": 31, "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_archived", "href": "/inventory?status=archived", "label": "Archived Inventory", "order": 32, "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "scanning", "href": "/scanning", "label": "Scanning", "order": 33, "_module": "celerp-inventory"}},
+    {"slot": "nav", "contrib": {"group": "Inventory", "key": "audits", "href": "/audits", "label": "Audits", "order": 34, "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "order": 50, "settings_href": "/settings/accounting", "_module": "celerp-accounting"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "order": 52, "_module": "celerp-accounting"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "order": 53, "_module": "celerp-reports"}},

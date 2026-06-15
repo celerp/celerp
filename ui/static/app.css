@@ -2619,3 +2619,24 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .history-per-page { display: flex; align-items: center; gap: 0.4rem; }
 .btn--active { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }
 
+
+/* --- Inventory audit (scan-first count screen) --- */
+.audit-meta { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin: 0.5rem 0 0.75rem; }
+.audit-meta .hint { margin-top: 0; }
+.scan-bar { display: flex; align-items: center; gap: 0.6rem; padding: 0.6rem 0.75rem; margin-bottom: 0.75rem;
+  background: var(--c-bg2); border: 1px solid var(--c-accent); border-radius: 6px; }
+.scan-bar-icon { font-size: 18px; line-height: 1; }
+.scan-bar-input { flex: 1; height: 34px; padding: 0 10px; font-size: 14px; font-family: inherit;
+  color: var(--c-text); background: var(--c-bg); border: 1px solid var(--c-border); border-radius: 4px; outline: none; }
+.scan-bar-input:focus { border-color: var(--c-accent); }
+.audit-actions { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
+.audit-count-input { max-width: 90px; }
+.data-row--audited td { background: var(--c-green-bg); }
+.data-row--audited:hover td { background: var(--c-green-badge-bg); }
+.data-row--audited td:first-child { box-shadow: inset 3px 0 0 var(--c-green); }
+.data-row--adjusted td { background: var(--c-blue-light); }
+.data-row--adjusted:hover td { background: var(--c-blue-bg); }
+.data-row--adjusted td:first-child { box-shadow: inset 3px 0 0 var(--c-blue); }
+.badge--unaudited { background: rgba(139,148,172,0.15); color: var(--c-text2); border: 1px solid rgba(139,148,172,0.3); }
+.badge--audited { background: rgba(59,130,246,0.15); color: var(--c-blue); border: 1px solid rgba(59,130,246,0.3); }
+.badge--stock-adjusted { background: rgba(34,197,94,0.15); color: var(--c-green); border: 1px solid rgba(34,197,94,0.3); }

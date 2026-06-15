@@ -69,6 +69,11 @@ class ItemTransferred(BaseModel):
 
 class ItemQuantityAdjusted(BaseModel):
     new_qty: float
+    # Optional provenance for audit-driven adjustments (Q6): why and from which audit list, plus the
+    # pre-adjustment quantity so the audit's "Adjust stock" action can be undone.
+    reason: str | None = None
+    source_list_id: str | None = None
+    prior_qty: float | None = None
 
 
 class ItemFulfilled(BaseModel):

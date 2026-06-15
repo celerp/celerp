@@ -671,6 +671,20 @@ async def test_merge_preserves_allow_splitting_false(client):
 
 
 @pytest.mark.asyncio
+async def test_list_items_location_filter(client):
+    """GET /items?location_id= returns only items at that location."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc_a = (await client.post("/companies/me/locations", headers=h, json={"name": "Loc A", "type": "warehouse"})).json()["id"]
+    loc_b = (await client.post("/companies/me/locations", headers=h, json={"name": "Loc B", "type": "warehouse"})).json()["id"]
+    await client.post("/items", headers=h, json={"sku": "LOC-A1", "name": "A1", "quantity": 1, "sell_by": "piece", "location_id": loc_a})
+    await client.post("/items", headers=h, json={"sku": "LOC-B1", "name": "B1", "quantity": 1, "sell_by": "piece", "location_id": loc_b})
+    items = (await client.get(f"/items?location_id={loc_a}", headers=h)).json()["items"]
+    skus = {i["sku"] for i in items}
+    assert "LOC-A1" in skus and "LOC-B1" not in skus
+
+
+@pytest.mark.asyncio
 async def test_merge_rejects_different_sell_units(client):
     """Merging sums quantities, so items measured in different units (e.g. gram vs carat) must be
     rejected - otherwise 5 g + 3 ct would silently become 8 of nothing."""

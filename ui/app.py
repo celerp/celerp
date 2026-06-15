@@ -354,6 +354,7 @@ _CONDITIONAL_UI: list[tuple[str, str]] = [
     ("celerp-accounting",  "ui.routes.accounting_import"),
     ("celerp-docs",        "ui.routes.documents"),
     # ui.routes.lists omitted: list routes are registered by ui.routes.documents
+    ("celerp-docs",        "ui.routes.audits"),
     ("celerp-labels",      "celerp_labels.ui_routes"),
     ("celerp-accounting",  "ui.routes.reconciliation"),
     ("celerp-dashboard",   "ui.routes.dashboard"),

@@ -269,6 +269,7 @@ async def list_items(
     status: str | None = None,
     category: str | None = None,
     inventory_type: str | None = None,
+    location_id: str | None = None,
     sort: str | None = None,
     dir: str = "desc",
 ) -> dict:
@@ -312,6 +313,9 @@ async def list_items(
 
     if inventory_type:
         result = [r for r in result if (r.get("inventory_type") or "stocked") == inventory_type]
+
+    if location_id:
+        result = [r for r in result if str(r.get("location_id") or "") == location_id]
 
     if sku:
         result = [r for r in result if str(r.get("sku", "")) == sku]

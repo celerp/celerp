@@ -2686,6 +2686,8 @@ async def convert_list(
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
     state = row.state
+    if state.get("list_type") == "audit":
+        raise HTTPException(status_code=409, detail="Audit lists cannot be converted to a sales document")
     if state.get("status") in ("void", "converted"):
         raise HTTPException(status_code=409, detail="Cannot convert list in current status")
     if payload.target_type not in ("invoice", "memo"):
@@ -3947,3 +3949,267 @@ async def delete_doc_file(
     await session.commit()
     updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     return (updated.state if updated else {}) | {"id": entity_id}
+
+
+# ---------------------------------------------------------------------------
+# Inventory Audit (a location-bound list_type="audit": scan to confirm presence,
+# optionally re-count, then adjust stock - all reversible). See
+# context/2026-0614-inventory-audit-scanner-plan.md.
+# ---------------------------------------------------------------------------
+
+audits_router = APIRouter(dependencies=[Depends(get_current_user)])
+
+# Physical item types an audit counts (services / non-stocked have no stock to count).
+_AUDIT_STOCK_TYPES = frozenset({"stocked", "component"})
+
+
+class AuditCreateBody(BaseModel):
+    location_id: str
+    idempotency_key: str | None = None
+
+
+class AuditScanBody(BaseModel):
+    barcode: str
+
+
+class AuditCountBody(BaseModel):
+    counted_qty: float | None = None  # None clears the pending adjustment (no change)
+
+
+def _audit_unit_cost(state: dict) -> float:
+    cp = state.get("cost_price")
+    try:
+        if cp is not None:
+            return float(cp)
+        total = state.get("cost_total")
+        qty = float(state.get("quantity") or 0)
+        if total is not None and qty > 0:
+            return float(total) / qty
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
+async def _get_audit(session: AsyncSession, company_id, entity_id: str) -> Projection:
+    row = await _get_list(session, company_id, entity_id)
+    if row.state.get("list_type") != "audit":
+        raise HTTPException(status_code=404, detail="Audit not found")
+    return row
+
+
+async def _audit_update(session, company_id, entity_id, user, fields: dict):
+    """Emit list.updated carrying the given top-level field changes."""
+    fc = {k: {"new": v} for k, v in fields.items()}
+    return await _emit_list(session, company_id, entity_id, "list.updated", {"fields_changed": fc}, user)
+
+
+async def _resolve_barcode(session, company_id, code: str):
+    """Resolve a scanned code to an item: exact barcode first, then exact SKU. None if no match."""
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    hit = next((r for r in rows if str(r.state.get("barcode") or "") == code), None)
+    return hit or next((r for r in rows if str(r.state.get("sku") or "") == code), None)
+
+
+@audits_router.post("")
+async def create_audit(
+    payload: AuditCreateBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a location-bound audit pre-populated with the physical items at that location."""
+    company = await session.get(Company, company_id)
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    lines: list[dict] = []
+    for r in rows:
+        st = r.state
+        if str(r.location_id or "") != payload.location_id:
+            continue
+        if (st.get("status") or "available") != "available":
+            continue
+        if (st.get("inventory_type") or "stocked") not in _AUDIT_STOCK_TYPES:
+            continue
+        lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
+                      "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0),
+                      "audited_at": None, "counted_qty": None})
+    ref_id = next_doc_ref(company, "audit")
+    entity_id = f"list:{ref_id}"
+    if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
+        raise HTTPException(status_code=409, detail=f"Audit number '{ref_id}' already exists")
+    data = {"list_type": "audit", "location_id": payload.location_id, "status": "unaudited",
+            "ref_id": ref_id, "line_items": lines, "adjust_count": 0,
+            "currency": company.settings.get("currency", "USD")}
+    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
+    await session.commit()
+    return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
+
+
+@audits_router.get("/{entity_id}")
+async def get_audit(entity_id: str, company_id=Depends(get_current_company_id),
+                    session: AsyncSession = Depends(get_session)) -> dict:
+    row = await _get_audit(session, company_id, entity_id)
+    return row.state | {"id": row.entity_id}
+
+
+@audits_router.post("/{entity_id}/scan")
+async def scan_audit(
+    entity_id: str, payload: AuditScanBody,
+    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Uniform scan rule: not on the list -> add + audit (top-insert); on the list but un-audited ->
+    audit (move to top); already audited -> reject. Unknown barcode -> reject."""
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") == "stock_adjusted":
+        raise HTTPException(status_code=409, detail="This audit's stock has been adjusted; reopen to scan again")
+    code = (payload.barcode or "").strip()
+    if not code:
+        raise HTTPException(status_code=422, detail="Empty scan")
+    item = await _resolve_barcode(session, company_id, code)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Unknown barcode or SKU: {code}")
+    now = datetime.now(UTC).isoformat()
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
+    if idx is None:
+        lines.insert(0, {"item_id": item.entity_id, "sku": item.state.get("sku"), "name": item.state.get("name"),
+                         "barcode": item.state.get("barcode"), "quantity": float(item.state.get("quantity") or 0),
+                         "audited_at": now, "counted_qty": None})
+        result_state = "added"
+    elif lines[idx].get("audited_at") is None:
+        ln = lines.pop(idx)
+        ln["audited_at"] = now
+        lines.insert(0, ln)
+        result_state = "audited"
+    else:
+        raise HTTPException(status_code=409, detail=f"Already scanned: {item.state.get('sku') or code}")
+    await _audit_update(session, company_id, entity_id, user, {"line_items": lines})
+    await session.commit()
+    return {"state": result_state, "item_id": item.entity_id, "sku": item.state.get("sku")}
+
+
+@audits_router.patch("/{entity_id}/line/{item_id}")
+async def set_audit_count(
+    entity_id: str, item_id: str, payload: AuditCountBody,
+    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") == "stock_adjusted":
+        raise HTTPException(status_code=409, detail="Cannot edit an adjusted audit; reopen it first")
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Item is not on this audit")
+    cq = payload.counted_qty
+    lines[idx]["counted_qty"] = float(cq) if cq is not None else None
+    await _audit_update(session, company_id, entity_id, user, {"line_items": lines})
+    await session.commit()
+    return {"ok": True}
+
+
+@audits_router.post("/{entity_id}/done")
+async def mark_audit_done(entity_id: str, company_id=Depends(get_current_company_id),
+                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") != "unaudited":
+        raise HTTPException(status_code=409, detail="Audit is not in the unaudited state")
+    await _audit_update(session, company_id, entity_id, user, {"status": "audited"})
+    await session.commit()
+    return {"ok": True}
+
+
+@audits_router.post("/{entity_id}/reopen")
+async def reopen_audit(entity_id: str, company_id=Depends(get_current_company_id),
+                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") != "audited":
+        raise HTTPException(status_code=409, detail="Only an audited (not yet adjusted) audit can be reopened")
+    await _audit_update(session, company_id, entity_id, user, {"status": "unaudited"})
+    await session.commit()
+    return {"ok": True}
+
+
+@audits_router.post("/{entity_id}/adjust")
+async def adjust_audit(
+    entity_id: str, company_id=Depends(get_current_company_id),
+    _: None = Depends(require_manager), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Apply each line's counted_qty to its item (manager/owner). Lines with counted_qty=None are
+    skipped. Posts a Shrinkage/Overage JE and records prior_qty so the action is undoable."""
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") != "audited":
+        raise HTTPException(status_code=409, detail="Mark the audit done before adjusting stock")
+    cycle = int(row.state.get("adjust_count") or 0)
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    shrink_val = 0.0
+    over_val = 0.0
+    adjusted = 0
+    for l in lines:
+        cq = l.get("counted_qty")
+        if cq is None:
+            continue  # report-and-skip
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
+        if item is None or item.entity_type != "item":
+            continue
+        prior = float(item.state.get("quantity") or 0)
+        cqf = float(cq)
+        if abs(cqf - prior) < 1e-9:
+            continue  # no change
+        unit_cost = _audit_unit_cost(item.state)
+        if cqf < prior:
+            shrink_val += (prior - cqf) * unit_cost
+        else:
+            over_val += (cqf - prior) * unit_cost
+        await emit_event(
+            session, company_id=company_id, entity_id=l["item_id"], entity_type="item",
+            event_type="item.quantity.adjusted",
+            data={"new_qty": cqf, "reason": "audit", "source_list_id": entity_id, "prior_qty": prior},
+            actor_id=user.id, location_id=None, source="audit", idempotency_key=str(uuid.uuid4()),
+            metadata_={"audit_id": entity_id},
+        )
+        l["prior_qty"] = prior
+        l["adjusted"] = True
+        adjusted += 1
+    await auto_je.create_for_audit_adjustment(
+        session, company_id=company_id, user_id=user.id, list_id=entity_id,
+        shrinkage_value=shrink_val, overage_value=over_val, cycle=cycle,
+    )
+    await _audit_update(session, company_id, entity_id, user,
+                        {"status": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1})
+    await session.commit()
+    return {"adjusted": adjusted, "shrinkage_value": round(shrink_val, 2), "overage_value": round(over_val, 2)}
+
+
+@audits_router.post("/{entity_id}/undo-adjust")
+async def undo_audit_adjust(
+    entity_id: str, company_id=Depends(get_current_company_id),
+    _: None = Depends(require_manager), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reverse the last stock adjustment (manager/owner): restore each item's prior quantity and void
+    the audit JE. Returns the audit to the 'audited' state."""
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") != "stock_adjusted":
+        raise HTTPException(status_code=409, detail="This audit has no adjustment to undo")
+    cycle = int(row.state.get("adjust_count") or 1) - 1
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    for l in lines:
+        if l.get("adjusted") and l.get("prior_qty") is not None:
+            await emit_event(
+                session, company_id=company_id, entity_id=l["item_id"], entity_type="item",
+                event_type="item.quantity.adjusted",
+                data={"new_qty": float(l["prior_qty"]), "reason": "audit_undo", "source_list_id": entity_id},
+                actor_id=user.id, location_id=None, source="audit", idempotency_key=str(uuid.uuid4()),
+                metadata_={"audit_id": entity_id},
+            )
+            l.pop("adjusted", None)
+            l.pop("prior_qty", None)
+    await auto_je.void_for_audit_adjustment(session, company_id=company_id, user_id=user.id,
+                                            list_id=entity_id, cycle=cycle)
+    await _audit_update(session, company_id, entity_id, user, {"status": "audited", "line_items": lines})
+    await session.commit()
+    return {"ok": True}

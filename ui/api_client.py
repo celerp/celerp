@@ -1221,6 +1221,33 @@ async def patch_list(token: str, entity_id: str, data: dict) -> dict:
         return _raise(await c.patch(f"/lists/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
+# ── Inventory audits (location-bound list_type=audit) ─────────────────────────
+async def create_audit(token: str, location_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/audits", json={"location_id": location_id})).json()
+
+
+async def get_audit(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/audits/{entity_id}")).json()
+
+
+async def scan_audit(token: str, entity_id: str, barcode: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/audits/{entity_id}/scan", json={"barcode": barcode})).json()
+
+
+async def set_audit_count(token: str, entity_id: str, item_id: str, counted_qty: float | None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/audits/{entity_id}/line/{item_id}", json={"counted_qty": counted_qty})).json()
+
+
+async def audit_action(token: str, entity_id: str, action: str) -> dict:
+    """action in {done, reopen, adjust, undo-adjust}."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/audits/{entity_id}/{action}")).json()
+
+
 async def send_list(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/send", json={})).json()
