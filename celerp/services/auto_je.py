@@ -226,10 +226,10 @@ async def create_for_po_received(
 ) -> None:
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     debit_account = {
-        "inventory": "1130-P",
+        "inventory": _INVENTORY_ACCT,
         "expense": "6950",
         "asset": "1210",
-    }.get(purchase_kind, "1130-P")
+    }.get(purchase_kind, _INVENTORY_ACCT)
 
     rate = _Dec(str((doc or {}).get("conversion_rate") or 1))
     base_total = _to_base(float(total), rate, base_currency)
@@ -379,7 +379,7 @@ async def create_for_bill_conversion(
                 # Landed-cost charge (freight/insurance/duty/import_vat): clearing or 1150.
                 account = landed_acct
             else:
-                account = "1130-P" if li.get("sku") else "6950"
+                account = _INVENTORY_ACCT if li.get("sku") else "6950"
             debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
         if tax_total_d > 0:
             debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
@@ -501,7 +501,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 elif receive_as == "asset":
                     account = "1210"
                 else:
-                    account = "1130-P" if li.get("sku") else "6950"
+                    account = _INVENTORY_ACCT if li.get("sku") else "6950"
                 debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
             if tax_total_d > 0:
                 debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
@@ -642,10 +642,10 @@ async def create_for_receive_undone(
         return
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     credit_account = {
-        "inventory": "1130-P",
+        "inventory": _INVENTORY_ACCT,
         "expense": "6950",
         "asset": "1210",
-    }.get(purchase_kind, "1130-P")
+    }.get(purchase_kind, _INVENTORY_ACCT)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -673,9 +673,9 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         idem_posted=je_idempotency_key(order_id, "mfg.completed", "p"),
         memo=f"Auto JE for {order_id} completion",
         entries=[
-            {"account": "1130-P", "debit": output_cost, "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": output_cost, "credit": 0.0},
             {"account": "5100", "debit": float(waste_cost), "credit": 0.0},
-            {"account": "1130-P", "debit": 0.0, "credit": float(input_cost)},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(input_cost)},
         ],
         metadata_={"trigger": "mfg.order.completed", "order_id": order_id},
     )
