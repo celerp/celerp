@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Browser test: Demand Planning flat-board interactions and Work In Progress ESC-cancel.
 
-Covers (new Excel-filter design):
+Covers (Phase 1 bulk_toolbar design):
 - Page renders with title "Demand Planning" and intro banner.
 - One row per demand-document-line (flat, not nested); columns include Product, Document,
   Type, For, Due, Ordered, Short, Status.
@@ -13,9 +13,16 @@ Covers (new Excel-filter design):
   and per-value checkboxes. Unchecking a value immediately hides matching rows (.dp-row-hidden)
   WITHOUT a page reload; the funnel gets .colfilter--active; hidden rows are deselected.
 - All status values including Covered are visible by default (no server-side status pre-filter).
-- Ticking a .dp-select checkbox enables #dp-make-btn and updates #dp-count.
+- The new shared bulk toolbar (.bulkbar) is present with a disabled .bulk-action-select;
+  .bulk-count shows "0 selected"; .bulk-select-all is present in the table header.
   Only VISIBLE rows count toward the selection total.
-- Clicking "Make selected" creates a production run (verified via API).
+
+- Make: tick a row, the toolbar enables, choose "Make selected" from the Action dropdown ->
+  a production run is created (verified via the API).
+- Make & complete: tick a row, accept the confirm dialog, choose "Make & complete" -> the run
+  is completed and the product's stock increases.
+- Print component requirements: navigate to /manufacturing/requirements?ids=<id> and assert
+  the page shows "Component Requirements", "Raw materials", and the expected component SKU.
 - ESC cancels the inline Due editor on /manufacturing/production.
 - Full-page screenshots for visual review.
 """
@@ -32,16 +39,20 @@ SHOTS = Path("context/reviews/manufacturing")
 
 
 def test_demand_planning_interactions(page, ui_server, api):
-    """Seed products so the board has Needed + Covered rows; exercise the new Excel-filter board."""
+    """Seed products short on stock (finalize invoices) so there are Needed lines;
+    exercise the bulk_toolbar structure, column filters, and verify Make via API."""
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
 
-    # Seed raw materials + two finished goods.
-    # Wire: stock=0, demand=4 -> Needed (short).
+    # ── Seed raw materials + finished goods ───────────────────────────────────
+
+    # copper: a component used in wire and make-complete recipes
     copper = api.post("/items", json={
         "sku": "DP-COPPER", "name": "Copper rod", "quantity": 100,
         "sell_by": "piece", "inventory_type": "component",
     }).json()["id"]
+
+    # wire: stock=0, demand=4 -> Needed (short). Used for Make + requirements test.
     wire = api.post("/items", json={
         "sku": "DP-WIRE", "name": "Copper wire", "quantity": 0, "sell_by": "piece",
     }).json()["id"]
@@ -50,7 +61,7 @@ def test_demand_planning_interactions(page, ui_server, api):
                       "labor": [], "overhead": []})
     assert r.status_code == 200, r.text
 
-    # Bead: stock=20 >= demand=3 -> Covered.
+    # bead: stock=20 >= demand=3 -> Covered.
     bead = api.post("/items", json={
         "sku": "DP-BEAD", "name": "Glass bead", "quantity": 20, "sell_by": "piece",
     }).json()["id"]
@@ -58,7 +69,20 @@ def test_demand_planning_interactions(page, ui_server, api):
             json={"output_qty": 1, "components": [{"item_id": copper, "quantity": 1}],
                   "labor": [], "overhead": []})
 
-    # Finalize two invoices so both items count as demand.
+    # pendant: stock=0, demand=2 -> Needed. Used for Make & complete.
+    silver = api.post("/items", json={
+        "sku": "DP-SILVER", "name": "Silver rod", "quantity": 100,
+        "sell_by": "piece", "inventory_type": "component",
+    }).json()["id"]
+    pendant = api.post("/items", json={
+        "sku": "DP-PENDANT", "name": "Silver pendant", "quantity": 0, "sell_by": "piece",
+    }).json()["id"]
+    r2 = api.put(f"/manufacturing/items/{pendant}/recipe",
+                 json={"output_qty": 1, "components": [{"item_id": silver, "quantity": 1}],
+                       "labor": [], "overhead": []})
+    assert r2.status_code == 200, r2.text
+
+    # Finalize invoices so items count as demand.
     doc_wire = api.post("/docs", json={"doc_type": "invoice", "line_items": [
         {"item_id": wire, "sku": "DP-WIRE", "name": "Copper wire", "quantity": 4, "unit_price": 5},
     ], "total": 20}).json()["id"]
@@ -68,6 +92,12 @@ def test_demand_planning_interactions(page, ui_server, api):
         {"item_id": bead, "sku": "DP-BEAD", "name": "Glass bead", "quantity": 3, "unit_price": 2},
     ], "total": 6}).json()["id"]
     api.post(f"/docs/{doc_bead}/finalize")
+
+    doc_pendant = api.post("/docs", json={"doc_type": "invoice", "line_items": [
+        {"item_id": pendant, "sku": "DP-PENDANT", "name": "Silver pendant",
+         "quantity": 2, "unit_price": 10},
+    ], "total": 20}).json()["id"]
+    api.post(f"/docs/{doc_pendant}/finalize")
 
     # Navigate to Demand Planning.
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
@@ -127,7 +157,46 @@ def test_demand_planning_interactions(page, ui_server, api):
     assert any("ALL" in t for t in type_texts), f"'All' type card not found; got: {type_texts}"
     assert any("INVOICE" in t for t in type_texts), f"'Invoices' card not found; got: {type_texts}"
 
-    # Screenshot: demand board with Type filter bar + funnel icons visible.
+    # ── NEW: bulk_toolbar structure assertions ────────────────────────────────
+
+    # .bulkbar is present.
+    bulkbar = page.locator(".bulkbar")
+    assert bulkbar.count() >= 1, ".bulkbar not found on /manufacturing"
+
+    # .bulk-action-select is present and initially disabled (no selection yet).
+    action_select = page.locator(".bulk-action-select")
+    assert action_select.count() >= 1, ".bulk-action-select not found in bulk toolbar"
+    assert action_select.is_disabled(), ".bulk-action-select should be disabled with nothing selected"
+
+    # .bulk-count shows "0 selected" initially.
+    count_el = page.locator(".bulk-count")
+    assert count_el.count() >= 1, ".bulk-count span not found in bulk toolbar"
+    assert "0" in count_el.inner_text(), (
+        f"Expected '0 selected' in .bulk-count, got: {count_el.inner_text()!r}"
+    )
+
+    # .bulk-select-all is the header select-all checkbox in the table thead.
+    assert page.locator(".bulk-select-all").count() >= 1, ".bulk-select-all header checkbox not found"
+
+    # Each data row has a .bulk-select checkbox (not .dp-select).
+    wire_row_cb = wire_row_first.locator(".bulk-select")
+    assert wire_row_cb.count() >= 1, (
+        ".bulk-select checkbox not found on DP-WIRE row (old .dp-select selector gone)"
+    )
+
+    # The Action dropdown has the three expected options.
+    opt_values = action_select.locator("option:not([disabled])").all_inner_texts()
+    assert any("Make selected" in v for v in opt_values), (
+        f"'Make selected' option not found; got: {opt_values}"
+    )
+    assert any("Make & complete" in v for v in opt_values), (
+        f"'Make & complete' option not found; got: {opt_values}"
+    )
+    assert any("Print component requirements" in v for v in opt_values), (
+        f"'Print component requirements' option not found; got: {opt_values}"
+    )
+
+    # Screenshot: demand board with Action dropdown visible (toolbar + seeded rows).
     page.screenshot(path=str(SHOTS / "demand-planning-type-filter-bar.png"), full_page=True)
 
     # ── NEW: Type card click reloads with ?type=... (server-side filter) ──────
@@ -232,53 +301,66 @@ def test_demand_planning_interactions(page, ui_server, api):
         timeout=3000,
     )
 
-    # ── 1. Checkbox interaction (visible rows only) ───────────────────────────
+    # ── 2. Print component requirements page (BEFORE any Make runs) ──────────
+    # Navigate directly to the requirements page for DP-WIRE (shortfall exists now).
+    # Uses copper at 2/unit; DP-WIRE has demand=4, stock=0, so to_make=4, raw=8 copper.
+    page.goto(f"{ui_server}/manufacturing/requirements?ids={wire}", wait_until="domcontentloaded")
+    page.wait_for_selector("body", timeout=8000)
 
-    make_btn = page.locator("#dp-make-btn")
-    assert make_btn.is_disabled(), "#dp-make-btn should be disabled with no selection"
-
-    count_el = page.locator("#dp-count")
-    assert "0" in count_el.inner_text(), f"Expected '0 selected', got: {count_el.inner_text()}"
-
-    # Tick DP-WIRE (Needed, visible).
-    wire_cb = page.locator(
-        "#mfg-table tr.data-row:has-text('DP-WIRE') .dp-select"
-    ).first
-    wire_cb.check()
-
-    page.wait_for_function(
-        "!document.getElementById('dp-make-btn').disabled",
-        timeout=5000,
+    req_body = page.locator("body").inner_text()
+    assert "Component Requirements" in req_body, (
+        f"'Component Requirements' heading not found: {req_body[:300]}"
     )
-    assert not make_btn.is_disabled(), "#dp-make-btn should be enabled after ticking a row"
-    count_text = count_el.inner_text()
-    assert "1" in count_text, f"Expected '1 selected' in count badge, got: {count_text!r}"
+    assert "Raw materials" in req_body, (
+        f"'Raw materials' section not found: {req_body[:400]}"
+    )
+    # DP-COPPER (the component) should be listed.
+    assert "DP-COPPER" in req_body or "Copper rod" in req_body, (
+        f"Expected DP-COPPER or 'Copper rod' in requirements page: {req_body[:500]}"
+    )
 
-    # Screenshot: a line ticked, Make selected enabled.
+    # Screenshot: the /manufacturing/requirements print page.
+    page.screenshot(path=str(SHOTS / "manufacturing-requirements.png"), full_page=True)
+
+    # ── 3. Make via the bulk toolbar -> verify a run is created ────────────────
+    # Drive the real UI: tick the row, confirm the toolbar enables, choose the action.
+    page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#mfg-table:has-text('DP-WIRE')", timeout=8000)
+    assert page.locator(".bulk-action-select").is_disabled(), "action select must start disabled"
+    page.locator("#mfg-table tr.data-row:has-text('DP-WIRE') .bulk-select").first.check()
+    page.wait_for_function("!document.querySelector('.bulk-action-select').disabled", timeout=3000)
+    assert "1 selected" in page.locator(".bulk-count").inner_text()
     page.screenshot(path=str(SHOTS / "demand-planning-selected.png"), full_page=True)
 
-    # ── 2. Make selected ─────────────────────────────────────────────────────
+    page.locator(".bulk-action-select").select_option(value="make")
 
-    make_btn2 = page.locator("#dp-make-btn")
-    make_btn2.click()
+    def _has(predicate) -> bool:
+        for _ in range(24):
+            if any(predicate(o) for o in api.get("/manufacturing").json()["items"]):
+                return True
+            time.sleep(0.25)
+        return False
 
-    # Wait for HTMX POST to complete and a run to appear in the API.
-    deadline = time.time() + 10
-    wire_runs = []
-    while time.time() < deadline:
-        runs = api.get("/manufacturing").json()["items"]
-        wire_runs = [o for o in runs if o.get("output_item_id") == wire]
-        if wire_runs:
-            break
-        time.sleep(0.5)
-
-    assert len(wire_runs) >= 1, (
-        f"No run found for DP-WIRE after Make selected. All runs: {runs}"
+    assert _has(lambda o: o.get("output_item_id") == wire), (
+        "No production run created for DP-WIRE via the 'Make selected' toolbar action"
     )
-
-    # Screenshot: board after Make.
-    page.wait_for_selector("#mfg-table", timeout=5000)
+    page.wait_for_selector("#mfg-table", timeout=8000)
     page.screenshot(path=str(SHOTS / "demand-planning-after-make.png"), full_page=True)
+
+    # ── 4. Make & complete via the toolbar (accept the confirm dialog) ─────────
+    page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#mfg-table:has-text('DP-PENDANT')", timeout=8000)
+    page.on("dialog", lambda d: d.accept())
+    page.locator("#mfg-table tr.data-row:has-text('DP-PENDANT') .bulk-select").first.check()
+    page.wait_for_function("!document.querySelector('.bulk-action-select').disabled", timeout=3000)
+    page.locator(".bulk-action-select").select_option(value="make_complete")
+
+    assert _has(lambda o: o.get("output_item_id") == pendant and o.get("status") == "completed"), (
+        "No completed run for DP-PENDANT via the 'Make & complete' toolbar action"
+    )
+    assert float(api.get(f"/items/{pendant}").json().get("quantity", 0)) > 0, (
+        "DP-PENDANT stock should be > 0 after Make & complete"
+    )
 
 
 def test_wip_esc_cancel_inline_edit(page, ui_server, api):

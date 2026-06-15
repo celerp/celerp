@@ -147,6 +147,79 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
     return Div(*els, cls="status-cards")
 
 
+# Shared bulk-action toolbar: [N selected] [Clear] [Action ▾]. Reused across list pages so bulk
+# actions are consistent and extensible. Rows are `.bulk-select` checkboxes (name='selected',
+# value=id) in the table; the header `.bulk-select-all` checkbox toggles visible rows; only
+# VISIBLE (not .dp-row-hidden) rows count, so it composes with the column filters.
+BULK_TOOLBAR_JS = """
+(function(){
+  if(window.__celerpBulkbar)return;window.__celerpBulkbar=true;
+  function table(bar){return document.getElementById(bar.getAttribute('data-table'));}
+  function visBoxes(t){if(!t)return [];return Array.prototype.slice.call(
+    t.querySelectorAll('tbody tr.data-row:not(.dp-row-hidden) .bulk-select'));}
+  function checkedIds(t){var seen={},out=[];visBoxes(t).forEach(function(c){
+    if(c.checked&&!(c.value in seen)){seen[c.value]=1;out.push(c.value);}});return out;}
+  function refresh(bar){
+    var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
+    var cnt=bar.querySelector('.bulk-count');if(cnt)cnt.textContent=n+' selected';
+    var sel=bar.querySelector('.bulk-action-select');if(sel)sel.disabled=n===0;
+    var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
+    var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
+  }
+  function refreshAll(){document.querySelectorAll('.bulkbar').forEach(refresh);}
+  window.celerpBulkRefresh=refreshAll;
+  function doAction(sel){
+    var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
+    var ids=checkedIds(t),val=sel.value;sel.selectedIndex=0;
+    if(!ids.length||!val)return;
+    var acts=JSON.parse(sel.getAttribute('data-actions')||'[]'),a=null;
+    for(var i=0;i<acts.length;i++){if(acts[i].value===val){a=acts[i];break;}}
+    if(!a)return;
+    if(a.confirm&&!confirm(a.confirm))return;
+    if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
+    var form=document.createElement('form');
+    ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
+    document.body.appendChild(form);
+    htmx.ajax('POST',a.url,{source:form,target:a.target||('#'+t.id),swap:a.swap||'outerHTML'})
+      .then(function(){form.remove();},function(){form.remove();});
+  }
+  document.addEventListener('change',function(e){
+    var el=e.target;if(!el||!el.classList)return;
+    if(el.classList.contains('bulk-select-all')){var t=el.closest('table');
+      if(t)visBoxes(t).forEach(function(c){c.checked=el.checked;});refreshAll();}
+    else if(el.classList.contains('bulk-select')){refreshAll();}
+    else if(el.classList.contains('bulk-action-select')){doAction(el);}
+  });
+  document.addEventListener('click',function(e){
+    var clr=e.target.closest&&e.target.closest('.bulk-clear');
+    if(clr){var t=table(clr.closest('.bulkbar'));if(t)visBoxes(t).forEach(function(c){c.checked=false;});refreshAll();}
+  });
+  document.addEventListener('htmx:afterSwap',function(){refreshAll();});
+  refreshAll();
+})();
+"""
+
+
+def bulk_toolbar(table_id: str, actions: list[dict]) -> FT:
+    """Standard bulk-action toolbar: [N selected] [Clear] [Action ▾].
+    actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
+    POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
+    url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
+    header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there)."""
+    import json as _json
+    opts = [Option("Action…", value="", disabled=True, selected=True)]
+    opts += [Option(a["label"], value=a["value"]) for a in actions]
+    return Div(
+        Span("0 selected", cls="bulk-count"),
+        Button("Clear", type="button", cls="btn btn--xs btn--ghost bulk-clear"),
+        Select(*opts, cls="bulk-action-select", disabled=True,
+               **{"data-actions": _json.dumps(actions)}),
+        Script(BULK_TOOLBAR_JS),
+        cls="bulkbar bulk-action-bar", id=f"bulkbar-{table_id}",
+        **{"data-table": table_id},
+    )
+
+
 def empty_state_cta(
     message: str,
     action_label: str | None = None,

@@ -14,7 +14,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import EMPTY, status_cards, empty_state_cta, format_value, search_bar
+from ui.components.table import EMPTY, status_cards, empty_state_cta, format_value, search_bar, bulk_toolbar
 from ui.config import get_token as _token
 from ui.i18n import t
 
@@ -180,7 +180,7 @@ def _demand_row(l: dict) -> FT:
     doc_cell = (A(doc_no, href=_doc_href(l.get("doc_id"), doc_type), cls="table-link")
                 if l.get("doc_id") else Span(doc_no))
     return Tr(
-        Td(Input(type="checkbox", cls="dp-select", name="selected", value=item_id), cls="col-checkbox"),
+        Td(Input(type="checkbox", cls="bulk-select", name="selected", value=item_id), cls="col-checkbox"),
         Td(A(label, href=f"/inventory/{item_id}?tab=manufacturing", cls="table-link")),
         Td(doc_cell),
         Td(doc_type.replace("_", " ").title() or EMPTY),
@@ -203,7 +203,7 @@ def _demand_table(lines: list[dict]) -> FT:
         )
     return Table(
         Thead(Tr(
-            Th(Input(type="checkbox", id="dp-select-all", title="Select all"), cls="col-checkbox"),
+            Th(Input(type="checkbox", cls="bulk-select-all", title="Select all"), cls="col-checkbox"),
             Th("Product"), Th("Document"), Th("Type"), _filter_th("For", 4), Th("Due", cls="cell--center"),
             Th("Ordered"), Th("Short"), _filter_th("Status", 8, center=True),
         )),
@@ -232,33 +232,6 @@ def _type_filter_bar(all_lines: list[dict], dtype: str) -> FT:
     return status_cards(cards, "/manufacturing", dtype, show_all_card=False)
 
 
-# Demand-Planning row selection: select-all toggle + a live "[N selected]" count that enables the
-# bulk Make button. Counts only VISIBLE rows (a column filter may hide some). Only checked .dp-select
-# boxes submit (hx-include), so no hidden field is needed.
-_DP_SELECT_JS = """
-(function(){
-  function boxes(){return Array.prototype.slice.call(
-    document.querySelectorAll('#mfg-table tbody tr.data-row:not(.dp-row-hidden) .dp-select'));}
-  function update(){
-    var b=boxes(),n=b.filter(function(c){return c.checked}).length;
-    var cnt=document.getElementById('dp-count');if(cnt)cnt.textContent=n+' selected';
-    var btn=document.getElementById('dp-make-btn');if(btn)btn.disabled=n===0;
-    var all=document.getElementById('dp-select-all');
-    if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
-  }
-  window.dpUpdateSelection=update;
-  document.addEventListener('change',function(e){
-    var t=e.target;if(!t)return;
-    if(t.id==='dp-select-all'){boxes().forEach(function(c){c.checked=t.checked});update();}
-    else if(t.classList&&t.classList.contains('dp-select')){update();}
-  });
-  document.addEventListener('htmx:afterSwap',function(e){
-    if(e.detail&&e.detail.target&&e.detail.target.id==='mfg-table')update();
-  });
-  update();
-})();
-"""
-
 # Excel-style column filters: each .colfilter funnel opens a checkbox list of the distinct values
 # in its column (data-col = cell index). Filtering is client-side and instant; multiple columns AND
 # together; hidden rows get a .dp-row-hidden class and are deselected. State resets when the table
@@ -275,11 +248,11 @@ _DP_FILTER_JS = """
       var show=true;
       for(var col in active){var s=active[col];if(s&&!s.has(cellText(r,+col))){show=false;break;}}
       r.classList.toggle('dp-row-hidden',!show);
-      if(!show){var cb=r.querySelector('.dp-select');if(cb&&cb.checked)cb.checked=false;}
+      if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}
     });
     var t=tbl();if(t){t.querySelectorAll('.colfilter').forEach(function(b){
       b.classList.toggle('colfilter--active',!!active[b.getAttribute('data-col')]);});}
-    if(window.dpUpdateSelection)window.dpUpdateSelection();
+    if(window.celerpBulkRefresh)window.celerpBulkRefresh();
   }
   function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
   function open(btn){
@@ -464,17 +437,17 @@ def setup_routes(app):
                          "filters to narrow by status or customer; tick the lines you want and choose "
                          "Make to start a production run for each product that is short."),
             _type_filter_bar(all_lines, dtype),
-            Div(
-                Span("0 selected", id="dp-count", cls="bulk-count"),
-                Button("Make selected", id="dp-make-btn", type="button", disabled=True,
-                       cls="btn btn--sm btn--primary",
-                       hx_post=f"/manufacturing/make-selected?type={dtype}",
-                       hx_include=".dp-select", hx_target="#mfg-table", hx_swap="outerHTML",
-                       title="Start a production run for each selected product at its shortfall"),
-                cls="bulk-action-bar mfg-filter-row", id="dp-bulkbar",
-            ),
+            bulk_toolbar("mfg-table", [
+                {"value": "make", "label": "Make selected",
+                 "method": "post", "url": f"/manufacturing/make-selected?type={dtype}"},
+                {"value": "make_complete", "label": "Make & complete",
+                 "method": "post", "url": f"/manufacturing/make-selected?type={dtype}&complete=1",
+                 "confirm": "Build the selected products now - issue components and receive the "
+                            "finished goods? This updates stock and posts journal entries."},
+                {"value": "requirements", "label": "Print component requirements",
+                 "method": "open", "url": "/manufacturing/requirements"},
+            ]),
             _demand_table(lines),
-            Script(_DP_SELECT_JS),
             Script(_DP_FILTER_JS),
         )
         return base_shell(
@@ -536,31 +509,88 @@ def setup_routes(app):
 
     @app.post("/manufacturing/make-selected")
     async def make_selected(request: Request):
-        """Bulk 'Make selected': build each distinct ticked product at its net shortfall, then
-        refresh the demand board within the active filter (carried on the query string)."""
+        """Bulk 'Make selected' / 'Make & complete': build each distinct ticked product at its net
+        shortfall (and, with ?complete=1, issue + receive + close each run), then refresh the demand
+        board within the active filter (carried on the query string)."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
         dtype, _q = _dp_filter_args(request)
+        complete = request.query_params.get("complete") in ("1", "true", "on")
         form = await request.form()
         ids = list(dict.fromkeys(form.getlist("selected")))  # distinct products, order preserved
         result: dict = {"built": []}
         rows: list[dict] = []
+        error = ""
         try:
             if ids:
-                result = await api.manufacturing_bulk_build(token, ids)
+                result = await api.manufacturing_bulk_build(token, ids, complete=complete)
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
+            error = str(e.detail) or "Could not start the selected runs."
         lines = _demand_filter(_demand_lines(rows), dtype)
         built = len(result.get("built", []))
-        msg = (f"Started {built} production run(s)." if built
-               else "Nothing to make for the selected products.")
+        verb = "Built and completed" if complete else "Started"
+        if error:
+            toast = {"message": error, "type": "error"}
+        elif built:
+            toast = {"message": f"{verb} {built} production run(s).", "type": "success"}
+        else:
+            toast = {"message": "Nothing to make for the selected products.", "type": "info"}
         return HTMLResponse(
             to_xml(_demand_table(lines)),
-            headers={"HX-Trigger": json.dumps(
-                {"celerpToast": {"message": msg, "type": "success" if built else "info"}})},
+            headers={"HX-Trigger": json.dumps({"celerpToast": toast})},
+        )
+
+    @app.get("/manufacturing/requirements")
+    async def requirements_print(request: Request):
+        """Printable component-requirements pick list for the selected products (opens in a new tab
+        from the demand board's 'Print component requirements' action)."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        ids = [i for i in (request.query_params.get("ids") or "").split(",") if i]
+        data = {"products": [], "raw_materials": [], "sub_assemblies": []}
+        if ids:
+            try:
+                data = await api.manufacturing_requirements(token, ids)
+            except APIError as e:
+                if e.status == 401:
+                    return RedirectResponse("/login", status_code=302)
+
+        def _need_table(title: str, items: list[dict]) -> FT:
+            if not items:
+                return ""
+            return Div(
+                H2(title, cls="section-title"),
+                Table(
+                    Thead(Tr(Th("SKU"), Th("Item"), Th("Quantity", cls="cell--center"))),
+                    Tbody(*[Tr(Td(i.get("sku") or EMPTY), Td(i.get("name") or EMPTY),
+                               Td(_qty(i.get("quantity", 0), i.get("unit")), cls="cell--number"))
+                            for i in items]),
+                    cls="data-table",
+                ),
+            )
+
+        products = data.get("products", [])
+        head = P("Make: " + ", ".join(
+            f"{p.get('sku') or p.get('item_id')} ({_qty(p.get('quantity', 0), p.get('unit'))})"
+            for p in products), cls="hint") if products else P("No products with a shortfall in the selection.", cls="hint")
+        return base_shell(
+            page_header(
+                "Component Requirements",
+                Button("Print", type="button", cls="btn btn--primary", onclick="window.print()"),
+            ),
+            _intro("📋", "Raw materials and sub-assemblies needed to make the selected products' "
+                         "outstanding shortfall, exploded through the recipes and pooled."),
+            head,
+            _need_table("Raw materials", data.get("raw_materials", [])),
+            _need_table("Sub-assemblies to make", data.get("sub_assemblies", [])),
+            title="Component Requirements - Celerp",
+            nav_active="manufacturing",
+            request=request,
         )
 
     @app.get("/manufacturing/to-make-search")

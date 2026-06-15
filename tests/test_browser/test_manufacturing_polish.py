@@ -59,9 +59,9 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     assert "PL-MRING" in page.locator("#mfg-table").inner_text()
     # No category-tabs on the restructured page; it is now two separate pages.
     assert page.locator(".category-tabs").count() == 0, "category-tabs should be gone after restructure"
-    # Bulk-action bar and select-all are present on the Demand Planning page.
-    assert page.locator("#dp-bulkbar").count() == 1, "#dp-bulkbar not found on /manufacturing"
-    assert page.locator("#dp-select-all").count() == 1, "#dp-select-all header checkbox not found"
+    # Bulk-action toolbar and select-all are present on the Demand Planning page.
+    assert page.locator(".bulkbar").count() >= 1, ".bulkbar not found on /manufacturing"
+    assert page.locator(".bulk-select-all").count() >= 1, ".bulk-select-all header checkbox not found"
     # Search narrows the board by product / SKU (new placeholder text).
     box = page.get_by_placeholder("Search product / document...")
     box.fill("PL-MRING")

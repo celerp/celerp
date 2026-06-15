@@ -2692,3 +2692,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .colfilter-all { border-bottom: 1px solid var(--c-border); margin-bottom: 4px; font-weight: 600; }
 .colfilter-clear { background: none; border: none; color: var(--c-accent); cursor: pointer; font-size: 12px; padding: 2px; }
 .dp-row-hidden { display: none; }
+
+/* Shared bulk-action toolbar */
+.bulkbar { min-height: 32px; }
+.bulk-action-select {
+  padding: 4px 8px; border: 1px solid var(--c-border); border-radius: 4px;
+  font-size: 13px; background: var(--c-bg, #fff); color: var(--c-text); cursor: pointer;
+}
+.bulk-action-select:disabled { opacity: 0.5; cursor: default; }

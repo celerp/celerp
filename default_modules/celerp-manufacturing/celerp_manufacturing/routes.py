@@ -574,6 +574,7 @@ async def to_make(
 
 class BulkBuildBody(BaseModel):
     item_ids: list[str] = Field(default_factory=list)
+    complete: bool = False  # one-tap: also issue components, receive output and close each run
 
 
 @router.post("/to-make/build")
@@ -585,7 +586,8 @@ async def bulk_build(
 ) -> dict:
     """Create a production run for each selected product at its current net shortfall (the To-Make
     quantity). Products with nothing left to make (covered by stock or in-progress runs) are
-    skipped. This is the To-Make board's bulk 'Make selected' action."""
+    skipped. With ``complete=true`` each run is also issued, received and closed in one tap.
+    This is the To-Make board's bulk 'Make selected' / 'Make & complete' action."""
     if not payload.item_ids:
         return {"built": [], "skipped": []}
     rows = {r["item_id"]: r for r in await _compute_to_make(session, company_id)}
@@ -611,9 +613,56 @@ async def bulk_build(
             actor_id=user.id, location_id=None, source="api",
             idempotency_key=str(uuid.uuid4()), metadata_={},
         )
+        if payload.complete:
+            run = await _get_order(session, company_id, order_id)
+            await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
+            await _receive(session, company_id, user, order_id, run.state, qty, states)
+            run = await _get_order(session, company_id, order_id)
+            await _close_run(session, company_id, user, order_id, run.state, states)
         built.append({"item_id": item_id, "run_id": order_id, "quantity": qty})
     await session.commit()
     return {"built": built, "skipped": skipped}
+
+
+@router.post("/to-make/requirements")
+async def bulk_requirements(
+    payload: BulkBuildBody,
+    company_id=Depends(get_current_company_id),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Aggregated, recursively-exploded raw-material + sub-assembly requirements to make the net
+    shortfall of the selected products - the 'Print component requirements' pick list."""
+    rows = {r["item_id"]: r for r in await _compute_to_make(session, company_id)}
+    states = await _all_item_states(session, company_id)
+    lines: list[tuple[str, float]] = []
+    products: list[dict] = []
+    for item_id in payload.item_ids:
+        qty = float((rows.get(item_id) or {}).get("to_make") or 0)
+        if qty <= 0 or not is_manufacturable(states.get(item_id)):
+            continue
+        lines.append((item_id, qty))
+        ist = states.get(item_id) or {}
+        products.append({"item_id": item_id, "sku": ist.get("sku"), "name": ist.get("name"),
+                         "quantity": qty, "unit": ist.get("sell_by") or ist.get("unit")})
+    demand = explode_demand(lines, states.get) if lines else {"sub_assemblies": {}, "raw_materials": {}}
+
+    def _detail(d: dict[str, float]) -> list[dict]:
+        return [
+            {"item_id": iid, "sku": (states.get(iid) or {}).get("sku"),
+             "name": (states.get(iid) or {}).get("name"), "quantity": q,
+             "unit": (states.get(iid) or {}).get("sell_by") or (states.get(iid) or {}).get("unit")}
+            for iid, q in sorted(d.items(), key=lambda kv: (states.get(kv[0]) or {}).get("sku") or kv[0])
+        ]
+
+    # The selected products are shown in `products`; drop them from sub-assemblies so that section
+    # lists only intermediate manufactured parts (not the finished goods themselves).
+    selected_ids = {item_id for item_id, _ in lines}
+    subs = {k: v for k, v in demand["sub_assemblies"].items() if k not in selected_ids}
+    return {
+        "products": products,
+        "sub_assemblies": _detail(subs),
+        "raw_materials": _detail(demand["raw_materials"]),
+    }
 
 
 def _run_makes(run_state: dict, item_id: str, item_sku: str) -> bool:

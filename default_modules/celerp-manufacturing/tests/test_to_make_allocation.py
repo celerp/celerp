@@ -106,6 +106,41 @@ async def test_bulk_build_creates_runs_at_shortfall(client):
 
 
 @pytest.mark.asyncio
+async def test_bulk_build_complete_one_tap(client):
+    """complete=True issues components, receives output and closes each run in one call."""
+    token = await _register(client)
+    gold = await _item(client, token, "GC", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RC", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    await _finalized_invoice(client, token, ring, "RC", 3)
+
+    res = (await client.post("/manufacturing/to-make/build", headers=_h(token),
+                             json={"item_ids": [ring], "complete": True})).json()
+    assert len(res["built"]) == 1
+    run_id = res["built"][0]["run_id"]
+    assert (await client.get(f"/manufacturing/{run_id}", headers=_h(token))).json()["status"] == "completed"
+    # Output restocked, components consumed.
+    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 3.0
+    assert (await client.get(f"/items/{gold}", headers=_h(token))).json()["quantity"] == 97.0
+
+
+@pytest.mark.asyncio
+async def test_requirements_aggregates_components(client):
+    """The requirements pick list explodes recipes to raw materials for the selected shortfall."""
+    token = await _register(client)
+    gold = await _item(client, token, "GR", quantity=0, cost_total=8000)
+    ring = await _item(client, token, "RR", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 5}])
+    await _finalized_invoice(client, token, ring, "RR", 4)  # to_make 4 -> 20 gold
+
+    data = (await client.post("/manufacturing/to-make/requirements", headers=_h(token),
+                              json={"item_ids": [ring]})).json()
+    assert any(p["item_id"] == ring and p["quantity"] == 4.0 for p in data["products"])
+    raw = {r["item_id"]: r for r in data["raw_materials"]}
+    assert gold in raw and raw[gold]["quantity"] == 20.0
+
+
+@pytest.mark.asyncio
 async def test_bulk_build_skips_fully_covered(client):
     """Products already covered by stock have nothing to build and are skipped."""
     token = await _register(client)
