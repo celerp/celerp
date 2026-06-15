@@ -300,6 +300,7 @@ async def landed_account_for_line(session, company_id, li: dict) -> str | None:
 
 async def create_for_landed_capitalisation(
     session, *, company_id, user_id, doc_id: str, landed_by_kind: dict[str, float], receive_suffix: str,
+    receive_date: str | None = None,
 ) -> None:
     """Capitalise received landed cost from the clearing accounts into goods inventory on receipt:
     Dr 1130-P (total) / Cr each kind's clearing account. Balances by construction.
@@ -324,6 +325,7 @@ async def create_for_landed_capitalisation(
         idem_create=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "c"),
         idem_posted=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "p"),
         memo=f"Auto JE for {doc_id} landed-cost capitalisation",
+        ts=receive_date,
         entries=entries,
         metadata_={"trigger": "doc.landed_capitalised", "doc_id": doc_id},
     )

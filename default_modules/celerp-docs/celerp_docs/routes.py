@@ -1863,6 +1863,7 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         await auto_je.create_for_landed_capitalisation(
             session, company_id=company_id, user_id=user.id, doc_id=entity_id,
             landed_by_kind=landed_drawdown, receive_suffix=str(uuid.uuid4()),
+            receive_date=datetime.now(UTC).date().isoformat(),
         )
     # consignment_in: no JE (goods not owned).
     await session.commit()

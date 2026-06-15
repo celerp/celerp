@@ -78,6 +78,12 @@ async def test_bill_with_freight_capitalises_landed_then_cogs_reconciles(client)
     # After receive: freight capitalised into 1130-P; clearing zeroed; AP unchanged. No double goods/AP.
     assert await _net(client, t) == {"1130-P": 140.0, "2110": -140.0}
 
+    # The capitalisation JE carries a posting date (a dateless financial entry is never acceptable).
+    led = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
+    cap = next(e for e in led if "landed-cap" in (e.get("entity_id") or "")
+               and str(e.get("event_type", "")).endswith(".created"))
+    assert cap.get("ts"), "landed-cost capitalisation JE must have a posting date"
+
     # The received parcel carries the full landed cost.
     parcel = next(i for i in (await client.get("/items?q=G2", headers=_h(t))).json()["items"]
                   if float(i.get("quantity") or 0) == 10 and i["id"] != goods)
