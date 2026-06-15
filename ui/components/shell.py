@@ -997,6 +997,15 @@ _SIDEBAR_JS = """
   var btn = document.querySelector('.sidebar-toggle');
   var sb = document.querySelector('.sidebar');
   if (btn && sb) btn.addEventListener('click', function() { sb.classList.toggle('sidebar--open'); });
+  /* Bring the active nav item into view when its group sits below the fold on a short viewport.
+     Adjusts only the sidebar's own scroll (never the window), and only when off-screen. */
+  var activeLink = sb && sb.querySelector('.nav-link--active');
+  if (sb && activeLink) {
+    var lr = activeLink.getBoundingClientRect(), sr = sb.getBoundingClientRect();
+    if (lr.top < sr.top || lr.bottom > sr.bottom) {
+      sb.scrollTop += (lr.top - sr.top) - (sr.height - lr.height) / 2;
+    }
+  }
 })();
 """
 

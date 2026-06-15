@@ -55,6 +55,21 @@ def test_nav_route_loads(page, ui_server, route, expected_text):
         assert expected_text in body, f"{route} body missing expected text: {expected_text!r}"
 
 
+def test_active_nav_scrolled_into_view(page, ui_server):
+    """NAV-23: on a short viewport, the active nav link is scrolled into view within the sidebar -
+    a group near the bottom (Manufacturing) must not sit below the fold."""
+    page.set_viewport_size({"width": 1280, "height": 600})
+    page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
+    page.wait_for_selector(".sidebar .nav-link--active", timeout=8000)
+    link = page.locator(".sidebar .nav-link--active").first
+    assert link.inner_text().strip() != ""
+    lb, sb = link.bounding_box(), page.locator(".sidebar").bounding_box()
+    assert lb is not None and sb is not None
+    # The active link sits within the sidebar's visible vertical bounds (allow 1px rounding).
+    assert lb["y"] >= sb["y"] - 1, "active nav link is above the sidebar viewport"
+    assert lb["y"] + lb["height"] <= sb["y"] + sb["height"] + 1, "active nav link is below the fold"
+
+
 def test_search_loads_with_query(page, ui_server):
     """NAV-22: /search?q=test loads without 500."""
     resp = page.goto(f"{ui_server}/search?q=test", wait_until="domcontentloaded")
