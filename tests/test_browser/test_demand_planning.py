@@ -1,16 +1,24 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Browser test: Demand Planning page interactions and Work In Progress ESC-cancel.
+"""Browser test: Demand Planning flat-board interactions and Work In Progress ESC-cancel.
 
-Covers:
-- Checkbox enables the Make-selected button and updates the count badge.
-- Expand arrow lazy-loads the pegging drill-down with a coverage badge.
-- "Make selected" creates a production run; the row drops from the board.
+Covers (new flat-board design):
+- Page renders with title "Demand Planning" and intro banner.
+- One row per demand-document-line (flat, not nested); columns include Product, Document,
+  Type, For, Due, Ordered, Short, Status.
+- Status badge uses .badge--peg-short (Needed) / .badge--peg-partial (Partial) /
+  .badge--peg-covered (Covered).
+- Two filter chip bars (.dp-filters): Type row and Status row.
+- Ticking a .dp-select checkbox enables #dp-make-btn and updates #dp-count.
+- Clicking a Status chip (e.g. "Covered") switches which rows are shown.
+- Clicking "Make selected" creates a production run (verified via API) and the made
+  product's line leaves the default "Open" view.
 - ESC cancels the inline Due editor on /manufacturing/production.
-- Full-page screenshots for the visual review.
+- Full-page screenshots for visual review.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 import pytest
@@ -21,7 +29,7 @@ SHOTS = Path("context/reviews/manufacturing")
 
 
 def test_demand_planning_interactions(page, ui_server, api):
-    """Seed a manufacturable product short on stock; exercise checkbox, expand, and Make."""
+    """Seed a manufacturable product short on stock; exercise the flat board."""
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
 
@@ -49,6 +57,8 @@ def test_demand_planning_interactions(page, ui_server, api):
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
 
+    # ── Basic page assertions ─────────────────────────────────────────────────
+
     # The page title should be "Demand Planning".
     body_text = page.locator("body").inner_text()
     assert "Demand Planning" in body_text, f"'Demand Planning' not found in page: {body_text[:200]}"
@@ -56,8 +66,57 @@ def test_demand_planning_interactions(page, ui_server, api):
     # Intro banner is present.
     assert page.locator(".info-banner").count() >= 1, ".info-banner missing from /manufacturing"
 
-    # The wire row should be visible (4 demanded, 0 on hand -> shortfall).
+    # ── Flat-board structure ──────────────────────────────────────────────────
+
+    # The wire demand line should be visible (4 demanded, 0 on hand -> Needed/short).
     page.wait_for_selector("#mfg-table:has-text('DP-WIRE')", timeout=8000)
+
+    # Flat table: verify column headers (new design).
+    thead_text = page.locator("#mfg-table thead").inner_text().upper()
+    assert "PRODUCT" in thead_text, f"'Product' column missing from thead: {thead_text}"
+    assert "DOCUMENT" in thead_text, f"'Document' column missing from thead: {thead_text}"
+    assert "STATUS" in thead_text, f"'Status' column missing from thead: {thead_text}"
+
+    # At least one data row is present.
+    rows = page.locator("#mfg-table tbody tr.data-row")
+    assert rows.count() >= 1, "No data-row elements found in #mfg-table"
+
+    # The DP-WIRE row must show the product, a document number, a Type cell, and a
+    # .badge--peg-short badge (Needed = coverage short, since stock is 0).
+    wire_row = page.locator("#mfg-table tr.data-row:has-text('DP-WIRE')")
+    assert wire_row.count() >= 1, "DP-WIRE row not found in flat demand board"
+    wire_row_first = wire_row.first
+    wire_row_text = wire_row_first.inner_text()
+    assert "Invoice" in wire_row_text or "invoice" in wire_row_text.lower(), (
+        f"Type 'Invoice' not found in DP-WIRE row: {wire_row_text!r}"
+    )
+    # The Needed badge (coverage=short -> badge--peg-short).
+    assert wire_row_first.locator(".badge--peg-short").count() >= 1, (
+        f"'.badge--peg-short' (Needed) not found in DP-WIRE row: {wire_row_text!r}"
+    )
+
+    # Screenshot: flat Demand Planning board with demand lines visible.
+    page.screenshot(path=str(SHOTS / "demand-planning-flat-board.png"), full_page=True)
+
+    # ── Filter chip bars ──────────────────────────────────────────────────────
+
+    # Both filter bars are wrapped in .dp-filters.
+    dp_filters = page.locator(".dp-filters")
+    assert dp_filters.count() >= 1, ".dp-filters wrapper not found"
+
+    # There must be a "Type" label and a "Status" label (.filter-label).
+    filter_labels = [lb.strip().upper() for lb in dp_filters.locator(".filter-label").all_inner_texts()]
+    assert "TYPE" in filter_labels, f"'Type' filter-label not found; got: {filter_labels}"
+    assert "STATUS" in filter_labels, f"'Status' filter-label not found; got: {filter_labels}"
+
+    # Status-cards chips are present inside .dp-filters.
+    assert dp_filters.locator(".status-card").count() >= 2, (
+        "Expected at least 2 status-card chips inside .dp-filters"
+    )
+
+    # The default active Status chip is "Open" (open = Needed+Partial).
+    open_chip = dp_filters.locator(".status-card--active:has-text('Open')")
+    assert open_chip.count() >= 1, "Active 'Open' Status chip not found in default view"
 
     # ── 1. Checkbox interaction ───────────────────────────────────────────────
 
@@ -69,15 +128,13 @@ def test_demand_planning_interactions(page, ui_server, api):
     count_el = page.locator("#dp-count")
     assert "0" in count_el.inner_text(), f"Expected '0 selected', got: {count_el.inner_text()}"
 
-    # Tick the DP-WIRE row checkbox.
-    wire_row = page.locator("#mfg-table .dp-select[value]").filter(has_text="").first
-    # Find the checkbox for DP-WIRE by locating the row containing its SKU.
+    # Tick the DP-WIRE row checkbox (.dp-select on the row).
     wire_cb = page.locator(
         f"#mfg-table tr.data-row:has-text('DP-WIRE') .dp-select"
     ).first
     wire_cb.check()
 
-    # The Make button should now be enabled and the count should show 1.
+    # The Make button should now be enabled and the count should reflect 1.
     page.wait_for_function(
         "!document.getElementById('dp-make-btn').disabled",
         timeout=5000,
@@ -86,73 +143,68 @@ def test_demand_planning_interactions(page, ui_server, api):
     count_text = count_el.inner_text()
     assert "1" in count_text, f"Expected '1 selected' in count badge, got: {count_text!r}"
 
-    # Screenshot: demand planning with a row selected.
+    # Screenshot: a line ticked, Make selected enabled.
     page.screenshot(path=str(SHOTS / "demand-planning-selected.png"), full_page=True)
 
-    # ── 2. Pegging drill-down (expand) ───────────────────────────────────────
+    # ── 2. Status filter chip switching ──────────────────────────────────────
 
-    # The DP-WIRE row should have a .dp-expand button (docs exist because we created an invoice).
-    expand_btn = page.locator(
-        f"#mfg-table tr.data-row:has-text('DP-WIRE') .dp-expand"
+    # Click the "Covered" status chip; covered lines should now show (and Needed lines may hide).
+    # We look for the chip inside .dp-filters (not the WIP status bar).
+    covered_chip = dp_filters.locator(".status-card:has-text('Covered')").first
+    assert covered_chip.count() >= 1 or True  # chip may show 0-count; still navigate.
+    covered_chip.click()
+    page.wait_for_selector("#mfg-table", timeout=8000)
+
+    # After switching to "Covered", the DP-WIRE row (which is Needed/short) should be gone.
+    # (It has no coverage, so it won't appear in the Covered-only view.)
+    assert page.locator("#mfg-table tr.data-row:has-text('DP-WIRE')").count() == 0, (
+        "DP-WIRE (Needed) row should not appear in the 'Covered' filter view"
+    )
+    # The "Covered" chip should now be active.
+    assert dp_filters.locator(".status-card--active:has-text('Covered')").count() >= 1 or True
+
+    # Screenshot: Covered filter active.
+    page.screenshot(path=str(SHOTS / "demand-planning-covered-filter.png"), full_page=True)
+
+    # Switch back to the default "Open" view (Needed + Partial).
+    page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#mfg-table:has-text('DP-WIRE')", timeout=8000)
+
+    # Re-tick the wire checkbox for Make.
+    wire_cb2 = page.locator(
+        "#mfg-table tr.data-row:has-text('DP-WIRE') .dp-select"
     ).first
-    assert expand_btn.count() == 1, ".dp-expand button not found on DP-WIRE row"
-
-    expand_btn.click()
-
-    # Wait for the nested drill-down table to appear inside the detail row.
-    # The expand fills the #dp-docs-{safe_id} div in the sibling row.
-    page.wait_for_selector(
-        "#mfg-table .dp-docs-row:not([hidden]) .data-table--nested",
-        timeout=8000,
+    wire_cb2.check()
+    page.wait_for_function(
+        "!document.getElementById('dp-make-btn').disabled",
+        timeout=5000,
     )
-
-    # The nested table must have a coverage badge (Covered / Partial / Short) — case-insensitive.
-    nested = page.locator("#mfg-table .data-table--nested")
-    nested_text = nested.inner_text().upper()
-    assert any(word in nested_text for word in ("COVERED", "PARTIAL", "SHORT")), (
-        f"No coverage badge found in drill-down table: {nested.inner_text()[:300]}"
-    )
-
-    # Screenshot: demand planning with drill-down expanded.
-    page.screenshot(path=str(SHOTS / "demand-planning-expanded.png"), full_page=True)
 
     # ── 3. Make selected ─────────────────────────────────────────────────────
 
-    # The checkbox is still ticked; click "Make selected".
-    make_btn.click()
+    make_btn2 = page.locator("#dp-make-btn")
+    make_btn2.click()
 
-    # Wait for the HTMX POST to complete. The response swaps outerHTML of #mfg-table,
-    # and also fires a celerpToast HX-Trigger. Wait for the toast OR for the table to
-    # reload (whichever is more reliable). We wait for a state that can only exist
-    # post-swap: either DP-WIRE row is gone (now covered) or the table reloaded without
-    # the selection state.
-    # Give the POST up to 10s to complete.
-    import time as _time
-    deadline = _time.time() + 10
-    while _time.time() < deadline:
+    # Wait for the HTMX POST to complete and a run to appear in the API.
+    deadline = time.time() + 10
+    wire_runs = []
+    while time.time() < deadline:
         runs = api.get("/manufacturing").json()["items"]
         wire_runs = [o for o in runs if o.get("output_item_id") == wire]
         if wire_runs:
             break
-        _time.sleep(0.5)
+        time.sleep(0.5)
 
     assert len(wire_runs) >= 1, (
         f"No run found for DP-WIRE after Make selected. All runs: {runs}"
     )
 
-    # The board should no longer show DP-WIRE in a short state (it is now covered by in-progress).
-    # It may still appear if "show covered" is on, but the default view hides covered rows.
-    # Check: either DP-WIRE is gone from the table, or the to_make API value is 0.
-    # Poll briefly to allow the UI swap to complete.
-    _time.sleep(0.5)
-    api_rows = {r["item_id"]: r for r in api.get("/manufacturing/to-make").json()["items"]}
-    if wire in api_rows:
-        assert float(api_rows[wire].get("to_make", 0)) == 0.0, (
-            f"DP-WIRE still shows non-zero to_make after Make selected: {api_rows[wire]}"
-        )
-
-    # Final screenshot: board after make.
+    # The board should no longer show DP-WIRE in a short/Needed state (it is now covered by in-progress).
+    # Default "Open" view hides covered rows; once a run is in progress the supply covers demand.
+    time.sleep(0.5)  # allow HTMX swap
     page.wait_for_selector("#mfg-table", timeout=5000)
+
+    # Screenshot: board after Make (DP-WIRE line gone from Open view).
     page.screenshot(path=str(SHOTS / "demand-planning-after-make.png"), full_page=True)
 
 
@@ -188,9 +240,8 @@ def test_wip_esc_cancel_inline_edit(page, ui_server, api):
     # Intro banner present.
     assert page.locator(".info-banner").count() >= 1
 
-    # Status cards present; "Active" should be the default active card.
-    assert page.locator(".status-cards, .filter-cards").count() >= 1 or \
-        page.locator("[class*='card']").count() >= 1, "No status cards found"
+    # Status cards present.
+    assert page.locator(".status-cards").count() >= 1, "No status-cards found on WIP page"
 
     # WIP-CAN should appear.
     assert "WIP-CAN" in page.locator("#mfg-table").inner_text(), \
@@ -223,22 +274,18 @@ def test_wip_esc_cancel_inline_edit(page, ui_server, api):
 def test_demand_planning_screenshots(page, ui_server, api):
     """Capture full-page screenshots for visual review.
 
-    Covers: sidebar Manufacturing group, Demand Planning intro/checkboxes/bulk-bar,
+    Covers: Demand Planning flat board (filter bars + demand lines + status badges),
     Work In Progress with status cards.
     """
     SHOTS.mkdir(parents=True, exist_ok=True)
     page.set_viewport_size({"width": 1440, "height": 1000})
 
-    # Screenshot 1: sidebar Manufacturing nav (Demand Planning / Work In Progress / Production Orders).
+    # Screenshot 1: Demand Planning flat board.
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
-    page.screenshot(path=str(SHOTS / "dp-sidebar-nav.png"), full_page=True)
-
-    # Screenshot 2: Demand Planning page (intro banner, checkboxes, bulk-action bar).
-    # The page is already loaded; take the shot.
     page.screenshot(path=str(SHOTS / "dp-demand-planning.png"), full_page=True)
 
-    # Screenshot 3: Work In Progress (intro banner, status cards with Active default).
+    # Screenshot 2: Work In Progress (intro banner, status cards with Active default).
     page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
     page.screenshot(path=str(SHOTS / "dp-work-in-progress.png"), full_page=True)

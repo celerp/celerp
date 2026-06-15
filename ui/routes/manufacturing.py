@@ -14,7 +14,7 @@ from starlette.responses import HTMLResponse, RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import EMPTY, status_cards, empty_state_cta, format_value, search_bar, currency_symbol
+from ui.components.table import EMPTY, status_cards, empty_state_cta, format_value, search_bar
 from ui.config import get_token as _token
 from ui.i18n import t
 
@@ -22,12 +22,6 @@ logger = logging.getLogger(__name__)
 
 # Canonical run statuses; "incomplete" = still needs attention (default queue view).
 _INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
-
-
-def _company_cur(company: dict) -> str:
-    """Company currency symbol. Currency lives under settings.currency (top-level is unset)."""
-    code = company.get("currency") or (company.get("settings") or {}).get("currency") or ""
-    return currency_symbol(code)
 
 
 
@@ -125,111 +119,140 @@ def _order_row(order: dict, today: str = "") -> FT:
     )
 
 
-def _money(v, cur: str) -> str:
-    if v in (None, ""):
-        return EMPTY
-    try:
-        return f"{cur}{float(v):,.2f}"
-    except (TypeError, ValueError):
-        return EMPTY
-
-
 def _qty(value, unit: str | None) -> str:
     """Format a quantity with the product's sell unit, e.g. '2 Pieces'."""
     n = f"{float(value or 0):g}"
     return f"{n} {unit}" if unit else n
 
 
-def _safe(entity_id: str) -> str:
-    """DOM-id-safe form of an entity id (colons break CSS selectors)."""
-    return (entity_id or "").replace(":", "-")
+# Demand-line coverage from FIFO pegging (supply = on hand + in progress), relabelled for the board.
+_STATUS_LABELS = {"short": "Needed", "partial": "Partial", "covered": "Covered"}
+_STATUS_ORDER = {"short": 0, "partial": 1, "covered": 2}  # needed-first sort
+# Status filter values -> the coverage keys they include.
+_STATUS_SETS = {
+    "open": {"short", "partial"}, "needed": {"short"},
+    "partial": {"partial"}, "covered": {"covered"},
+}
+_DTYPE_DEFS = [("all", "All"), ("invoice", "Invoices"),
+               ("production_order", "Production Orders"), ("list", "Lists")]
+_STATUS_DEFS = [("open", "Open"), ("needed", "Needed"), ("partial", "Partial"),
+                ("covered", "Covered"), ("all", "All")]
 
 
-_PEG_LABELS = {"covered": "Covered", "partial": "Partial", "short": "Short"}
+def _status_badge(coverage: str) -> FT:
+    return Span(_STATUS_LABELS.get(coverage, coverage or EMPTY), cls=f"badge badge--peg-{coverage}")
 
 
-def _peg_badge(coverage: str) -> FT:
-    return Span(_PEG_LABELS.get(coverage, coverage or EMPTY), cls=f"badge badge--peg-{coverage}")
+def _doc_href(doc_id: str, doc_type: str) -> str:
+    return f"/lists/{doc_id}" if doc_type == "list" else f"/docs/{doc_id}"
 
 
-def _docs_fragment(docs: list[dict], unit: str | None) -> FT:
-    """The pegging drill-down: each demanding document with how much of it is covered by available
-    supply (on hand + in progress), pegged soonest-due first."""
-    if not docs:
-        return P("No open documents drive this demand.", cls="hint")
-    rows = []
-    for d in sorted(docs, key=lambda x: (x.get("due") is None, x.get("due") or "")):
-        rows.append(Tr(
-            Td(d.get("doc_number") or EMPTY),
-            Td((d.get("doc_type") or "").replace("_", " ").title()),
-            Td(d.get("contact_name") or EMPTY),
-            Td(d.get("due") or EMPTY, cls="cell--center"),
-            Td(_qty(d.get("quantity", 0), unit), cls="cell--number"),
-            Td(_qty(d.get("covered", 0), unit), cls="cell--number"),
-            Td(_qty(d.get("shortfall", 0), unit), cls="cell--number"),
-            Td(_peg_badge(d.get("coverage", "")), cls="cell--center"),
-            cls="data-row",
-        ))
-    return Table(
-        Thead(Tr(Th("Document"), Th("Type"), Th("For"), Th("Due", cls="cell--center"),
-                 Th("Ordered"), Th("Covered"), Th("Short"), Th("Status", cls="cell--center"))),
-        Tbody(*rows), cls="data-table data-table--nested",
-    )
+def _demand_lines(rows: list[dict]) -> list[dict]:
+    """Flatten the product-centric to-make rows into one entry per demanding document line, each
+    carrying its product and the document's pegged coverage. Needed first, then partial, then
+    covered; within a status, soonest due first (undated last)."""
+    lines: list[dict] = []
+    for r in rows:
+        unit = r.get("unit")
+        for d in r.get("docs", []):
+            lines.append({
+                "item_id": r.get("item_id", ""), "sku": r.get("sku"), "name": r.get("name"), "unit": unit,
+                "doc_id": d.get("doc_id"), "doc_number": d.get("doc_number"),
+                "doc_type": d.get("doc_type") or "", "contact_name": d.get("contact_name") or "",
+                "due": d.get("due"), "quantity": d.get("quantity", 0),
+                "shortfall": d.get("shortfall", 0), "coverage": d.get("coverage") or "short",
+            })
+    lines.sort(key=lambda l: (_STATUS_ORDER.get(l["coverage"], 0),
+                              l["due"] is None, l["due"] or "", l["sku"] or l["name"] or ""))
+    return lines
 
 
-def _to_make_rows(r: dict, cur: str) -> list[FT]:
-    """A product's data row plus its (hidden) pegging drill-down row, lazy-loaded on expand."""
-    item_id = r.get("item_id", "")
-    sid = _safe(item_id)
-    label = f"{r.get('sku') or item_id} - {r.get('name', '')}".strip(" -")
-    due = r.get("due")
-    unit = r.get("unit")
-    expand = Button(
-        "▸", type="button", cls="dp-expand", title="Show the orders behind this demand",
-        hx_get=f"/manufacturing/to-make/{item_id}/docs?unit={unit or ''}",
-        hx_target=f"#dp-docs-{sid}", hx_swap="innerHTML",
-        onclick=(f"this.classList.toggle('dp-expand--open');"
-                 f"var r=document.getElementById('dp-docs-row-{sid}');if(r)r.hidden=!r.hidden;"),
-    ) if r.get("docs") else Span(EMPTY)
-    data_row = Tr(
+def _demand_row(l: dict) -> FT:
+    item_id = l.get("item_id", "")
+    label = f"{l.get('sku') or item_id} - {l.get('name', '')}".strip(" -")
+    unit = l.get("unit")
+    doc_type = l.get("doc_type") or ""
+    doc_no = l.get("doc_number") or EMPTY
+    doc_cell = (A(doc_no, href=_doc_href(l.get("doc_id"), doc_type), cls="table-link")
+                if l.get("doc_id") else Span(doc_no))
+    return Tr(
         Td(Input(type="checkbox", cls="dp-select", name="selected", value=item_id), cls="col-checkbox"),
         Td(A(label, href=f"/inventory/{item_id}?tab=manufacturing", cls="table-link")),
-        Td(_qty(r.get("to_make", 0), unit), cls="cell--number"),
-        Td(f"{_qty(r.get('demand', 0), unit)} ({r.get('doc_count', 0)})", cls="cell--number",
-           title=f"{float(r.get('demand', 0)):g} demanded across {r.get('doc_count', 0)} open document(s)"),
-        Td(_qty(r.get("on_hand", 0), unit), cls="cell--number"),
-        Td(_qty(r.get("in_progress", 0), unit), cls="cell--number"),
-        Td(due or EMPTY, cls="cell--center"),
-        Td(_money(r.get("est_cost"), cur), cls="cell--number"),
-        Td(f"{float(r.get('est_hours', 0)):g}", cls="cell--number"),
-        Td(expand, cls="cell--center"),
+        Td(doc_cell),
+        Td(doc_type.replace("_", " ").title() or EMPTY),
+        Td(l.get("contact_name") or EMPTY),
+        Td(l.get("due") or EMPTY, cls="cell--center"),
+        Td(_qty(l.get("quantity", 0), unit), cls="cell--number"),
+        Td(_qty(l.get("shortfall", 0), unit), cls="cell--number"),
+        Td(_status_badge(l.get("coverage", "")), cls="cell--center"),
         cls="data-row",
     )
-    detail_row = Tr(
-        Td(Div(id=f"dp-docs-{sid}"), colspan="10", cls="dp-docs-cell"),
-        id=f"dp-docs-row-{sid}", cls="dp-docs-row", hidden=True,
-    )
-    return [data_row, detail_row]
 
 
-def _to_make_table(rows: list[dict], cur: str) -> FT:
-    if not rows:
+def _demand_table(lines: list[dict]) -> FT:
+    if not lines:
         return Div(
-            P("Nothing to make. Items appear here when an open invoice, list or production order "
-              "needs more of a product than you have in stock or already in production.", cls="hint"),
+            P("Nothing to make for this view. Demand lines appear here when an open invoice, list or "
+              "production order needs more of a product than you have in stock or already in production.",
+              cls="hint"),
             id="mfg-table",
         )
-    cl = f" ({cur})" if cur else ""
-    body = [el for r in rows for el in _to_make_rows(r, cur)]
-    # Headers centered (GDR 4a); numeric/currency CELLS right-aligned via cell--number on the td.
     return Table(
         Thead(Tr(
             Th(Input(type="checkbox", id="dp-select-all", title="Select all"), cls="col-checkbox"),
-            Th("Item"), Th("To make"), Th("Demand"), Th("On hand"), Th("In progress"), Th("Due"),
-            Th(f"Est. cost{cl}"), Th("Est. hours"), Th("", cls="cell--actions"),
+            Th("Product"), Th("Document"), Th("Type"), Th("For"), Th("Due", cls="cell--center"),
+            Th("Ordered"), Th("Short"), Th("Status", cls="cell--center"),
         )),
-        Tbody(*body),
+        Tbody(*[_demand_row(l) for l in lines]),
         cls="data-table", id="mfg-table",
+    )
+
+
+def _demand_filter(lines: list[dict], dtype: str, status: str) -> list[dict]:
+    """Apply the document-type and coverage-status filters to flattened demand lines."""
+    out = lines
+    if dtype != "all":
+        out = [l for l in out if l["doc_type"] == dtype]
+    if status != "all":
+        keep = _STATUS_SETS.get(status, _STATUS_SETS["open"])
+        out = [l for l in out if l["coverage"] in keep]
+    return out
+
+
+_STATUS_CHIP_COLOR = {"open": "blue", "needed": "red", "partial": "yellow",
+                      "covered": "green", "all": "gray"}
+
+
+def _demand_filter_bars(all_lines: list[dict], dtype: str, status: str) -> FT:
+    """Two chip bars (document type + coverage status) for the Demand Planning board. Each chip
+    carries both current dimensions in its href; counts reflect the other dimension's filter."""
+    st_keep = _STATUS_SETS.get(status) if status != "all" else None
+    dt_pool = [l for l in all_lines if st_keep is None or l["coverage"] in st_keep]
+    dt_counts = {"all": len(dt_pool)}
+    for key, _ in _DTYPE_DEFS[1:]:
+        dt_counts[key] = sum(1 for l in dt_pool if l["doc_type"] == key)
+    st_pool = [l for l in all_lines if dtype == "all" or l["doc_type"] == dtype]
+    st_counts = {
+        "all": len(st_pool),
+        "open": sum(1 for l in st_pool if l["coverage"] in _STATUS_SETS["open"]),
+        "needed": sum(1 for l in st_pool if l["coverage"] == "short"),
+        "partial": sum(1 for l in st_pool if l["coverage"] == "partial"),
+        "covered": sum(1 for l in st_pool if l["coverage"] == "covered"),
+    }
+    type_cards = [{"label": lbl, "count": dt_counts.get(k, 0), "status": k,
+                   "color": "gray" if k == "all" else "blue",
+                   "_url": f"/manufacturing?type={k}&status={status}", "_active_key": k}
+                  for k, lbl in _DTYPE_DEFS]
+    stat_cards = [{"label": lbl, "count": st_counts.get(k, 0), "status": k,
+                   "color": _STATUS_CHIP_COLOR.get(k, "gray"),
+                   "_url": f"/manufacturing?type={dtype}&status={k}", "_active_key": k}
+                  for k, lbl in _STATUS_DEFS]
+    return Div(
+        Div(Span("Type", cls="filter-label"),
+            status_cards(type_cards, "/manufacturing", dtype, show_all_card=False), cls="dp-filter"),
+        Div(Span("Status", cls="filter-label"),
+            status_cards(stat_cards, "/manufacturing", status, show_all_card=False), cls="dp-filter"),
+        cls="dp-filters",
     )
 
 
@@ -344,10 +367,24 @@ def setup_routes(app):
     def _intro(icon: str, text: str) -> FT:
         return Div(Span(icon, cls="info-banner-icon"), Span(text), cls="info-banner")
 
+    def _dp_filter_args(request: Request) -> tuple[str, str, str]:
+        """(document-type, coverage-status, search) from the query string, with defaults."""
+        dtype = (request.query_params.get("type") or "all").lower()
+        status = (request.query_params.get("status") or "open").lower()
+        q = (request.query_params.get("q") or "").strip().lower()
+        return dtype, status, q
+
+    def _dp_search(lines: list[dict], q: str) -> list[dict]:
+        if not q:
+            return lines
+        return [l for l in lines
+                if q in f"{l.get('sku', '')} {l.get('name', '')} {l.get('doc_number', '')}".lower()]
+
     @app.get("/manufacturing")
     async def demand_planning(request: Request):
-        """Demand Planning board: products with more open demand than on-hand + in-progress supply.
-        Tick products and Make to start runs; expand a row for the per-order pegging breakdown."""
+        """Demand Planning board: one line per open demand document, with the product it needs and
+        how well current supply (on hand + in progress) covers it. Filter by document type and
+        coverage status; tick lines and Make to start runs for the products that are short."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
@@ -356,49 +393,37 @@ def setup_routes(app):
             status = request.query_params.get("status")
             return RedirectResponse(
                 "/manufacturing/production" + (f"?status={status}" if status else ""), status_code=302)
-        q = (request.query_params.get("q") or "").strip().lower()
-        try:
-            company = await api.get_company(token)
-        except APIError:
-            company = {}
-        cur = _company_cur(company)
+        dtype, status, q = _dp_filter_args(request)
         try:
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
             rows = []
-        show_covered = request.query_params.get("view") == "all"
-        if not show_covered:
-            rows = [r for r in rows if float(r.get("to_make", 0)) > 0]
-        if q:
-            rows = [r for r in rows if q in f"{r.get('sku', '')} {r.get('name', '')}".lower()]
+        all_lines = _demand_lines(rows)
+        lines = _dp_search(_demand_filter(all_lines, dtype, status), q)
         body = (
-            _intro("📊", "What you need to make to fill open orders. Each row is a product with more "
-                         "demand (from invoices, lists and production orders) than you have in stock or "
-                         "already in production. Tick products and choose Make to start runs; click the "
-                         "arrow to see which orders drive each shortfall."),
+            _intro("📊", "Every open order that needs something made, with how well current stock and "
+                         "in-progress runs cover it. Filter by document type or coverage status; tick "
+                         "the lines you want and choose Make to start runs for the products that are short."),
+            _demand_filter_bars(all_lines, dtype, status),
             Div(
                 Span("0 selected", id="dp-count", cls="bulk-count"),
                 Button("Make selected", id="dp-make-btn", type="button", disabled=True,
                        cls="btn btn--sm btn--primary",
-                       hx_post="/manufacturing/make-selected", hx_include=".dp-select",
-                       hx_target="#mfg-table", hx_swap="outerHTML",
+                       hx_post=f"/manufacturing/make-selected?type={dtype}&status={status}",
+                       hx_include=".dp-select", hx_target="#mfg-table", hx_swap="outerHTML",
                        title="Start a production run for each selected product at its shortfall"),
-                A("Show covered too" if not show_covered else "Hide covered",
-                  href="/manufacturing?view=all" if not show_covered else "/manufacturing",
-                  cls="btn btn--xs btn--ghost",
-                  title="Also show products already covered by stock or in-progress runs"),
                 cls="bulk-action-bar mfg-filter-row", id="dp-bulkbar",
             ),
-            _to_make_table(rows, cur),
+            _demand_table(lines),
             Script(_DP_SELECT_JS),
         )
         return base_shell(
             page_header(
                 "Demand Planning",
-                search_bar(placeholder="Search item / SKU...", target="#mfg-table",
-                           url="/manufacturing/to-make-search"),
+                search_bar(placeholder="Search product / document...", target="#mfg-table",
+                           url=f"/manufacturing/to-make-search?type={dtype}&status={status}"),
             ),
             *body,
             title="Demand Planning - Celerp",
@@ -451,66 +476,48 @@ def setup_routes(app):
             request=request,
         )
 
-    @app.get("/manufacturing/to-make/{item_id}/docs")
-    async def to_make_docs(request: Request, item_id: str):
-        """The pegging drill-down fragment for one product on the Demand Planning board."""
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        unit = request.query_params.get("unit") or None
-        try:
-            rows = (await api.manufacturing_to_make(token)).get("items", [])
-        except APIError:
-            rows = []
-        row = next((r for r in rows if r.get("item_id") == item_id), None)
-        return _docs_fragment((row or {}).get("docs", []), unit)
-
     @app.post("/manufacturing/make-selected")
     async def make_selected(request: Request):
-        """Bulk 'Make selected': build each ticked product at its shortfall, then refresh the board."""
+        """Bulk 'Make selected': build each distinct ticked product at its net shortfall, then
+        refresh the demand board within the active filter (carried on the query string)."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
+        dtype, status, _q = _dp_filter_args(request)
         form = await request.form()
-        ids = form.getlist("selected")
-        cur = ""
+        ids = list(dict.fromkeys(form.getlist("selected")))  # distinct products, order preserved
         result: dict = {"built": []}
         rows: list[dict] = []
         try:
-            company = await api.get_company(token)
-            cur = _company_cur(company)
             if ids:
                 result = await api.manufacturing_bulk_build(token, ids)
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-        rows = [r for r in rows if float(r.get("to_make", 0)) > 0]
+        lines = _demand_filter(_demand_lines(rows), dtype, status)
         built = len(result.get("built", []))
         msg = (f"Started {built} production run(s)." if built
                else "Nothing to make for the selected products.")
         return HTMLResponse(
-            to_xml(_to_make_table(rows, cur)),
+            to_xml(_demand_table(lines)),
             headers={"HX-Trigger": json.dumps(
                 {"celerpToast": {"message": msg, "type": "success" if built else "info"}})},
         )
 
     @app.get("/manufacturing/to-make-search")
     async def to_make_search(request: Request):
-        """To-Make board fragment for the header search box."""
+        """Demand-board fragment for the header search box (keeps the active type/status filter)."""
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        q = (request.query_params.get("q") or "").strip().lower()
+        dtype, status, q = _dp_filter_args(request)
         try:
-            company = await api.get_company(token)
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError:
-            company, rows = {}, []
-        rows = [r for r in rows if float(r.get("to_make", 0)) > 0]
-        if q:
-            rows = [r for r in rows if q in f"{r.get('sku', '')} {r.get('name', '')}".lower()]
-        return _to_make_table(rows, _company_cur(company))
+            rows = []
+        lines = _dp_search(_demand_filter(_demand_lines(rows), dtype, status), q)
+        return _demand_table(lines)
 
     @app.get("/manufacturing/search")
     async def manufacturing_search(request: Request):

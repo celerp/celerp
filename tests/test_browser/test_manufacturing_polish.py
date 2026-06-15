@@ -52,15 +52,18 @@ def test_components_filter_tab_and_split_box_layout(page, ui_server, api):
     api.post(f"/docs/{doc_id}/finalize")
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
-    assert page.locator("table.data-table thead").inner_text().upper().find("TO MAKE") >= 0
+    # New flat board: columns are Product, Document, Type, For, Due, Ordered, Short, Status.
+    thead_text = page.locator("table.data-table thead").inner_text().upper()
+    assert "PRODUCT" in thead_text, f"'Product' column missing from thead: {thead_text}"
+    assert "STATUS" in thead_text, f"'Status' column missing from thead: {thead_text}"
     assert "PL-MRING" in page.locator("#mfg-table").inner_text()
     # No category-tabs on the restructured page; it is now two separate pages.
     assert page.locator(".category-tabs").count() == 0, "category-tabs should be gone after restructure"
     # Bulk-action bar and select-all are present on the Demand Planning page.
     assert page.locator("#dp-bulkbar").count() == 1, "#dp-bulkbar not found on /manufacturing"
     assert page.locator("#dp-select-all").count() == 1, "#dp-select-all header checkbox not found"
-    # Search narrows the board by item / SKU.
-    box = page.get_by_placeholder("Search item / SKU...")
+    # Search narrows the board by product / SKU (new placeholder text).
+    box = page.get_by_placeholder("Search product / document...")
     box.fill("PL-MRING")
     page.wait_for_selector("#mfg-table:has-text('PL-MRING')", timeout=8000)
     box.fill("NO-SUCH-ITEM-123")
