@@ -21,8 +21,6 @@
     "celerp-accounting",
     "celerp-reports",
     "celerp-dashboard",
-    "celerp-backup",
-    "celerp-verticals",
-    "celerp-ai"
+    "celerp-verticals"
   ]
 }

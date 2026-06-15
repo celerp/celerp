@@ -4,9 +4,7 @@
   "license": "MIT",
   "categories": [],
   "modules": [
-    "celerp-verticals",
-    "celerp-ai",
-    "celerp-backup"
+    "celerp-verticals"
   ],
   "company_settings": {}
 }

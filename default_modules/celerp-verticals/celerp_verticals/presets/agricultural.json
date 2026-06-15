@@ -20,9 +20,7 @@
     "celerp-accounting",
     "celerp-reports",
     "celerp-dashboard",
-    "celerp-backup",
     "celerp-labels",
-    "celerp-verticals",
-    "celerp-ai"
+    "celerp-verticals"
   ]
 }
