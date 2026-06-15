@@ -1,7 +1,7 @@
 {
   "name": "blank",
   "display_name": "No modules - build your own stack",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [],
   "modules": [
     "celerp-verticals",

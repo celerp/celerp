@@ -1,7 +1,7 @@
 {
   "name": "artwork",
   "display_name": "Artwork",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "painting",
     "sculpture",

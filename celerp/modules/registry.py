@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Module registry — enabled/disabled state.
 
 Enabled modules are persisted in company.settings["enabled_modules"] as a list

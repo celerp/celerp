@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """API tests: the product-centric To-Make board aggregates open demand BY PRODUCT across all
 open demand documents (invoices/pro formas/lists). Runs are NOT auto-created from documents.
 Also covers the JIT components-summary endpoint (incl. finished_goods).

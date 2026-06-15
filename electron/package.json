@@ -4,7 +4,7 @@
   "description": "Free business software \u2014 inventory, invoicing, and operations in one place.",
   "main": "main.js",
   "author": "Data Universal Limited",
-  "license": "BSL-1.1",
+  "license": "BUSL-1.1",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "start": "electron .",

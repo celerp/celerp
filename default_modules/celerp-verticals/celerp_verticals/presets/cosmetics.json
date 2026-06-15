@@ -1,7 +1,7 @@
 {
   "name": "cosmetics",
   "display_name": "Cosmetics & Beauty",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "skincare",
     "makeup",

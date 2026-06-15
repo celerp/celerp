@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Integration tests for monetary precision - verifies that the full computation
 chain (create doc → store → pay) produces correctly rounded values at every step."""
 import pytest

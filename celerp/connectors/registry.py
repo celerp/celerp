@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """
 Connector registry — maps connector name → singleton instance.
 Import connectors here; add new ones in one line.

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
 """Add system_runtime_state table
 
 Revision ID: q2r3s4t5u6v7

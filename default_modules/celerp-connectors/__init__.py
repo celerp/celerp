@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """celerp-connectors — External platform sync connectors for Celerp.
 
 Cloud-gated via X-Session-Token (Celerp Cloud subscription required).
@@ -25,7 +25,7 @@ PLUGIN_MANIFEST = {
         "Sync products, orders, and contacts from Shopify, QuickBooks, Xero, "
         "Lazada, and Shopee. Requires Celerp Cloud subscription."
     ),
-    "license": "MIT",
+    "license": "LicenseRef-Proprietary",
     "author": "Celerp",
 
     # ── Routes ────────────────────────────────────────────────────────────────

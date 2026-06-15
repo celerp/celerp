@@ -1,7 +1,7 @@
 {
   "name": "furniture",
   "display_name": "Furniture & Home",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "seating",
     "table_desk",

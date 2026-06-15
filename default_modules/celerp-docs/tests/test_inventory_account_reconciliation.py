@@ -1,5 +1,5 @@
-# Copyright (c) 2026 Noah Severs. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
 """Inventory-account reconciliation: COGS relieves the SAME account goods are capitalised into
 (1130-P), not the orphan 1300. A buy->sell round-trip nets the inventory account to the unsold value."""
 from __future__ import annotations

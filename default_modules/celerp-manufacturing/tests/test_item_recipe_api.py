@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """API tests for PUT /manufacturing/items/{id}/recipe."""
 from __future__ import annotations
 

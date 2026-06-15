@@ -1,7 +1,7 @@
 {
   "name": "gemstones",
   "display_name": "Gems & Jewelry",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "diamond",
     "ruby",

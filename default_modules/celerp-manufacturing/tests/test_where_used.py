@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Pure unit tests for the where_used implosion (mark-to-market dependency lookup)."""
 from __future__ import annotations
 

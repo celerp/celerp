@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Landed-cost allocation (P3): spread a bill's capitalisable charges (freight/insurance/duty +
 non-recoverable import VAT) across its stocked goods lines by value, returning a per-unit landed cost
 per (line, kind). Per-unit results scale naturally as quantity is received. Pure and deterministic.

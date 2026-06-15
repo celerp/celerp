@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -546,7 +546,7 @@ async def get_doc_pdf(
 ):
     """Return a PDF of the document with 'Powered by Celerp' footer branding."""
     from fastapi.responses import Response as _Resp
-    from celerp_docs.pdf import generate_document_pdf
+    from celerp.output.pdf import generate_document_pdf
 
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"entity_id": row.entity_id}

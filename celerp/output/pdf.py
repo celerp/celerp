@@ -1,5 +1,5 @@
-# Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """
 PDF generation for Celerp documents.
 

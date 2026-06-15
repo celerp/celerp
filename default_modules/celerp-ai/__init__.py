@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """celerp-ai — AI query module for Celerp.
 
 Cloud-gated: requires active Celerp Cloud+AI subscription (X-Session-Token).
@@ -10,7 +10,7 @@ PLUGIN_MANIFEST = {
     "version": "1.0.0",
     "display_name": "AI Assistant",
     "description": "Natural language queries against ERP data. Requires Cloud+AI subscription.",
-    "license": "BSL-1.1",
+    "license": "LicenseRef-Proprietary",
     "author": "Celerp",
     "api_routes": "celerp_ai.setup",
     "ui_routes": "celerp_ai.ui_routes",

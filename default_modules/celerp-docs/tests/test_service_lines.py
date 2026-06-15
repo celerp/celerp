@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Service items on documents: a service (inventory_type=service) has no stock, so fulfilling a
 document line that references it must not be blocked by a stock-availability check."""
 from __future__ import annotations

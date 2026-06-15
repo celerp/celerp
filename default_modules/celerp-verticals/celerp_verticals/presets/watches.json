@@ -1,7 +1,7 @@
 {
   "name": "watches",
   "display_name": "Watches & Accessories",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "watch",
     "watch_strap",

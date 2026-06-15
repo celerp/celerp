@@ -1,7 +1,7 @@
 {
   "name": "food_beverage",
   "display_name": "Food & Beverage",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "packaged_food",
     "beverage_nonalc",

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 from celerp.models.accounting import UserCompany  # noqa: F401 - ensure tables registered
 from celerp.models.auth import SessionRegistry, SystemRuntimeState, UserAuthState  # noqa: F401 - ensure tables registered

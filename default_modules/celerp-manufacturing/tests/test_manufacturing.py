@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Production-run execution: build -> issue components -> receive finished goods.
 
 Covers the headline P3 correctness rule — completion restocks the *real* product (keyed on

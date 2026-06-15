@@ -1,7 +1,7 @@
 {
   "name": "property_rental",
   "display_name": "Property Rental",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "residential_unit",
     "commercial_space",

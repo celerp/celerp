@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """API tests for recipe cost: auto-applied cost_price + mark-to-market re-cost of dependents.
 
 The recipe rolls on every save and the rolled unit cost is applied to cost_price automatically

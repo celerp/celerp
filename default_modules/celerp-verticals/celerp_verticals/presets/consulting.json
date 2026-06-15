@@ -1,7 +1,7 @@
 {
   "name": "consulting",
   "display_name": "Consulting",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "consulting_service"
   ],

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """The internal Production Order document type (invoice-to-self demand).
 
 The single most important correctness requirement: a production order is NOT a sale, so it must be

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Gateway session-token state - internal only.
 
 This module is in _PROTECTED_BSL_INTERNALS. Third-party modules MUST NOT import it.

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Data Universal Limited
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Currency data and combobox widget - single source of truth for all currency UI."""
 
 from __future__ import annotations

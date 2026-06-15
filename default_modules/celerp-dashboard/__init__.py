@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """celerp-dashboard — Dashboard KPI module for Celerp."""
 
 PLUGIN_MANIFEST = {
@@ -7,7 +7,7 @@ PLUGIN_MANIFEST = {
     "version": "1.0.0",
     "display_name": "Dashboard",
     "description": "KPI overview: inventory value, AR, document counts, and recent activity.",
-    "license": "BSL-1.1",
+    "license": "MIT",
     "author": "Celerp",
     "api_routes": "celerp_dashboard.setup",
     "ui_routes": None,

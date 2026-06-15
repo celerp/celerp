@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Proof the standalone BOM entity is removed but the ledger stays replayable (no back-compat)."""
 from __future__ import annotations
 

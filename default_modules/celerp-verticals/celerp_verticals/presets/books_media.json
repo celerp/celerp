@@ -1,7 +1,7 @@
 {
   "name": "books_media",
   "display_name": "Books & Media",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "book",
     "music_vinyl",

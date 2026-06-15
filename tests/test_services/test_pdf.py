@@ -15,7 +15,7 @@ os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
 
 def _pdf(doc: dict, company: dict | None = None) -> bytes:
-    from celerp_docs.pdf import generate_document_pdf
+    from celerp.output.pdf import generate_document_pdf
     return generate_document_pdf(doc, company)
 
 

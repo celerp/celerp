@@ -1,5 +1,5 @@
-# Copyright (c) 2026 Noah Severs. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
 """A freight charge line (inventory_type=freight) behaves like a service line on a document: it has no
 stock, so fulfilling a document that references it must not be blocked by a stock check."""
 from __future__ import annotations

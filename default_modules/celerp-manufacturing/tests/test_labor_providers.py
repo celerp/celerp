@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Pure tests for the auto-labor provider seam (v1 ships the hook, no providers)."""
 from __future__ import annotations
 

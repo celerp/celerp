@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """API tests for POST /manufacturing/items/{id}/build (the repurposed new-order flow)."""
 from __future__ import annotations
 

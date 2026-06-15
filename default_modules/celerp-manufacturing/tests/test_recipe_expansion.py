@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Pure unit tests for recipe expansion (order inputs/outputs + JIT demand explosion)."""
 from __future__ import annotations
 

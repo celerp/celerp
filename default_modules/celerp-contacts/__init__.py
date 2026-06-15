@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """celerp-contacts — Contact management module for Celerp.
 
 Provides:
@@ -13,7 +13,7 @@ PLUGIN_MANIFEST = {
     "version": "1.0.0",
     "display_name": "Contacts",
     "description": "Contact management, memos, notes, tags, import/export.",
-    "license": "BSL-1.1",
+    "license": "MIT",
     "author": "Celerp",
     "api_routes": "celerp_contacts.routes",
     "ui_routes": "celerp_contacts.ui_routes",

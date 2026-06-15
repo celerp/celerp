@@ -1,7 +1,7 @@
 {
   "name": "saas",
   "display_name": "SaaS / Software",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "saas_plan",
     "software_addon",

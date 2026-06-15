@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Celerp CLI — init, start, migrate, status, demo, upgrade."""
 
 from __future__ import annotations

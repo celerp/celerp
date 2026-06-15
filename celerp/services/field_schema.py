@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Kernel service: effective item field schema resolution.
 
 Extracted from routers/companies.py so celerp-inventory module can import

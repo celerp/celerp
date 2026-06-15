@@ -70,7 +70,7 @@ async def _list_entity(client, tok) -> str:
 
 def test_share_fmt_money_and_esc():
     """_fmt_money ValueError returns '--'; _esc None returns '' (lines 303-304, 309)."""
-    from celerp_docs.routes_share import _fmt_money, _esc
+    from celerp.output.share_render import _fmt_money, _esc
 
     assert _fmt_money("not-a-number") == "--"
     assert _fmt_money(None) == "--"

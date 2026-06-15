@@ -1,12 +1,12 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 PLUGIN_MANIFEST = {
     "name": "celerp-subscriptions",
     "version": "2.0.0",
     "display_name": "Subscriptions",
     "description": "Recurring invoice and purchase order templates with automatic generation.",
-    "license": "BSL-1.1",
+    "license": "MIT",
     "author": "Celerp",
     "api_routes": "celerp_subscriptions.routes",
     "ui_routes": "celerp_subscriptions.ui_routes",

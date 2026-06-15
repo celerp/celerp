@@ -1,7 +1,7 @@
 {
   "name": "agricultural",
   "display_name": "Agricultural",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "fresh_produce",
     "grain_cereal",

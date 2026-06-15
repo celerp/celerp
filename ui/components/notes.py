@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Shared notes tab component.
 
 Used by both contacts (entity_type="contact") and documents/lists

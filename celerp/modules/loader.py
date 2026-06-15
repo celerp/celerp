@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Module loader — scans DATA_DIR/modules/, imports enabled modules,
 registers slots, wires API and UI routes.
 

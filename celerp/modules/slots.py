@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Slot registry for the Celerp module system.
 
 Slots are named extension points in core UI and API that modules can fill.

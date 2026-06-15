@@ -1,5 +1,5 @@
-# Copyright (c) 2026 Noah Severs. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
 """Bill posting (P2): landed-cost charge lines route to their clearing accounts (freight/insurance/
 duty -> 1130-FRT/INS/DTY, non-recoverable import VAT -> 1130-IVT, recoverable import VAT -> 1150);
 doc-level shipping debits freight clearing so the JE balances. See freight-tracking-plan."""

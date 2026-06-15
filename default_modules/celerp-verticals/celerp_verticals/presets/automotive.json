@@ -1,7 +1,7 @@
 {
   "name": "automotive",
   "display_name": "Automotive Parts",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "engine_part",
     "brake_suspension",

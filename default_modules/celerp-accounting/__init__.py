@@ -1,12 +1,12 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 PLUGIN_MANIFEST = {
     "name": "celerp-accounting",
     "version": "1.0.0",
     "display_name": "Accounting",
     "description": "Chart of accounts, journal entries, and financial reporting.",
-    "license": "BSL-1.1",
+    "license": "MIT",
     "author": "Celerp",
     "depends_on": ["celerp-docs"],
     "api_routes": "celerp_accounting.api_setup",

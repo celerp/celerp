@@ -1,5 +1,5 @@
-# Copyright (c) 2026 Noah Severs. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
 """Inbound goods-recognition lifecycle: a bill recognises goods + AP exactly once (at finalize), and
 receiving it only capitalises landed cost (Dr 1130-P / Cr clearing) - no double-posting. A purchase
 order still recognises at receipt. COGS then relieves the same 1130-P the goods landed in."""

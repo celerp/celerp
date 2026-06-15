@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Sync runner - wraps connector sync calls with audit trail recording."""
 from __future__ import annotations
 

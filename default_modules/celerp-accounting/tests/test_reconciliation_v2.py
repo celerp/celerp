@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Tests for Phase 9 reconciliation: CSV parser, matcher, API endpoints, rules."""
 
 from __future__ import annotations

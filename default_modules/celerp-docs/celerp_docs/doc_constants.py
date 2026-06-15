@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """Shared constants for the docs module."""
 
 # Per-doc-type allowlist: maps doc_type → set of statuses where fulfill-lines is permitted.

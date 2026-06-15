@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Pure projection tests for the item.recipe.set event (full-replace semantics)."""
 from __future__ import annotations
 

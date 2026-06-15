@@ -1,5 +1,5 @@
-# Copyright (c) 2026 Noah Severs. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
 """Landed cost on receipt (P3): receiving a bill's goods creates parcels whose cost includes the
 allocated freight/duty (by value, prorated per received quantity). See freight-tracking-plan."""
 from __future__ import annotations

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Inventory audit via scanner: location-bound list_type=audit, uniform scan rule (a scan always
 audits, adding the line if new), optional re-count, then a reversible stock adjustment that posts a
 shrinkage/overage JE. See context/2026-0614-inventory-audit-scanner-plan.md."""

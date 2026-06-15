@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Work Centers (relational CRUD, like locations) and Manufacturing settings effects.
 
 Settings live under company.settings["manufacturing"]: hours_per_day feeds the To-Make est-hours

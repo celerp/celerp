@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """celerp-inventory module: item management, field schemas, location tracking, bulk operations."""
 
 PLUGIN_MANIFEST = {
@@ -7,7 +7,7 @@ PLUGIN_MANIFEST = {
     "version": "1.0.0",
     "display_name": "Inventory",
     "description": "Item management, field schemas, location tracking, bulk operations.",
-    "license": "BSL-1.1",
+    "license": "MIT",
     "author": "Celerp",
     "api_routes": "celerp_inventory.routes",
     "ui_routes": "celerp_inventory.ui_routes",

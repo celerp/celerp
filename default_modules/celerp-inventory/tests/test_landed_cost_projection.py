@@ -1,5 +1,5 @@
-# Copyright (c) 2026 Noah Severs. All rights reserved.
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: MIT
 """Pure projection tests for the cost_base/cost_landed split (P3): cost_total = cost_base + landed,
 landed stored per-unit and re-derivable, a manual cost edit re-adds freight on top of the new base."""
 from __future__ import annotations

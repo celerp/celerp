@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Validation guards on the production-run execution endpoints (issue / receive / complete)."""
 from __future__ import annotations
 
