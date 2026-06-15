@@ -76,6 +76,15 @@ class ItemQuantityAdjusted(BaseModel):
     prior_qty: float | None = None
 
 
+class ItemLandedCostApplied(BaseModel):
+    # Absolute per-unit landed cost for one (source bill, kind); overwrite-safe so re-running the
+    # allocation with changed freight self-corrects. unit_amount=0 clears the contribution.
+    source_bill_id: str
+    kind: str                       # freight | insurance | duty | import_vat
+    unit_amount: float
+    currency_rate: float | None = None   # bill conversion rate used (reproducibility)
+
+
 class ItemFulfilled(BaseModel):
     source_doc_id: str
     quantity_fulfilled: float
@@ -825,6 +834,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.status.set": ItemStatusSet,
     "item.transferred": ItemTransferred,
     "item.quantity.adjusted": ItemQuantityAdjusted,
+    "item.landed_cost.applied": ItemLandedCostApplied,
     "item.fulfilled": ItemFulfilled,
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,

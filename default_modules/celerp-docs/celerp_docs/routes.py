@@ -23,6 +23,7 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator
@@ -1704,6 +1705,13 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         for li in (row.state.get("line_items") or [])
         if li.get("sku")
     }
+    # Landed-cost allocation: spread this bill's freight/duty/insurance/non-recoverable-VAT charges
+    # across its stocked goods lines (by value). Received parcels carry their per-unit share so each
+    # item's cost reflects landed cost; per-unit storage prorates naturally to the received quantity.
+    bill_alloc: dict[str, dict[str, float]] = {}
+    if doc_type == "bill":
+        bill_alloc = await compute_bill_landed_allocation(session, company_id, row.state)
+
     for it in payload.received_items:
         sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
@@ -1787,6 +1795,11 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 # Emit cost_total when quantity is known (cost_total is the primitive)
                 _recv_qty = float(it.quantity_received) * conversion
                 item_data["cost_total"] = it.cost_price * _recv_qty if _recv_qty else it.cost_price
+            # Attach the per-unit landed cost allocated to this goods line: the projection derives
+            # cost_total = cost_base + Σ(unit × quantity), so the parcel carries its landed share.
+            _landed = bill_alloc.get(_sku.strip(), {})
+            if _landed:
+                item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
             if is_consignment:
                 item_data["consignment_flag"] = "in"
             new_eid = f"item:{uuid.uuid4()}"
