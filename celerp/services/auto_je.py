@@ -247,6 +247,49 @@ async def create_for_po_received(
     )
 
 
+# Landed-cost clearing accounts: capitalisable import charges park here at bill posting and
+# capitalise into inventory on receipt (P3). Recoverable import VAT goes to 1150 instead (not a cost).
+_LANDED_CLEARING_ACCT: dict[str, str] = {
+    "freight": "1130-FRT",
+    "insurance": "1130-INS",
+    "duty": "1130-DTY",
+    "import_vat": "1130-IVT",
+}
+
+
+async def landed_account_for_line(session, company_id, li: dict) -> str | None:
+    """Return the clearing/receivable account for a landed-cost bill line, or None if not one.
+
+    A line is a landed-cost component if it carries landed_cost_kind, or references a
+    freight-typed item. Recoverable import VAT routes to 1150 (input VAT receivable, not capitalised);
+    every other capitalisable kind routes to its clearing account.
+    """
+    kind = li.get("landed_cost_kind")
+    recoverable = li.get("recoverable")
+    if not kind:
+        item_id = li.get("item_id") or li.get("entity_id")
+        if not item_id:
+            return None
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": str(item_id)})
+        if not proj or (proj.state.get("inventory_type") or "stocked") != "freight":
+            return None
+        kind = proj.state.get("landed_cost_kind") or "freight"
+        if recoverable is None:
+            recoverable = proj.state.get("recoverable")
+    if kind not in _LANDED_CLEARING_ACCT:
+        return None
+    if kind == "import_vat":
+        # Fall back to the company default when recoverability is unspecified (worldwide: a company in a
+        # recoverable-VAT jurisdiction sets import_vat_recoverable_default=True).
+        if recoverable is None:
+            from celerp.models.company import Company
+            company = await session.get(Company, company_id)
+            recoverable = bool((company.settings or {}).get("import_vat_recoverable_default")) if company else False
+        if recoverable:
+            return "1150"
+    return _LANDED_CLEARING_ACCT[kind]
+
+
 async def create_for_bill_conversion(
     session,
     *,
@@ -284,17 +327,27 @@ async def create_for_bill_conversion(
             tax_total_d += line_tax_d
             # receive_as overrides SKU-based account selection for bills.
             receive_as = (li.get("receive_as") or "").strip().lower()
+            landed_acct = await landed_account_for_line(session, company_id, li)
             if li.get("account_code"):
                 account = li["account_code"]
             elif receive_as == "expense":
                 account = "6950"
             elif receive_as == "asset":
                 account = "1210"
+            elif landed_acct:
+                # Landed-cost charge (freight/insurance/duty/import_vat): clearing or 1150.
+                account = landed_acct
             else:
                 account = "1130-P" if li.get("sku") else "6950"
             debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
         if tax_total_d > 0:
             debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
+
+    # Doc-level shipping on a bill is inbound freight: debit the freight clearing account so the JE
+    # balances (this closes the legacy gap where shipping inflated the AP credit with no debit).
+    shipping_d = round_money(doc.get("shipping", 0) or 0, currency)
+    if shipping_d > 0:
+        debit_entries.append({"account": "1130-FRT", "debit": _to_base(to_stored_float(shipping_d), rate, base_currency), "credit": 0.0})
 
     base_total = _to_base(total, rate, base_currency)
     if not debit_entries:
