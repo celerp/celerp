@@ -17,6 +17,12 @@ follows:
   the recommended starting point: fork one, rename it (see `TRADEMARK.md`), and license your derivative
   however you wish.
 
+**How CLA acceptance works.** Contributions to official Celerp repositories require CLA acceptance before
+merge. Opening a pull request does not by itself complete the CLA. When prompted by the CLA bot on your
+pull request, post the exact acceptance phrase from your authenticated GitHub account; that one-time
+acceptance is recorded against the current `CLA.md` version. The bot blocks merge until acceptance is
+recorded.
+
 Trademarks are not licensed by any code license; see `TRADEMARK.md`.
 
 ## Environment variables

@@ -1,5 +1,8 @@
 # Celerp Contributor License Agreement
 
+**CLA version: 1.0** (acceptance is recorded against this version and the agreement's content hash by the
+Celerp CLA workflow; a material change to this document increments the version and requires re-acceptance.)
+
 This Contributor License Agreement ("Agreement") applies to any Contribution You submit for inclusion in
 any official Celerp repository, package, module, documentation, website, or related project, including
 components licensed under BUSL-1.1, MIT, the Celerp Proprietary License, or any future Celerp license.
@@ -11,7 +14,9 @@ otherwise (those may be contributed under a Developer Certificate of Origin sign
 including source code, documentation, tests, configuration, UI assets, comments, patches, pull requests,
 and issue content intended for inclusion, and any modifications thereto.
 
-By signing this Agreement and submitting a Contribution, You agree to the following.
+By electronically accepting this Agreement through the Celerp CLA workflow and submitting a Contribution,
+You agree to the following. A pull request, issue, patch, or other submission is not accepted for inclusion
+in an official Celerp project unless the required CLA acceptance has been completed.
 
 ## 1. Copyright license grant
 You grant the Licensor a perpetual, worldwide, non-exclusive, no-charge, royalty-free, irrevocable
@@ -61,4 +66,5 @@ to give effect to the grants in this Agreement.
 You are not expected to provide support for your Contributions, and your Contributions are provided "as
 is" without warranties, except as required by applicable law.
 
-To sign: contact https://celerp.com or follow the signing instructions in the relevant pull request.
+To accept this Agreement, follow the CLA workflow linked from the relevant pull request or contribution
+page. Celerp may decline, close, or not merge any Contribution until the required CLA acceptance is complete.
