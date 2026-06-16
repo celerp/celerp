@@ -515,6 +515,19 @@ a:hover { text-decoration: underline; }
 .wf-thumb { display: inline-flex; border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
 .wf-thumb--active { border-color: var(--c-accent, #2563eb); }
 .wf-thumb-img { height: 48px; width: auto; display: block; object-fit: cover; }
+/* Production workflow table: drag-to-reorder rows, canonical-minutes time, ref-image drop. */
+.wf-table { width: 100%; }
+.wf-table th.wf-col-drag, .wf-table td.wf-col-drag { width: 24px; text-align: center; padding-left: 4px; padding-right: 4px; }
+.wf-table th.wf-num, .wf-table td.wf-num { width: 32px; text-align: right; color: var(--c-text2); font-variant-numeric: tabular-nums; }
+.wf-drag { cursor: grab; color: var(--c-text2); user-select: none; font-size: 1.1em; line-height: 1; }
+.wf-drag:active { cursor: grabbing; }
+.wf-row.wf-dragging { opacity: 0.4; }
+.wf-row.wf-drag-over td { border-top: 2px solid var(--c-accent, #2563eb); }
+.wf-ref-drop { min-width: 96px; }
+.wf-ref-drop.wf-ref-active { outline: 2px dashed var(--c-accent, #2563eb); outline-offset: -2px; }
+.wf-ref-hint { color: var(--c-text2); font-size: 12px; font-style: italic; cursor: default; }
+.wf-ref-img { height: 40px; width: auto; border-radius: 3px; vertical-align: middle; }
+.wf-summary { font-size: 13px; color: var(--c-text2); font-variant-numeric: tabular-nums; }
 .data-table thead th.cell--number { text-align: right; }
 /* Section header: title on the left, running section total right-aligned. */
 .recipe-section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }

@@ -24,6 +24,7 @@ from ui.components.shell import base_shell, page_header
 from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.events.schemas import _WORKFLOW_TIME_UNITS
 from ui.i18n import t, get_lang
 from celerp.services.units import is_weight_unit, is_pieces_unit
 
@@ -1575,6 +1576,98 @@ function celerpPrintLabel(entityId, templateId) {
         value = rows_[idx].get(field, "") if 0 <= idx < len(rows_) else ""
         return _recipe_cell(entity_id, section, idx, field, value)
 
+    # ── Production workflow (ordered build steps) ────────────────────────────
+    async def _workflow_section_response(token: str, entity_id: str):
+        item = await api.get_item(token, entity_id)
+        return _workflow_section(entity_id, item)
+
+    @app.get("/api/items/{entity_id}/workflow-section")
+    async def workflow_section(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            return await _workflow_section_response(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="workflow-section")
+
+    @app.post("/api/items/{entity_id}/workflow-section")
+    async def workflow_section_edit(request: Request, entity_id: str):
+        """Structural workflow change (add / remove / reorder / set or upload a step reference)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        action = request.query_params.get("action", "")
+        form = await request.form()
+        try:
+            index = int(request.query_params.get("index", "-1"))
+        except ValueError:
+            index = -1
+        try:
+            item = await api.get_item(token, entity_id)
+            steps = list((item.get("workflow") or {}).get("steps") or [])
+            if action == "add":
+                steps.append({"name": "", "instructions": "", "station": "",
+                              "time_value": 0, "time_unit": "min", "wait": False})
+            elif action == "remove" and 0 <= index < len(steps):
+                steps.pop(index)
+            elif action == "reorder":
+                order = [s for s in str(form.get("order", "")).split(",") if s]
+                by_id = {s.get("id"): s for s in steps}
+                seen = set(order)
+                steps = [by_id[i] for i in order if i in by_id] + [s for s in steps if s.get("id") not in seen]
+            elif action == "clear_ref" and 0 <= index < len(steps):
+                steps[index]["ref_file_id"] = None
+            elif action == "upload_ref" and 0 <= index < len(steps):
+                up = form.get("file")
+                if up is not None:
+                    meta = await api.upload_item_file(token, entity_id, up)
+                    steps[index]["ref_file_id"] = meta.get("file_id") or meta.get("id")
+            await api.set_item_workflow(token, entity_id, {"steps": steps})
+            return await _workflow_section_response(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="workflow-section")
+
+    @app.get("/api/items/{entity_id}/workflow-cell/{idx}/{field}/edit")
+    async def workflow_cell_edit(request: Request, entity_id: str, idx: int, field: str):
+        from ui.components.table import editable_cell
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        cell_type = _WORKFLOW_CELLS.get(field)
+        if cell_type is None:
+            return P("Unknown workflow field", cls="cell-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(e.detail, cls="cell-error")
+        steps = (item.get("workflow") or {}).get("steps") or []
+        value = steps[idx].get(field, "") if 0 <= idx < len(steps) else ""
+        return editable_cell(
+            entity_id=entity_id, field=f"workflow__{idx}__{field}", value=value, cell_type=cell_type,
+            options=list(_WORKFLOW_TIME_UNITS) if field == "time_unit" else None,
+            restore_url=f"/api/items/{entity_id}/workflow-cell/{idx}/{field}/display",
+        )
+
+    @app.get("/api/items/{entity_id}/workflow-cell/{idx}/{field}/display")
+    async def workflow_cell_display(request: Request, entity_id: str, idx: int, field: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if _WORKFLOW_CELLS.get(field) is None:
+            return P("Unknown workflow field", cls="cell-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(e.detail, cls="cell-error")
+        steps = (item.get("workflow") or {}).get("steps") or []
+        value = steps[idx].get(field, "") if 0 <= idx < len(steps) else ""
+        return _workflow_cell(entity_id, idx, field, value)
+
     @app.get("/api/items/{entity_id}/field/{field}/edit")
     async def field_edit_cell(request: Request, entity_id: str, field: str):
         token = _token(request)
@@ -1727,6 +1820,54 @@ function celerpPrintLabel(entityId, templateId) {
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         value: str | float | bool = str(form.get("value", ""))
+
+        # Workflow cells (field = workflow__{idx}__{name}): patch one value on the persisted
+        # workflow, then return the display cell + section refresh (workflowSaved). `wait` is a
+        # boolean checkbox (no display cell to swap), so it just fires the refresh.
+        if field.startswith("workflow__"):
+            from ui.components.table import editable_cell
+            try:
+                _, idx_s, fname = field.split("__", 2)
+                idx = int(idx_s)
+            except ValueError:
+                return P("Bad workflow field", cls="cell-error")
+            restore_url = f"/api/items/{entity_id}/workflow-cell/{idx}/{fname}/display"
+            is_wait = fname == "wait"
+            cell_type = "bool" if is_wait else _WORKFLOW_CELLS.get(fname)
+            if cell_type is None:
+                return P("Unknown workflow field", cls="cell-error")
+            if is_wait:
+                value = str(form.get("value", "")).lower() in ("true", "1", "yes", "on")
+            elif cell_type == "number":
+                try:
+                    value = float(str(value) or 0)
+                except (ValueError, TypeError):
+                    edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
+                                            cell_type="number", restore_url=restore_url)
+                    edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                    return edit_td
+            try:
+                item = await api.get_item(token, entity_id)
+                steps = list((item.get("workflow") or {}).get("steps") or [])
+                if not (0 <= idx < len(steps)):
+                    return P("Step no longer exists. Reload the tab.", cls="cell-error")
+                steps[idx][fname] = value
+                await api.set_item_workflow(token, entity_id, {"steps": steps})
+                if is_wait:
+                    return "", HttpHeader("HX-Trigger", "workflowSaved")
+                item = await api.get_item(token, entity_id)
+                fresh = (item.get("workflow") or {}).get("steps") or []
+                new_val = fresh[idx].get(fname, "") if 0 <= idx < len(fresh) else ""
+                return _workflow_cell(entity_id, idx, fname, new_val), HttpHeader("HX-Trigger", "workflowSaved")
+            except APIError as e:
+                if e.status == 401:
+                    return P(t("error.unauthorized"), cls="cell-error")
+                edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
+                                        cell_type=_WORKFLOW_CELLS.get(fname, "text"), restore_url=restore_url,
+                                        options=list(_WORKFLOW_TIME_UNITS) if fname == "time_unit" else None)
+                edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                edit_td.attrs["title"] = f"Not saved: {e.detail}"
+                return edit_td
 
         # Recipe cells (field = recipe__{section}__{idx}__{name}): patch one value on the
         # persisted recipe, then return the display cell + cost card refresh (out-of-band).
@@ -5044,6 +5185,174 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
     )
 
 
+# Editable workflow-step fields and their system-standard cell types (double-click to edit).
+# `wait` is a direct checkbox (boolean toggle), handled separately — not a click-to-edit cell.
+_WORKFLOW_CELLS: dict[str, str] = {
+    "name": "text", "instructions": "text", "station": "text",
+    "time_value": "number", "time_unit": "select",
+}
+
+
+def _fmt_minutes(mins) -> str:
+    """Human elapsed time from canonical minutes: '90 min' -> '1 h 30 min', exact days/hours kept."""
+    m = int(round(float(mins or 0)))
+    if m <= 0:
+        return "0 min"
+    if m % 1440 == 0:
+        return f"{m // 1440} d"
+    if m % 60 == 0:
+        return f"{m // 60} h"
+    if m >= 60:
+        h, mm = divmod(m, 60)
+        return f"{h} h {mm} min"
+    return f"{m} min"
+
+
+def _workflow_cell(entity_id: str, idx: int, field: str, value) -> FT:
+    """One double-click-to-edit workflow cell (mirrors _recipe_cell: same display_cell engine,
+    so editing behaves identically to the rest of the system)."""
+    from ui.components.table import display_cell
+    return display_cell(
+        entity_id=entity_id,
+        field=f"workflow__{idx}__{field}",
+        value=value,
+        cell_type=_WORKFLOW_CELLS[field],
+        options=list(_WORKFLOW_TIME_UNITS) if field == "time_unit" else None,
+        edit_url=f"/api/items/{entity_id}/workflow-cell/{idx}/{field}/edit",
+    )
+
+
+WORKFLOW_JS = """
+(function(){
+ function init(){
+  var sec=document.getElementById('workflow-section');
+  if(!sec||sec._wfInit) return; sec._wfInit=true;
+  var base=sec.getAttribute('data-base');
+  // outerHTML swaps do not re-run inline scripts, so re-init the fresh section after a reload.
+  function reload(html){ sec.outerHTML=html; var ns=document.getElementById('workflow-section'); if(ns&&window.htmx) htmx.process(ns); init(); }
+  var dragId=null;
+  sec.querySelectorAll('.wf-drag').forEach(function(h){
+    h.addEventListener('dragstart',function(e){ var tr=h.closest('tr'); dragId=tr.getAttribute('data-step-id'); tr.classList.add('wf-dragging'); e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',dragId); });
+    h.addEventListener('dragend',function(){ var tr=h.closest('tr'); if(tr) tr.classList.remove('wf-dragging'); });
+  });
+  sec.querySelectorAll('tr.wf-row').forEach(function(tr){
+    tr.addEventListener('dragover',function(e){ if(dragId){ e.preventDefault(); tr.classList.add('wf-drag-over'); } });
+    tr.addEventListener('dragleave',function(){ tr.classList.remove('wf-drag-over'); });
+    tr.addEventListener('drop',function(e){
+      tr.classList.remove('wf-drag-over');
+      if(e.dataTransfer.files&&e.dataTransfer.files.length) return;  // file drops handled by the ref cell
+      if(!dragId) return; e.preventDefault();
+      var rows=Array.prototype.slice.call(sec.querySelectorAll('tr.wf-row'));
+      var ids=rows.map(function(r){return r.getAttribute('data-step-id');});
+      var from=ids.indexOf(dragId), to=ids.indexOf(tr.getAttribute('data-step-id'));
+      if(from<0||to<0||from===to){ dragId=null; return; }
+      ids.splice(to,0,ids.splice(from,1)[0]); dragId=null;
+      var fd=new FormData(); fd.append('order',ids.join(','));
+      fetch(base+'?action=reorder',{method:'POST',headers:{'HX-Request':'true'},body:fd}).then(function(r){return r.text();}).then(reload);
+    });
+  });
+  sec.querySelectorAll('.wf-ref-drop').forEach(function(cell){
+    cell.addEventListener('dragover',function(e){ if(e.dataTransfer.types&&Array.prototype.indexOf.call(e.dataTransfer.types,'Files')>=0){ e.preventDefault(); cell.classList.add('wf-ref-active'); } });
+    cell.addEventListener('dragleave',function(){ cell.classList.remove('wf-ref-active'); });
+    cell.addEventListener('drop',function(e){
+      if(!(e.dataTransfer.files&&e.dataTransfer.files.length)) return;
+      e.preventDefault(); e.stopPropagation(); cell.classList.remove('wf-ref-active');
+      var idx=cell.getAttribute('data-idx');
+      var fd=new FormData(); fd.append('file',e.dataTransfer.files[0]);
+      fetch(base+'?action=upload_ref&index='+idx,{method:'POST',headers:{'HX-Request':'true'},body:fd}).then(function(r){return r.text();}).then(reload);
+    });
+  });
+ }
+ init();
+})();
+"""
+
+
+def _workflow_section(entity_id: str, item: dict) -> FT:
+    """The Production workflow: an ordered, drag-to-reorder list of build steps. Cells are the
+    system-standard double-click-to-edit cells; the elapsed Time is canonical minutes (a number
+    plus a unit select), and Wait marks unattended steps that are kept out of the active-time
+    total. A reference image can be dropped onto a step's Reference cell.
+    """
+    steps = list((item.get("workflow") or {}).get("steps") or [])
+    files_by_id = {f.get("id"): f for f in (item.get("files") or [])}
+    base = f"/api/items/{entity_id}/workflow-section"
+    _struct = {"hx_post": base, "hx_target": "#workflow-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
+
+    active = sum(float(s.get("time_minutes") or 0) for s in steps if not s.get("wait"))
+    waitm = sum(float(s.get("time_minutes") or 0) for s in steps if s.get("wait"))
+    summary = f"Active time {_fmt_minutes(active)}"
+    if waitm:
+        summary += f"  ·  +{_fmt_minutes(waitm)} unattended"
+
+    def _ref_cell(idx: int, step: dict) -> FT:
+        ref = files_by_id.get(step.get("ref_file_id")) if step.get("ref_file_id") else None
+        if ref:
+            src = f"/items/{entity_id}/files/{ref['id']}/download"
+            inner = [
+                A(Img(src=src, alt=ref.get("filename", ""), cls="wf-ref-img", loading="lazy"),
+                  href=src, target="_blank", title=ref.get("filename", "")),
+                Button("×", type="button", title="Remove reference", cls="btn btn--xs btn--ghost",
+                       hx_post=f"{base}?action=clear_ref&index={idx}", **{k: v for k, v in _struct.items() if k != "hx_post"}),
+            ]
+        else:
+            inner = [Span("Drop image", cls="wf-ref-hint")]
+        return Td(*inner, cls="wf-ref-drop", **{"data-idx": str(idx)})
+
+    def _row(idx: int, step: dict) -> FT:
+        return Tr(
+            Td(Span("⠿", cls="wf-drag", draggable="true", title="Drag to reorder"), cls="wf-col-drag"),
+            Td(str(idx + 1), cls="wf-num"),
+            _workflow_cell(entity_id, idx, "name", step.get("name")),
+            _workflow_cell(entity_id, idx, "instructions", step.get("instructions")),
+            _workflow_cell(entity_id, idx, "station", step.get("station")),
+            _workflow_cell(entity_id, idx, "time_value", step.get("time_value")),
+            _workflow_cell(entity_id, idx, "time_unit", step.get("time_unit") or "min"),
+            Td(Input(type="checkbox", checked=bool(step.get("wait")),
+                     hx_patch=f"/api/items/{entity_id}/field/workflow__{idx}__wait",
+                     hx_vals="js:{value: event.target.checked}", hx_trigger="change", hx_swap="none",
+                     title="Unattended elapsed time (cooling, curing) — excluded from active time"),
+               cls="cell--center"),
+            _ref_cell(idx, step),
+            Td(Button("×", type="button", title="Remove step", cls="btn btn--xs btn--ghost",
+                      hx_post=f"{base}?action=remove&index={idx}", **{k: v for k, v in _struct.items() if k != "hx_post"}),
+               cls="cell--actions"),
+            cls="wf-row", **{"data-step-id": step.get("id") or f"idx-{idx}"},
+        )
+
+    head = Tr(
+        Th("", cls="wf-col-drag"), Th("#", cls="wf-num"),
+        Th("Step"), Th("Instructions"), Th("Station"),
+        Th("Time", cls="cell--number"), Th("Unit", cls="cell--center"),
+        Th("Wait", cls="cell--center"), Th("Reference"), Th("", cls="cell--actions"),
+    )
+    body = [_row(i, s) for i, s in enumerate(steps)]
+    table = Table(Thead(head), Tbody(*body), cls="data-table wf-table") if steps else ""
+    empty = P("No steps yet. Add the build steps a worker follows; drag the handle to reorder.",
+              cls="hint") if not steps else ""
+
+    return Div(
+        Div(
+            H3("Production workflow", cls="section-title"),
+            Span(summary, cls="wf-summary") if steps else "",
+            cls="recipe-section-head",
+        ),
+        P("The ordered steps to build this item. Double-click a cell to edit; drag a row to reorder; "
+          "drop an image on Reference to illustrate a step.", cls="hint"),
+        table,
+        empty,
+        Button("+ Add step", type="button", cls="btn btn--sm btn--secondary",
+               hx_post=f"{base}?action=add", **{k: v for k, v in _struct.items() if k != "hx_post"}),
+        Script(WORKFLOW_JS),
+        id="workflow-section",
+        cls="detail-card recipe-block",
+        **{"data-base": base},
+        hx_get=f"/api/items/{entity_id}/workflow-section",
+        hx_trigger="workflowSaved from:body",
+        hx_swap="outerHTML",
+    )
+
+
 def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
                     show_all: bool = False, flash_msg: str | None = None, flash_kind: str = "success") -> FT:
     """The Manufacturing tab: Materials / Labor / Overhead tables + Cost Summary.
@@ -5462,6 +5771,11 @@ def _item_detail_tabs(
                 hx_trigger="load", hx_swap="outerHTML", id="recipe-section",
             ),
             _item_files_section(entity_id, item),
+            Div(
+                P("Loading…", cls="hint"),
+                hx_get=f"/api/items/{entity_id}/workflow-section",
+                hx_trigger="load", hx_swap="outerHTML", id="workflow-section",
+            ),
             Div(
                 hx_get=f"/api/items/{entity_id}/production-block",
                 hx_trigger="load", hx_swap="outerHTML", id="production-block",
