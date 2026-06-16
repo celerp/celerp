@@ -42,7 +42,9 @@ def test_in_production_scheduling(page, ui_server, api):
     #   runs[1] -> 2030-12-31  (future)
     # Other tests may also have undated planned runs; verify positional ordering only
     # among the dated cells by checking that 2020-01-01 appears before 2030-12-31.
-    due_cells = page.locator("#mfg-table tbody tr td:nth-child(4)").all_inner_texts()
+    # Column order (Phase 2): [bulk-select] Product, Status, Priority, Due, Created, Inputs.
+    # The Due cell is the 5th td (the leading checkbox column shifts everything right by one).
+    due_cells = page.locator("#mfg-table tbody tr td:nth-child(5)").all_inner_texts()
     date_cells = [c.strip() for c in due_cells if c.strip() not in ("--", "", EMPTY := "—")]
     idx_2020 = next((i for i, c in enumerate(due_cells) if "2020-01-01" in c), None)
     idx_2030 = next((i for i, c in enumerate(due_cells) if "2030-12-31" in c), None)
@@ -63,7 +65,7 @@ def test_in_production_scheduling(page, ui_server, api):
     # Target the first row that has a -- due cell (runs[2] from this test, or any undated run).
     # Each row has two editable chips (priority then due); the due chip is the second (.nth(1)).
     undated_row = page.locator(
-        "#mfg-table tbody tr:has(td:nth-child(4):has-text('--'))"
+        "#mfg-table tbody tr:has(td:nth-child(5):has-text('--'))"
     ).first
     first_due = undated_row.locator(".editable-cell").nth(1)
     first_due.dblclick()

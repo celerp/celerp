@@ -1050,6 +1050,13 @@ async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
                                    json={"item_ids": item_ids})).json()
 
 
+async def manufacturing_bulk_run_action(token: str, run_ids: list[str], action: str) -> dict:
+    """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/manufacturing/bulk-action",
+                                   json={"run_ids": run_ids, "action": action})).json()
+
+
 async def manufacturing_item_hub(token: str, item_id: str) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.get(f"/manufacturing/items/{item_id}/hub")).json()

@@ -220,6 +220,97 @@ def bulk_toolbar(table_id: str, actions: list[dict]) -> FT:
     )
 
 
+def filter_th(label: str, col: int, *, center: bool = False) -> FT:
+    """A column header with an Excel-style filter funnel (client-side checkbox value list).
+    `col` is the 0-based cell index the funnel filters on. Pair with COLUMN_FILTER_JS on the page."""
+    return Th(
+        Span(label),
+        Button("▾", type="button", cls="colfilter", title=f"Filter by {label}",
+               **{"data-col": str(col), "aria-label": f"Filter by {label}"}),
+        cls="colfilter-th" + (" cell--center" if center else ""),
+    )
+
+
+# Excel-style column filters: each `.colfilter` funnel (in a `filter_th`) opens a checkbox list of
+# the distinct values in its column (data-col = cell index). Filtering is client-side and instant;
+# multiple columns AND together; hidden rows get `.dp-row-hidden` and are de-selected. Per-table
+# state (WeakMap) so it works on any table on the page; resets when a table is re-rendered via htmx.
+COLUMN_FILTER_JS = """
+(function(){
+  if(window.__celerpColFilter)return;window.__celerpColFilter=true;
+  var state=new WeakMap();
+  function active(t){if(!state.has(t))state.set(t,{});return state.get(t);}
+  function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}
+  function cellText(r,col){var c=r.children[col];return c?c.textContent.trim():'';}
+  function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}
+  function apply(t){
+    var a=active(t);
+    rows(t).forEach(function(r){
+      var show=true;
+      for(var col in a){var s=a[col];if(s&&!s.has(cellText(r,+col))){show=false;break;}}
+      r.classList.toggle('dp-row-hidden',!show);
+      if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}
+    });
+    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',!!a[b.getAttribute('data-col')]);});
+    if(window.celerpBulkRefresh)window.celerpBulkRefresh();
+  }
+  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
+  function open(btn){
+    var t=btn.closest('table');if(!t)return;
+    var col=btn.getAttribute('data-col');
+    var a=active(t),values=distinct(t,+col);
+    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);
+    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder='Search\\u2026';
+    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';
+    var selAllCb=document.createElement('input');selAllCb.type='checkbox';
+    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' (Select all)'));
+    var list=document.createElement('div');list.className='colfilter-list';
+    function commit(){
+      var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});
+      if(checked.length===values.length){delete a[col];}else{a[col]=new Set(checked);}
+      selAllCb.checked=(checked.length===values.length);
+      selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);
+      apply(t);
+    }
+    values.forEach(function(v){
+      var lbl=document.createElement('label');lbl.className='colfilter-item';
+      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;
+      cb.checked=!a[col]||a[col].has(v);
+      cb.addEventListener('change',commit);
+      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||'(blank)')));
+      list.appendChild(lbl);
+    });
+    selAllCb.checked=!a[col];selAllCb.indeterminate=!!a[col];
+    selAllCb.addEventListener('change',function(){
+      list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});
+    search.addEventListener('input',function(){var q=search.value.toLowerCase();
+      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
+    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent='Clear filter';
+    clear.addEventListener('click',function(){delete a[col];closeAll();apply(t);});
+    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);
+    pop.style.position='fixed';
+    document.body.appendChild(pop);
+    var br=btn.getBoundingClientRect();
+    pop.style.top=(br.bottom+2)+'px';
+    pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';
+    search.focus();
+  }
+  document.addEventListener('click',function(e){
+    var btn=e.target.closest&&e.target.closest('.colfilter');
+    if(btn){e.preventDefault();e.stopPropagation();
+      var wasOpen=!!document.querySelector('.colfilter-pop[data-col="'+btn.getAttribute('data-col')+'"]');
+      closeAll();if(!wasOpen)open(btn);return;}
+    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+  document.addEventListener('htmx:afterSwap',function(e){
+    var tg=e.detail&&e.detail.target;if(!tg)return;
+    var t=tg.tagName==='TABLE'?tg:(tg.querySelector?tg.querySelector('table'):null);
+    if(t){state.delete(t);closeAll();apply(t);}});
+})();
+"""
+
+
 def empty_state_cta(
     message: str,
     action_label: str | None = None,

@@ -141,6 +141,33 @@ async def test_requirements_aggregates_components(client):
 
 
 @pytest.mark.asyncio
+async def test_bulk_run_action_start_then_complete(client):
+    """The bulk run-action endpoint advances many runs at once; invalid-state runs are skipped."""
+    token = await _register(client)
+    gold = await _item(client, token, "GB", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RB", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    r1 = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 1})).json()["id"]
+    r2 = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 2})).json()["id"]
+
+    started = (await client.post("/manufacturing/bulk-action", headers=_h(token),
+                                 json={"run_ids": [r1, r2], "action": "start"})).json()
+    assert set(started["done"]) == {r1, r2}
+    for rid in (r1, r2):
+        assert (await client.get(f"/manufacturing/{rid}", headers=_h(token))).json()["status"] == "in_progress"
+
+    completed = (await client.post("/manufacturing/bulk-action", headers=_h(token),
+                                   json={"run_ids": [r1, r2], "action": "complete"})).json()
+    assert set(completed["done"]) == {r1, r2}
+    assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 3.0
+
+    # Re-completing closed runs is skipped, not an error.
+    again = (await client.post("/manufacturing/bulk-action", headers=_h(token),
+                               json={"run_ids": [r1], "action": "complete"})).json()
+    assert again["done"] == [] and len(again["skipped"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_bulk_build_skips_fully_covered(client):
     """Products already covered by stock have nothing to build and are skipped."""
     token = await _register(client)

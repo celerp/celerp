@@ -14,7 +14,8 @@ from starlette.responses import HTMLResponse, RedirectResponse
 import ui.api_client as api
 from ui.api_client import APIError
 from ui.components.shell import base_shell, page_header
-from ui.components.table import EMPTY, status_cards, empty_state_cta, format_value, search_bar, bulk_toolbar
+from ui.components.table import (EMPTY, status_cards, empty_state_cta, format_value, search_bar,
+                                 bulk_toolbar, filter_th, COLUMN_FILTER_JS)
 from ui.config import get_token as _token
 from ui.i18n import t
 
@@ -109,6 +110,7 @@ def _order_row(order: dict, today: str = "") -> FT:
         cls="cell--center",
     )
     return Tr(
+        Td(Input(type="checkbox", cls="bulk-select", name="selected", value=rid), cls="col-checkbox"),
         Td(name_cell),
         Td(_badge(status)),
         prio_cell,
@@ -136,15 +138,6 @@ def _status_badge(coverage: str) -> FT:
     return Span(_STATUS_LABELS.get(coverage, coverage or EMPTY), cls=f"badge badge--peg-{coverage}")
 
 
-def _filter_th(label: str, col: int, center: bool = False) -> FT:
-    """A column header with an Excel-style filter funnel (client-side checkbox value list).
-    `col` is the 0-based cell index the funnel filters on."""
-    return Th(
-        Span(label),
-        Button("▾", type="button", cls="colfilter", title=f"Filter by {label}",
-               **{"data-col": str(col), "aria-label": f"Filter by {label}"}),
-        cls="colfilter-th" + (" cell--center" if center else ""),
-    )
 
 
 def _doc_href(doc_id: str, doc_type: str) -> str:
@@ -204,8 +197,8 @@ def _demand_table(lines: list[dict]) -> FT:
     return Table(
         Thead(Tr(
             Th(Input(type="checkbox", cls="bulk-select-all", title="Select all"), cls="col-checkbox"),
-            Th("Product"), Th("Document"), Th("Type"), _filter_th("For", 4), Th("Due", cls="cell--center"),
-            Th("Ordered"), Th("Short"), _filter_th("Status", 8, center=True),
+            Th("Product"), Th("Document"), Th("Type"), filter_th("For", 4), Th("Due", cls="cell--center"),
+            Th("Ordered"), Th("Short"), filter_th("Status", 8, center=True),
         )),
         Tbody(*[_demand_row(l) for l in lines]),
         cls="data-table", id="mfg-table",
@@ -232,82 +225,6 @@ def _type_filter_bar(all_lines: list[dict], dtype: str) -> FT:
     return status_cards(cards, "/manufacturing", dtype, show_all_card=False)
 
 
-# Excel-style column filters: each .colfilter funnel opens a checkbox list of the distinct values
-# in its column (data-col = cell index). Filtering is client-side and instant; multiple columns AND
-# together; hidden rows get a .dp-row-hidden class and are deselected. State resets when the table
-# is re-rendered (a server filter / search / make swaps #mfg-table).
-_DP_FILTER_JS = """
-(function(){
-  var active={};  // colIndex(str) -> Set of allowed values; absent = all allowed
-  function tbl(){return document.getElementById('mfg-table');}
-  function rows(){var t=tbl();return t?Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row')):[];}
-  function cellText(r,col){var c=r.children[col];return c?c.textContent.trim():'';}
-  function distinct(col){var out=[],seen={};rows().forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}
-  function apply(){
-    rows().forEach(function(r){
-      var show=true;
-      for(var col in active){var s=active[col];if(s&&!s.has(cellText(r,+col))){show=false;break;}}
-      r.classList.toggle('dp-row-hidden',!show);
-      if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}
-    });
-    var t=tbl();if(t){t.querySelectorAll('.colfilter').forEach(function(b){
-      b.classList.toggle('colfilter--active',!!active[b.getAttribute('data-col')]);});}
-    if(window.celerpBulkRefresh)window.celerpBulkRefresh();
-  }
-  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
-  function open(btn){
-    var col=btn.getAttribute('data-col');
-    var wasOpen=!!document.querySelector('.colfilter-pop[data-col="'+col+'"]');
-    closeAll(); if(wasOpen)return;                     // toggle off
-    var values=distinct(+col);
-    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);
-    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder='Search\\u2026';
-    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';
-    var selAllCb=document.createElement('input');selAllCb.type='checkbox';
-    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' (Select all)'));
-    var list=document.createElement('div');list.className='colfilter-list';
-    function commit(){
-      var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});
-      if(checked.length===values.length){delete active[col];}else{active[col]=new Set(checked);}
-      selAllCb.checked=(checked.length===values.length);
-      selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);
-      apply();
-    }
-    values.forEach(function(v){
-      var lbl=document.createElement('label');lbl.className='colfilter-item';
-      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;
-      cb.checked=!active[col]||active[col].has(v);
-      cb.addEventListener('change',commit);
-      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||'(blank)')));
-      list.appendChild(lbl);
-    });
-    selAllCb.checked=!active[col];selAllCb.indeterminate=!!active[col];
-    selAllCb.addEventListener('change',function(){
-      list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});
-    search.addEventListener('input',function(){var q=search.value.toLowerCase();
-      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
-    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent='Clear filter';
-    clear.addEventListener('click',function(){delete active[col];closeAll();apply();});
-    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);
-    // Anchor to document.body with fixed positioning so table-cell stacking never clips it, and
-    // clamp within the viewport (rightmost columns flip left instead of overflowing off-screen).
-    pop.style.position='fixed';
-    document.body.appendChild(pop);
-    var br=btn.getBoundingClientRect();
-    pop.style.top=(br.bottom+2)+'px';
-    pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';
-    search.focus();
-  }
-  document.addEventListener('click',function(e){
-    var btn=e.target.closest&&e.target.closest('.colfilter');
-    if(btn){e.preventDefault();e.stopPropagation();open(btn);return;}
-    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
-  });
-  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
-  document.addEventListener('htmx:afterSwap',function(e){
-    if(e.detail&&e.detail.target&&e.detail.target.id==='mfg-table'){active={};closeAll();apply();}});
-})();
-"""
 
 
 def _order_table(orders: list[dict], today: str = "") -> FT:
@@ -317,8 +234,11 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
             id="mfg-table",
         )
     return Table(
-        Thead(Tr(Th("Product"), Th(t("th.status")), Th("Priority", cls="cell--center"),
-                 Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs")))),
+        Thead(Tr(
+            Th(Input(type="checkbox", cls="bulk-select-all", title="Select all"), cls="col-checkbox"),
+            filter_th("Product", 1), Th(t("th.status")), filter_th("Priority", 3, center=True),
+            Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs")),
+        )),
         Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",
         id="mfg-table",
@@ -448,7 +368,7 @@ def setup_routes(app):
                  "method": "open", "url": "/manufacturing/requirements"},
             ]),
             _demand_table(lines),
-            Script(_DP_FILTER_JS),
+            Script(COLUMN_FILTER_JS),
         )
         return base_shell(
             page_header(
@@ -489,11 +409,30 @@ def setup_routes(app):
                      if q in " ".join(str(x.get("sku", "")) for x in o.get("expected_outputs", [])).lower()
                      or q in str(o.get("description", "")).lower()]
         body = (
-            _intro("🏭", "Production runs on the floor. Issue components to start a run, then receive "
-                         "finished goods to restock. Runs you start from Demand Planning appear here. "
-                         "Double-click a due date or priority to edit; press Esc to cancel."),
+            _intro("🏭", "Production runs on the floor. Tick runs and choose an action to advance "
+                         "them - issue components to start, receive finished goods to restock. Runs you "
+                         "start from Demand Planning appear here. Double-click a due date or priority to "
+                         "edit; press Esc to cancel."),
             _mfg_status_cards(orders_all, active, "/manufacturing/production"),
+            bulk_toolbar("mfg-table", [
+                {"value": "start", "label": "Start", "method": "post",
+                 "url": f"/manufacturing/runs/bulk/start?status={active}"},
+                {"value": "issue", "label": "Issue components", "method": "post",
+                 "url": f"/manufacturing/runs/bulk/issue?status={active}"},
+                {"value": "complete", "label": "Complete", "method": "post",
+                 "url": f"/manufacturing/runs/bulk/complete?status={active}",
+                 "confirm": "Complete the selected runs now - issue any outstanding components and "
+                            "receive the finished goods? This updates stock and posts journal entries."},
+                {"value": "hold", "label": "Put on hold", "method": "post",
+                 "url": f"/manufacturing/runs/bulk/hold?status={active}"},
+                {"value": "resume", "label": "Resume", "method": "post",
+                 "url": f"/manufacturing/runs/bulk/resume?status={active}"},
+                {"value": "cancel", "label": "Cancel", "method": "post",
+                 "url": f"/manufacturing/runs/bulk/cancel?status={active}",
+                 "confirm": "Cancel the selected production runs?"},
+            ]),
             _order_table(shown, today=date.today().isoformat()),
+            Script(COLUMN_FILTER_JS),
         )
         return base_shell(
             page_header(
@@ -620,14 +559,57 @@ def setup_routes(app):
             orders = []
         return _order_table(orders, today=date.today().isoformat())
 
+    def _runs_for_status(orders: list[dict], status: str) -> list[dict]:
+        if status in ("active", "incomplete"):
+            return [o for o in orders if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
+        if status == "all":
+            return orders
+        return [o for o in orders if str(o.get("status") or "").lower() == status]
+
     async def _incomplete_runs_table(token: str) -> FT:
         """The In Production table for the active (incomplete) runs - used after a schedule edit."""
         try:
             orders = (await api.list_mfg_orders(token, {})).get("items", [])
         except APIError:
             orders = []
-        shown = [o for o in orders if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
-        return _order_table(shown, today=date.today().isoformat())
+        return _order_table(_runs_for_status(orders, "active"), today=date.today().isoformat())
+
+    _BULK_RUN_VERB = {"start": "Started", "issue": "Issued components for", "complete": "Completed",
+                      "hold": "Put on hold", "resume": "Resumed", "cancel": "Cancelled"}
+
+    @app.post("/manufacturing/runs/bulk/{action}")
+    async def bulk_run_action(request: Request, action: str):
+        """Apply a lifecycle action to the ticked runs, then refresh the queue within its filter."""
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        status = (request.query_params.get("status") or "active").lower()
+        form = await request.form()
+        ids = list(dict.fromkeys(form.getlist("selected")))
+        result: dict = {"done": [], "skipped": []}
+        orders: list[dict] = []
+        error = ""
+        try:
+            if ids:
+                result = await api.manufacturing_bulk_run_action(token, ids, action)
+            orders = (await api.list_mfg_orders(token, {})).get("items", [])
+        except APIError as e:
+            if e.status == 401:
+                return RedirectResponse("/login", status_code=302)
+            error = str(e.detail) or "Could not apply the action."
+        done = len(result.get("done", []))
+        skipped = len(result.get("skipped", []))
+        if error:
+            toast = {"message": error, "type": "error"}
+        else:
+            msg = f"{_BULK_RUN_VERB.get(action, 'Updated')} {done} run(s)."
+            if skipped:
+                msg += f" {skipped} skipped (not in a valid state)."
+            toast = {"message": msg, "type": "success" if done else "info"}
+        return HTMLResponse(
+            to_xml(_order_table(_runs_for_status(orders, status), today=date.today().isoformat())),
+            headers={"HX-Trigger": json.dumps({"celerpToast": toast})},
+        )
 
     @app.get("/manufacturing/runs/{run_id}/edit/{field}")
     async def run_field_edit(request: Request, run_id: str, field: str):

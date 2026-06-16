@@ -665,6 +665,80 @@ async def bulk_requirements(
     }
 
 
+class BulkRunActionBody(BaseModel):
+    run_ids: list[str] = Field(default_factory=list)
+    action: str = ""
+
+
+_BULK_RUN_ACTIONS = {"start", "issue", "complete", "hold", "resume", "cancel"}
+_CLOSED_RUN_STATUSES = {"completed", "cancelled"}
+
+
+@router.post("/bulk-action")
+async def bulk_run_action(
+    payload: BulkRunActionBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once.
+    Runs in a state that does not permit the action are skipped (not a hard error)."""
+    action = payload.action
+    if action not in _BULK_RUN_ACTIONS:
+        raise HTTPException(status_code=422, detail=f"Unknown bulk action: {action}")
+    states = await _all_item_states(session, company_id) if action in ("issue", "complete") else {}
+    require_issued = (action == "complete" and bool(
+        (await _mfg_settings(session, company_id)).get("require_issued_before_complete")))
+
+    async def _emit(run_id: str, event_type: str, data: dict) -> None:
+        await emit_event(session, company_id=company_id, entity_id=run_id, entity_type="mfg_order",
+                         event_type=event_type, data=data, actor_id=user.id, location_id=None,
+                         source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+
+    done: list[str] = []
+    skipped: list[dict] = []
+    for run_id in payload.run_ids:
+        try:
+            row = await _get_order(session, company_id, run_id)
+        except HTTPException:
+            skipped.append({"id": run_id, "reason": "not found"})
+            continue
+        st = row.state or {}
+        status = (st.get("status") or "").lower()
+        try:
+            if action in ("start", "hold", "cancel", "issue", "complete") and status in _CLOSED_RUN_STATUSES:
+                raise ValueError("run is already closed")
+            if action == "start":
+                await _emit(run_id, "mfg.order.started", {"started_by": str(user.id)})
+            elif action == "hold":
+                await _emit(run_id, "mfg.order.on_hold", {"reason": None})
+            elif action == "resume":
+                if status != "on_hold":
+                    raise ValueError("only an on-hold run can be resumed")
+                await _emit(run_id, "mfg.order.resumed", {"resumed_by": str(user.id)})
+            elif action == "cancel":
+                await _emit(run_id, "mfg.order.cancelled", {})
+            elif action == "issue":
+                await _issue_and_record(session, company_id, user, run_id, _outstanding_inputs(st), states)
+            elif action == "complete":
+                outstanding = _outstanding_inputs(st)
+                if outstanding:
+                    if require_issued:
+                        raise ValueError("components must be issued before completing (required by settings)")
+                    await _issue_and_record(session, company_id, user, run_id, outstanding, states)
+                    st = (await _get_order(session, company_id, run_id)).state
+                qty = _outstanding_output(st)
+                if qty > 0:
+                    await _receive(session, company_id, user, run_id, st, qty, states)
+                    st = (await _get_order(session, company_id, run_id)).state
+                await _close_run(session, company_id, user, run_id, st, states)
+            done.append(run_id)
+        except ValueError as e:
+            skipped.append({"id": run_id, "reason": str(e)})
+    await session.commit()
+    return {"done": done, "skipped": skipped}
+
+
 def _run_makes(run_state: dict, item_id: str, item_sku: str) -> bool:
     """Does this run produce the given product? Match on output_item_id, else output SKU."""
     if run_state.get("output_item_id") == item_id:
