@@ -25,6 +25,7 @@ from ui.components.table import data_table, search_bar, pagination, EMPTY, bread
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
+from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang
 from celerp.services.units import is_weight_unit, is_pieces_unit
 
@@ -1324,6 +1325,8 @@ def setup_routes(app):
             page_header(
                 item.get("name") or item.get("sku") or entity_id,
                 Div(
+                    A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
+                      cls="btn btn--ghost btn--icon", title="Print production worksheet"),
                     _print_label_dropdown(entity_id),
                     A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
                     cls="header-actions",
@@ -1667,6 +1670,24 @@ function celerpPrintLabel(entityId, templateId) {
         steps = (item.get("workflow") or {}).get("steps") or []
         value = steps[idx].get(field, "") if 0 <= idx < len(steps) else ""
         return _workflow_cell(entity_id, idx, field, value)
+
+    @app.get("/inventory/{entity_id}/worksheet/print")
+    async def worksheet_print(request: Request, entity_id: str):
+        """Standalone printable production worksheet (auto window.print(); user saves as PDF)."""
+        from datetime import datetime, timezone
+
+        from fasthtml.common import to_xml
+        from starlette.responses import HTMLResponse
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, cur, today)))
 
     @app.get("/api/items/{entity_id}/field/{field}/edit")
     async def field_edit_cell(request: Request, entity_id: str, field: str):
@@ -5350,6 +5371,172 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
         hx_get=f"/api/items/{entity_id}/workflow-section",
         hx_trigger="workflowSaved from:body",
         hx_swap="outerHTML",
+    )
+
+
+_WORKSHEET_PRINT_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background: #fff; padding: 16mm; }
+.ws-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 4mm; margin-bottom: 6mm; }
+.ws-title { font-size: 17pt; font-weight: 700; }
+.ws-sub { color: #555; font-size: 9pt; margin-top: 1mm; }
+.ws-meta { text-align: right; font-size: 9pt; color: #333; }
+.ws-meta strong { font-size: 11pt; }
+.ws-section { margin-top: 6mm; page-break-inside: avoid; }
+.ws-section h2 { font-size: 11pt; border-bottom: 1px solid #999; padding-bottom: 1mm; margin-bottom: 2mm; }
+table.ws-tbl { width: 100%; border-collapse: collapse; font-size: 9pt; }
+.ws-tbl th, .ws-tbl td { border: 1px solid #ccc; padding: 1.6mm 2.6mm; text-align: left; vertical-align: top; }
+.ws-tbl th { background: #f2f2f2; }
+.ws-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ws-images { display: flex; flex-wrap: wrap; gap: 4mm; }
+.ws-images img { height: 38mm; width: auto; max-width: 62mm; object-fit: contain; border: 1px solid #ddd; }
+.ws-wait { color: #b45309; font-weight: 600; white-space: nowrap; }
+.ws-step-img { height: 16mm; width: auto; border: 1px solid #ddd; }
+.ws-muted { color: #777; }
+.ws-foot { margin-top: 8mm; border-top: 1px solid #ccc; padding-top: 2mm; font-size: 8pt; color: #777; display: flex; justify-content: space-between; }
+@page { size: A4 portrait; margin: 0; }
+@media print { body { padding: 14mm; } }
+"""
+
+
+def _worksheet_unit_label(unit: str) -> str:
+    return {"min": "min", "hr": "hr", "day": "day"}.get(unit, unit or "min")
+
+
+def _worksheet_print_view(entity_id: str, item: dict, currency: str | None, today: str) -> FT:
+    """Standalone printable production worksheet: product info + images + recipe + workflow.
+    Mirrors the document print view (auto window.print(); the browser saves it as one PDF)."""
+    recipe = item.get("recipe") or {}
+    EM = EMPTY
+
+    def _money(v):
+        return _recipe_money(v, currency)
+
+    # ── Product images ──
+    images = _item_image_files(item)
+    img_section = (
+        Div(
+            H2("Product images"),
+            Div(*[Img(src=f"/items/{entity_id}/files/{f['id']}/download", alt=f.get("filename", ""))
+                  for f in images[:6]], cls="ws-images"),
+            cls="ws-section",
+        ) if images else ""
+    )
+
+    # ── Recipe: materials / labor / overhead ──
+    comps = recipe.get("components", []) or []
+    materials = (
+        Div(
+            H2("Materials"),
+            Table(
+                Thead(Tr(Th("Component"), Th("Qty", cls="ws-num"), Th("Unit"), Th("Cost", cls="ws-num"))),
+                Tbody(*[Tr(
+                    Td(f"{c.get('sku') or ''} {('- ' + c['name']) if c.get('name') else ''}".strip(" -") or EM),
+                    Td(f"{float(c.get('quantity') or 0):g}", cls="ws-num"),
+                    Td(c.get("unit") or EM),
+                    Td(_money(c.get("line_cost")), cls="ws-num"),
+                ) for c in comps]),
+                cls="ws-tbl",
+            ),
+            cls="ws-section",
+        ) if comps else ""
+    )
+    labor_rows = recipe.get("labor", []) or []
+    labor = (
+        Div(
+            H2("Labor"),
+            Table(
+                Thead(Tr(Th("Operation"), Th("Type"), Th("Total", cls="ws-num"))),
+                Tbody(*[Tr(
+                    Td(l.get("operation") or EM),
+                    Td((l.get("kind") or "hourly").title()),
+                    Td(_money((float(l.get("hours") or 0) * float(l.get("rate") or 0)) if (l.get("kind") or "hourly") != "fixed" else l.get("amount")), cls="ws-num"),
+                ) for l in labor_rows]),
+                cls="ws-tbl",
+            ),
+            cls="ws-section",
+        ) if labor_rows else ""
+    )
+    oh_rows = recipe.get("overhead", []) or []
+    overhead = (
+        Div(
+            H2("Overhead"),
+            Table(
+                Thead(Tr(Th("Description"), Th("Amount", cls="ws-num"))),
+                Tbody(*[Tr(Td(o.get("description") or EM), Td(_money(o.get("amount")), cls="ws-num")) for o in oh_rows]),
+                cls="ws-tbl",
+            ),
+            cls="ws-section",
+        ) if oh_rows else ""
+    )
+
+    # ── Workflow steps ──
+    steps = (item.get("workflow") or {}).get("steps") or []
+    files_by_id = {f.get("id"): f for f in (item.get("files") or [])}
+
+    def _time_cell(s: dict) -> FT:
+        txt = f"{float(s.get('time_value') or 0):g} {_worksheet_unit_label(s.get('time_unit') or 'min')}"
+        if s.get("wait"):
+            return Td(Span(f"⏳ {txt} unattended", cls="ws-wait"), cls="ws-num")
+        return Td(txt, cls="ws-num")
+
+    def _step_ref(s: dict) -> FT:
+        f = files_by_id.get(s.get("ref_file_id")) if s.get("ref_file_id") else None
+        if f:
+            return Td(Img(src=f"/items/{entity_id}/files/{f['id']}/download", alt="", cls="ws-step-img"))
+        return Td(EM, cls="ws-muted")
+
+    workflow = (
+        Div(
+            H2("Production workflow"),
+            Table(
+                Thead(Tr(Th("#", cls="ws-num"), Th("Step"), Th("Instructions"), Th("Station"),
+                         Th("Time", cls="ws-num"), Th("Ref"))),
+                Tbody(*[Tr(
+                    Td(str(i + 1), cls="ws-num"),
+                    Td(s.get("name") or EM),
+                    Td(s.get("instructions") or EM),
+                    Td(s.get("station") or EM),
+                    _time_cell(s),
+                    _step_ref(s),
+                ) for i, s in enumerate(steps)]),
+                cls="ws-tbl",
+            ),
+            cls="ws-section",
+        ) if steps else ""
+    )
+
+    sku = item.get("sku") or ""
+    name = item.get("name") or sku or entity_id
+    return Html(
+        Head(
+            Meta(charset="utf-8"),
+            Meta(name="viewport", content="width=device-width, initial-scale=1"),
+            Title(f"Worksheet - {name}"),
+            Style(_WORKSHEET_PRINT_CSS),
+        ),
+        Body(
+            Div(
+                Div(
+                    Div(name, cls="ws-title"),
+                    Div(f"SKU {sku}" + (f"  ·  {item.get('category')}" if item.get("category") else ""), cls="ws-sub"),
+                    cls="ws-headl",
+                ),
+                Div(
+                    Div("Production Worksheet"),
+                    Div(f"Output {float(recipe.get('output_qty') or 1):g} / batch"),
+                    Div(Span("Unit cost "), Strong(_money(recipe.get("unit_cost")))),
+                    Div(today, cls="ws-muted"),
+                    cls="ws-meta",
+                ),
+                cls="ws-header",
+            ),
+            img_section,
+            materials, labor, overhead,
+            workflow,
+            Div(Span(f"{sku} - {name}"), Span("Powered by celerp.com"), cls="ws-foot"),
+            Script("window.onload = function() { window.print(); }"),
+        ),
     )
 
 

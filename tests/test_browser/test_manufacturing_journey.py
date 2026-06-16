@@ -159,3 +159,28 @@ def test_full_manufacturing_journey(page, ui_server, api):
     page.wait_for_selector("body", timeout=8000)
     assert "Bills of Materials" not in page.content()
     assert page.goto(f"{ui_server}/manufacturing/boms").status in (404, 200)  # UI route gone (404) or app 404 page
+
+    # 9. The production worksheet composes everything onto one printable page. Add a workflow step
+    #    and a product image, then open the worksheet from the Manufacturing tab's print icon.
+    import base64
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+    )
+    api.put(f"/manufacturing/items/{ring}/workflow", json={"steps": [
+        {"name": "Setting", "instructions": "Set the stone, polish", "station": "Bench",
+         "time_value": 30, "time_unit": "min"},
+    ]})
+    api.post(f"/items/{ring}/files?document_tag=product_images",
+             files={"file": ("ring.png", png, "image/png")})
+    page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
+    icon = page.locator("a[title='Print production worksheet']")
+    icon.wait_for(state="visible", timeout=10000)
+    with page.expect_popup() as popup_info:
+        icon.click()
+    ws = popup_info.value
+    ws.wait_for_load_state("domcontentloaded")
+    sheet = ws.locator("body").inner_text()
+    assert "JNY-RING" in sheet and "JNY-GOLD" in sheet   # the recipe materials
+    assert "Setting" in sheet                            # the workflow step
+    assert ws.locator(".ws-images img").count() >= 1     # the product image
+    ws.screenshot(path=str(SHOTS / "worksheet.png"), full_page=True)
