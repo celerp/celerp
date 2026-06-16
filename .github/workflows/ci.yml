@@ -10,11 +10,11 @@ jobs:
   shard:
     name: Test shard ${{ matrix.group }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5, 6]
 
     services:
       postgres:
@@ -43,19 +43,20 @@ jobs:
       - name: Install deps
         run: pip install uv && uv pip install --system -e ".[dev]" pytest-xdist pytest-split
 
-      - name: Run tests (shard ${{ matrix.group }}/4)
+      - name: Run tests (shard ${{ matrix.group }}/6)
         env:
           ALLOW_INSECURE_JWT: "true"
           # Run on the Postgres service (each xdist worker gets its own database).
           DATABASE_URL: postgresql+asyncpg://celerp:celerp@localhost:5432/celerp_test
         # The suite is ~3.5k small tests (no slow outliers), so wall time is bound by
         # core count. ubuntu-latest has 2 vCPUs, so a single `-n auto` run can't keep up.
-        # pytest-split fans the suite across 4 parallel runners; each still uses -n auto
-        # within its 2 cores. conftest also turns off Postgres durability on this preset DB.
+        # pytest-split fans the suite across 6 parallel runners; each still uses -n auto
+        # within its 2 cores. 4 shards left one shard ~340s (it hit the old 300s cap); 6
+        # shards drop each to ~1/6 of the suite and the 600s cap is a generous backstop.
         run: >
-          timeout 300 pytest tests/ -n auto -q --tb=short --no-cov
+          timeout 600 pytest tests/ -n auto -q --tb=short --no-cov
           --timeout=30
-          --splits 4 --group ${{ matrix.group }}
+          --splits 6 --group ${{ matrix.group }}
           --ignore=tests/test_visual.py
           --ignore=tests/test_browser
 
