@@ -245,6 +245,11 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # Dumb full-replace: inventory stores the recipe verbatim; all interpretation
         # (validation, cost roll-up) lives in celerp-manufacturing.
         current["recipe"] = data["recipe"]
+    elif event_type == "item.workflow.set":
+        # Dumb full-replace: inventory stores the production workflow verbatim;
+        # interpretation (worksheet, future scheduling) lives downstream. Mirrors
+        # item.recipe.set (module boundary: data here, meaning elsewhere).
+        current["workflow"] = data["workflow"]
     elif event_type == "item.reserved":
         current["reserved_quantity"] = float(current.get("reserved_quantity", 0)) + float(data["quantity"])
     elif event_type == "item.unreserved":

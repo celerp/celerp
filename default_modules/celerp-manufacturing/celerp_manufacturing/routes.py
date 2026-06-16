@@ -19,7 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.events.engine import emit_event
-from celerp.events.schemas import RecipeSpec
+from celerp.events.schemas import (
+    _WORKFLOW_TIME_UNITS,
+    RecipeSpec,
+    WorkflowSpec,
+    workflow_step_minutes,
+)
 from celerp.models.company import Company, WorkCenter
 from celerp.models.projections import Projection
 from celerp.services import auto_je
@@ -221,6 +226,66 @@ async def set_item_recipe(
     await _recost_dependents_of(session, company_id, user, item_id)
     await session.commit()
     return {"event_id": entry.id, "recipe": recipe}
+
+
+# ---------------------------------------------------------------------------
+# Production workflow endpoints (the ordered build steps attached to an item)
+# ---------------------------------------------------------------------------
+
+@router.put("/items/{item_id}/workflow")
+async def set_item_workflow(
+    item_id: str,
+    payload: WorkflowSpec,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set (full-replace) the production workflow on an inventory item.
+
+    The workflow is the shop-floor build sequence — independent of the costing
+    recipe. We validate at the function level (GDR), assign a stable id to any
+    new step, and normalize each step's elapsed time to canonical minutes so the
+    stored data is always single-unit. Emits ``item.workflow.set``; the inventory
+    projection stores it verbatim.
+    """
+    item = await session.get(Projection, {"company_id": company_id, "entity_id": item_id})
+    if item is None or item.entity_type != "item":
+        raise HTTPException(status_code=404, detail="Item not found")
+
+    file_ids = {f.get("id") for f in (item.state.get("files") or [])}
+    steps = []
+    for step in payload.steps:
+        if step.time_unit not in _WORKFLOW_TIME_UNITS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid time unit '{step.time_unit}' (use one of {', '.join(_WORKFLOW_TIME_UNITS)})",
+            )
+        if step.ref_file_id and step.ref_file_id not in file_ids:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Reference file '{step.ref_file_id}' is not attached to this item",
+            )
+        data = step.model_dump()
+        data["id"] = step.id or str(uuid.uuid4())
+        data["time_minutes"] = workflow_step_minutes(step.time_value, step.time_unit)
+        steps.append(data)
+
+    workflow = {"steps": steps}
+    entry = await emit_event(
+        session,
+        company_id=company_id,
+        entity_id=item_id,
+        entity_type="item",
+        event_type="item.workflow.set",
+        data={"workflow": workflow},
+        actor_id=user.id,
+        location_id=None,
+        source="api",
+        idempotency_key=str(uuid.uuid4()),
+        metadata_={},
+    )
+    await session.commit()
+    return {"event_id": entry.id, "workflow": workflow}
 
 
 async def _apply_standard_cost(session: AsyncSession, company_id, user, item_id: str,

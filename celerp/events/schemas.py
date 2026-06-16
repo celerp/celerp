@@ -180,6 +180,51 @@ class ItemRecipeSet(BaseModel):
     recipe: RecipeSpec
 
 
+# --- Production workflow (ordered build steps) attached to an item ---
+# Independent of the costing recipe: this is the shop-floor instruction sequence,
+# stored verbatim by the inventory projection (full-replace) and rendered on the
+# Manufacturing tab + printable worksheet. Time is canonical in MINUTES; time_unit
+# is a cosmetic display hint only, so all logic reads a single field.
+
+_WORKFLOW_TIME_UNITS = ("min", "hr", "day")
+_WORKFLOW_UNIT_MINUTES = {"min": 1.0, "hr": 60.0, "day": 1440.0}
+
+
+def workflow_step_minutes(time_value, time_unit: str) -> float:
+    """Canonical elapsed minutes for a workflow step — the single conversion point.
+
+    time_value is the number as the user typed it, in time_unit; the result is the
+    one value every calculation (active-time totals, scheduling) reads.
+    """
+    try:
+        value = float(time_value or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    return value * _WORKFLOW_UNIT_MINUTES.get(time_unit, 1.0)
+
+
+class WorkflowStep(BaseModel):
+    id: str = ""                       # stable uuid; the server assigns one if blank
+    name: str = ""                     # short step title
+    instructions: str = ""             # free-text detail for the worker
+    station: str = ""                  # workcenter / bench
+    time_value: float = 0              # elapsed time as typed, in time_unit
+    time_unit: str = "min"             # min | hr | day
+    wait: bool = False                 # unattended elapsed (cooling/curing); excluded from active total
+    ref_file_id: str | None = None     # optional reference image/doc (an item file id)
+    # Derived, written server-side from (time_value, time_unit) — never trusted from the client.
+    # CANONICAL: every calculation reads time_minutes, never the typed value/unit.
+    time_minutes: float | None = None
+
+
+class WorkflowSpec(BaseModel):
+    steps: list[WorkflowStep] = Field(default_factory=list)
+
+
+class ItemWorkflowSet(BaseModel):
+    workflow: WorkflowSpec
+
+
 class ItemReserved(BaseModel):
     quantity: float
     reserved_for: str | None = None  # source doc entity_id
@@ -846,6 +891,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.consumed": ItemConsumed,
     "item.produced": ItemProduced,
     "item.recipe.set": ItemRecipeSet,
+    "item.workflow.set": ItemWorkflowSet,
     "item.reserved": ItemReserved,
     "item.unreserved": ItemUnreserved,
     "item.file.attached": EntityFileAttached,
