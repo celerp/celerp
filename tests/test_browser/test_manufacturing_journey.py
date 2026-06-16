@@ -106,31 +106,51 @@ def test_full_manufacturing_journey(page, ui_server, api):
     board = {r["item_id"]: r for r in api.get("/manufacturing/to-make").json()["items"]}
     assert board[ring]["to_make"] == 2.0 and board[ring]["demand"] == 2.0
 
-    # 5. Make the ring from its own Manufacturing tab — the product hub (Phase 2/3).
-    page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
-    page.wait_for_selector("#production-block", timeout=10000)
-    page.fill("#production-block .make-form input[name=quantity]", "3")
-    page.locator("#production-block .make-form button:has-text('Make')").click()
-    page.wait_for_selector("#production-block:has-text('Planned')", timeout=8000)
-    run_id = api.get(f"/manufacturing/items/{ring}/hub").json()["runs"][0]["id"]
+    # 5. Make the ring from the invoice's demand — a work order is created (Phase 2/3). Work orders
+    #    are no longer typed inline on the product hub; they come from an order. Setup creates the
+    #    work order linked 1:1 to the invoice via the make endpoint; the hub then DRIVES it.
+    doc_row = {r["item_id"]: r for r in api.get("/manufacturing/to-make").json()["items"]}[ring]
+    made = api.post("/manufacturing/to-make/make",
+                    json={"lines": [{"item_id": ring, "doc_id": doc_row["docs"][0]["doc_id"]}]}).json()
+    run_id = made["created"][0]["run_id"]
+    assert made["created"][0]["quantity"] == 2.0  # net shortfall = 2 demanded, 0 on hand
 
-    # 6. Start, then Complete — Complete issues the components and receives the finished goods.
-    #    allow_splitting is true (default) so the ring is restocked IN PLACE (no nameless item).
-    page.locator("#production-block button:has-text('Start')").click()
-    page.wait_for_selector("#production-block:has-text('In Progress')", timeout=8000)
-    page.locator("#production-block button:has-text('Complete')").click()
-    page.wait_for_selector("#production-block:has-text('Completed')", timeout=8000)
+    # The product hub's Work orders table shows that order, linked to the source invoice.
+    page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#production-block table.data-table", timeout=10000)
+    block = page.locator("#production-block")
+    assert block.locator(".badge:has-text('Planned')").count() >= 1
+    assert block.locator("table.data-table a.table-link[href*='/docs/']").count() >= 1
+
+    # 6. Start, then Complete via the per-row Action dropdown — Complete issues the components and
+    #    receives the finished goods. allow_splitting is true (default) so the ring is restocked
+    #    IN PLACE (no nameless item).
+    import time as _t2
+    def _wait_status(want: str, timeout: float = 10.0) -> None:
+        deadline = _t2.time() + timeout
+        while _t2.time() < deadline:
+            if api.get(f"/manufacturing/{run_id}").json().get("status") == want:
+                return
+            _t2.sleep(0.3)
+        raise AssertionError(f"work order never reached {want}")
+
+    block.locator(".wo-action-select").first.select_option(value="start")
+    _wait_status("in_progress")
+    page.wait_for_selector("#production-block .wo-action-select", timeout=8000)
+    block.locator(".wo-action-select").first.select_option(value="complete")
+    _wait_status("completed")
+    page.wait_for_selector("#production-block .badge:has-text('Completed')", timeout=8000)
     page.screenshot(path=str(SHOTS / "run-completed.png"), full_page=True)
 
     assert api.get(f"/manufacturing/{run_id}").json()["status"] == "completed"
     rings = [i for i in api.get("/items").json()["items"] if i.get("sku") == "JNY-RING"]
     assert len(rings) == 1 and rings[0]["id"] == ring  # restocked in place — one ring item, no clone
-    assert rings[0]["quantity"] == 3.0
-    assert api.get(f"/items/{gold}").json()["quantity"] == 85.0  # 100 - 5*3 issued
+    assert rings[0]["quantity"] == 2.0  # made the 2 demanded
+    assert api.get(f"/items/{gold}").json()["quantity"] == 90.0  # 100 - 5*2 issued
 
-    # 7. The board now shows zero to-make for the ring (3 on hand >= 2 demanded).
+    # 7. The board now shows zero to-make for the ring (2 on hand >= 2 demanded).
     board = {r["item_id"]: r for r in api.get("/manufacturing/to-make").json()["items"]}
-    assert board[ring]["on_hand"] == 3.0 and board[ring]["to_make"] == 0.0
+    assert board[ring]["on_hand"] == 2.0 and board[ring]["to_make"] == 0.0
 
     # 8. No standalone BOM anywhere.
     page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")

@@ -128,6 +128,12 @@ def _order_row(order: dict, today: str = "") -> FT:
             title="Double-click to set priority"),
         cls="cell--center",
     )
+    src_id, src_no = order.get("source_doc_id"), order.get("source_doc_number")
+    if src_id and src_no:
+        src_href = f"/lists/{src_id}" if str(src_id).startswith("list:") else f"/docs/{src_id}"
+        src_cell = A(src_no, href=src_href, cls="table-link")
+    else:
+        src_cell = Span("To stock", cls="hint")
     return Tr(
         Td(Input(type="checkbox", cls="bulk-select", name="selected", value=rid), cls="col-checkbox"),
         Td(name_cell),
@@ -136,6 +142,7 @@ def _order_row(order: dict, today: str = "") -> FT:
         due_cell,
         Td(format_value((order.get("created_at") or "")[:10])),
         Td(str(len(inputs)), cls="cell--number"),
+        Td(src_cell),
         cls="data-row",
     )
 
@@ -260,7 +267,7 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
         Thead(Tr(
             Th(Input(type="checkbox", cls="bulk-select-all", title="Select all"), cls="col-checkbox"),
             filter_th("Product", 1), Th(t("th.status")), filter_th("Priority", 3, center=True),
-            Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs")),
+            Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs")), Th("Source order"),
         )),
         Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",

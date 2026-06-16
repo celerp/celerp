@@ -1473,9 +1473,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 /* Production Queue filter row: clear separation from the description/tabs above it. */
 .mfg-filter-row { display: flex; align-items: center; gap: 8px; margin: 12px 0 8px; flex-wrap: wrap; }
 /* Product Manufacturing tab production hub: Make control + inline per-run status actions. */
-.make-form { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.make-form input { max-width: 90px; }
-.run-actions { display: inline-flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* ── Activating / module-load spinner ── */
 .activating-body { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 32px 0; }
@@ -2702,28 +2699,12 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 }
 .bulk-action-select:disabled { opacity: 0.5; cursor: default; }
 
-/* ── Production-run status pipeline (item Manufacturing tab) ── */
-.run-card-list { display: flex; flex-direction: column; gap: 10px; }
-.run-card { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
-  padding: 10px 14px; border: 1px solid var(--c-border); border-radius: 8px; background: var(--c-bg, #fff); }
-.run-card--cancelled { opacity: 0.6; }
-.run-card-meta { display: flex; flex-direction: column; gap: 1px; flex: 1; min-width: 150px; }
-.run-card-qty { font-weight: 600; font-size: 13px; }
-.run-card-comps, .run-card-date { font-size: 12px; }
-.run-pipeline-wrap { display: flex; align-items: center; gap: 8px; }
-.run-pipeline { display: inline-flex; align-items: stretch; }
-.pipe-step { padding: 4px 14px; font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: 0.02em; color: var(--c-text2); background: var(--c-bg-alt, #f3f4f6);
-  border: 1px solid var(--c-border); }
-.pipe-step:not(:first-child) { border-left: none; }
-.pipe-step:first-child { border-radius: 13px 0 0 13px; }
-.pipe-step:last-child { border-radius: 0 13px 13px 0; }
-.pipe-step--done { background: rgba(34,197,94,0.14); color: var(--c-green-dark, #15803d); border-color: rgba(34,197,94,0.3); }
-.pipe-step--current { background: var(--c-accent); color: #fff; border-color: var(--c-accent); }
-.run-pipeline--hold .pipe-step--current { background: #ea580c; border-color: #ea580c; }
-.run-pipeline--cancelled .pipe-step { text-decoration: line-through; }
-.pipe-flag { font-size: 11px; font-weight: 600; color: #ea580c; }
-.pipe-flag--cancel { color: var(--c-text2); }
+/* ── Work-order table action dropdown (item Manufacturing tab) ── */
+.wo-ref { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; color: var(--c-text2); }
+.wo-action-select {
+  padding: 3px 6px; border: 1px solid var(--c-border); border-radius: 4px;
+  font-size: 12px; background: var(--c-bg, #fff); color: var(--c-text); cursor: pointer;
+}
 
 /* Status indicators with an explanatory tooltip show the help cursor on hover. */
-.badge[title], .pipe-step[title], .pipe-flag[title], .status-card[title] { cursor: help; }
+.badge[title], .status-card[title] { cursor: help; }

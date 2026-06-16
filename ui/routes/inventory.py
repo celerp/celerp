@@ -1418,44 +1418,22 @@ function celerpPrintLabel(entityId, templateId) {
                 return P(t("error.unauthorized"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="production-block")
 
-    @app.post("/api/items/{entity_id}/make")
-    async def make_item(request: Request, entity_id: str):
-        """Create a production run for N of this product (the To-Make 'Make' action)."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        form = await request.form()
-        try:
-            qty = float(str(form.get("quantity", "1")) or 1)
-        except ValueError:
-            qty = 0
-        if qty <= 0:
-            return await _production_block_response(token, entity_id,
-                                                    flash_msg="Enter a quantity greater than zero.", flash_kind="error")
-        try:
-            await api.build_item(token, entity_id, qty)
-            return await _production_block_response(token, entity_id,
-                                                    flash_msg=f"Started a run for {qty:g}.", flash_kind="success")
-        except APIError as e:
-            if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
-            return await _production_block_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
-
     _RUN_ACTIONS = {
         "start": api.start_mfg_order, "complete": lambda tok, rid: api.complete_mfg_order(tok, rid),
         "hold": lambda tok, rid: api.hold_mfg_order(tok, rid), "resume": api.resume_mfg_order,
         "cancel": lambda tok, rid: api.cancel_mfg_order(tok, rid),
     }
 
-    @app.post("/api/items/{entity_id}/runs/{run_id}/{action}")
-    async def run_action(request: Request, entity_id: str, run_id: str, action: str):
-        """Advance a run's status from the product's production block; refreshes the block."""
+    @app.post("/api/items/{entity_id}/runs/{run_id}/act")
+    async def run_action(request: Request, entity_id: str, run_id: str):
+        """Advance a work order via its Action dropdown (action in the form body); refresh the block."""
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
-        fn = _RUN_ACTIONS.get(action)
+        form = await request.form()
+        fn = _RUN_ACTIONS.get(str(form.get("action") or ""))
         if fn is None:
-            return await _production_block_response(token, entity_id, flash_msg="Unknown action.", flash_kind="error")
+            return await _production_block_response(token, entity_id)
         try:
             await fn(token, run_id)
             return await _production_block_response(token, entity_id)
@@ -5365,7 +5343,6 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
     want it) + its production runs with inline status actions + a Make control."""
     demand = hub.get("demand", []) or []
     runs = hub.get("runs", []) or []
-    has_recipe = bool((item.get("recipe") or {}).get("components"))
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
 
     def _doc_url(d: dict) -> str:
@@ -5389,74 +5366,69 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         cls="data-table",
     )
 
-    # A run is shown as a status pipeline (Planned -> In Progress -> Completed) with the current
-    # state highlighted and the valid guarded next action. Transitions have side effects (issue
-    # consumes components, complete receives + posts a JE), so they stay actions, not a free dropdown.
-    _PIPE_STEPS = [("planned", "Planned"), ("in_progress", "In Progress"), ("completed", "Completed")]
-    _PIPE_POS = {"planned": 0, "in_progress": 1, "on_hold": 1, "completed": 2}
-
-    def _run_pipeline(status: str) -> FT:
+    # Work orders are shown in a table that surfaces the order each one fulfils. The status is a
+    # badge (with a tooltip); the lifecycle action is a concise per-row Action dropdown. Transitions
+    # have side effects (Complete issues components, receives output and posts a JE).
+    def _wo_status_badge(status: str) -> FT:
         from ui.routes.manufacturing import RUN_STATUS_HELP
-        cur = -1 if status == "cancelled" else _PIPE_POS.get(status, 0)
-        nodes = [Span(label, cls="pipe-step pipe-step--"
-                      + ("done" if (cur >= 0 and i < cur) else "current" if i == cur else "todo"),
-                      title=RUN_STATUS_HELP.get(key, ""))
-                 for i, (key, label) in enumerate(_PIPE_STEPS)]
-        extra = (" run-pipeline--cancelled" if status == "cancelled"
-                 else " run-pipeline--hold" if status == "on_hold" else "")
-        head = Span("On hold", cls="pipe-flag", title=RUN_STATUS_HELP["on_hold"]) if status == "on_hold" else (
-            Span("Cancelled", cls="pipe-flag pipe-flag--cancel", title=RUN_STATUS_HELP["cancelled"])
-            if status == "cancelled" else "")
-        return Div(Div(*nodes, cls="run-pipeline" + extra), head, cls="run-pipeline-wrap")
+        s = (status or "planned").lower()
+        help_txt = RUN_STATUS_HELP.get(s, "")
+        return Span(s.replace("_", " ").title(), cls=f"badge badge--{s.replace('_', '-')}",
+                    **({"title": help_txt} if help_txt else {}))
 
-    def _run_card(run: dict) -> FT:
-        rid, status = run.get("id"), run.get("status", "planned")
-        _a = {"hx_target": "#production-block", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
-
-        def b(label, action, primary=True):
-            return Button(label, type="button",
-                          cls=f"btn btn--xs btn--{'primary' if primary else 'secondary'}",
-                          hx_post=f"/api/items/{entity_id}/runs/{rid}/{action}", **_a)
-
-        nxt = {"planned": ("Start run →", "start"), "in_progress": ("Complete →", "complete"),
-               "on_hold": ("Resume →", "resume")}.get(status)
-        actions = [b(*nxt)] if nxt else []
+    def _wo_action_select(rid: str, status: str) -> FT:
+        opts = [Option("Action…", value="", disabled=True, selected=True)]
+        if status == "planned":
+            opts.append(Option("Start", value="start"))
         if status == "in_progress":
-            actions.append(b("Hold", "hold", False))
+            opts += [Option("Complete", value="complete"), Option("Put on hold", value="hold")]
+        if status == "on_hold":
+            opts.append(Option("Resume", value="resume"))
         if status not in ("completed", "cancelled"):
-            actions.append(b("Cancel", "cancel", False))
+            opts.append(Option("Cancel", value="cancel"))
+        if len(opts) == 1:  # closed run - no further actions
+            return Span(EMPTY)
+        return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
+                      hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
+                      hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this")
+
+    def _wo_source_cell(run: dict) -> FT:
+        src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
+        if src_id and src_no:
+            href = f"/lists/{src_id}" if str(src_id).startswith("list:") else f"/docs/{src_id}"
+            return A(src_no, href=href, cls="table-link")
+        return Span("To stock", cls="hint")  # no linked order = made to stock
+
+    def _wo_row(run: dict) -> FT:
+        rid, status = run.get("id"), run.get("status", "planned")
         qty = float((run.get("expected_outputs") or [{}])[0].get("quantity", 0))
-        comps = ", ".join(f"{float(i.get('quantity', 0)):g} x {i.get('sku') or i.get('item_id')}"
-                          for i in run.get("inputs", [])) or EMPTY
-        return Div(
-            _run_pipeline(status),
-            Div(Span(f"{qty:g} to make", cls="run-card-qty"),
-                Span(comps, cls="run-card-comps hint"),
-                Span((run.get("created_at") or "")[:10], cls="run-card-date hint"),
-                cls="run-card-meta"),
-            Div(*actions, cls="run-actions"),
-            cls="run-card" + (" run-card--cancelled" if status == "cancelled" else ""),
+        return Tr(
+            Td("WO-" + str(rid).split(":")[-1][:8], cls="wo-ref"),
+            Td(_wo_source_cell(run)),
+            Td(run.get("source_contact_name") or EMPTY),
+            Td(f"{qty:g}", cls="cell--number"),
+            Td(run.get("source_due") or (run.get("created_at") or "")[:10] or EMPTY, cls="cell--center"),
+            Td(_wo_status_badge(status)),
+            Td(_wo_action_select(rid, status), cls="cell--actions"),
+            cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
         )
 
-    runs_view = (Div(*[_run_card(r) for r in runs], cls="run-card-list")
-                 if runs else P("No production runs yet.", cls="hint"))
-
-    make = ""
-    if has_recipe:
-        make = Form(
-            Label("Make", For="make_qty"),
-            Input(type="number", id="make_qty", name="quantity", value="1", min="0.001", step="any", cls="cell--number"),
-            Button("Make", type="submit", cls="btn btn--sm btn--primary"),
-            hx_post=f"/api/items/{entity_id}/make", hx_target="#production-block", hx_swap="outerHTML",
-            cls="make-form",
-        )
+    runs_view = (Table(
+        Thead(Tr(Th("Work order"), Th("Source order"), Th("Customer"), Th("Qty", cls="cell--number"),
+                 Th("Due", cls="cell--center"), Th("Status"), Th("", cls="cell--actions"))),
+        Tbody(*[_wo_row(r) for r in runs]),
+        cls="data-table",
+    ) if runs else P("No work orders yet. Create them from an order or on the Demand Planning page.", cls="hint"))
 
     return Div(
         flash_el,
         Div(H3("Open demand", cls="section-title"),
-            P("Documents that have this item on order.", cls="hint"), demand_tbl,
+            P("Orders that have this item on order.", cls="hint"), demand_tbl,
             cls="detail-card recipe-block"),
-        Div(H3("Production runs", cls="section-title"), make, runs_view, cls="detail-card recipe-block"),
+        Div(H3("Work orders", cls="section-title"),
+            P("Production tasks for this item, each shown with the order it fulfils. Create them from "
+              "an order or on the Demand Planning page; advance one with its Action menu.", cls="hint"),
+            runs_view, cls="detail-card recipe-block"),
         id="production-block",
     )
 
