@@ -504,6 +504,17 @@ a:hover { text-decoration: underline; }
 .recipe-cost-summary { padding: 14px; }
 .recipe-cost-summary .detail-table td.recipe-amount { text-align: right; font-variant-numeric: tabular-nums; }
 .recipe-cost-summary .cell--total { font-weight: 600; }
+/* Manufacturing-tab product image gallery: hero + thumbnail strip, shop-floor sized.
+   GDR §2l: only one dimension fixed (width), height auto, contained — no distortion. */
+.wf-gallery { padding: 14px; margin-bottom: 16px; }
+.wf-gallery .section-title { margin-bottom: 8px; }
+.wf-hero { display: block; }
+.wf-hero-img { width: 100%; height: auto; max-height: 320px; object-fit: contain;
+  border-radius: 6px; background: var(--c-bg2, #f4f4f5); }
+.wf-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.wf-thumb { display: inline-flex; border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
+.wf-thumb--active { border-color: var(--c-accent, #2563eb); }
+.wf-thumb-img { height: 48px; width: auto; display: block; object-fit: cover; }
 .data-table thead th.cell--number { text-align: right; }
 /* Section header: title on the left, running section total right-aligned. */
 .recipe-section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }

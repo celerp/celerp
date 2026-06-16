@@ -4986,6 +4986,60 @@ def _recipe_cost_card(entity_id: str, item: dict, currency: str | None) -> FT:
     return Div(*children, id="recipe-cost-card", cls="detail-card recipe-cost-summary")
 
 
+def _item_image_files(item: dict) -> list[dict]:
+    """The item's image files, hero first, then product/360 tags, then the rest.
+
+    Shared by the Manufacturing-tab gallery and the printable worksheet so both
+    show the same images in the same order (DRY)."""
+    images = [f for f in (item.get("files") or []) if (f.get("mime") or "").startswith("image/")]
+
+    def _rank(f: dict):
+        if f.get("is_hero"):
+            return 0
+        return 1 if (f.get("document_tag") or "") in ("product_images", "view_360") else 2
+
+    return sorted(images, key=_rank)
+
+
+def _workflow_gallery(entity_id: str, item: dict) -> FT:
+    """Product image gallery for the Manufacturing tab: a large hero image plus a
+    thumbnail strip, sized for shop-floor reference. Renders above the Cost summary.
+
+    Images obey GDR §2l (one dimension fixed: width 100%, height auto, contained),
+    and come from the item's uploaded files (managed in Production documents below).
+    """
+    images = _item_image_files(item)
+    if not images:
+        return Div(
+            H3("Product images", cls="section-title"),
+            P("No product images yet. Add them in Production documents below.", cls="hint"),
+            cls="detail-card wf-gallery wf-gallery--empty",
+            id="wf-gallery",
+        )
+
+    def _src(f: dict) -> str:
+        return f"/items/{entity_id}/files/{f['id']}/download"
+
+    hero = images[0]
+    thumbs = (
+        Div(*[
+            A(Img(src=_src(f), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
+              href=_src(f), target="_blank",
+              cls="wf-thumb" + (" wf-thumb--active" if f is hero else ""))
+            for f in images
+        ], cls="wf-thumbs")
+        if len(images) > 1 else ""
+    )
+    return Div(
+        H3("Product images", cls="section-title"),
+        A(Img(src=_src(hero), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
+          href=_src(hero), target="_blank", cls="wf-hero", title="Open full size"),
+        thumbs,
+        cls="detail-card wf-gallery",
+        id="wf-gallery",
+    )
+
+
 def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
                     show_all: bool = False, flash_msg: str | None = None, flash_kind: str = "success") -> FT:
     """The Manufacturing tab: Materials / Labor / Overhead tables + Cost Summary.
@@ -5171,7 +5225,7 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # Mark-to-market is automatic: changing a component's cost recosts every item that uses it
     # (see the inventory pricing endpoint + manufacturing set_item_recipe), so there is no
     # manual "re-cost dependents" control here.
-    right_col = [_recipe_cost_card(entity_id, item, currency)]
+    right_col = [_workflow_gallery(entity_id, item), _recipe_cost_card(entity_id, item, currency)]
 
     has_rows = bool(components or labor_rows or overhead_rows)
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
