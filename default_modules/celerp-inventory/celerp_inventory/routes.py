@@ -300,10 +300,13 @@ async def list_items(
         for r in rows
     ]
 
-    # Status filtering: default excludes hidden statuses; "all" skips filtering;
-    # "archived" expands to include merged/expired (and legacy disposed events).
+    # Status filtering: default excludes hidden statuses; "all" skips filtering; "archived" expands
+    # to include merged/expired; a comma-separated value matches any (column-filter multi-select).
+    status_set = {s.strip().lower() for s in status.split(",") if s.strip()} if (status and "," in status) else None
     if status == "all":
         pass  # no filter
+    elif status_set:
+        result = [r for r in result if str(r.get("status") or "").lower() in status_set]
     elif status == "archived":
         result = [r for r in result if str(r.get("status") or "").lower() in _ARCHIVED_GROUP]
     elif status:
@@ -312,13 +315,16 @@ async def list_items(
         result = [r for r in result if str(r.get("status") or "").lower() not in _HIDDEN_STATUSES]
 
     if category:
-        result = [r for r in result if str(r.get("category") or "") == category]
+        cats = {c.strip() for c in category.split(",") if c.strip()}
+        result = [r for r in result if str(r.get("category") or "") in cats]
 
     if inventory_type:
-        result = [r for r in result if (r.get("inventory_type") or "stocked") == inventory_type]
+        types = {it.strip() for it in inventory_type.split(",") if it.strip()}
+        result = [r for r in result if (r.get("inventory_type") or "stocked") in types]
 
     if location_id:
-        result = [r for r in result if str(r.get("location_id") or "") == location_id]
+        locs = {loc.strip() for loc in location_id.split(",") if loc.strip()}
+        result = [r for r in result if str(r.get("location_id") or "") in locs]
 
     if sku:
         result = [r for r in result if str(r.get("sku", "")) == sku]

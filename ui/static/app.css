@@ -2691,6 +2691,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .colfilter-item:hover { background: var(--c-bg-alt, #f3f4f6); }
 .colfilter-all { border-bottom: 1px solid var(--c-border); margin-bottom: 4px; font-weight: 600; }
 .colfilter-clear { background: none; border: none; color: var(--c-accent); cursor: pointer; font-size: 12px; padding: 2px; }
+.colfilter-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
 .dp-row-hidden { display: none; }
 
 /* Shared bulk-action toolbar */

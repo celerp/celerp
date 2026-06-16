@@ -311,6 +311,89 @@ COLUMN_FILTER_JS = """
 """
 
 
+def _filter_funnel_btn(param: str, options: list, selected, label: str = "") -> FT:
+    """The funnel button for a server-backed column filter. `options` is [(value, label), ...];
+    `selected` is the active values (from the current query). SERVER_FILTER_JS handles the rest."""
+    import json as _json
+    sel = [str(s) for s in (selected or [])]
+    return Button(
+        "▾", type="button", cls="colfilter" + (" colfilter--active" if sel else ""),
+        title=f"Filter by {label}" if label else "Filter",
+        **{"data-param": param,
+           "data-options": _json.dumps([[str(v), (lbl if lbl is not None else str(v))] for v, lbl in options]),
+           "data-selected": _json.dumps(sel),
+           "aria-label": f"Filter by {label}" if label else "Filter"},
+    )
+
+
+def server_filter_th(label: str, param: str, options: list, selected=None, *, center: bool = False) -> FT:
+    """A column header with a SERVER-backed Excel filter funnel (for paginated lists). Checking
+    values and applying reloads the page with `?<param>=<csv>` so the full dataset is filtered
+    server-side. Pair with SERVER_FILTER_JS on the page."""
+    return Th(
+        Span(label), _filter_funnel_btn(param, options, selected, label),
+        cls="colfilter-th" + (" cell--center" if center else ""),
+    )
+
+
+# Server-backed column filter: the funnel popup lists the column's value domain (provided
+# server-side); Apply reloads with the chosen values as a `?<param>=csv` query so a PAGINATED list
+# is filtered across its whole dataset, not just the visible page. Reuses the .colfilter-pop styling.
+SERVER_FILTER_JS = """
+(function(){
+  if(window.__celerpSrvFilter)return;window.__celerpSrvFilter=true;
+  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
+  function build(btn){
+    var param=btn.getAttribute('data-param');
+    var options=JSON.parse(btn.getAttribute('data-options')||'[]');
+    var selected=new Set(JSON.parse(btn.getAttribute('data-selected')||'[]'));
+    var noFilter=selected.size===0;
+    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-param',param);
+    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder='Search\\u2026';
+    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';
+    var selAllCb=document.createElement('input');selAllCb.type='checkbox';
+    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' (Select all)'));
+    var list=document.createElement('div');list.className='colfilter-list';
+    options.forEach(function(o){
+      var v=String(o[0]),label=o[1]==null?v:o[1];
+      var lbl=document.createElement('label');lbl.className='colfilter-item';
+      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;cb.checked=noFilter||selected.has(v);
+      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+label));
+      list.appendChild(lbl);
+    });
+    function checkedVals(){var out=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)out.push(c.value);});return out;}
+    function syncAll(){var n=checkedVals().length;selAllCb.checked=n===options.length;selAllCb.indeterminate=n>0&&n<options.length;}
+    syncAll();list.addEventListener('change',syncAll);
+    selAllCb.addEventListener('change',function(){list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});});
+    search.addEventListener('input',function(){var q=search.value.toLowerCase();
+      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
+    function go(vals){var p=new URLSearchParams(window.location.search);
+      if(!vals||vals.length===0||vals.length===options.length){p.delete(param);}else{p.set(param,vals.join(','));}
+      p.set('page','1');window.location.search=p.toString();}
+    var foot=document.createElement('div');foot.className='colfilter-foot';
+    var apply=document.createElement('button');apply.type='button';apply.className='btn btn--xs btn--primary';apply.textContent='Apply';
+    apply.addEventListener('click',function(){go(checkedVals());});
+    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent='Clear';
+    clear.addEventListener('click',function(){go([]);});
+    foot.appendChild(apply);foot.appendChild(clear);
+    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(foot);
+    pop.style.position='fixed';document.body.appendChild(pop);
+    var br=btn.getBoundingClientRect();
+    pop.style.top=(br.bottom+2)+'px';pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';
+    search.focus();
+  }
+  document.addEventListener('click',function(e){
+    var btn=e.target.closest&&e.target.closest('.colfilter[data-param]');
+    if(btn){e.preventDefault();e.stopPropagation();
+      var open=!!document.querySelector('.colfilter-pop[data-param="'+btn.getAttribute('data-param')+'"]');
+      closeAll();if(!open)build(btn);return;}
+    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+})();
+"""
+
+
 def empty_state_cta(
     message: str,
     action_label: str | None = None,
@@ -755,6 +838,7 @@ def data_table(
     delete_url_tpl: str | None = None,
     cell_renderers: dict | None = None,
     hidden_fields: set | None = None,
+    column_filters: dict | None = None,
 ) -> FT:
     """
     Dynamic spreadsheet table. Headers from schema (never hardcoded), rows from API.
@@ -804,6 +888,10 @@ def data_table(
         key = f["key"]
         default_width = _DEFAULT_COL_WIDTHS.get(key, _DEFAULT_COL_WIDTHS["_attr_default"])
         th_style = f"width:{default_width}"
+        spec = (column_filters or {}).get(key)
+        funnel = _filter_funnel_btn(spec["param"], spec["options"], spec.get("selected"),
+                                    f["label"]) if spec else ""
+        th_cls = f"col-{key}" + (" colfilter-th" if spec else "")
         if sort_url:
             params = {**(extra_params or {}), "sort": key}
             new_dir = "asc" if (sort_key == key and sort_dir == "desc") else "desc"
@@ -819,11 +907,12 @@ def data_table(
                   hx_swap="outerHTML",
                   hx_push_url="true",
                   cls="sort-link"),
-                cls=f"col-{key}", data_key=key, draggable="true",
+                funnel,
+                cls=th_cls, data_key=key, draggable="true",
                 title="Drag to reorder columns",
                 style=th_style,
             )
-        return Th(f["label"], cls=f"col-{key}", data_key=key, draggable="true",
+        return Th(f["label"], funnel, cls=th_cls, data_key=key, draggable="true",
                    title="Drag to reorder columns", style=th_style)
 
     checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title="Select all"), cls="col-checkbox")] if show_checkboxes else []

@@ -21,7 +21,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from ui.i18n import t, get_lang
@@ -365,6 +365,7 @@ def _parse_params(request: Request) -> dict:
         "status": q.get("status", ""),
         "category": q.get("category", ""),
         "inventory_type": q.get("inventory_type", ""),
+        "location_id": q.get("location_id", ""),  # column-filter funnel (csv of location ids)
         "sort": q.get("sort", ""),
         "dir": q.get("dir", "desc"),
         "per_page": max(1, per_page),
@@ -374,7 +375,7 @@ def _parse_params(request: Request) -> dict:
 
 def _base_state(p: dict, include_page: bool = False) -> dict:
     state = {}
-    for k in ("q", "skus", "status", "category", "inventory_type", "sort", "dir"):
+    for k in ("q", "skus", "status", "category", "inventory_type", "location_id", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
     if p.get("per_page") and p["per_page"] != _DEFAULT_PER_PAGE:
@@ -416,6 +417,8 @@ async def _inventory_content(
             params["category"] = p["category"]
         if p.get("inventory_type"):
             params["inventory_type"] = p["inventory_type"]
+        if p.get("location_id"):
+            params["location_id"] = p["location_id"]
         if p["sort"]:
             params["sort"] = p["sort"]
             params["dir"] = p["dir"]
@@ -479,8 +482,15 @@ async def _inventory_content(
             auto_hide_empty=False,
             cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency),
             hidden_fields=set(_PAIRED_TABLE.values()),
+            column_filters={"location_name": {
+                "param": "location_id",
+                "options": [(loc.get("id") or loc.get("location_id"), loc.get("name"))
+                            for loc in locations if (loc.get("id") or loc.get("location_id"))],
+                "selected": [s for s in (p.get("location_id") or "").split(",") if s],
+            }} if locations else None,
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
+        Script(SERVER_FILTER_JS),
         Div(id="modal-container"),
         id="inventory-content",
     )
