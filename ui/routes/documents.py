@@ -804,8 +804,14 @@ def _doc_manufacture_panel(doc_id: str, summary: dict) -> FT:
             for it in fgs
         ]
         tables.append(Div(
-            H3("Items to manufacture", cls="section-title"),
-            P("Open this item's Manufacturing tab to produce it; demand also appears on the Production Queue.", cls="hint"),
+            Div(H3("Items to manufacture", cls="section-title"),
+                Button("Create work orders", type="button", cls="btn btn--sm btn--primary",
+                       hx_post=f"/docs/{doc_id}/make-work-orders", hx_target="#doc-mfg-panel",
+                       hx_swap="outerHTML", hx_disabled_elt="this",
+                       title="Create a linked work order for each item still short"),
+                cls="flex-row flex-between"),
+            P("Each item links to its Manufacturing tab. 'Create work orders' starts production for the "
+              "quantities still short, linked back to this order.", cls="hint"),
             Table(Thead(Tr(Th("SKU"), Th("Name"), Th("Quantity", cls="cell--number"))),
                   Tbody(*fg_rows), cls="data-table"),
             cls="recipe-block"))
@@ -1933,6 +1939,32 @@ celerpUpdateBulkAlloc();
                 return P(t("error.unauthorized"), cls="cell-error")
             return Div(P(e.detail, cls="cell-error"), id="doc-mfg-panel")
         return _doc_manufacture_panel(entity_id, summary)
+
+    @app.post("/docs/{entity_id}/make-work-orders")
+    async def doc_make_work_orders(request: Request, entity_id: str):
+        """Create linked work orders for this order's manufacturable lines (the 'Create work orders'
+        action), then refresh the panel with a toast."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        import json as _json
+        from starlette.responses import HTMLResponse as _HR
+        from fasthtml.common import to_xml
+        toast = {"message": "Could not create work orders.", "type": "error"}
+        try:
+            result = await api.manufacturing_make_work_orders_for_doc(token, entity_id)
+            n = len(result.get("created", []))
+            toast = ({"message": f"Created {n} work order(s).", "type": "success"} if n
+                     else {"message": "Nothing to make - all items are covered by stock or existing work orders.",
+                           "type": "info"})
+            summary = await api.document_components_summary(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            toast = {"message": str(e.detail) or "Could not create work orders.", "type": "error"}
+            summary = await api.document_components_summary(token, entity_id)
+        return _HR(to_xml(_doc_manufacture_panel(entity_id, summary)),
+                   headers={"HX-Trigger": _json.dumps({"celerpToast": toast})})
 
     @app.get("/docs/{entity_id}/field/{field}/display")
     async def doc_field_display(request: Request, entity_id: str, field: str):

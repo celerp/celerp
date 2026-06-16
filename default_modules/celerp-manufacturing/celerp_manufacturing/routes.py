@@ -660,6 +660,31 @@ async def make_work_orders(
     return {"created": created, "skipped": skipped}
 
 
+@router.post("/documents/{doc_id}/make-work-orders")
+async def make_work_orders_for_doc(
+    doc_id: str,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a linked work order for every manufacturable line on this document that still has a
+    shortfall (the 'Create work orders' action on an order). Lines already covered are skipped."""
+    states = await _all_item_states(session, company_id)
+    created: list[dict] = []
+    for row in await _compute_to_make(session, company_id):
+        st = states.get(row["item_id"])
+        if not is_manufacturable(st):
+            continue
+        doc = next((d for d in row.get("docs", []) if d.get("doc_id") == doc_id), None)
+        qty = float((doc or {}).get("shortfall") or 0)
+        if not doc or qty <= 0:
+            continue
+        order_id = await _emit_work_order(session, company_id, user, row["item_id"], st, qty, _line_source(doc))
+        created.append({"item_id": row["item_id"], "run_id": order_id, "quantity": qty})
+    await session.commit()
+    return {"created": created}
+
+
 @router.post("/to-make/requirements")
 async def bulk_requirements(
     payload: BulkBuildBody,

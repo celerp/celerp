@@ -50,3 +50,31 @@ def test_doc_panel_is_product_centric(page, ui_server, api, doc_with_mfg):
     # No runs are auto-created from the document.
     runs = [o for o in api.get("/manufacturing").json()["items"] if o.get("source_doc_id") == doc_id]
     assert runs == []
+
+
+def test_create_work_orders_from_doc(page, ui_server, api):
+    """The 'Create work orders' button on an order creates a work order linked 1:1 to it."""
+    import time
+    gold = api.post("/items", json={"sku": "CW-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
+                                    "cost_total": 8000, "inventory_type": "component"}).json()["id"]
+    ring = api.post("/items", json={"sku": "CW-RING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    api.put(f"/manufacturing/items/{ring}/recipe",
+            json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
+    inv = api.post("/docs", json={"doc_type": "invoice", "line_items": [
+        {"item_id": ring, "sku": "CW-RING", "name": "Ring", "quantity": 2, "unit_price": 500}], "total": 1000}).json()
+    api.post(f"/docs/{inv['id']}/finalize")  # only finalized demand counts
+
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    page.goto(f"{ui_server}/docs/{inv['id']}", wait_until="domcontentloaded")
+    page.wait_for_selector("#doc-mfg-panel button:has-text('Create work orders')", timeout=10000)
+    assert not [o for o in api.get("/manufacturing").json()["items"] if o.get("output_item_id") == ring]
+
+    page.locator("#doc-mfg-panel button:has-text('Create work orders')").click()
+    ok = False
+    for _ in range(20):
+        runs = [o for o in api.get("/manufacturing").json()["items"] if o.get("output_item_id") == ring]
+        if runs and runs[0].get("source_doc_id") == inv["id"] and runs[0]["expected_outputs"][0]["quantity"] == 2.0:
+            ok = True
+            break
+        time.sleep(0.25)
+    assert ok, "Create work orders did not create a work order linked to the invoice"

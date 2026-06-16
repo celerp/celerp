@@ -1043,6 +1043,12 @@ async def manufacturing_make_work_orders(token: str, lines: list[dict], complete
                                    json={"lines": lines, "complete": complete})).json()
 
 
+async def manufacturing_make_work_orders_for_doc(token: str, doc_id: str) -> dict:
+    """Create linked work orders for every manufacturable line on a document at its shortfall."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/documents/{doc_id}/make-work-orders")).json()
+
+
 async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
     """Aggregated raw-material + sub-assembly requirements to make the selected products' shortfall."""
     async with _api_client(token) as c:
