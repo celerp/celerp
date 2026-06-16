@@ -257,7 +257,22 @@ def test_backup_routes_are_registered():
     from celerp_backup.setup import setup_api_routes as _setup_backup
     _tmp = FastAPI()
     _setup_backup(_tmp)
-    registered = {route.path for route in _tmp.routes}
+
+    # Flatten the route tree: include_router(...) may put leaf routes directly on
+    # the app (older Starlette) or behind a wrapper holding a `.routes` list
+    # (e.g. _IncludedRouter / Mount on newer Starlette). Only leaf routes carry a
+    # `.path`, so recurse into any entry that has `.routes` instead.
+    def _leaf_paths(routes):
+        for r in routes:
+            sub = getattr(r, "routes", None)
+            if sub:
+                yield from _leaf_paths(sub)
+            else:
+                path = getattr(r, "path", None)
+                if path is not None:
+                    yield path
+
+    registered = set(_leaf_paths(_tmp.routes))
     assert "/backup/trigger" in registered
     assert "/backup/list" in registered
     assert "/backup/restore/{backup_id}" in registered
