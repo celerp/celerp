@@ -1035,12 +1035,12 @@ async def manufacturing_to_make(token: str) -> dict:
         return _raise(await c.get("/manufacturing/to-make")).json()
 
 
-async def manufacturing_bulk_build(token: str, item_ids: list[str], complete: bool = False) -> dict:
-    """Create a production run for each selected product at its net shortfall (To-Make qty).
-    With complete=True, also issue/receive/close each run in one tap."""
+async def manufacturing_make_work_orders(token: str, lines: list[dict], complete: bool = False) -> dict:
+    """Create one work order per selected demand line (each {item_id, doc_id}), linked 1:1 to its
+    source order, for the line's shortfall. With complete=True, also issue/receive/close each."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing/to-make/build",
-                                   json={"item_ids": item_ids, "complete": complete})).json()
+        return _raise(await c.post("/manufacturing/to-make/make",
+                                   json={"lines": lines, "complete": complete})).json()
 
 
 async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:

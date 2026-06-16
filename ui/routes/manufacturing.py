@@ -194,7 +194,9 @@ def _demand_row(l: dict) -> FT:
     doc_cell = (A(doc_no, href=_doc_href(l.get("doc_id"), doc_type), cls="table-link")
                 if l.get("doc_id") else Span(doc_no))
     return Tr(
-        Td(Input(type="checkbox", cls="bulk-select", name="selected", value=item_id), cls="col-checkbox"),
+        # value carries the demand line (product + its document) so each makes a 1:1-linked work order.
+        Td(Input(type="checkbox", cls="bulk-select", name="selected", value=f"{item_id}|{l.get('doc_id') or ''}"),
+           cls="col-checkbox"),
         Td(A(label, href=f"/inventory/{item_id}?tab=manufacturing", cls="table-link")),
         Td(doc_cell),
         Td(doc_type.replace("_", " ").title() or EMPTY),
@@ -478,27 +480,32 @@ def setup_routes(app):
         dtype, _q = _dp_filter_args(request)
         complete = request.query_params.get("complete") in ("1", "true", "on")
         form = await request.form()
-        ids = list(dict.fromkeys(form.getlist("selected")))  # distinct products, order preserved
-        result: dict = {"built": []}
+        # Each selected value is "item_id|doc_id" - one demand line -> one linked work order.
+        wo_lines = []
+        for val in dict.fromkeys(form.getlist("selected")):
+            item_id, _, doc_id = val.partition("|")
+            if item_id:
+                wo_lines.append({"item_id": item_id, "doc_id": doc_id})
+        result: dict = {"created": []}
         rows: list[dict] = []
         error = ""
         try:
-            if ids:
-                result = await api.manufacturing_bulk_build(token, ids, complete=complete)
+            if wo_lines:
+                result = await api.manufacturing_make_work_orders(token, wo_lines, complete=complete)
             rows = (await api.manufacturing_to_make(token)).get("items", [])
         except APIError as e:
             if e.status == 401:
                 return RedirectResponse("/login", status_code=302)
-            error = str(e.detail) or "Could not start the selected runs."
+            error = str(e.detail) or "Could not create the selected work orders."
         lines = _demand_filter(_demand_lines(rows), dtype)
-        built = len(result.get("built", []))
-        verb = "Built and completed" if complete else "Started"
+        made = len(result.get("created", []))
+        verb = "Made and completed" if complete else "Created"
         if error:
             toast = {"message": error, "type": "error"}
-        elif built:
-            toast = {"message": f"{verb} {built} production run(s).", "type": "success"}
+        elif made:
+            toast = {"message": f"{verb} {made} work order(s).", "type": "success"}
         else:
-            toast = {"message": "Nothing to make for the selected products.", "type": "info"}
+            toast = {"message": "Nothing to make for the selected lines.", "type": "info"}
         return HTMLResponse(
             to_xml(_demand_table(lines)),
             headers={"HX-Trigger": json.dumps({"celerpToast": toast})},
@@ -511,7 +518,9 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return RedirectResponse("/login", status_code=302)
-        ids = [i for i in (request.query_params.get("ids") or "").split(",") if i]
+        # Selected values are "item_id|doc_id" demand lines; requirements aggregate by product.
+        ids = list(dict.fromkeys(
+            v.partition("|")[0] for v in (request.query_params.get("ids") or "").split(",") if v))
         data = {"products": [], "raw_materials": [], "sub_assemblies": []}
         if ids:
             try:

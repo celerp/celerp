@@ -574,54 +574,90 @@ async def to_make(
 
 class BulkBuildBody(BaseModel):
     item_ids: list[str] = Field(default_factory=list)
-    complete: bool = False  # one-tap: also issue components, receive output and close each run
 
 
-@router.post("/to-make/build")
-async def bulk_build(
-    payload: BulkBuildBody,
+async def _emit_work_order(session, company_id, user, item_id: str, item_state: dict, qty: float,
+                           source: dict | None = None) -> str:
+    """Create a work order (mfg_order) to build qty of item_id, optionally linked 1:1 to a source
+    order line via source_doc_* fields. Returns the new order id; the caller commits."""
+    inputs, outputs = expand_recipe(item_state, qty)
+    order_id = f"mfg:{uuid.uuid4()}"
+    data = {
+        "description": f"Build {qty:g} x {item_state.get('sku', '')}",
+        "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
+        "output_item_id": item_id,
+    }
+    if source:
+        data.update({k: v for k, v in source.items() if v not in (None, "")})
+    await emit_event(
+        session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
+        event_type="mfg.order.created", data=data, actor_id=user.id, location_id=None,
+        source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
+    return order_id
+
+
+async def _complete_work_order_now(session, company_id, user, order_id: str, qty: float, states: dict) -> None:
+    """One-tap: issue all components, receive the output and close the work order."""
+    run = await _get_order(session, company_id, order_id)
+    await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
+    await _receive(session, company_id, user, order_id, run.state, qty, states)
+    run = await _get_order(session, company_id, order_id)
+    await _close_run(session, company_id, user, order_id, run.state, states)
+
+
+def _line_source(doc: dict) -> dict:
+    """Denormalised source-order fields stored on a work order so it shows which order it's for."""
+    return {
+        "source_doc_id": doc.get("doc_id"), "source_doc_number": doc.get("doc_number"),
+        "source_doc_type": doc.get("doc_type"), "source_contact_name": doc.get("contact_name"),
+        "source_due": doc.get("due"),
+    }
+
+
+class WorkOrderLineRef(BaseModel):
+    item_id: str
+    doc_id: str = ""  # the demand document the work order is for (1:1 link); blank = make-to-stock
+
+
+class MakeWorkOrdersBody(BaseModel):
+    lines: list[WorkOrderLineRef] = Field(default_factory=list)
+    complete: bool = False  # one-tap: also issue components, receive output and close each work order
+
+
+@router.post("/to-make/make")
+async def make_work_orders(
+    payload: MakeWorkOrdersBody,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Create a production run for each selected product at its current net shortfall (the To-Make
-    quantity). Products with nothing left to make (covered by stock or in-progress runs) are
-    skipped. With ``complete=true`` each run is also issued, received and closed in one tap.
-    This is the To-Make board's bulk 'Make selected' / 'Make & complete' action."""
-    if not payload.item_ids:
-        return {"built": [], "skipped": []}
+    """Create one work order per selected demand line, linked 1:1 to its source order, for the
+    line's net shortfall (the FIFO-pegged uncovered quantity). With ``complete=true`` each is also
+    issued, received and closed. This is Demand Planning's 'Make selected' / 'Make & complete'."""
+    if not payload.lines:
+        return {"created": [], "skipped": []}
     rows = {r["item_id"]: r for r in await _compute_to_make(session, company_id)}
     states = await _all_item_states(session, company_id)
-    built: list[dict] = []
-    skipped: list[str] = []
-    for item_id in payload.item_ids:
-        qty = float((rows.get(item_id) or {}).get("to_make") or 0)
-        st = states.get(item_id)
-        if qty <= 0 or not is_manufacturable(st):
-            skipped.append(item_id)
+    created: list[dict] = []
+    skipped: list[dict] = []
+    for ln in payload.lines:
+        row = rows.get(ln.item_id)
+        st = states.get(ln.item_id)
+        if not row or not is_manufacturable(st):
+            skipped.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "reason": "not manufacturable"})
             continue
-        inputs, outputs = expand_recipe(st, qty)
-        order_id = f"mfg:{uuid.uuid4()}"
-        await emit_event(
-            session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-            event_type="mfg.order.created",
-            data={
-                "description": f"Build {qty:g} x {st.get('sku', '')}",
-                "order_type": "assembly", "inputs": inputs, "expected_outputs": outputs,
-                "output_item_id": item_id,
-            },
-            actor_id=user.id, location_id=None, source="api",
-            idempotency_key=str(uuid.uuid4()), metadata_={},
-        )
+        doc = next((d for d in row.get("docs", []) if d.get("doc_id") == ln.doc_id), None) if ln.doc_id else None
+        qty = float((doc.get("shortfall") if doc else row.get("to_make")) or 0)
+        if qty <= 0:
+            skipped.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "reason": "nothing to make"})
+            continue
+        order_id = await _emit_work_order(session, company_id, user, ln.item_id, st, qty,
+                                          _line_source(doc) if doc else None)
         if payload.complete:
-            run = await _get_order(session, company_id, order_id)
-            await _issue_and_record(session, company_id, user, order_id, run.state.get("inputs", []), states)
-            await _receive(session, company_id, user, order_id, run.state, qty, states)
-            run = await _get_order(session, company_id, order_id)
-            await _close_run(session, company_id, user, order_id, run.state, states)
-        built.append({"item_id": item_id, "run_id": order_id, "quantity": qty})
+            await _complete_work_order_now(session, company_id, user, order_id, qty, states)
+        created.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "run_id": order_id, "quantity": qty})
     await session.commit()
-    return {"built": built, "skipped": skipped}
+    return {"created": created, "skipped": skipped}
 
 
 @router.post("/to-make/requirements")

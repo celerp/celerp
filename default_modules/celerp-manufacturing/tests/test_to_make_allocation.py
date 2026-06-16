@@ -85,39 +85,42 @@ async def test_in_progress_runs_reduce_to_make(client):
 
 
 @pytest.mark.asyncio
-async def test_bulk_build_creates_runs_at_shortfall(client):
-    """The bulk action builds each selected product at its net shortfall, which then shows as
-    in-progress supply so nothing is left to make."""
+async def test_make_work_orders_links_to_order_at_shortfall(client):
+    """Making a demand line creates a work order at the line's shortfall, linked 1:1 to its order."""
     token = await _register(client)
     gold = await _item(client, token, "G2", quantity=100, cost_total=8000)
     ring = await _item(client, token, "R2", quantity=1)  # 1 on hand
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
-    await _finalized_invoice(client, token, ring, "R2", 4)  # demand 4 - on hand 1 -> to_make 3
-    assert (await _board(client, token))[ring]["to_make"] == 3.0
+    await _finalized_invoice(client, token, ring, "R2", 4)  # demand 4 - on hand 1 -> shortfall 3
+    board = await _board(client, token)
+    doc_id = board[ring]["docs"][0]["doc_id"]
+    assert board[ring]["to_make"] == 3.0
 
-    res = (await client.post("/manufacturing/to-make/build", headers=_h(token),
-                             json={"item_ids": [ring]})).json()
-    assert len(res["built"]) == 1 and res["built"][0]["quantity"] == 3.0 and res["skipped"] == []
+    res = (await client.post("/manufacturing/to-make/make", headers=_h(token),
+                             json={"lines": [{"item_id": ring, "doc_id": doc_id}]})).json()
+    assert len(res["created"]) == 1 and res["created"][0]["quantity"] == 3.0 and res["skipped"] == []
+    run = (await client.get(f"/manufacturing/{res['created'][0]['run_id']}", headers=_h(token))).json()
+    assert run["output_item_id"] == ring
+    assert run["source_doc_id"] == doc_id  # the 1:1 link back to the order
 
     board = await _board(client, token)
     assert board[ring]["in_progress"] == 3.0 and board[ring]["to_make"] == 0.0
-    runs = (await client.get("/manufacturing", headers=_h(token))).json()["items"]
-    assert any(r.get("output_item_id") == ring for r in runs)
 
 
 @pytest.mark.asyncio
-async def test_bulk_build_complete_one_tap(client):
-    """complete=True issues components, receives output and closes each run in one call."""
+async def test_make_work_orders_complete_one_tap(client):
+    """complete=True issues components, receives output and closes each work order in one call."""
     token = await _register(client)
     gold = await _item(client, token, "GC", quantity=100, cost_total=8000)
     ring = await _item(client, token, "RC", quantity=0)
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
     await _finalized_invoice(client, token, ring, "RC", 3)
+    doc_id = (await _board(client, token))[ring]["docs"][0]["doc_id"]
 
-    res = (await client.post("/manufacturing/to-make/build", headers=_h(token),
-                             json={"item_ids": [ring], "complete": True})).json()
-    assert len(res["built"]) == 1
-    run_id = res["built"][0]["run_id"]
+    res = (await client.post("/manufacturing/to-make/make", headers=_h(token),
+                             json={"lines": [{"item_id": ring, "doc_id": doc_id}], "complete": True})).json()
+    assert len(res["created"]) == 1
+    run_id = res["created"][0]["run_id"]
     assert (await client.get(f"/manufacturing/{run_id}", headers=_h(token))).json()["status"] == "completed"
     # Output restocked, components consumed.
     assert (await client.get(f"/items/{ring}", headers=_h(token))).json()["quantity"] == 3.0
@@ -168,14 +171,15 @@ async def test_bulk_run_action_start_then_complete(client):
 
 
 @pytest.mark.asyncio
-async def test_bulk_build_skips_fully_covered(client):
-    """Products already covered by stock have nothing to build and are skipped."""
+async def test_make_work_orders_skips_fully_covered(client):
+    """A demand line already covered by stock has nothing to make and is skipped."""
     token = await _register(client)
     gold = await _item(client, token, "G3", quantity=100, cost_total=8000)
     ring = await _item(client, token, "R3", quantity=10)  # plenty on hand
     await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
     await _finalized_invoice(client, token, ring, "R3", 4)  # covered by on-hand
+    doc_id = (await _board(client, token))[ring]["docs"][0]["doc_id"]
 
-    res = (await client.post("/manufacturing/to-make/build", headers=_h(token),
-                             json={"item_ids": [ring]})).json()
-    assert res["built"] == [] and res["skipped"] == [ring]
+    res = (await client.post("/manufacturing/to-make/make", headers=_h(token),
+                             json={"lines": [{"item_id": ring, "doc_id": doc_id}]})).json()
+    assert res["created"] == [] and len(res["skipped"]) == 1
