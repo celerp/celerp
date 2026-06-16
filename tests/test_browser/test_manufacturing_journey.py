@@ -139,6 +139,8 @@ def test_full_manufacturing_journey(page, ui_server, api):
     page.wait_for_selector("#production-block .wo-action-select", timeout=8000)
     block.locator(".wo-action-select").first.select_option(value="complete")
     _wait_status("completed")
+    # Completed work orders are hidden by default; reveal them with the toggle to confirm.
+    page.locator("#production-block a:has-text('Show completed')").click()
     page.wait_for_selector("#production-block .badge:has-text('Completed')", timeout=8000)
     page.screenshot(path=str(SHOTS / "run-completed.png"), full_page=True)
 

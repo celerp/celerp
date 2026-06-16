@@ -896,6 +896,13 @@ async def item_manufacturing_hub(
                      "created_at": r.created_at.isoformat() if r.created_at else None})
     runs.sort(key=lambda x: x.get("created_at") or "", reverse=True)
 
+    # Coverage per demand line (Needed/Partial/Covered) from the FIFO pegging - shows at a glance
+    # which orders still need making.
+    my_row = next((r for r in await _compute_to_make(session, company_id) if r.get("item_id") == item_id), None)
+    cov_by_doc = {d.get("doc_id"): d.get("coverage") for d in (my_row or {}).get("docs", [])}
+    for d in demand:
+        d["coverage"] = cov_by_doc.get(d.get("doc_id"))
+
     return {"demand": demand, "runs": runs}
 
 

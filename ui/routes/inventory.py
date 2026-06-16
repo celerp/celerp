@@ -21,7 +21,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from ui.i18n import t, get_lang
@@ -1398,13 +1398,14 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     async def _production_block_response(token: str, entity_id: str, flash_msg: str | None = None,
-                                         flash_kind: str = "success"):
+                                         flash_kind: str = "success", show_completed: bool = False):
         item, company, hub = await asyncio.gather(
             api.get_item(token, entity_id), api.get_company(token),
             api.manufacturing_item_hub(token, entity_id),
         )
         cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
-        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind)
+        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind,
+                                 show_completed=show_completed)
 
     @app.get("/api/items/{entity_id}/production-block")
     async def production_block(request: Request, entity_id: str):
@@ -1412,7 +1413,8 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         try:
-            return await _production_block_response(token, entity_id)
+            return await _production_block_response(
+                token, entity_id, show_completed=request.query_params.get("wo") == "all")
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
@@ -5337,12 +5339,21 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     )
 
 
+_WO_CLOSED = ("completed", "cancelled")
+
+
 def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
-                      flash_msg: str | None = None, flash_kind: str = "success") -> FT:
-    """The product Manufacturing-tab production hub: open demand for this product (which documents
-    want it) + its production runs with inline status actions + a Make control."""
+                      flash_msg: str | None = None, flash_kind: str = "success",
+                      show_completed: bool = False) -> FT:
+    """The product Manufacturing-tab production hub: open demand for this product (with coverage) +
+    its work orders. Completed/cancelled work orders are hidden by default (toggle to show). Both
+    tables are client-sortable and Excel-filterable, and paginate when long."""
+    from ui.routes.manufacturing import _status_badge as _coverage_badge
     demand = hub.get("demand", []) or []
-    runs = hub.get("runs", []) or []
+    all_runs = hub.get("runs", []) or []
+    runs = (all_runs if show_completed
+            else [r for r in all_runs if (r.get("status") or "").lower() not in _WO_CLOSED])
+    completed_n = sum(1 for r in all_runs if (r.get("status") or "").lower() in _WO_CLOSED)
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
 
     def _doc_url(d: dict) -> str:
@@ -5356,14 +5367,22 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             Td(d.get("contact_name") or EMPTY),
             Td(f"{float(d.get('quantity', 0)):g}", cls="cell--number"),
             Td(d.get("due") or EMPTY, cls="cell--center"),
+            Td(_coverage_badge(d["coverage"]) if d.get("coverage") else EMPTY, cls="cell--center"),
             cls="data-row",
         )
         for d in demand
     ]
-    demand_tbl = Table(
-        Thead(Tr(Th("Document"), Th("Type"), Th("Customer"), Th("Qty"), Th("Due"))),
-        Tbody(*demand_rows) if demand_rows else Tbody(Tr(Td("No open demand.", colspan="5", cls="empty-row"))),
-        cls="data-table",
+    demand_tbl = Div(
+        Table(
+            Thead(Tr(
+                sortable_th("Document", 0), filter_th("Type", 1, sortable=True),
+                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3),
+                sortable_th("Due", 4, center=True), filter_th("Coverage", 5, sortable=True, center=True),
+            )),
+            Tbody(*demand_rows) if demand_rows else Tbody(Tr(Td("No open demand.", colspan="6", cls="empty-row"))),
+            cls="data-table js-table", id="wo-demand-table", **{"data-page-size": "25"},
+        ),
+        table_pager("wo-demand-table"),
     )
 
     # Work orders are shown in a table that surfaces the order each one fulfils. The status is a
@@ -5413,22 +5432,38 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
             cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
         )
 
-    runs_view = (Table(
-        Thead(Tr(Th("Work order"), Th("Source order"), Th("Customer"), Th("Qty", cls="cell--number"),
-                 Th("Due", cls="cell--center"), Th("Status"), Th("", cls="cell--actions"))),
-        Tbody(*[_wo_row(r) for r in runs]),
-        cls="data-table",
-    ) if runs else P("No work orders yet. Create them from an order or on the Demand Planning page.", cls="hint"))
+    runs_view = (Div(
+        Table(
+            Thead(Tr(
+                sortable_th("Work order", 0), filter_th("Source order", 1, sortable=True),
+                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3),
+                sortable_th("Due", 4, center=True), filter_th("Status", 5, sortable=True),
+                Th("", cls="cell--actions"),
+            )),
+            Tbody(*[_wo_row(r) for r in runs]),
+            cls="data-table js-table", id="wo-orders-table", **{"data-page-size": "25"},
+        ),
+        table_pager("wo-orders-table"),
+    ) if runs else P("No work orders to show. Create them from an order or on the Demand Planning page.", cls="hint"))
+
+    toggle = (A(f"Show completed ({completed_n})" if not show_completed else "Hide completed",
+                hx_get=f"/api/items/{entity_id}/production-block?wo={'active' if show_completed else 'all'}",
+                hx_target="#production-block", hx_swap="outerHTML", cls="btn btn--xs btn--ghost")
+              if (completed_n or show_completed) else "")
 
     return Div(
         flash_el,
         Div(H3("Open demand", cls="section-title"),
-            P("Orders that have this item on order.", cls="hint"), demand_tbl,
-            cls="detail-card recipe-block"),
-        Div(H3("Work orders", cls="section-title"),
-            P("Production tasks for this item, each shown with the order it fulfils. Create them from "
-              "an order or on the Demand Planning page; advance one with its Action menu.", cls="hint"),
+            P("Orders that have this item on order, with how well current supply covers each.", cls="hint"),
+            demand_tbl, cls="detail-card recipe-block"),
+        Div(
+            Div(H3("Work orders", cls="section-title"), toggle, cls="flex-row flex-between"),
+            P("Production tasks for this item, each shown with the order it fulfils. Completed work "
+              "orders are hidden by default. Create them from an order or on the Demand Planning page; "
+              "advance one with its Action menu.", cls="hint"),
             runs_view, cls="detail-card recipe-block"),
+        Script(COLUMN_FILTER_JS),
+        Script(ENHANCED_TABLE_JS),
         id="production-block",
     )
 

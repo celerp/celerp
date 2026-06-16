@@ -84,3 +84,38 @@ def test_product_hub_work_orders_and_action_dropdown(page, ui_server, api):
     # Finished stock went up; the gold component was consumed (5 per ring * 2 = 10 g).
     assert api.get(f"/items/{ring}").json()["quantity"] == 2.0
     assert api.get(f"/items/{gold}").json()["quantity"] == 90.0
+
+
+def test_hub_work_orders_sort_filter_coverage(page, ui_server, api):
+    """The hub Work orders + Open demand tables: sortable headers, Excel funnels, and a Coverage
+    column on demand."""
+    gold = api.post("/items", json={"sku": "HF-GOLD", "name": "Gold", "quantity": 100, "sell_by": "gram",
+                                    "cost_total": 8000, "inventory_type": "component"}).json()["id"]
+    ring = api.post("/items", json={"sku": "HF-RING", "name": "Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    api.put(f"/manufacturing/items/{ring}/recipe",
+            json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
+    for q in (1, 2):  # two orders -> two demand lines -> two work orders (qty 1 and 2)
+        inv = api.post("/docs", json={"doc_type": "invoice", "total": q, "line_items": [
+            {"item_id": ring, "sku": "HF-RING", "name": "Ring", "quantity": q, "unit_price": 1}]}).json()
+        api.post(f"/docs/{inv['id']}/finalize")
+    board = {r["item_id"]: r for r in api.get("/manufacturing/to-make").json()["items"]}
+    lines = [{"item_id": ring, "doc_id": d["doc_id"]} for d in board[ring]["docs"]]
+    api.post("/manufacturing/to-make/make", json={"lines": lines})
+
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
+    page.wait_for_selector("#wo-orders-table", timeout=10000)
+
+    # Two active work orders; Status funnel + sortable headers present.
+    assert page.locator("#wo-orders-table tbody tr.data-row").count() == 2
+    assert page.locator("#wo-orders-table .colfilter[data-col='5']").count() == 1   # Status funnel
+    assert page.locator("#wo-orders-table thead th[data-sort='3']").count() == 1    # Qty sortable
+
+    # Open demand has a Coverage column with coverage badges.
+    assert "COVERAGE" in page.locator("#wo-demand-table thead").inner_text().upper()
+    assert page.locator("#wo-demand-table .badge[class*='peg-']").count() >= 1
+
+    # Sort the work orders by Qty ascending -> first visible row's qty cell is the smaller (1).
+    page.locator("#wo-orders-table thead th[data-sort='3']").click()
+    first_qty = page.locator("#wo-orders-table tbody tr.data-row:not(.enh-page-hidden) td:nth-child(4)").first.inner_text().strip()
+    assert first_qty == "1", f"qty-ascending sort failed; first row qty={first_qty!r}"

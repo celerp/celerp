@@ -221,14 +221,18 @@ def bulk_toolbar(table_id: str, actions: list[dict]) -> FT:
     )
 
 
-def filter_th(label: str, col: int, *, center: bool = False) -> FT:
+def filter_th(label: str, col: int, *, center: bool = False, sortable: bool = False) -> FT:
     """A column header with an Excel-style filter funnel (client-side checkbox value list).
-    `col` is the 0-based cell index the funnel filters on. Pair with COLUMN_FILTER_JS on the page."""
+    `col` is the 0-based cell index the funnel filters on. Pair with COLUMN_FILTER_JS on the page.
+    With sortable=True the label also sorts the column (needs ENHANCED_TABLE_JS); the funnel button
+    is guarded so clicking it filters rather than sorts."""
+    attrs = {"data-col": str(col), "aria-label": f"Filter by {label}"}
+    th_attrs = {"data-sort": str(col)} if sortable else {}
     return Th(
         Span(label),
-        Button("▾", type="button", cls="colfilter", title=f"Filter by {label}",
-               **{"data-col": str(col), "aria-label": f"Filter by {label}"}),
-        cls="colfilter-th" + (" cell--center" if center else ""),
+        Button("▾", type="button", cls="colfilter", title=f"Filter by {label}", **attrs),
+        cls="colfilter-th" + (" sortable-th" if sortable else "") + (" cell--center" if center else ""),
+        **th_attrs,
     )
 
 
@@ -254,6 +258,7 @@ COLUMN_FILTER_JS = """
     });
     t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',!!a[b.getAttribute('data-col')]);});
     if(window.celerpBulkRefresh)window.celerpBulkRefresh();
+    if(window.celerpTableEnhance)window.celerpTableEnhance(t);
   }
   function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
   function open(btn){
@@ -391,6 +396,82 @@ SERVER_FILTER_JS = """
     if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
   });
   document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+})();
+"""
+
+
+def sortable_th(label, col: int, *, center: bool = False) -> FT:
+    """A clickable, client-sortable column header (asc/desc). Pair with ENHANCED_TABLE_JS and a
+    `js-table` table. `col` is the 0-based cell index to sort on."""
+    return Th(label, cls="sortable-th" + (" cell--center" if center else ""), **{"data-sort": str(col)})
+
+
+def table_pager(table_id: str) -> FT:
+    """Client-side pager controls for a `js-table` (hidden until the table spans >1 page)."""
+    return Div(
+        Button("‹ Prev", type="button", cls="btn btn--xs btn--ghost",
+               **{"data-page-nav": "prev", "data-page-for": table_id}),
+        Span("", cls="enh-page-info"),
+        Button("Next ›", type="button", cls="btn btn--xs btn--ghost",
+               **{"data-page-nav": "next", "data-page-for": table_id}),
+        cls="enh-pager", style="display:none", **{"data-pager-for": table_id},
+    )
+
+
+# Client-side table enhancer for bounded tables (`table.js-table`): clickable sort on
+# `th[data-sort]` (asc/desc) and windowed pagination (`data-page-size`). Composes with the Excel
+# column funnels - it only paginates VISIBLE (not .dp-row-hidden) rows and re-windows when a filter
+# changes. Reusable across pages; no server round-trips.
+ENHANCED_TABLE_JS = """
+(function(){
+  if(window.__celerpEnhTable)return;window.__celerpEnhTable=true;
+  function dataRows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}
+  function visible(t){return dataRows(t).filter(function(r){return !r.classList.contains('dp-row-hidden');});}
+  function num(s){var n=parseFloat(String(s).replace(/[^0-9.\\-]/g,''));return (s!==''&&!isNaN(n))?n:null;}
+  function cmp(a,b,col,dir){
+    var av=a.children[col]?a.children[col].textContent.trim():'';
+    var bv=b.children[col]?b.children[col].textContent.trim():'';
+    var an=num(av),bn=num(bv),r;
+    if(an!==null&&bn!==null)r=an-bn; else r=av.toLowerCase().localeCompare(bv.toLowerCase());
+    return dir==='asc'?r:-r;
+  }
+  function paginate(t){
+    var size=parseInt(t.getAttribute('data-page-size')||'0',10);
+    var vis=visible(t),pager=document.querySelector('[data-pager-for="'+t.id+'"]');
+    if(!size){return;}
+    var pages=Math.max(1,Math.ceil(vis.length/size));
+    var page=Math.min(pages,Math.max(1,parseInt(t.getAttribute('data-page')||'1',10)));
+    t.setAttribute('data-page',page);
+    vis.forEach(function(r,i){r.classList.toggle('enh-page-hidden',!(i>=(page-1)*size&&i<page*size));});
+    if(pager){
+      pager.style.display=pages>1?'':'none';
+      var info=pager.querySelector('.enh-page-info');if(info)info.textContent=page+' / '+pages+' ('+vis.length+')';
+      var prev=pager.querySelector('[data-page-nav=prev]'),next=pager.querySelector('[data-page-nav=next]');
+      if(prev)prev.disabled=page<=1; if(next)next.disabled=page>=pages;
+    }
+  }
+  function sortBy(t,col){
+    var cur=t.getAttribute('data-sort-col');
+    var dir=(cur===String(col)&&t.getAttribute('data-sort-dir')==='asc')?'desc':'asc';
+    t.setAttribute('data-sort-col',col);t.setAttribute('data-sort-dir',dir);t.setAttribute('data-page','1');
+    var tb=t.querySelector('tbody');
+    dataRows(t).sort(function(a,b){return cmp(a,b,col,dir);}).forEach(function(r){tb.appendChild(r);});
+    t.querySelectorAll('thead th[data-sort]').forEach(function(th){th.classList.remove('sort-asc','sort-desc');});
+    var th=t.querySelector('thead th[data-sort="'+col+'"]');if(th)th.classList.add(dir==='asc'?'sort-asc':'sort-desc');
+    paginate(t);
+  }
+  window.celerpTableEnhance=function(t){ if(t){paginate(t);return;} document.querySelectorAll('table.js-table').forEach(paginate); };
+  document.addEventListener('click',function(e){
+    if(e.target.closest&&e.target.closest('.colfilter'))return;  // funnel handles its own clicks
+    var th=e.target.closest&&e.target.closest('th[data-sort]');
+    if(th){var t=th.closest('table');if(t&&t.classList.contains('js-table'))sortBy(t,parseInt(th.getAttribute('data-sort'),10));return;}
+    var nav=e.target.closest&&e.target.closest('[data-page-nav]');
+    if(nav){var t=document.getElementById(nav.getAttribute('data-page-for'));if(!t)return;
+      var p=parseInt(t.getAttribute('data-page')||'1',10);
+      t.setAttribute('data-page',nav.getAttribute('data-page-nav')==='next'?p+1:p-1);paginate(t);}
+  });
+  document.addEventListener('htmx:afterSwap',function(){document.querySelectorAll('table.js-table').forEach(paginate);});
+  document.querySelectorAll('table.js-table').forEach(paginate);
 })();
 """
 
