@@ -42,7 +42,9 @@ def test_product_hub_demand_make_and_run_actions(page, ui_server, api):
     runs = [r for r in api.get(f"/manufacturing/items/{ring}/hub").json()["runs"]]
     assert len(runs) == 1 and runs[0]["status"] == "planned" and runs[0]["output_item_id"] == ring
 
-    # Start the run from the hub -> In Progress.
+    # Start the run from the hub -> the pipeline advances and the Complete action appears.
     page.locator("#production-block button:has-text('Start')").click()
-    page.wait_for_selector("#production-block:has-text('In Progress')", timeout=8000)
+    # The Complete button only renders once the run is in progress (wait on the affordance, not on
+    # the always-present 'In Progress' pipeline-step label).
+    page.wait_for_selector("#production-block button:has-text('Complete')", timeout=8000)
     assert api.get(f"/manufacturing/items/{ring}/hub").json()["runs"][0]["status"] == "in_progress"

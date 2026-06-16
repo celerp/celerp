@@ -5317,11 +5317,6 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     )
 
 
-def _run_status_badge(status: str) -> FT:
-    s = (status or "planned")
-    return Span(s.replace("_", " ").title(), cls=f"badge badge--{s.replace('_', '-')}")
-
-
 def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
                       flash_msg: str | None = None, flash_kind: str = "success") -> FT:
     """The product Manufacturing-tab production hub: open demand for this product (which documents
@@ -5352,42 +5347,54 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         cls="data-table",
     )
 
-    def _run_actions(run: dict) -> FT:
+    # A run is shown as a status pipeline (Planned -> In Progress -> Completed) with the current
+    # state highlighted and the valid guarded next action. Transitions have side effects (issue
+    # consumes components, complete receives + posts a JE), so they stay actions, not a free dropdown.
+    _PIPE_STEPS = [("planned", "Planned"), ("in_progress", "In Progress"), ("completed", "Completed")]
+    _PIPE_POS = {"planned": 0, "in_progress": 1, "on_hold": 1, "completed": 2}
+
+    def _run_pipeline(status: str) -> FT:
+        cur = -1 if status == "cancelled" else _PIPE_POS.get(status, 0)
+        nodes = [Span(label, cls="pipe-step pipe-step--"
+                      + ("done" if (cur >= 0 and i < cur) else "current" if i == cur else "todo"))
+                 for i, (_key, label) in enumerate(_PIPE_STEPS)]
+        extra = (" run-pipeline--cancelled" if status == "cancelled"
+                 else " run-pipeline--hold" if status == "on_hold" else "")
+        head = Span("On hold", cls="pipe-flag") if status == "on_hold" else (
+            Span("Cancelled", cls="pipe-flag pipe-flag--cancel") if status == "cancelled" else "")
+        return Div(Div(*nodes, cls="run-pipeline" + extra), head, cls="run-pipeline-wrap")
+
+    def _run_card(run: dict) -> FT:
         rid, status = run.get("id"), run.get("status", "planned")
         _a = {"hx_target": "#production-block", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
 
         def b(label, action, primary=True):
-            return Button(label, type="button", cls=f"btn btn--xs btn--{'primary' if primary else 'secondary'}",
+            return Button(label, type="button",
+                          cls=f"btn btn--xs btn--{'primary' if primary else 'secondary'}",
                           hx_post=f"/api/items/{entity_id}/runs/{rid}/{action}", **_a)
-        btns = []
-        if status == "planned":
-            btns.append(b("Start", "start"))
-        if status == "in_progress":
-            btns.append(b("Complete", "complete"))
-            btns.append(b("Hold", "hold", False))
-        if status == "on_hold":
-            btns.append(b("Resume", "resume"))
-        if status not in ("completed", "cancelled"):
-            btns.append(b("Cancel", "cancel", False))
-        return Div(*btns, cls="run-actions")
 
-    run_rows = [
-        Tr(
-            Td(_run_status_badge(run.get("status"))),
-            Td(f"{float((run.get('expected_outputs') or [{}])[0].get('quantity', 0)):g}", cls="cell--number"),
-            Td(", ".join(f"{float(i.get('quantity', 0)):g} x {i.get('sku') or i.get('item_id')}"
-                         for i in run.get("inputs", [])) or EMPTY),
-            Td((run.get("created_at") or "")[:10], cls="cell--center"),
-            Td(_run_actions(run), cls="cell--actions"),
-            cls="data-row",
+        nxt = {"planned": ("Start run →", "start"), "in_progress": ("Complete →", "complete"),
+               "on_hold": ("Resume →", "resume")}.get(status)
+        actions = [b(*nxt)] if nxt else []
+        if status == "in_progress":
+            actions.append(b("Hold", "hold", False))
+        if status not in ("completed", "cancelled"):
+            actions.append(b("Cancel", "cancel", False))
+        qty = float((run.get("expected_outputs") or [{}])[0].get("quantity", 0))
+        comps = ", ".join(f"{float(i.get('quantity', 0)):g} x {i.get('sku') or i.get('item_id')}"
+                          for i in run.get("inputs", [])) or EMPTY
+        return Div(
+            _run_pipeline(status),
+            Div(Span(f"{qty:g} to make", cls="run-card-qty"),
+                Span(comps, cls="run-card-comps hint"),
+                Span((run.get("created_at") or "")[:10], cls="run-card-date hint"),
+                cls="run-card-meta"),
+            Div(*actions, cls="run-actions"),
+            cls="run-card" + (" run-card--cancelled" if status == "cancelled" else ""),
         )
-        for run in runs
-    ]
-    runs_tbl = Table(
-        Thead(Tr(Th("Status"), Th("Qty"), Th("Components"), Th("Created"), Th("", cls="cell--actions"))),
-        Tbody(*run_rows) if run_rows else Tbody(Tr(Td("No production runs yet.", colspan="5", cls="empty-row"))),
-        cls="data-table",
-    )
+
+    runs_view = (Div(*[_run_card(r) for r in runs], cls="run-card-list")
+                 if runs else P("No production runs yet.", cls="hint"))
 
     make = ""
     if has_recipe:
@@ -5404,7 +5411,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         Div(H3("Open demand", cls="section-title"),
             P("Documents that have this item on order.", cls="hint"), demand_tbl,
             cls="detail-card recipe-block"),
-        Div(H3("Production runs", cls="section-title"), make, runs_tbl, cls="detail-card recipe-block"),
+        Div(H3("Production runs", cls="section-title"), make, runs_view, cls="detail-card recipe-block"),
         id="production-block",
     )
 
