@@ -221,19 +221,19 @@ def bulk_toolbar(table_id: str, actions: list[dict]) -> FT:
     )
 
 
-def filter_th(label: str, col: int, *, center: bool = False, sortable: bool = False) -> FT:
+def filter_th(label: str, col: int, *, center: bool = False, sortable: bool = False,
+              right: bool = False) -> FT:
     """A column header with an Excel-style filter funnel (client-side checkbox value list).
     `col` is the 0-based cell index the funnel filters on. Pair with COLUMN_FILTER_JS on the page.
-    With sortable=True the label also sorts the column (needs ENHANCED_TABLE_JS); the funnel button
-    is guarded so clicking it filters rather than sorts."""
+    With sortable=True the label also sorts the column (needs ENHANCED_TABLE_JS); the sort arrow sits
+    inner (right after the label) and the funnel arrow outer - matching the inventory list. right=True
+    right-aligns the header to match numeric cells. The funnel is guarded so clicking it filters."""
     attrs = {"data-col": str(col), "aria-label": f"Filter by {label}"}
-    th_attrs = {"data-sort": str(col)} if sortable else {}
-    return Th(
-        Span(label),
-        Button("▾", type="button", cls="colfilter", title=f"Filter by {label}", **attrs),
-        cls="colfilter-th" + (" sortable-th" if sortable else "") + (" cell--center" if center else ""),
-        **th_attrs,
-    )
+    inner = [Span(label)] + ([Span(cls="sort-ind")] if sortable else [])
+    inner.append(Button("▾", type="button", cls="colfilter", title=f"Filter by {label}", **attrs))
+    cls = ("colfilter-th" + (" sortable-th" if sortable else "")
+           + (" cell--center" if center else "") + (" cell--number" if right else ""))
+    return Th(*inner, cls=cls, **({"data-sort": str(col)} if sortable else {}))
 
 
 # Excel-style column filters: each `.colfilter` funnel (in a `filter_th`) opens a checkbox list of
@@ -400,10 +400,12 @@ SERVER_FILTER_JS = """
 """
 
 
-def sortable_th(label, col: int, *, center: bool = False) -> FT:
-    """A clickable, client-sortable column header (asc/desc). Pair with ENHANCED_TABLE_JS and a
-    `js-table` table. `col` is the 0-based cell index to sort on."""
-    return Th(label, cls="sortable-th" + (" cell--center" if center else ""), **{"data-sort": str(col)})
+def sortable_th(label, col: int, *, center: bool = False, right: bool = False) -> FT:
+    """A clickable, client-sortable column header (asc/desc); the sort arrow sits inner (right after
+    the label). Pair with ENHANCED_TABLE_JS and a `js-table` table. `col` is the 0-based cell index
+    to sort on. right=True right-aligns the header to match numeric cells."""
+    cls = "sortable-th" + (" cell--center" if center else "") + (" cell--number" if right else "")
+    return Th(Span(label), Span(cls="sort-ind"), cls=cls, **{"data-sort": str(col)})
 
 
 def table_pager(table_id: str) -> FT:

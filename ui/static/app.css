@@ -2711,9 +2711,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
 /* ── Client-side sortable headers + windowed pagination (enhanced tables) ── */
 .sortable-th { cursor: pointer; user-select: none; }
-.sortable-th:not(.colfilter-th)::after { content: " \2195"; opacity: 0.35; font-size: 0.85em; }
-.sortable-th.sort-asc::after { content: " \25B2"; opacity: 1; font-size: 0.8em; }
-.sortable-th.sort-desc::after { content: " \25BC"; opacity: 1; font-size: 0.8em; }
+/* Sort arrow sits inner (right after the label, before any filter funnel), shown when active -
+   consistent with the inventory list where the funnel is the outer arrow. */
+.sortable-th .sort-ind { font-size: 0.72em; }
+.sortable-th.sort-asc .sort-ind::after { content: " \25B2"; }
+.sortable-th.sort-desc .sort-ind::after { content: " \25BC"; }
 .enh-page-hidden { display: none; }
 .enh-pager { display: flex; align-items: center; gap: 10px; margin-top: 8px; justify-content: flex-end; }
 .enh-page-info { font-size: 12px; color: var(--c-text2); }

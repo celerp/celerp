@@ -5376,7 +5376,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         Table(
             Thead(Tr(
                 sortable_th("Document", 0), filter_th("Type", 1, sortable=True),
-                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3),
+                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3, right=True),
                 sortable_th("Due", 4, center=True), filter_th("Coverage", 5, sortable=True, center=True),
             )),
             Tbody(*demand_rows) if demand_rows else Tbody(Tr(Td("No open demand.", colspan="6", cls="empty-row"))),
@@ -5436,7 +5436,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         Table(
             Thead(Tr(
                 sortable_th("Work order", 0), filter_th("Source order", 1, sortable=True),
-                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3),
+                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3, right=True),
                 sortable_th("Due", 4, center=True), filter_th("Status", 5, sortable=True),
                 Th("", cls="cell--actions"),
             )),

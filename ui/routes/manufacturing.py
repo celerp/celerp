@@ -228,7 +228,8 @@ def _demand_table(lines: list[dict]) -> FT:
         Thead(Tr(
             Th(Input(type="checkbox", cls="bulk-select-all", title="Select all"), cls="col-checkbox"),
             Th("Product"), Th("Document"), Th("Type"), filter_th("For", 4), Th("Due", cls="cell--center"),
-            Th("Ordered"), Th("Short"), filter_th("Status", 8, center=True),
+            Th("Ordered", cls="cell--number"), Th("Short", cls="cell--number"),
+            filter_th("Status", 8, center=True),
         )),
         Tbody(*[_demand_row(l) for l in lines]),
         cls="data-table", id="mfg-table",
@@ -267,7 +268,8 @@ def _order_table(orders: list[dict], today: str = "") -> FT:
         Thead(Tr(
             Th(Input(type="checkbox", cls="bulk-select-all", title="Select all"), cls="col-checkbox"),
             filter_th("Product", 1), Th(t("th.status")), filter_th("Priority", 3, center=True),
-            Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs")), Th("Source order"),
+            Th("Due", cls="cell--center"), Th(t("msg.created")), Th(t("th.inputs"), cls="cell--number"),
+            Th("Source order"),
         )),
         Tbody(*[_order_row(o, today) for o in _sched_sort(orders)]),
         cls="data-table",
