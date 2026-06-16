@@ -71,6 +71,11 @@ PLUGIN_MANIFEST = {
             # not routed here anymore — they fall through to the engine's default merge handler on
             # replay, so projections still rebuild cleanly without a dead branch to maintain.
         ],
+        # Auto-create work orders when an order is finalized (gated by the company setting
+        # auto_create_work_orders; off by default, on for make-on-order verticals like restaurants).
+        "doc_finalize_hook": [
+            {"handler": "celerp_manufacturing.routes:auto_create_work_orders_on_finalize"},
+        ],
     },
 
     # ── No DB migrations needed ───────────────────────────────────────────────

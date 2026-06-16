@@ -309,6 +309,13 @@ _SLOT_CONTRIBUTIONS = [
     },
     # The retired bom.* prefix is intentionally not registered — historical bom.* events fall
     # through to the projection engine's default merge handler on replay.
+    {
+        "slot": "doc_finalize_hook",
+        "contrib": {
+            "handler": "celerp_manufacturing.routes:auto_create_work_orders_on_finalize",
+            "_module": "celerp-manufacturing",
+        },
+    },
 ]
 
 # If celerp-sales-funnel is installed, add the deal projection handler.
@@ -334,7 +341,7 @@ def _ensure_slots() -> None:
         slot = entry["slot"]
         contrib = entry["contrib"]
         registered = get(slot)
-        dedup_key = contrib.get("prefix") or contrib.get("href")
+        dedup_key = contrib.get("prefix") or contrib.get("href") or contrib.get("handler")
         existing_keys = {c.get("prefix") or c.get("href") for c in registered}
         if dedup_key not in existing_keys:
             register(slot, contrib)

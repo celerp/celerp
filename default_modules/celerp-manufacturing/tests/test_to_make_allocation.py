@@ -133,6 +133,43 @@ async def test_make_work_orders_for_doc_links_all_lines(client):
 
 
 @pytest.mark.asyncio
+async def test_auto_create_work_orders_on_finalize(client):
+    """With the company setting on, finalizing an order auto-creates a linked work order per line."""
+    token = await _register(client)
+    await client.patch("/companies/me", headers=_h(token),
+                       json={"settings": {"manufacturing": {"auto_create_work_orders": True}}})
+    gold = await _item(client, token, "GA", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RA", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    inv = (await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "total": 2,
+           "line_items": [{"item_id": ring, "sku": "RA", "name": "Ring", "quantity": 2, "unit_price": 1}]})).json()
+
+    await client.post(f"/docs/{inv['id']}/finalize", headers=_h(token))  # fires the auto-create hook
+
+    runs = [r for r in (await client.get("/manufacturing", headers=_h(token))).json()["items"]
+            if r.get("output_item_id") == ring]
+    assert len(runs) == 1
+    assert runs[0]["source_doc_id"] == inv["id"] and runs[0]["expected_outputs"][0]["quantity"] == 2.0
+
+
+@pytest.mark.asyncio
+async def test_no_auto_create_when_setting_off(client):
+    """With the setting off (default), finalizing creates no work orders."""
+    token = await _register(client)
+    gold = await _item(client, token, "GO", quantity=100, cost_total=8000)
+    ring = await _item(client, token, "RO", quantity=0)
+    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
+    inv = (await client.post("/docs", headers=_h(token), json={"doc_type": "invoice", "total": 2,
+           "line_items": [{"item_id": ring, "sku": "RO", "name": "Ring", "quantity": 2, "unit_price": 1}]})).json()
+
+    await client.post(f"/docs/{inv['id']}/finalize", headers=_h(token))
+
+    runs = [r for r in (await client.get("/manufacturing", headers=_h(token))).json()["items"]
+            if r.get("output_item_id") == ring]
+    assert runs == []
+
+
+@pytest.mark.asyncio
 async def test_make_work_orders_complete_one_tap(client):
     """complete=True issues components, receives output and closes each work order in one call."""
     token = await _register(client)

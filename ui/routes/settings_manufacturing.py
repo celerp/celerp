@@ -69,6 +69,7 @@ def setup_routes(app):
         mfg = _mfg_settings(company)
         hours = mfg.get("hours_per_day", _DEFAULT_HOURS_PER_DAY)
         require_issued = bool(mfg.get("require_issued_before_complete"))
+        auto_create = bool(mfg.get("auto_create_work_orders"))
         saved = request.query_params.get("saved") == "1"
 
         prefs = Form(
@@ -83,6 +84,18 @@ def setup_routes(app):
                     _info("When on, a production run cannot be marked complete until its raw materials "
                           "have been issued (consumed) from stock - so finished output is only booked "
                           "after the inputs are actually used. Leave off if you reconcile materials later."),
+                    cls="settings-toggle",
+                ),
+                cls="form-group",
+            ),
+            Div(
+                Label(
+                    Input(type="checkbox", name="auto_create_work_orders", value="1", checked=auto_create),
+                    Span(" Auto-create work orders when an order is finalized"),
+                    _info("When on, finalizing a customer order or stock order automatically creates a "
+                          "work order for each manufacturable line - the production task pops up with no "
+                          "extra step. Best for make-to-order shops (e.g. restaurants). Leave off to "
+                          "create work orders manually from the order or on Demand Planning."),
                     cls="settings-toggle",
                 ),
                 cls="form-group",
@@ -122,10 +135,12 @@ def setup_routes(app):
         if hours <= 0:
             hours = _DEFAULT_HOURS_PER_DAY
         require_issued = str(form.get("require_issued_before_complete") or "") in ("1", "on", "true")
+        auto_create = str(form.get("auto_create_work_orders") or "") in ("1", "on", "true")
         try:
             await api.update_mfg_settings(token, {
                 "hours_per_day": hours,
                 "require_issued_before_complete": require_issued,
+                "auto_create_work_orders": auto_create,
             })
         except APIError:
             pass

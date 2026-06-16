@@ -576,7 +576,7 @@ class BulkBuildBody(BaseModel):
     item_ids: list[str] = Field(default_factory=list)
 
 
-async def _emit_work_order(session, company_id, user, item_id: str, item_state: dict, qty: float,
+async def _emit_work_order(session, company_id, actor_id, item_id: str, item_state: dict, qty: float,
                            source: dict | None = None) -> str:
     """Create a work order (mfg_order) to build qty of item_id, optionally linked 1:1 to a source
     order line via source_doc_* fields. Returns the new order id; the caller commits."""
@@ -591,7 +591,7 @@ async def _emit_work_order(session, company_id, user, item_id: str, item_state: 
         data.update({k: v for k, v in source.items() if v not in (None, "")})
     await emit_event(
         session, company_id=company_id, entity_id=order_id, entity_type="mfg_order",
-        event_type="mfg.order.created", data=data, actor_id=user.id, location_id=None,
+        event_type="mfg.order.created", data=data, actor_id=actor_id, location_id=None,
         source="api", idempotency_key=str(uuid.uuid4()), metadata_={})
     return order_id
 
@@ -651,7 +651,7 @@ async def make_work_orders(
         if qty <= 0:
             skipped.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "reason": "nothing to make"})
             continue
-        order_id = await _emit_work_order(session, company_id, user, ln.item_id, st, qty,
+        order_id = await _emit_work_order(session, company_id, user.id, ln.item_id, st, qty,
                                           _line_source(doc) if doc else None)
         if payload.complete:
             await _complete_work_order_now(session, company_id, user, order_id, qty, states)
@@ -679,10 +679,45 @@ async def make_work_orders_for_doc(
         qty = float((doc or {}).get("shortfall") or 0)
         if not doc or qty <= 0:
             continue
-        order_id = await _emit_work_order(session, company_id, user, row["item_id"], st, qty, _line_source(doc))
+        order_id = await _emit_work_order(session, company_id, user.id, row["item_id"], st, qty, _line_source(doc))
         created.append({"item_id": row["item_id"], "run_id": order_id, "quantity": qty})
     await session.commit()
     return {"created": created}
+
+
+async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, company_id, user_id,
+                                              doc_type=None, **kwargs) -> None:
+    """doc_finalize_hook: when the company has work-order auto-creation enabled, create a linked work
+    order for each manufacturable line on the just-finalized order (ordered qty minus on-hand). Runs
+    inside the finalize transaction (the caller commits); failures are logged and non-fatal."""
+    settings = await _mfg_settings(session, company_id)
+    if not settings.get("auto_create_work_orders"):
+        return
+    states = await _all_item_states(session, company_id)
+    # Idempotent across re-finalize: skip items already linked to an open work order for this order.
+    existing = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "mfg_order")
+    )).scalars().all()
+    linked = {(r.state or {}).get("output_item_id") for r in existing
+              if (r.state or {}).get("source_doc_id") == entity_id
+              and (r.state or {}).get("status") != "cancelled"}
+    doc = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
+    dstate = (doc.state if doc else None) or doc_state or {}
+    source = {
+        "source_doc_id": entity_id, "source_doc_number": dstate.get("ref_id"),
+        "source_doc_type": dstate.get("doc_type") or doc_type,
+        "source_contact_name": dstate.get("contact_name"),
+        "source_due": dstate.get("due_date") or dstate.get("promised_date"),
+    }
+    for _idx, item_id, _line_id, qty, _label in _doc_lines(doc_state):
+        st = states.get(item_id)
+        if not item_id or qty <= 0 or item_id in linked or not is_manufacturable(st):
+            continue
+        make_qty = max(0.0, qty - float((st or {}).get("quantity") or 0))
+        if make_qty <= 0:
+            continue
+        await _emit_work_order(session, company_id, user_id, item_id, st, make_qty, source)
+        linked.add(item_id)
 
 
 @router.post("/to-make/requirements")
