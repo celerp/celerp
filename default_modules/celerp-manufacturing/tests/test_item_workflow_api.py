@@ -29,7 +29,7 @@ async def _item(client, token, sku="FG") -> str:
 
 
 def _step(**kw):
-    base = {"station": "", "instructions": "", "time_value": 0, "time_unit": "min", "wait": False}
+    base = {"station": "", "instructions": "", "time_value": 0, "time_unit": "min"}
     base.update(kw)
     return base
 
@@ -41,7 +41,7 @@ async def test_put_workflow_round_trip_assigns_id_and_normalizes_minutes(client)
 
     body = {"steps": [
         _step(station="Bench 1", instructions="Cut & anneal", time_value=15, time_unit="min"),
-        _step(station="Casting", instructions="Cool overnight", time_value=12, time_unit="hr", wait=True),
+        _step(station="Casting", instructions="Cool overnight", time_value=12, time_unit="hr"),
         _step(station="Polish", instructions="Set & polish", time_value=2, time_unit="day"),
     ]}
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token), json=body)
@@ -53,8 +53,8 @@ async def test_put_workflow_round_trip_assigns_id_and_normalizes_minutes(client)
     # A stable id is assigned to every step.
     assert all(s["id"] for s in steps)
     assert len({s["id"] for s in steps}) == 3
-    # The wait flag round-trips.
-    assert steps[1]["wait"] is True
+    # The wait field is gone.
+    assert "wait" not in steps[1]
 
     got = (await client.get(f"/items/{fg}", headers=_h(token))).json()
     assert got["workflow"]["steps"][2]["time_minutes"] == 2880.0

@@ -31,7 +31,7 @@ def _wait(api, item, pred, timeout=8.0):
     raise AssertionError(f"workflow never satisfied predicate; last = {_steps(api, item)}")
 
 
-def _set_cell(page, col, value, is_select=False):
+def _set_cell(page, col, value, is_select=False, is_textarea=False):
     """Double-click a workflow cell, edit it, commit (input/select named 'value')."""
     for attempt in range(2):
         try:
@@ -40,6 +40,11 @@ def _set_cell(page, col, value, is_select=False):
                 sel = page.locator('#workflow-section select[name=value]').last
                 sel.wait_for(state="visible", timeout=4000)
                 sel.select_option(value)
+            elif is_textarea:
+                ta = page.locator('#workflow-section textarea[name=value]').last
+                ta.wait_for(state="visible", timeout=4000)
+                ta.fill(str(value))
+                ta.blur()  # textarea saves on blur (Enter inserts a newline)
             else:
                 inp = page.locator('#workflow-section input[name=value]').last
                 inp.wait_for(state="visible", timeout=4000)
@@ -54,6 +59,7 @@ def _set_cell(page, col, value, is_select=False):
 
 def _pick_station(page, col, value):
     """Double-click the station cell and choose a work center from the combobox."""
+    page.locator(f'td[data-col="{col}"]').scroll_into_view_if_needed()
     page.dblclick(f'td[data-col="{col}"]')
     box = page.locator("#workflow-section .combobox-input").last
     box.wait_for(state="visible", timeout=4000)
@@ -65,6 +71,7 @@ def _pick_station(page, col, value):
 
 def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
+    page.set_viewport_size({"width": 1280, "height": 1500})  # room for the station dropdown below the fold
     item = api.post("/items", json={"sku": "WF-RING", "name": "Workflow Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
     # Seed work centers so the Station dropdown has real options.
     api.post("/manufacturing/work-centers", json={"name": "Casting"})
@@ -82,15 +89,17 @@ def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):
     _pick_station(page, "workflow__0__station", "Casting")
     _wait(api, item, lambda s: s[0].get("station") == "Casting")
 
-    # Instructions + time/unit + wait.
-    _set_cell(page, "workflow__0__instructions", "Pour and cool")
-    _wait(api, item, lambda s: s[0].get("instructions") == "Pour and cool")
+    # Instructions is a multi-line text box: line breaks are preserved.
+    _set_cell(page, "workflow__0__instructions", "Pour the melt\nThen cool", is_textarea=True)
+    _wait(api, item, lambda s: s[0].get("instructions") == "Pour the melt\nThen cool")
     _set_cell(page, "workflow__0__time_value", "12")
     _wait(api, item, lambda s: float(s[0].get("time_value") or 0) == 12.0)
+
+    # Changing the unit must NOT reload the page: a JS marker survives the edit.
+    page.evaluate("window.__wfReloadMarker = 'alive'")
     _set_cell(page, "workflow__0__time_unit", "hr", is_select=True)
     _wait(api, item, lambda s: float(s[0].get("time_minutes") or 0) == 720.0)
-    page.locator('#workflow-section tr.wf-row input[type=checkbox]').first.check()
-    _wait(api, item, lambda s: s[0].get("wait") is True)
+    assert page.evaluate("window.__wfReloadMarker") == "alive", "unit change reloaded the page"
 
     # Excel sort + filter controls are present on the columns (same components as the rest).
     page.wait_for_selector('#workflow-section th[data-sort="3"]', timeout=8000)        # Time sortable
@@ -102,7 +111,7 @@ def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):
     # Second step, then drag-reorder it above the first.
     page.click("#workflow-section button:has-text('+ Add step')")
     page.wait_for_selector('td[data-col="workflow__1__instructions"]', timeout=8000)
-    _set_cell(page, "workflow__1__instructions", "Polish")
+    _set_cell(page, "workflow__1__instructions", "Polish", is_textarea=True)
     _wait(api, item, lambda s: len(s) == 2 and s[1].get("instructions") == "Polish")
     order_before = [s["id"] for s in _steps(api, item)]
     page.locator("#workflow-section .wf-drag").nth(1).drag_to(page.locator("#workflow-section tr.wf-row").nth(0))

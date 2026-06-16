@@ -206,10 +206,9 @@ def workflow_step_minutes(time_value, time_unit: str) -> float:
 class WorkflowStep(BaseModel):
     id: str = ""                       # stable uuid; the server assigns one if blank
     station: str = ""                  # work center / location (links to a WorkCenter name)
-    instructions: str = ""             # free-text detail for the worker
+    instructions: str = ""             # free-text detail for the worker (multi-line)
     time_value: float = 0              # elapsed time as typed, in time_unit
     time_unit: str = "min"             # min | hr | day
-    wait: bool = False                 # unattended elapsed (cooling/curing); excluded from active total
     ref_file_id: str | None = None     # optional reference image/doc (an item file id)
     # Derived, written server-side from (time_value, time_unit) — never trusted from the client.
     # CANONICAL: every calculation reads time_minutes, never the typed value/unit.

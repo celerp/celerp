@@ -29,7 +29,7 @@ def test_print_icon_opens_full_worksheet(page, ui_server, api):
         "overhead": [{"description": "Polish & box", "amount": 15}],
     })
     api.put(f"/manufacturing/items/{ring}/workflow", json={"steps": [
-        {"station": "Casting", "instructions": "Pour and cool", "time_value": 12, "time_unit": "hr", "wait": True},
+        {"station": "Casting", "instructions": "Pour and cool", "time_value": 12, "time_unit": "hr"},
         {"station": "Bench", "instructions": "Set the stone", "time_value": 25, "time_unit": "min"},
     ]})
     api.post(f"/items/{ring}/files?document_tag=product_images", files={"file": ("ring.png", _PNG, "image/png")})
@@ -51,7 +51,6 @@ def test_print_icon_opens_full_worksheet(page, ui_server, api):
     assert "WS-GOLD" in body                              # a materials component
     assert "Casting" in body and "Bench" in body         # workflow stations
     assert "Pour and cool" in body and "Set the stone" in body  # instructions
-    assert "unattended" in body                          # the wait step badge
     assert ws.locator(".ws-images img").count() >= 1     # product image
     assert ws.locator(".ws-tbl").count() >= 2            # materials + workflow tables
     # Costs NEVER appear on the worksheet (unit cost was 465; no Labor/Overhead/Cost columns).

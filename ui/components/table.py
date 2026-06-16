@@ -743,6 +743,20 @@ def editable_cell(
             autofocus=True,
             onkeydown=escape_js,
         )
+    elif cell_type == "textarea":
+        # Multi-line editor: Enter inserts a newline (not save), Esc cancels, blur saves.
+        textarea_escape_js = (
+            f"if(event.key==='Escape'){{this._escaping=true;"
+            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
+            f"event.preventDefault();}}"
+        )
+        input_el = Textarea(
+            display_val, name="value", **swap,
+            hx_trigger="blur delay:200ms",
+            cls="cell-input cell-textarea-input", rows="5",
+            autofocus=True,
+            onkeydown=textarea_escape_js,
+        )
     elif cell_type == "bool":
         # Toggle: send "true"/"false" on change
         is_true = display_val.lower() in ("true", "1", "yes")
@@ -805,6 +819,9 @@ def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
         if s:
             return Img(src=s, cls="cell-thumbnail", loading="lazy", alt="")
         return Span("＋", cls="cell-image-empty", title="Drop image here or click to upload")
+    if cell_type == "textarea":
+        # Multi-line text: preserve line breaks on display (CSS white-space: pre-wrap).
+        return Span(s, cls="cell-textarea") if s else Span(EMPTY)
     return Span(s or EMPTY, cls="cell-text")
 
 

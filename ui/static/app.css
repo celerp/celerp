@@ -501,6 +501,9 @@ a:hover { text-decoration: underline; }
 .recipe-block { padding: 14px; }
 .recipe-block .section-title { margin-bottom: 8px; }
 .recipe-block > .btn { margin-top: 10px; }
+/* Cost summary as a right-aligned totals block beneath the recipe (invoice-totals style). */
+.recipe-totals-wrap { display: flex; justify-content: flex-end; }
+.recipe-totals-wrap .recipe-cost-summary { width: 340px; max-width: 100%; }
 .recipe-cost-summary { padding: 14px; }
 .recipe-cost-summary .detail-table td.recipe-amount { text-align: right; font-variant-numeric: tabular-nums; }
 .recipe-cost-summary .cell--total { font-weight: 600; }
@@ -512,7 +515,15 @@ a:hover { text-decoration: underline; }
 .wf-hero-img { width: 100%; height: auto; max-height: 320px; object-fit: contain;
   border-radius: 6px; background: var(--c-bg2, #f4f4f5); }
 .wf-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
-.wf-thumb { display: inline-flex; border: 2px solid transparent; border-radius: 4px; overflow: hidden; }
+.wf-thumb { display: inline-flex; border: 2px solid transparent; border-radius: 4px; overflow: hidden;
+  padding: 0; background: none; cursor: pointer; }
+/* Item files table in the narrow Manufacturing right column: keep it within the column. */
+.recipe-right table.data-table { table-layout: fixed; width: 100%; }
+.recipe-right table.data-table td, .recipe-right table.data-table th { overflow: hidden; }
+.recipe-right table.data-table select { max-width: 100%; }
+.files-name-cell { overflow: hidden; }
+.file-link--clip { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; vertical-align: bottom; }
 .wf-thumb--active { border-color: var(--c-accent, #2563eb); }
 .wf-thumb-img { height: 48px; width: auto; display: block; object-fit: cover; }
 /* Production workflow table: drag-to-reorder rows, canonical-minutes time, ref-image drop. */
@@ -528,6 +539,10 @@ a:hover { text-decoration: underline; }
 .wf-ref-hint { color: var(--c-text2); font-size: 12px; font-style: italic; cursor: default; }
 .wf-ref-img { height: 40px; width: auto; border-radius: 3px; vertical-align: middle; }
 .wf-summary { font-size: 13px; color: var(--c-text2); font-variant-numeric: tabular-nums; }
+/* Multi-line text cells (e.g. workflow instructions): preserve line breaks; clamp the display. */
+.cell-textarea { white-space: pre-wrap; display: block; max-height: 4.6em; overflow: hidden; }
+.cell-textarea-input { width: 100%; min-height: 4.5em; resize: vertical; font: inherit; line-height: 1.4; }
+.wf-table td.cell--textarea, .wf-table th:nth-child(3) { min-width: 220px; max-width: 380px; }
 .data-table thead th.cell--number { text-align: right; }
 /* Section header: title on the left, running section total right-aligned. */
 .recipe-section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; }

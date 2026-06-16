@@ -1699,6 +1699,19 @@ function celerpPrintLabel(entityId, templateId) {
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, today)))
 
+    @app.post("/api/items/{entity_id}/gallery-hero/{file_id}")
+    async def gallery_set_hero(request: Request, entity_id: str, file_id: str):
+        """Set a file as the hero image by clicking its gallery thumbnail; re-render the gallery."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            await api.set_item_file_hero(token, entity_id, file_id)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _workflow_gallery(entity_id, item)
+
     @app.get("/api/items/{entity_id}/field/{field}/edit")
     async def field_edit_cell(request: Request, entity_id: str, field: str):
         token = _token(request)
@@ -1853,8 +1866,8 @@ function celerpPrintLabel(entityId, templateId) {
         value: str | float | bool = str(form.get("value", ""))
 
         # Workflow cells (field = workflow__{idx}__{name}): patch one value on the persisted
-        # workflow, then return the display cell + section refresh (workflowSaved). `wait` is a
-        # boolean checkbox (no display cell to swap), so it just fires the refresh.
+        # workflow and swap ONLY that cell back. No section reload — the running total is
+        # recomputed client-side (WORKFLOW_JS) so editing a unit never reloads the page.
         if field.startswith("workflow__"):
             from ui.components.table import editable_cell
             try:
@@ -1863,13 +1876,10 @@ function celerpPrintLabel(entityId, templateId) {
             except ValueError:
                 return P("Bad workflow field", cls="cell-error")
             restore_url = f"/api/items/{entity_id}/workflow-cell/{idx}/{fname}/display"
-            is_wait = fname == "wait"
-            cell_type = "bool" if is_wait else _WORKFLOW_CELLS.get(fname)
+            cell_type = _WORKFLOW_CELLS.get(fname)
             if cell_type is None:
                 return P("Unknown workflow field", cls="cell-error")
-            if is_wait:
-                value = str(form.get("value", "")).lower() in ("true", "1", "yes", "on")
-            elif cell_type == "number":
+            if cell_type == "number":
                 try:
                     value = float(str(value) or 0)
                 except (ValueError, TypeError):
@@ -1884,12 +1894,10 @@ function celerpPrintLabel(entityId, templateId) {
                     return P("Step no longer exists. Reload the tab.", cls="cell-error")
                 steps[idx][fname] = value
                 await api.set_item_workflow(token, entity_id, {"steps": steps})
-                if is_wait:
-                    return "", HttpHeader("HX-Trigger", "workflowSaved")
                 item = await api.get_item(token, entity_id)
                 fresh = (item.get("workflow") or {}).get("steps") or []
                 new_val = fresh[idx].get(fname, "") if 0 <= idx < len(fresh) else ""
-                return _workflow_cell(entity_id, idx, fname, new_val), HttpHeader("HX-Trigger", "workflowSaved")
+                return _workflow_cell(entity_id, idx, fname, new_val)
             except APIError as e:
                 if e.status == 401:
                     return P(t("error.unauthorized"), cls="cell-error")
@@ -5068,7 +5076,11 @@ def _item_files_section(entity_id: str, item: dict, *, title: str = "Production 
                 "uploaded_at": None,
                 "is_hero": is_hero,
             })
-    return _shared_files_section("item", entity_id, files, can_set_hero=True, show_linked=False, title=title)
+    # Lives in a narrow column on the Manufacturing tab: no inline preview (the gallery shows
+    # images large above) and no hero column (set the hero by clicking a gallery thumbnail);
+    # compact filters so the bar stays on one row.
+    return _shared_files_section("item", entity_id, files, can_set_hero=False, show_linked=False,
+                                 title=title, show_preview=False, compact=True)
 
 
 def _recipe_money(v, currency: str | None) -> str:
@@ -5197,30 +5209,33 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
         return f"/items/{entity_id}/files/{f['id']}/download"
 
     hero = images[0]
+    # Clicking a thumbnail makes that image the hero (the large one) — it does not open a new tab.
     thumbs = (
         Div(*[
-            A(Img(src=_src(f), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
-              href=_src(f), target="_blank",
-              cls="wf-thumb" + (" wf-thumb--active" if f is hero else ""))
+            Button(Img(src=_src(f), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
+                   type="button", title="Set as main image",
+                   hx_post=f"/api/items/{entity_id}/gallery-hero/{f['id']}",
+                   hx_target="#wf-gallery", hx_swap="outerHTML",
+                   cls="wf-thumb" + (" wf-thumb--active" if f is hero else ""))
             for f in images
         ], cls="wf-thumbs")
         if len(images) > 1 else ""
     )
     return Div(
         H3("Product images", cls="section-title"),
-        A(Img(src=_src(hero), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
-          href=_src(hero), target="_blank", cls="wf-hero", title="Open full size"),
+        Img(src=_src(hero), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
         thumbs,
+        P("Click a thumbnail to make it the main image.", cls="hint") if len(images) > 1 else "",
         cls="detail-card wf-gallery",
         id="wf-gallery",
     )
 
 
 # Editable workflow-step fields and their system-standard cell types (double-click to edit).
-# `wait` is a direct checkbox (boolean toggle), handled separately — not a click-to-edit cell.
-# `station` is a select linked to the company's work centers (with an add-new option).
+# `station` is a select linked to the company's work centers (with an add-new option);
+# `instructions` is a multi-line text box.
 _WORKFLOW_CELLS: dict[str, str] = {
-    "station": "select", "instructions": "text",
+    "station": "select", "instructions": "textarea",
     "time_value": "number", "time_unit": "select",
 }
 
@@ -5262,6 +5277,21 @@ WORKFLOW_JS = """
   var base=sec.getAttribute('data-base');
   // outerHTML swaps do not re-run inline scripts, so re-init the fresh section after a reload.
   function reload(html){ sec.outerHTML=html; var ns=document.getElementById('workflow-section'); if(ns&&window.htmx) htmx.process(ns); init(); }
+  // Running total, recomputed client-side after each single-cell edit so editing a value or unit
+  // never triggers a section reload.
+  function fmtMin(m){ m=Math.round(m); if(m<=0)return '0 min'; if(m%1440===0)return (m/1440)+' d'; if(m%60===0)return (m/60)+' h'; if(m>=60){var h=Math.floor(m/60),mm=m%60;return h+' h '+mm+' min';} return m+' min'; }
+  function recalc(){
+    var total=0;
+    sec.querySelectorAll('tr.wf-row').forEach(function(r){
+      var tv=r.querySelector('[data-col$="__time_value"]'), tu=r.querySelector('[data-col$="__time_unit"]');
+      if(!tv) return;
+      var v=parseFloat((tv.textContent||'').replace(/[^0-9.\\-]/g,'')); if(isNaN(v)) v=0;
+      var u=(tu?tu.textContent.trim():'min'), f=u==='day'?1440:(u==='hr'?60:1);
+      total+=v*f;
+    });
+    var el=sec.querySelector('.wf-summary'); if(el) el.textContent='Total time '+fmtMin(total);
+  }
+  sec.addEventListener('htmx:afterSettle', recalc);
   var dragId=null;
   sec.querySelectorAll('.wf-drag').forEach(function(h){
     h.addEventListener('dragstart',function(e){ var tr=h.closest('tr'); dragId=tr.getAttribute('data-step-id'); tr.classList.add('wf-dragging'); e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',dragId); });
@@ -5303,19 +5333,16 @@ WORKFLOW_JS = """
 def _workflow_section(entity_id: str, item: dict) -> FT:
     """The Production workflow: an ordered, drag-to-reorder list of build steps. Cells are the
     system-standard double-click-to-edit cells; the elapsed Time is canonical minutes (a number
-    plus a unit select), and Wait marks unattended steps that are kept out of the active-time
-    total. A reference image can be dropped onto a step's Reference cell.
+    plus a unit select), Instructions is a multi-line text box, and a reference image can be
+    dropped onto a step's Reference cell.
     """
     steps = list((item.get("workflow") or {}).get("steps") or [])
     files_by_id = {f.get("id"): f for f in (item.get("files") or [])}
     base = f"/api/items/{entity_id}/workflow-section"
     _struct = {"hx_post": base, "hx_target": "#workflow-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
 
-    active = sum(float(s.get("time_minutes") or 0) for s in steps if not s.get("wait"))
-    waitm = sum(float(s.get("time_minutes") or 0) for s in steps if s.get("wait"))
-    summary = f"Active time {_fmt_minutes(active)}"
-    if waitm:
-        summary += f"  ·  +{_fmt_minutes(waitm)} unattended"
+    total = sum(float(s.get("time_minutes") or 0) for s in steps)
+    summary = f"Total time {_fmt_minutes(total)}"
 
     def _ref_cell(idx: int, step: dict) -> FT:
         ref = files_by_id.get(step.get("ref_file_id")) if step.get("ref_file_id") else None
@@ -5339,11 +5366,6 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
             _workflow_cell(entity_id, idx, "instructions", step.get("instructions")),
             _workflow_cell(entity_id, idx, "time_value", step.get("time_value")),
             _workflow_cell(entity_id, idx, "time_unit", step.get("time_unit") or "min"),
-            Td(Input(type="checkbox", checked=bool(step.get("wait")),
-                     hx_patch=f"/api/items/{entity_id}/field/workflow__{idx}__wait",
-                     hx_vals="js:{value: event.target.checked}", hx_trigger="change", hx_swap="none",
-                     title="Unattended elapsed time (cooling, curing) — excluded from active time"),
-               cls="cell--center"),
             _ref_cell(idx, step),
             Td(Button("×", type="button", title="Remove step", cls="btn btn--xs btn--ghost",
                       hx_post=f"{base}?action=remove&index={idx}", **{k: v for k, v in _struct.items() if k != "hx_post"}),
@@ -5351,7 +5373,7 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
             cls="wf-row data-row", **{"data-step-id": step.get("id") or f"idx-{idx}"},
         )
 
-    # Columns: 0 drag, 1 Station, 2 Instructions, 3 Time, 4 Unit, 5 Wait, 6 Reference, 7 remove.
+    # Columns: 0 drag, 1 Station, 2 Instructions, 3 Time, 4 Unit, 5 Reference, 6 remove.
     # Station/Instructions/Unit are Excel-filterable + sortable; Time sorts. Filtering/sorting
     # is a client-side view (COLUMN_FILTER_JS/ENHANCED_TABLE_JS) over the manual drag order.
     head = Tr(
@@ -5360,7 +5382,7 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
         filter_th("Instructions", 2, sortable=True),
         sortable_th("Time", 3, right=True),
         filter_th("Unit", 4, sortable=True, center=True),
-        Th("Wait", cls="cell--center"), Th("Reference"), Th("", cls="cell--actions"),
+        Th("Reference"), Th("", cls="cell--actions"),
     )
     body = [_row(i, s) for i, s in enumerate(steps)]
     table = Table(Thead(head), Tbody(*body), cls="data-table js-table wf-table") if steps else ""
@@ -5384,9 +5406,6 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
         id="workflow-section",
         cls="detail-card recipe-block",
         **{"data-base": base},
-        hx_get=f"/api/items/{entity_id}/workflow-section",
-        hx_trigger="workflowSaved from:body",
-        hx_swap="outerHTML",
     )
 
 
@@ -5404,9 +5423,9 @@ table.ws-tbl { width: 100%; border-collapse: collapse; font-size: 9pt; }
 .ws-tbl th, .ws-tbl td { border: 1px solid #ccc; padding: 1.6mm 2.6mm; text-align: left; vertical-align: top; }
 .ws-tbl th { background: #f2f2f2; }
 .ws-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ws-pre { white-space: pre-wrap; }
 .ws-images { display: flex; flex-wrap: wrap; gap: 4mm; }
 .ws-images img { height: 38mm; width: auto; max-width: 62mm; object-fit: contain; border: 1px solid #ddd; }
-.ws-wait { color: #b45309; font-weight: 600; white-space: nowrap; }
 .ws-step-img { height: 16mm; width: auto; border: 1px solid #ddd; }
 .ws-muted { color: #777; }
 .ws-foot { margin-top: 8mm; border-top: 1px solid #ccc; padding-top: 2mm; font-size: 8pt; color: #777; display: flex; justify-content: space-between; }
@@ -5461,8 +5480,6 @@ def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
 
     def _time_cell(s: dict) -> FT:
         txt = f"{float(s.get('time_value') or 0):g} {_worksheet_unit_label(s.get('time_unit') or 'min')}"
-        if s.get("wait"):
-            return Td(Span(f"⏳ {txt} unattended", cls="ws-wait"), cls="ws-num")
         return Td(txt, cls="ws-num")
 
     def _step_ref(s: dict) -> FT:
@@ -5480,7 +5497,7 @@ def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
                 Tbody(*[Tr(
                     Td(str(i + 1), cls="ws-num"),
                     Td(s.get("station") or EM),
-                    Td(s.get("instructions") or EM),
+                    Td(s.get("instructions") or EM, cls="ws-pre"),
                     _time_cell(s),
                     _step_ref(s),
                 ) for i, s in enumerate(steps)]),
@@ -5708,12 +5725,11 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # Mark-to-market is automatic: changing a component's cost recosts every item that uses it
     # (see the inventory pricing endpoint + manufacturing set_item_recipe), so there is no
     # manual "re-cost dependents" control here.
-    # Right column, top to bottom: product images, the drop-files area (directly under the
-    # images), then the Cost summary. The workflow renders full-width below the grid.
+    # Right column, top to bottom: product images, then the drop-files area directly under them.
+    # The Cost summary sits under the recipe (left column), right-aligned like a totals block.
     right_col = [
         _workflow_gallery(entity_id, item),
         _item_files_section(entity_id, item),
-        _recipe_cost_card(entity_id, item, currency),
     ]
 
     has_rows = bool(components or labor_rows or overhead_rows)
@@ -5759,6 +5775,8 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
             Div(_section_head("Materials", "materials_cost"), materials, cls="detail-card recipe-block"),
             Div(_section_head("Labor", "labor_cost"), labor, cls="detail-card recipe-block"),
             Div(_section_head("Overhead", "overhead_cost"), overhead, cls="detail-card recipe-block"),
+            # Cost summary as a right-aligned totals block under the recipe (like a document's totals).
+            Div(_recipe_cost_card(entity_id, item, currency), cls="recipe-totals-wrap"),
             clear_action,
             id="recipe-form",
         ),

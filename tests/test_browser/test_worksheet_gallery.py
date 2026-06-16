@@ -1,9 +1,10 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Manufacturing-tab product image gallery (above the Cost summary)."""
+"""Manufacturing-tab product image gallery: hero above the files area; thumbnail sets hero."""
 from __future__ import annotations
 
 import base64
+import time as _t
 from pathlib import Path
 
 import pytest
@@ -18,22 +19,40 @@ _PNG = base64.b64decode(
 )
 
 
-def test_gallery_shows_hero_above_cost_summary(page, ui_server, api):
+def _fid(resp):
+    j = resp.json()
+    return j.get("file_id") or j.get("id")
+
+
+def _hero_id(api, item):
+    fs = api.get(f"/items/{item}").json().get("files") or []
+    return next((f["id"] for f in fs if f.get("is_hero")), None)
+
+
+def test_gallery_above_files_and_thumbnail_sets_hero(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
     ring = api.post("/items", json={"sku": "GAL-RING", "name": "Gallery Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
-    # Upload a product image (the first image auto-becomes the hero).
-    r = api.post(f"/items/{ring}/files?document_tag=product_images",
-                 files={"file": ("ring.png", _PNG, "image/png")})
-    assert r.status_code == 200, r.text
+    # Two product images — the first auto-becomes hero.
+    id1 = _fid(api.post(f"/items/{ring}/files?document_tag=product_images", files={"file": ("a.png", _PNG, "image/png")}))
+    id2 = _fid(api.post(f"/items/{ring}/files?document_tag=product_images", files={"file": ("b.png", _PNG, "image/png")}))
+    assert _hero_id(api, ring) == id1
 
     page.goto(f"{ui_server}/inventory/{ring}?tab=manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#wf-gallery .wf-hero-img", timeout=10000)
-    # Gallery renders in the right column, above the Cost summary card.
+
+    # The gallery sits above the Production documents (files) area in the right column.
+    sid = ring.replace(":", "-")
     gallery_box = page.locator("#wf-gallery").bounding_box()
-    cost_box = page.locator("#recipe-cost-card").bounding_box()
-    assert gallery_box and cost_box
-    assert gallery_box["y"] < cost_box["y"], "gallery must sit above the cost summary"
+    files_box = page.locator(f"#files-section-{sid}").bounding_box()
+    assert gallery_box and files_box and gallery_box["y"] < files_box["y"]
     page.screenshot(path=str(SHOTS / "gallery.png"), full_page=True)
+
+    # Clicking the non-hero thumbnail makes it the hero (it does not open a new tab).
+    page.locator("#wf-gallery .wf-thumb:not(.wf-thumb--active)").first.click()
+    deadline = _t.time() + 8
+    while _t.time() < deadline and _hero_id(api, ring) != id2:
+        _t.sleep(0.25)
+    assert _hero_id(api, ring) == id2, "clicking a thumbnail should set it as the hero image"
 
 
 def test_gallery_empty_state(page, ui_server, api):

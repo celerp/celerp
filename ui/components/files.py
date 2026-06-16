@@ -84,6 +84,8 @@ def _files_section(
     date_to: str = "",
     search: str = "",
     title: str | None = None,
+    show_preview: bool = True,
+    compact: bool = False,
 ) -> FT:
     """Render the files section for any entity.
 
@@ -148,59 +150,27 @@ def _files_section(
 
     # Hidden fields carry all filter state so every individual control can
     # include the form and get a complete refresh URL.
+    _hx = {"hx_get": f"{base_url}/_section", "hx_target": f"#files-section-{sid}",
+           "hx_swap": "outerHTML", "hx_include": f"#files-filter-form-{sid}"}
+    # Compact (narrow column, e.g. the Manufacturing tab): tag + search only, narrower; the date
+    # range stays as hidden state so it survives refreshes but doesn't wrap the bar to two rows.
+    if compact:
+        date_controls = [Input(type="hidden", name="date_from", value=date_from),
+                         Input(type="hidden", name="date_to", value=date_to)]
+    else:
+        date_controls = [
+            Input(type="text", name="date_from", value=date_from, placeholder="YYYY-MM-DD",
+                  cls="form-input form-input--sm", style="width:130px;", **_hx, hx_trigger="change"),
+            Input(type="text", name="date_to", value=date_to, placeholder="YYYY-MM-DD",
+                  cls="form-input form-input--sm", style="width:130px;", **_hx, hx_trigger="change"),
+        ]
     filter_bar = Form(
-        Select(
-            *tag_opts,
-            name="tag_filter",
-            cls="form-input form-input--sm",
-            style="width:160px;",
-            hx_get=f"{base_url}/_section",
-            hx_target=f"#files-section-{sid}",
-            hx_swap="outerHTML",
-            hx_include=f"#files-filter-form-{sid}",
-            hx_trigger="change",
-        ),
-        Input(
-            type="text",
-            name="date_from",
-            value=date_from,
-            placeholder="YYYY-MM-DD",
-            cls="form-input form-input--sm",
-            style="width:130px;",
-            hx_get=f"{base_url}/_section",
-            hx_target=f"#files-section-{sid}",
-            hx_swap="outerHTML",
-            hx_include=f"#files-filter-form-{sid}",
-            hx_trigger="change",
-        ),
-        Input(
-            type="text",
-            name="date_to",
-            value=date_to,
-            placeholder="YYYY-MM-DD",
-            cls="form-input form-input--sm",
-            style="width:130px;",
-            hx_get=f"{base_url}/_section",
-            hx_target=f"#files-section-{sid}",
-            hx_swap="outerHTML",
-            hx_include=f"#files-filter-form-{sid}",
-            hx_trigger="change",
-        ),
-        Input(
-            type="search",
-            name="search",
-            value=search,
-            placeholder=t("label.search"),
-            cls="form-input form-input--sm",
-            style="width:180px;",
-            hx_get=f"{base_url}/_section",
-            hx_target=f"#files-section-{sid}",
-            hx_swap="outerHTML",
-            hx_include=f"#files-filter-form-{sid}",
-            # keyup+blur: keyup fires on each keystroke so the cursor stays in
-            # place; delay:400ms debounces; blur covers paste+clear
-            hx_trigger="keyup changed delay:400ms, blur",
-        ),
+        Select(*tag_opts, name="tag_filter", cls="form-input form-input--sm",
+               style=f"width:{'120px' if compact else '160px'};", **_hx, hx_trigger="change"),
+        *date_controls,
+        Input(type="search", name="search", value=search, placeholder=t("label.search"),
+              cls="form-input form-input--sm", style=f"width:{'130px' if compact else '180px'};",
+              **_hx, hx_trigger="keyup changed delay:400ms, blur"),
         # Hidden state fields - keep current values across partial refreshes
         Input(type="hidden", name="sort_dir", value=sort_dir),
         Input(type="hidden", name="page", value=str(page)),
@@ -363,8 +333,9 @@ def _files_section(
             Td(Span(uploaded_at, cls="muted")),
             Td(
                 Img(src=file_download_url, style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
-                if f.get("mime", "").startswith("image/") else "",
-                A(fname, href=file_download_url, cls="file-link"),
+                if (show_preview and f.get("mime", "").startswith("image/")) else "",
+                A(fname, href=file_download_url, cls="file-link file-link--clip", title=fname),
+                cls="files-name-cell",
             ),
             tag_cell,
             desc_cell,
@@ -420,8 +391,9 @@ def _files_section(
         ),
     )
 
-    # Description column gets extra width via inline style
-    desc_th = Th(t("label.file_description") if can_describe else "", style="min-width:200px;")
+    # Description column gets extra width via inline style (not in compact/narrow columns).
+    desc_th = Th(t("label.file_description") if can_describe else "",
+                 style=None if compact else "min-width:200px;")
 
     header_cells = [
         date_th,
