@@ -389,7 +389,7 @@ def test_wip_esc_cancel_inline_edit(page, ui_server, api):
     issue_r = api.post(f"/manufacturing/{run_id}/issue")
     assert issue_r.status_code in (200, 204), issue_r.text
 
-    page.goto(f"{ui_server}/manufacturing/production?status=all", wait_until="domcontentloaded")
+    page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
 
     assert "Work In Progress" in page.locator("body").inner_text()

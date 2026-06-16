@@ -98,7 +98,7 @@ def test_in_production_esc_cancels_inline_edit(page, ui_server, api):
     display chip without saving.
 
     Flow: create item + recipe -> build (planned) -> issue (in_progress) -> navigate to
-    /manufacturing/production?status=all -> double-click Due cell -> verify editor
+    /manufacturing/production -> double-click Due cell -> verify editor
     appears -> press ESC -> verify editor is gone and display chip is restored.
     """
     MFG_SHOTS.mkdir(parents=True, exist_ok=True)
@@ -124,8 +124,8 @@ def test_in_production_esc_cancels_inline_edit(page, ui_server, api):
     state = api.get(f"/manufacturing/{run_id}").json()
     assert state["status"] == "in_progress", f"Expected in_progress, got: {state['status']}"
 
-    # Navigate to Work In Progress (status=all so our run is visible).
-    page.goto(f"{ui_server}/manufacturing/production?status=all",
+    # Navigate to Work In Progress (the run is in_progress, so the default Active view shows it).
+    page.goto(f"{ui_server}/manufacturing/production",
               wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
 
@@ -214,7 +214,7 @@ def test_manufacturing_ui_screenshots(page, ui_server, api):
     assert "piece" in table_text.lower(), f"'piece' unit not visible in table: {table_text[:300]}"
 
     # 5. Work In Progress page screenshot (canonical URL).
-    page.goto(f"{ui_server}/manufacturing/production?status=all",
+    page.goto(f"{ui_server}/manufacturing/production",
               wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
     page.screenshot(path=str(MFG_SHOTS / "in-production-tab.png"), full_page=True)

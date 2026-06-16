@@ -49,10 +49,9 @@ def _badge(status: str) -> FT:
 
 def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> FT:
     """Status filter cards for the Work In Progress queue. 'Active' = planned+in_progress+on_hold
-    (the default view); 'All' shows every run including completed/cancelled. Cards link within
-    base_url (carrying the status) so the queue stays put when filtering."""
+    (the default view). There is no 'All' card - we never show completed/cancelled and active runs
+    together. Cards link within base_url (carrying the status) so the queue stays put when filtering."""
     _CARD_DEFS = [
-        ("all", "All", "gray"),
         ("active", "Active", "blue"),
         ("planned", "Planned", "blue"),
         ("in_progress", "In Progress", "yellow"),
@@ -62,13 +61,11 @@ def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> 
     ]
     statuses = [str(o.get("status") or "").lower() for o in orders]
     counts: dict[str, int] = {
-        "all": len(statuses),
         "active": sum(1 for s in statuses if s in _INCOMPLETE_STATUSES),
     }
     for s, _, _ in _CARD_DEFS:
         counts.setdefault(s, sum(1 for x in statuses if x == s))
     card_help = {
-        "all": "Every run, including completed and cancelled.",
         "active": "Runs still needing attention: planned, in progress or on hold.",
         **RUN_STATUS_HELP,
     }
@@ -429,11 +426,11 @@ def setup_routes(app):
                 return RedirectResponse("/login", status_code=302)
             orders_all = []
         active = (request.query_params.get("status") or "active").lower()
-        if active in ("active", "incomplete"):
+        # "all" is no longer a view (completed/cancelled and active runs are never shown together);
+        # legacy ?status=all links fall back to the default Active queue.
+        if active in ("active", "incomplete", "all"):
             active = "active"
             shown = [o for o in orders_all if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
-        elif active == "all":
-            shown = orders_all
         else:
             shown = [o for o in orders_all if str(o.get("status") or "").lower() == active]
         if q:
@@ -599,10 +596,8 @@ def setup_routes(app):
         return _order_table(orders, today=date.today().isoformat())
 
     def _runs_for_status(orders: list[dict], status: str) -> list[dict]:
-        if status in ("active", "incomplete"):
+        if status in ("active", "incomplete", "all"):
             return [o for o in orders if str(o.get("status") or "").lower() in _INCOMPLETE_STATUSES]
-        if status == "all":
-            return orders
         return [o for o in orders if str(o.get("status") or "").lower() == status]
 
     async def _incomplete_runs_table(token: str) -> FT:

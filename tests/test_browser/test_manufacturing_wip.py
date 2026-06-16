@@ -69,7 +69,7 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
     ) and len([o for o in items if o.get("id") in both]) == 2), "both runs should start PLANNED"
 
     # ── WIP page: bulk toolbar present, Action select disabled with no selection ──
-    page.goto(f"{ui_server}/manufacturing/production?status=all", wait_until="domcontentloaded")
+    page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table", timeout=10000)
     assert "Work In Progress" in page.locator("body").inner_text()
     page.wait_for_selector("#mfg-table:has-text('WIP-WIDGET')", timeout=8000)
@@ -124,7 +124,7 @@ def test_wip_bulk_actions_and_priority_funnel(page, ui_server, api):
         "WIP-WIDGET stock should rise by the produced quantity (8)"
 
     # ── Priority Excel funnel filters live (data-col 3) ──
-    page.goto(f"{ui_server}/manufacturing/production?status=all", wait_until="domcontentloaded")
+    page.goto(f"{ui_server}/manufacturing/production?status=completed", wait_until="domcontentloaded")
     page.wait_for_selector("#mfg-table:has-text('WIP-WIDGET')", timeout=8000)
 
     # The Priority header has a .colfilter funnel at data-col=3 (checkbox col is 0, Product 1).
