@@ -366,6 +366,8 @@ def _parse_params(request: Request) -> dict:
         "category": q.get("category", ""),
         "inventory_type": q.get("inventory_type", ""),
         "location_id": q.get("location_id", ""),  # column-filter funnel (csv of location ids)
+        # Category-attribute column funnels: every ?attr.<key>=csv pair, keyed by <key>.
+        "attr_filters": {k[len("attr."):]: v for k, v in q.items() if k.startswith("attr.") and v},
         "sort": q.get("sort", ""),
         "dir": q.get("dir", "desc"),
         "per_page": max(1, per_page),
@@ -378,6 +380,9 @@ def _base_state(p: dict, include_page: bool = False) -> dict:
     for k in ("q", "skus", "status", "category", "inventory_type", "location_id", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
+    for akey, aval in (p.get("attr_filters") or {}).items():
+        if aval:
+            state[f"attr.{akey}"] = aval
     if p.get("per_page") and p["per_page"] != _DEFAULT_PER_PAGE:
         state["per_page"] = str(p["per_page"])
     if p.get("cols"):
@@ -385,6 +390,34 @@ def _base_state(p: dict, include_page: bool = False) -> dict:
     if include_page and p.get("page", 1) > 1:
         state["page"] = str(p["page"])
     return state
+
+
+def _inventory_column_filters(eff_schema: list[dict], global_schema: list[dict], locations: list[dict],
+                              attribute_facets: dict, p: dict) -> dict | None:
+    """Server-backed column funnels for the inventory table: Location plus every category-specific
+    attribute that has distinct values. Each funnel reloads with ?param=csv (full-dataset filter)."""
+    global_keys = {f["key"] for f in global_schema}
+    attr_filters = p.get("attr_filters") or {}
+    filters: dict = {}
+    loc_opts = [(loc.get("id") or loc.get("location_id"), loc.get("name"))
+                for loc in locations if (loc.get("id") or loc.get("location_id"))]
+    if loc_opts:
+        filters["location_name"] = {
+            "param": "location_id", "options": loc_opts,
+            "selected": [s for s in (p.get("location_id") or "").split(",") if s],
+        }
+    for f in eff_schema:
+        key = f["key"]
+        if key in global_keys:
+            continue  # base fields keep their existing filters (status cards, category/type tabs)
+        vals = attribute_facets.get(key)
+        if not vals:
+            continue
+        filters[key] = {
+            "param": f"attr.{key}", "options": [(v, v) for v in vals],
+            "selected": [s for s in (attr_filters.get(key) or "").split(",") if s],
+        }
+    return filters or None
 
 
 async def _inventory_content(
@@ -419,6 +452,9 @@ async def _inventory_content(
             params["inventory_type"] = p["inventory_type"]
         if p.get("location_id"):
             params["location_id"] = p["location_id"]
+        for akey, aval in (p.get("attr_filters") or {}).items():
+            if aval:
+                params[f"attr.{akey}"] = aval
         if p["sort"]:
             params["sort"] = p["sort"]
             params["dir"] = p["dir"]
@@ -427,6 +463,7 @@ async def _inventory_content(
             api.get_units(token),
         )
         items = items_resp.get("items", [])
+        attribute_facets = items_resp.get("attribute_facets", {})
         unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
         units_map: dict[str, dict] = {u["name"]: u for u in units_resp if u.get("name")}
         try:
@@ -434,7 +471,7 @@ async def _inventory_content(
         except Exception:
             category_label_map = {}
     except APIError:
-        valuation, items, unit_names, units_map, category_label_map = {}, [], [], {}, {}
+        valuation, items, unit_names, units_map, category_label_map, attribute_facets = {}, [], [], {}, {}, {}
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -482,12 +519,7 @@ async def _inventory_content(
             auto_hide_empty=False,
             cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency),
             hidden_fields=set(_PAIRED_TABLE.values()),
-            column_filters={"location_name": {
-                "param": "location_id",
-                "options": [(loc.get("id") or loc.get("location_id"), loc.get("name"))
-                            for loc in locations if (loc.get("id") or loc.get("location_id"))],
-                "selected": [s for s in (p.get("location_id") or "").split(",") if s],
-            }} if locations else None,
+            column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
         Script(SERVER_FILTER_JS),

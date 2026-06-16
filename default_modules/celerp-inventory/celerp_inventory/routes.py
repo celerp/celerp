@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -260,6 +260,7 @@ _COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 
 @router.get("")
 async def list_items(
+    request: Request,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
@@ -325,6 +326,30 @@ async def list_items(
     if location_id:
         locs = {loc.strip() for loc in location_id.split(",") if loc.strip()}
         result = [r for r in result if str(r.get("location_id") or "") in locs]
+
+    # Distinct attribute values for the column-filter funnels, over the status/category/type/location
+    # scope and BEFORE attribute filters are applied (so every available value stays selectable).
+    _FACET_MAX = 500
+    attrs_by_id = {r.entity_id: (r.state.get("attributes") or {}) for r in rows}
+    facet_sets: dict[str, set] = {}
+    for r in result:
+        for akey, aval in attrs_by_id.get(r.get("id"), {}).items():
+            if aval in (None, ""):
+                continue
+            s = facet_sets.setdefault(akey, set())
+            if len(s) < _FACET_MAX:
+                s.add(str(aval))
+    attribute_facets = {k: sorted(s) for k, s in facet_sets.items() if s}
+
+    # Category-attribute column filters: ?attr.<key>=v1,v2 keeps items whose (flattened) attribute
+    # value is in the chosen set. Multiple attribute filters AND together.
+    for qk, qv in request.query_params.multi_items():
+        if not qk.startswith("attr.") or not qv:
+            continue
+        akey = qk[len("attr."):]
+        wanted = {x.strip() for x in qv.split(",") if x.strip()}
+        if wanted:
+            result = [r for r in result if str(r.get(akey) if r.get(akey) is not None else "") in wanted]
 
     if sku:
         result = [r for r in result if str(r.get("sku", "")) == sku]
@@ -397,7 +422,8 @@ async def list_items(
         result.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
     total = len(result)
-    return {"items": result[offset: offset + limit], "total": total}
+    return {"items": result[offset: offset + limit], "total": total,
+            "attribute_facets": attribute_facets}
 
 
 @router.get("/valuation")
