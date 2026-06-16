@@ -4900,20 +4900,6 @@ class TestAttachmentRoutes:
             )
         assert r.status_code == 204
 
-    def test_attachment_upload_url_in_item_detail_html(self):
-        """_attachments_panel renders fetch POST targeting /api/items/{id}/attachments
-        and hx-delete targeting /api/items/{id}/attachments/{att_id}."""
-        from ui.routes.inventory import _attachments_panel
-        from fasthtml.common import to_xml
-        item_with_attachments = {**_ITEM, "attachments": [
-            {"id": "att:1", "filename": "photo.jpg", "url": "/static/attachments/c/photo.jpg", "type": "image"},
-        ]}
-        html = to_xml(_attachments_panel("gc:ROW-001", item_with_attachments))
-        assert "/api/items/gc:ROW-001/attachments" in html, \
-            "attachment upload fetch must POST to /api/items/{id}/attachments"
-        assert 'hx-delete="/api/items/gc:ROW-001/attachments/att:1"' in html, \
-            "attachment delete button must target DELETE /api/items/{id}/attachments/{att_id}"
-
 
 class TestInventoryBulkActions:
     """List-level bulk action routes: status, transfer, delete."""

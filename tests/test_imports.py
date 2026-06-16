@@ -18,8 +18,9 @@ def test_event_type_values() -> None:
     assert EventType.MP_LISTING_CREATED == "mp.listing.created"
     assert EventType.ACC_JOURNAL_ENTRY_CREATED == "acc.journal_entry.created"
     assert EventType.SYS_COMPANY_CREATED == "sys.company.created"
+    assert EventType.ITEM_WORKFLOW_SET == "item.workflow.set"
     # Spot-check total count
-    assert len(EventType) == 106
+    assert len(EventType) == 107
 
 
 def test_log_level_default_is_info() -> None:
