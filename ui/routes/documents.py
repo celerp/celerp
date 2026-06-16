@@ -126,16 +126,16 @@ _DOC_TYPE_PAGE_LABELS: dict[str, str] = {
     "memo": "Consignment Out",
     "consignment_in": "Consignment In",
     "list": "Lists",
-    "production_order": "Production Orders",
+    "production_order": "Stock Orders",
     "subscription_invoice": "Subscription Templates",
     "subscription_po": "Subscription PO Templates",
 }
 # Short explanatory banner shown above certain doc-type lists where the purpose isn't obvious.
 _DOC_TYPE_INTRO: dict[str, str] = {
     "production_order": (
-        "Production Orders are internal orders to make stock - demand you create yourself, not tied to "
+        "Stock Orders are internal orders to make stock - demand you create yourself, not tied to "
         "a customer. Use them to plan production ahead of (or independent of) sales; once finalized, their "
-        "items appear on the Manufacturing Demand Planning page."
+        "items appear on the Manufacturing Demand Planning page and can become work orders."
     ),
 }
 
@@ -176,7 +176,7 @@ _DOC_TYPE_SINGULAR: dict[str, str] = {
     "memo": "Consignment Out",
     "consignment_in": "Consignment In",
     "list": "List",
-    "production_order": "Production Order",
+    "production_order": "Stock Order",
     "subscription_invoice": "Subscription Template",
     "subscription_po": "Subscription PO Template",
 }

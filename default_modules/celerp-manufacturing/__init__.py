@@ -29,8 +29,8 @@ PLUGIN_MANIFEST = {
     "slots": {
         # Ordered 35-37 so the group sorts immediately after the Inventory group (orders 30-34)
         # and before Contacts (order 40). Work Centers is configured in Manufacturing Settings.
-        # Demand Planning (what to make) -> Work In Progress (runs on the floor) -> Production Orders
-        # (create internal build demand): the natural left-to-right production flow.
+        # Demand Planning (what to make) -> Work In Progress (work orders on the floor) -> Stock Orders
+        # (create internal build-for-stock demand): the natural left-to-right production flow.
         "nav": [
             {
                 "group": "Manufacturing",
@@ -56,7 +56,7 @@ PLUGIN_MANIFEST = {
                 "group": "Manufacturing",
                 "key": "production_orders",
                 "icon": "📋",
-                "label": "Production Orders",
+                "label": "Stock Orders",
                 "href": "/docs?type=production_order",
                 "order": 37,
                 "min_role": "operator",

@@ -46,7 +46,7 @@ def test_production_order_interface_hides_money(page, ui_server, api):
     page.goto(f"{ui_server}/docs?type=production_order", wait_until="domcontentloaded")
     page.wait_for_selector("body", timeout=8000)
     body = page.locator("body").inner_text()
-    assert "Production Orders" in body
+    assert "Stock Orders" in body  # production_order doc-type is labelled "Stock Order" in the UI
     page.screenshot(path=str(SHOTS / "production-order-list.png"), full_page=True)
 
     # Finalising releases it as demand on the To-Make board.

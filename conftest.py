@@ -250,7 +250,7 @@ _SLOT_CONTRIBUTIONS = [
     {"slot": "nav", "contrib": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "order": 53, "_module": "celerp-reports"}},
     {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "manufacturing", "href": "/manufacturing", "label": "Demand Planning", "order": 35, "settings_href": "/settings/manufacturing", "_module": "celerp-manufacturing"}},
     {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "work_in_progress", "href": "/manufacturing/production", "label": "Work In Progress", "order": 36, "_module": "celerp-manufacturing"}},
-    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "production_orders", "href": "/docs?type=production_order", "label": "Production Orders", "order": 37, "_module": "celerp-manufacturing"}},
+    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "production_orders", "href": "/docs?type=production_order", "label": "Stock Orders", "order": 37, "_module": "celerp-manufacturing"}},
     # --- projection_handler slots ---
     {
         "slot": "projection_handler",
