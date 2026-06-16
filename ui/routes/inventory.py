@@ -4861,8 +4861,12 @@ def _print_label_dropdown(entity_id: str) -> FT:
     )
 
 
-def _item_files_section(entity_id: str, item: dict) -> FT:
-    """Render the shared files section for an item, with hero toggle enabled."""
+def _item_files_section(entity_id: str, item: dict, *, title: str = "Production documents & images") -> FT:
+    """Render the shared files section for an item, with hero toggle enabled.
+
+    Titled "Production documents & images" everywhere it appears (Details +
+    Manufacturing tabs) so the heading stays consistent across every HTMX refresh
+    (all the file mutation routes funnel through here) and describes what it is."""
     files = item.get("files") or []
     if not files and item.get("attachments"):
         # Display-side adapter: convert old attachment format for display until
@@ -4892,7 +4896,7 @@ def _item_files_section(entity_id: str, item: dict) -> FT:
                 "uploaded_at": None,
                 "is_hero": is_hero,
             })
-    return _shared_files_section("item", entity_id, files, can_set_hero=True, show_linked=False)
+    return _shared_files_section("item", entity_id, files, can_set_hero=True, show_linked=False, title=title)
 
 
 def _recipe_money(v, currency: str | None) -> str:
@@ -5448,13 +5452,16 @@ def _item_detail_tabs(
                 cls="detail-grid detail-grid--single",
             )
     elif active_tab == "manufacturing":
-        # Lazy-loaded: the recipe editor + the production hub (demand + runs), each self-contained.
+        # Lazy-loaded sections, each self-contained: the recipe editor (with the image
+        # gallery + cost summary), the production documents, the workflow, and the
+        # production hub (demand + runs). Order forms the printable worksheet top-down.
         panel = Div(
             Div(
                 P("Loading…", cls="hint"),
                 hx_get=f"/api/items/{entity_id}/recipe-section",
                 hx_trigger="load", hx_swap="outerHTML", id="recipe-section",
             ),
+            _item_files_section(entity_id, item),
             Div(
                 hx_get=f"/api/items/{entity_id}/production-block",
                 hx_trigger="load", hx_swap="outerHTML", id="production-block",

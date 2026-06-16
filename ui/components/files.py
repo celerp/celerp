@@ -83,6 +83,7 @@ def _files_section(
     date_from: str = "",
     date_to: str = "",
     search: str = "",
+    title: str | None = None,
 ) -> FT:
     """Render the files section for any entity.
 
@@ -521,7 +522,7 @@ def _files_section(
     )
 
     children = [
-        H3(t("label.files"), cls="section-title"),
+        H3(title or t("label.files"), cls="section-title"),
         filter_bar,
         table,
         Script(resize_js),
