@@ -248,8 +248,16 @@ async def test_restore_failure(auth_client, monkeypatch):
 # ── Router registration (regression: ImportError must not silence registration) ─
 
 def test_backup_routes_are_registered():
-    """Regression: /backup/* routes must be present on the app."""
-    registered = {route.path for route in app.routes}
+    """Regression: setup_api_routes must register /backup/* (ImportError must not silence it).
+
+    Built on a throwaway app so the check exercises setup_api_routes directly and is independent of
+    the process-global celerp.main.app, whose route table is not stable across an xdist worker's
+    test sequence (the suite does sys.modules surgery on module packages)."""
+    from fastapi import FastAPI
+    from celerp_backup.setup import setup_api_routes as _setup_backup
+    _tmp = FastAPI()
+    _setup_backup(_tmp)
+    registered = {route.path for route in _tmp.routes}
     assert "/backup/trigger" in registered
     assert "/backup/list" in registered
     assert "/backup/restore/{backup_id}" in registered

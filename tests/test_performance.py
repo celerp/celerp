@@ -393,11 +393,13 @@ class TestSSESessionLeak:
         alive for the entire StreamingResponse lifetime, one DB connection per open tab.
         """
         from fastapi.routing import APIRoute
-        from celerp.main import app
+        from celerp.routers.notifications import router as notifications_router
         from celerp.db import get_session
 
+        # Inspect the route on its OWNING router (the source of truth), not the process-global
+        # celerp.main.app, whose route table is not stable across an xdist worker's test sequence.
         stream_route = next(
-            (r for r in app.routes if isinstance(r, APIRoute) and r.path == "/notifications/stream"),
+            (r for r in notifications_router.routes if isinstance(r, APIRoute) and r.path == "/notifications/stream"),
             None,
         )
         assert stream_route is not None, "/notifications/stream route not found"
@@ -416,11 +418,12 @@ class TestSSESessionLeak:
         Per-tick nonce checks use manual SessionLocal() context managers, not DI sessions.
         """
         from fastapi.routing import APIRoute
-        from celerp.main import app
+        from celerp.routers.auth import router as auth_router
         from celerp.db import get_session
 
+        # On the auth router the path is "/session-watch" ("/auth" prefix is applied at include time).
         watch_route = next(
-            (r for r in app.routes if isinstance(r, APIRoute) and r.path == "/auth/session-watch"),
+            (r for r in auth_router.routes if isinstance(r, APIRoute) and r.path == "/session-watch"),
             None,
         )
         assert watch_route is not None, "/auth/session-watch route not found"
@@ -449,10 +452,10 @@ class TestBlockingCallsInAsyncHandlers:
         import asyncio
         import inspect
         from fastapi.routing import APIRoute
-        from celerp.main import app
+        from celerp.routers.health import router as health_router
 
         health_route = next(
-            (r for r in app.routes if isinstance(r, APIRoute) and r.path == "/health/system"),
+            (r for r in health_router.routes if isinstance(r, APIRoute) and r.path == "/health/system"),
             None,
         )
         assert health_route is not None, "/health/system route not found"

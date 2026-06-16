@@ -174,8 +174,9 @@ async def test_stream_endpoint_exists(auth_client):
     Functional SSE tests are in test_sse.py (unit level).
     """
     c, headers = auth_client
-    # Verify the route is registered by checking a non-streaming endpoint still works
-    # (The SSE test is covered in test_sse.py at the unit level)
-    from celerp.main import app as _app
-    route_paths = [r.path for r in _app.routes if hasattr(r, "path")]
+    # Verify the SSE route on its OWNING router (the source of truth). Asserting against the
+    # process-global celerp.main.app is fragile under xdist: a worker's test ordering + the suite's
+    # sys.modules surgery can leave the shared app's route table in a different state than at import.
+    from celerp.routers.notifications import router as notif_router
+    route_paths = [r.path for r in notif_router.routes]
     assert "/notifications/stream" in route_paths
