@@ -5396,14 +5396,17 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
     _PIPE_POS = {"planned": 0, "in_progress": 1, "on_hold": 1, "completed": 2}
 
     def _run_pipeline(status: str) -> FT:
+        from ui.routes.manufacturing import RUN_STATUS_HELP
         cur = -1 if status == "cancelled" else _PIPE_POS.get(status, 0)
         nodes = [Span(label, cls="pipe-step pipe-step--"
-                      + ("done" if (cur >= 0 and i < cur) else "current" if i == cur else "todo"))
-                 for i, (_key, label) in enumerate(_PIPE_STEPS)]
+                      + ("done" if (cur >= 0 and i < cur) else "current" if i == cur else "todo"),
+                      title=RUN_STATUS_HELP.get(key, ""))
+                 for i, (key, label) in enumerate(_PIPE_STEPS)]
         extra = (" run-pipeline--cancelled" if status == "cancelled"
                  else " run-pipeline--hold" if status == "on_hold" else "")
-        head = Span("On hold", cls="pipe-flag") if status == "on_hold" else (
-            Span("Cancelled", cls="pipe-flag pipe-flag--cancel") if status == "cancelled" else "")
+        head = Span("On hold", cls="pipe-flag", title=RUN_STATUS_HELP["on_hold"]) if status == "on_hold" else (
+            Span("Cancelled", cls="pipe-flag pipe-flag--cancel", title=RUN_STATUS_HELP["cancelled"])
+            if status == "cancelled" else "")
         return Div(Div(*nodes, cls="run-pipeline" + extra), head, cls="run-pipeline-wrap")
 
     def _run_card(run: dict) -> FT:

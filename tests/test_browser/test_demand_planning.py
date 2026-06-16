@@ -129,8 +129,13 @@ def test_demand_planning_interactions(page, ui_server, api):
     assert "invoice" in wire_row_text.lower(), (
         f"Type 'Invoice' not found in DP-WIRE row: {wire_row_text!r}"
     )
-    assert wire_row_first.locator(".badge--peg-short").count() >= 1, (
+    needed_badge = wire_row_first.locator(".badge--peg-short")
+    assert needed_badge.count() >= 1, (
         f"'.badge--peg-short' (Needed) not found in DP-WIRE row: {wire_row_text!r}"
+    )
+    # The status indicator carries an explanatory tooltip (title attribute).
+    assert "Needed" in (needed_badge.first.get_attribute("title") or ""), (
+        "coverage badge should have a 'Needed' tooltip"
     )
 
     # Covered row (bead, stock >= demand) should also be visible by default.

@@ -24,13 +24,27 @@ logger = logging.getLogger(__name__)
 # Canonical run statuses; "incomplete" = still needs attention (default queue view).
 _INCOMPLETE_STATUSES = frozenset({"planned", "in_progress", "on_hold"})
 
-
+# Plain-language help for the status indicators, shown as hover tooltips so users know what each means.
+RUN_STATUS_HELP = {
+    "planned": "Created but not started - components not yet issued.",
+    "in_progress": "Started - components issued and the run is being worked.",
+    "on_hold": "Paused - work stopped for now; can be resumed.",
+    "completed": "Finished - components consumed and finished goods received into stock.",
+    "cancelled": "Stopped - this run will not be produced.",
+}
+COVERAGE_HELP = {
+    "short": "Needed - no stock or in-progress run covers this order line; it must be made.",
+    "partial": "Partial - some stock or in-progress production covers it; the rest must be made.",
+    "covered": "Covered - fully covered by on-hand stock or in-progress runs; nothing to make.",
+}
 
 
 def _badge(status: str) -> FT:
-    key = (status or "").lower().replace("_", "-")
+    raw = (status or "").lower()
     label = (status or "").replace("_", " ").title()
-    return Span(label or EMPTY, cls=f"badge badge--{key}")
+    help_txt = RUN_STATUS_HELP.get(raw, "")
+    return Span(label or EMPTY, cls=f"badge badge--{raw.replace('_', '-')}",
+                **({"title": help_txt} if help_txt else {}))
 
 
 def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> FT:
@@ -53,8 +67,13 @@ def _mfg_status_cards(orders: list[dict], active_status: str, base_url: str) -> 
     }
     for s, _, _ in _CARD_DEFS:
         counts.setdefault(s, sum(1 for x in statuses if x == s))
+    card_help = {
+        "all": "Every run, including completed and cancelled.",
+        "active": "Runs still needing attention: planned, in progress or on hold.",
+        **RUN_STATUS_HELP,
+    }
     cards = [
-        {"label": label, "count": counts[s], "status": s, "color": color}
+        {"label": label, "count": counts[s], "status": s, "color": color, "title": card_help.get(s, "")}
         for s, label, color in _CARD_DEFS
     ]
     return status_cards(cards, base_url, active_status or None, show_all_card=False)
@@ -135,7 +154,9 @@ _DTYPE_DEFS = [("all", "All"), ("invoice", "Invoices"),
 
 
 def _status_badge(coverage: str) -> FT:
-    return Span(_STATUS_LABELS.get(coverage, coverage or EMPTY), cls=f"badge badge--peg-{coverage}")
+    help_txt = COVERAGE_HELP.get(coverage, "")
+    return Span(_STATUS_LABELS.get(coverage, coverage or EMPTY), cls=f"badge badge--peg-{coverage}",
+                **({"title": help_txt} if help_txt else {}))
 
 
 

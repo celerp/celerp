@@ -112,7 +112,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
     "All" card (status=None/"") is prepended unless show_all_card=False.
     total_override: if provided, the "All" card shows this count instead of summing cards.
     """
-    def _card(label: str, count: int, total: float | None, status: str | None, color: str, href_override: str | None = None, active_key: str | None = None) -> FT:
+    def _card(label: str, count: int, total: float | None, status: str | None, color: str, href_override: str | None = None, active_key: str | None = None, title: str | None = None) -> FT:
         _cmp = active_key if active_key is not None else (status or "")
         is_active = (active_status or "") == _cmp
         color_cls = color if color in _STATUS_CARD_COLORS else "gray"
@@ -129,7 +129,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
         ]
         if total is not None:
             inner.append(Span(fmt_money(total, currency), cls="status-card-total"))
-        return A(*inner, href=href, cls=cls)
+        return A(*inner, href=href, cls=cls, **({"title": title} if title else {}))
 
     # Ensure "All" card is first (optional)
     all_total = total_override if total_override is not None else sum(c.get("count", 0) for c in cards)
@@ -143,6 +143,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
             c.get("color", "gray"),
             href_override=c.get("_url"),
             active_key=c.get("_active_key"),
+            title=c.get("title"),
         ))
     return Div(*els, cls="status-cards")
 

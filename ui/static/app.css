@@ -2724,3 +2724,6 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .run-pipeline--cancelled .pipe-step { text-decoration: line-through; }
 .pipe-flag { font-size: 11px; font-weight: 600; color: #ea580c; }
 .pipe-flag--cancel { color: var(--c-text2); }
+
+/* Status indicators with an explanatory tooltip show the help cursor on hover. */
+.badge[title], .pipe-step[title], .pipe-flag[title], .status-card[title] { cursor: help; }
