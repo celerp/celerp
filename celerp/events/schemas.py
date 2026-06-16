@@ -205,9 +205,8 @@ def workflow_step_minutes(time_value, time_unit: str) -> float:
 
 class WorkflowStep(BaseModel):
     id: str = ""                       # stable uuid; the server assigns one if blank
-    name: str = ""                     # short step title
+    station: str = ""                  # work center / location (links to a WorkCenter name)
     instructions: str = ""             # free-text detail for the worker
-    station: str = ""                  # workcenter / bench
     time_value: float = 0              # elapsed time as typed, in time_unit
     time_unit: str = "min"             # min | hr | day
     wait: bool = False                 # unattended elapsed (cooling/curing); excluded from active total

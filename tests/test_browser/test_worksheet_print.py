@@ -29,8 +29,8 @@ def test_print_icon_opens_full_worksheet(page, ui_server, api):
         "overhead": [{"description": "Polish & box", "amount": 15}],
     })
     api.put(f"/manufacturing/items/{ring}/workflow", json={"steps": [
-        {"name": "Cast", "instructions": "Pour and cool", "station": "Casting", "time_value": 12, "time_unit": "hr", "wait": True},
-        {"name": "Set", "instructions": "Set the stone", "station": "Bench", "time_value": 25, "time_unit": "min"},
+        {"station": "Casting", "instructions": "Pour and cool", "time_value": 12, "time_unit": "hr", "wait": True},
+        {"station": "Bench", "instructions": "Set the stone", "time_value": 25, "time_unit": "min"},
     ]})
     api.post(f"/items/{ring}/files?document_tag=product_images", files={"file": ("ring.png", _PNG, "image/png")})
 
@@ -45,13 +45,17 @@ def test_print_icon_opens_full_worksheet(page, ui_server, api):
     ws = popup_info.value
     ws.wait_for_load_state("domcontentloaded")
     body = ws.locator("body").inner_text()
-    # One page carries product info + recipe + workflow.
+    # One page carries product info + materials + workflow.
     assert "Production Worksheet" in body
     assert "Print Ring" in body and "WS-RING" in body
-    assert "WS-GOLD" in body            # a materials component
-    assert "Setting" in body            # a labor operation
-    assert "Cast" in body and "Set" in body          # workflow steps
-    assert "unattended" in body         # the wait step badge
-    assert ws.locator(".ws-images img").count() >= 1  # product image
-    assert ws.locator(".ws-tbl").count() >= 2         # recipe + workflow tables
+    assert "WS-GOLD" in body                              # a materials component
+    assert "Casting" in body and "Bench" in body         # workflow stations
+    assert "Pour and cool" in body and "Set the stone" in body  # instructions
+    assert "unattended" in body                          # the wait step badge
+    assert ws.locator(".ws-images img").count() >= 1     # product image
+    assert ws.locator(".ws-tbl").count() >= 2            # materials + workflow tables
+    # Costs NEVER appear on the worksheet (unit cost was 465; no Labor/Overhead/Cost columns).
+    assert "Unit cost" not in body
+    assert "465" not in body
+    assert "Labor" not in body and "Overhead" not in body
     ws.screenshot(path=str(SHOTS / "print.png"), full_page=True)

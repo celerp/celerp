@@ -167,8 +167,7 @@ def test_full_manufacturing_journey(page, ui_server, api):
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
     )
     api.put(f"/manufacturing/items/{ring}/workflow", json={"steps": [
-        {"name": "Setting", "instructions": "Set the stone, polish", "station": "Bench",
-         "time_value": 30, "time_unit": "min"},
+        {"station": "Bench", "instructions": "Set the stone, polish", "time_value": 30, "time_unit": "min"},
     ]})
     api.post(f"/items/{ring}/files?document_tag=product_images",
              files={"file": ("ring.png", png, "image/png")})
@@ -181,6 +180,6 @@ def test_full_manufacturing_journey(page, ui_server, api):
     ws.wait_for_load_state("domcontentloaded")
     sheet = ws.locator("body").inner_text()
     assert "JNY-RING" in sheet and "JNY-GOLD" in sheet   # the recipe materials
-    assert "Setting" in sheet                            # the workflow step
+    assert "Set the stone, polish" in sheet              # the workflow step instruction
     assert ws.locator(".ws-images img").count() >= 1     # the product image
     ws.screenshot(path=str(SHOTS / "worksheet.png"), full_page=True)

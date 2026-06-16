@@ -29,7 +29,7 @@ async def _item(client, token, sku="FG") -> str:
 
 
 def _step(**kw):
-    base = {"name": "", "instructions": "", "station": "", "time_value": 0, "time_unit": "min", "wait": False}
+    base = {"station": "", "instructions": "", "time_value": 0, "time_unit": "min", "wait": False}
     base.update(kw)
     return base
 
@@ -40,9 +40,9 @@ async def test_put_workflow_round_trip_assigns_id_and_normalizes_minutes(client)
     fg = await _item(client, token)
 
     body = {"steps": [
-        _step(name="Cut", instructions="Cut & anneal", station="Bench 1", time_value=15, time_unit="min"),
-        _step(name="Cast", instructions="Cool overnight", station="Casting", time_value=12, time_unit="hr", wait=True),
-        _step(name="Cure", time_value=2, time_unit="day"),
+        _step(station="Bench 1", instructions="Cut & anneal", time_value=15, time_unit="min"),
+        _step(station="Casting", instructions="Cool overnight", time_value=12, time_unit="hr", wait=True),
+        _step(station="Polish", instructions="Set & polish", time_value=2, time_unit="day"),
     ]}
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token), json=body)
     assert r.status_code == 200, r.text
@@ -67,16 +67,16 @@ async def test_put_workflow_preserves_supplied_id_and_full_replaces(client) -> N
     token = await _register(client)
     fg = await _item(client, token)
 
-    first = {"steps": [_step(id="keep-me", name="One"), _step(name="Two")]}
+    first = {"steps": [_step(id="keep-me", instructions="One"), _step(instructions="Two")]}
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token), json=first)
     assert r.status_code == 200, r.text
     assert r.json()["workflow"]["steps"][0]["id"] == "keep-me"
 
-    second = {"steps": [_step(name="Only")]}
+    second = {"steps": [_step(instructions="Only")]}
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token), json=second)
     got = (await client.get(f"/items/{fg}", headers=_h(token))).json()
     # Full-replace, not merge.
-    assert [s["name"] for s in got["workflow"]["steps"]] == ["Only"]
+    assert [s["instructions"] for s in got["workflow"]["steps"]] == ["Only"]
 
 
 @pytest.mark.asyncio
@@ -84,7 +84,7 @@ async def test_put_workflow_rejects_bad_time_unit(client) -> None:
     token = await _register(client)
     fg = await _item(client, token)
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token),
-                         json={"steps": [_step(name="X", time_value=1, time_unit="weeks")]})
+                         json={"steps": [_step(instructions="X", time_value=1, time_unit="weeks")]})
     assert r.status_code == 422
     assert "time unit" in r.json()["detail"].lower()
 
@@ -94,7 +94,7 @@ async def test_put_workflow_rejects_unknown_ref_file(client) -> None:
     token = await _register(client)
     fg = await _item(client, token)
     r = await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token),
-                         json={"steps": [_step(name="X", ref_file_id="nope")]})
+                         json={"steps": [_step(instructions="X", ref_file_id="nope")]})
     assert r.status_code == 422
     assert "reference file" in r.json()["detail"].lower()
 
@@ -112,7 +112,7 @@ async def test_put_workflow_emits_event(client, session) -> None:
     token = await _register(client)
     fg = await _item(client, token)
     await client.put(f"/manufacturing/items/{fg}/workflow", headers=_h(token),
-                     json={"steps": [_step(name="Step")]})
+                     json={"steps": [_step(instructions="Step")]})
     rows = (await session.execute(
         select(LedgerEntry).where(LedgerEntry.entity_id == fg,
                                   LedgerEntry.event_type == "item.workflow.set")

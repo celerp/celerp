@@ -1,6 +1,6 @@
 # Copyright (c) 2026 Noah Severs. All rights reserved.
 # SPDX-License-Identifier: LicenseRef-Proprietary
-"""Production workflow table on the Manufacturing tab: add / edit / unit / wait / reorder / ref."""
+"""Production workflow table: station dropdown, edit, sort/filter, reorder, ref, remove."""
 from __future__ import annotations
 
 import base64
@@ -32,8 +32,7 @@ def _wait(api, item, pred, timeout=8.0):
 
 
 def _set_cell(page, col, value, is_select=False):
-    """Double-click a workflow cell, edit it, commit. The editor swaps the cell to an
-    input/select named 'value' (the td drops data-col), so locate it within the section."""
+    """Double-click a workflow cell, edit it, commit (input/select named 'value')."""
     for attempt in range(2):
         try:
             page.dblclick(f'td[data-col="{col}"]')
@@ -53,50 +52,66 @@ def _set_cell(page, col, value, is_select=False):
             page.wait_for_timeout(600)
 
 
-def test_workflow_add_edit_reorder_ref(page, ui_server, api):
+def _pick_station(page, col, value):
+    """Double-click the station cell and choose a work center from the combobox."""
+    page.dblclick(f'td[data-col="{col}"]')
+    box = page.locator("#workflow-section .combobox-input").last
+    box.wait_for(state="visible", timeout=4000)
+    box.click()
+    box.fill(value)
+    page.wait_for_selector(".combobox-list.open", timeout=3000)
+    page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty):visible").first.click()
+
+
+def test_workflow_station_edit_sortfilter_reorder_ref(page, ui_server, api):
     SHOTS.mkdir(parents=True, exist_ok=True)
     item = api.post("/items", json={"sku": "WF-RING", "name": "Workflow Ring", "quantity": 0, "sell_by": "piece"}).json()["id"]
+    # Seed work centers so the Station dropdown has real options.
+    api.post("/manufacturing/work-centers", json={"name": "Casting"})
+    api.post("/manufacturing/work-centers", json={"name": "Bench"})
 
     page.goto(f"{ui_server}/inventory/{item}?tab=manufacturing", wait_until="domcontentloaded")
     page.wait_for_selector("#workflow-section:has-text('Production workflow')", timeout=10000)
 
     # Add a step.
     page.click("#workflow-section button:has-text('+ Add step')")
-    page.wait_for_selector('td[data-col="workflow__0__name"]', timeout=8000)
+    page.wait_for_selector('td[data-col="workflow__0__station"]', timeout=8000)
     _wait(api, item, lambda s: len(s) == 1)
 
-    # Edit its text + station.
-    _set_cell(page, "workflow__0__name", "Cast")
-    _wait(api, item, lambda s: s[0].get("name") == "Cast")
-    _set_cell(page, "workflow__0__station", "Casting")
+    # Station via the work-center dropdown.
+    _pick_station(page, "workflow__0__station", "Casting")
     _wait(api, item, lambda s: s[0].get("station") == "Casting")
 
-    # Time: 12 + unit "hr" -> canonical 720 minutes.
+    # Instructions + time/unit + wait.
+    _set_cell(page, "workflow__0__instructions", "Pour and cool")
+    _wait(api, item, lambda s: s[0].get("instructions") == "Pour and cool")
     _set_cell(page, "workflow__0__time_value", "12")
-    _wait(api, item, lambda s: float(s[0].get("time_value") or 0) == 12)
+    _wait(api, item, lambda s: float(s[0].get("time_value") or 0) == 12.0)
     _set_cell(page, "workflow__0__time_unit", "hr", is_select=True)
-    _wait(api, item, lambda s: s[0].get("time_unit") == "hr" and float(s[0].get("time_minutes") or 0) == 720.0)
-
-    # Wait flag (unattended) — excluded from active time.
+    _wait(api, item, lambda s: float(s[0].get("time_minutes") or 0) == 720.0)
     page.locator('#workflow-section tr.wf-row input[type=checkbox]').first.check()
     _wait(api, item, lambda s: s[0].get("wait") is True)
 
-    # Add a second step and reorder via the drag handle (step 2 above step 1).
+    # Excel sort + filter controls are present on the columns (same components as the rest).
+    page.wait_for_selector('#workflow-section th[data-sort="3"]', timeout=8000)        # Time sortable
+    page.wait_for_selector('#workflow-section .colfilter[data-col="1"]', timeout=8000)  # Station funnel
+    page.locator('#workflow-section .colfilter[data-col="1"]').click()                # opens the filter popup
+    page.wait_for_selector(".colfilter-pop", timeout=3000)
+    page.keyboard.press("Escape")
+
+    # Second step, then drag-reorder it above the first.
     page.click("#workflow-section button:has-text('+ Add step')")
-    page.wait_for_selector('td[data-col="workflow__1__name"]', timeout=8000)
-    _set_cell(page, "workflow__1__name", "Polish")
-    _wait(api, item, lambda s: len(s) == 2 and s[1].get("name") == "Polish")
-
+    page.wait_for_selector('td[data-col="workflow__1__instructions"]', timeout=8000)
+    _set_cell(page, "workflow__1__instructions", "Polish")
+    _wait(api, item, lambda s: len(s) == 2 and s[1].get("instructions") == "Polish")
     order_before = [s["id"] for s in _steps(api, item)]
-    handles = page.locator("#workflow-section .wf-drag")
-    handles.nth(1).drag_to(page.locator("#workflow-section tr.wf-row").nth(0))
+    page.locator("#workflow-section .wf-drag").nth(1).drag_to(page.locator("#workflow-section tr.wf-row").nth(0))
     _wait(api, item, lambda s: [x["id"] for x in s] == list(reversed(order_before)))
-    # Polish is now first.
-    assert _steps(api, item)[0]["name"] == "Polish"
+    assert _steps(api, item)[0]["instructions"] == "Polish"
 
-    # Drop a reference image onto the first step's Reference cell.
+    # Drop a reference image onto the first step.
     page.evaluate(
-        """async ([b64]) => {
+        """([b64]) => {
             const bin = atob(b64); const arr = new Uint8Array(bin.length);
             for (let i=0;i<bin.length;i++) arr[i]=bin.charCodeAt(i);
             const file = new File([arr], 'ref.png', {type:'image/png'});

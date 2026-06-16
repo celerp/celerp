@@ -1612,7 +1612,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
             steps = list((item.get("workflow") or {}).get("steps") or [])
             if action == "add":
-                steps.append({"name": "", "instructions": "", "station": "",
+                steps.append({"station": "", "instructions": "",
                               "time_value": 0, "time_unit": "min", "wait": False})
             elif action == "remove" and 0 <= index < len(steps):
                 steps.pop(index)
@@ -1650,9 +1650,20 @@ function celerpPrintLabel(entityId, templateId) {
             return P(e.detail, cls="cell-error")
         steps = (item.get("workflow") or {}).get("steps") or []
         value = steps[idx].get(field, "") if 0 <= idx < len(steps) else ""
+        options = list(_WORKFLOW_TIME_UNITS) if field == "time_unit" else None
+        allow_custom = False
+        if field == "station":
+            # Dropdown of the company's work centers, with an add-new option (GDR §2i searchable).
+            try:
+                centers = (await api.list_work_centers(token)).get("items", [])
+            except APIError:
+                centers = []
+            options = [c.get("name") for c in centers if c.get("name")] + [
+                ("__new__:/settings/manufacturing#work-centers", "+ Add new work center")]
+            allow_custom = True
         return editable_cell(
             entity_id=entity_id, field=f"workflow__{idx}__{field}", value=value, cell_type=cell_type,
-            options=list(_WORKFLOW_TIME_UNITS) if field == "time_unit" else None,
+            options=options, allow_custom=allow_custom,
             restore_url=f"/api/items/{entity_id}/workflow-cell/{idx}/{field}/display",
         )
 
@@ -1682,12 +1693,11 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return RedirectResponse("/login", status_code=302)
         try:
-            item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
+            item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, cur, today)))
+        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, today)))
 
     @app.get("/api/items/{entity_id}/field/{field}/edit")
     async def field_edit_cell(request: Request, entity_id: str, field: str):
@@ -5208,8 +5218,9 @@ def _workflow_gallery(entity_id: str, item: dict) -> FT:
 
 # Editable workflow-step fields and their system-standard cell types (double-click to edit).
 # `wait` is a direct checkbox (boolean toggle), handled separately — not a click-to-edit cell.
+# `station` is a select linked to the company's work centers (with an add-new option).
 _WORKFLOW_CELLS: dict[str, str] = {
-    "name": "text", "instructions": "text", "station": "text",
+    "station": "select", "instructions": "text",
     "time_value": "number", "time_unit": "select",
 }
 
@@ -5321,12 +5332,11 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
         return Td(*inner, cls="wf-ref-drop", **{"data-idx": str(idx)})
 
     def _row(idx: int, step: dict) -> FT:
+        # Cell order must match the filter/sort column indices below (0-based, drag handle is 0).
         return Tr(
             Td(Span("⠿", cls="wf-drag", draggable="true", title="Drag to reorder"), cls="wf-col-drag"),
-            Td(str(idx + 1), cls="wf-num"),
-            _workflow_cell(entity_id, idx, "name", step.get("name")),
-            _workflow_cell(entity_id, idx, "instructions", step.get("instructions")),
             _workflow_cell(entity_id, idx, "station", step.get("station")),
+            _workflow_cell(entity_id, idx, "instructions", step.get("instructions")),
             _workflow_cell(entity_id, idx, "time_value", step.get("time_value")),
             _workflow_cell(entity_id, idx, "time_unit", step.get("time_unit") or "min"),
             Td(Input(type="checkbox", checked=bool(step.get("wait")),
@@ -5338,17 +5348,22 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
             Td(Button("×", type="button", title="Remove step", cls="btn btn--xs btn--ghost",
                       hx_post=f"{base}?action=remove&index={idx}", **{k: v for k, v in _struct.items() if k != "hx_post"}),
                cls="cell--actions"),
-            cls="wf-row", **{"data-step-id": step.get("id") or f"idx-{idx}"},
+            cls="wf-row data-row", **{"data-step-id": step.get("id") or f"idx-{idx}"},
         )
 
+    # Columns: 0 drag, 1 Station, 2 Instructions, 3 Time, 4 Unit, 5 Wait, 6 Reference, 7 remove.
+    # Station/Instructions/Unit are Excel-filterable + sortable; Time sorts. Filtering/sorting
+    # is a client-side view (COLUMN_FILTER_JS/ENHANCED_TABLE_JS) over the manual drag order.
     head = Tr(
-        Th("", cls="wf-col-drag"), Th("#", cls="wf-num"),
-        Th("Step"), Th("Instructions"), Th("Station"),
-        Th("Time", cls="cell--number"), Th("Unit", cls="cell--center"),
+        Th("", cls="wf-col-drag"),
+        filter_th("Station", 1, sortable=True),
+        filter_th("Instructions", 2, sortable=True),
+        sortable_th("Time", 3, right=True),
+        filter_th("Unit", 4, sortable=True, center=True),
         Th("Wait", cls="cell--center"), Th("Reference"), Th("", cls="cell--actions"),
     )
     body = [_row(i, s) for i, s in enumerate(steps)]
-    table = Table(Thead(head), Tbody(*body), cls="data-table wf-table") if steps else ""
+    table = Table(Thead(head), Tbody(*body), cls="data-table js-table wf-table") if steps else ""
     empty = P("No steps yet. Add the build steps a worker follows; drag the handle to reorder.",
               cls="hint") if not steps else ""
 
@@ -5358,13 +5373,14 @@ def _workflow_section(entity_id: str, item: dict) -> FT:
             Span(summary, cls="wf-summary") if steps else "",
             cls="recipe-section-head",
         ),
-        P("The ordered steps to build this item. Double-click a cell to edit; drag a row to reorder; "
-          "drop an image on Reference to illustrate a step.", cls="hint"),
+        P("The ordered steps to build this item, by work center. Double-click a cell to edit; drag a "
+          "row to reorder; sort or filter any column; drop an image on Reference to illustrate a step.",
+          cls="hint"),
         table,
         empty,
         Button("+ Add step", type="button", cls="btn btn--sm btn--secondary",
                hx_post=f"{base}?action=add", **{k: v for k, v in _struct.items() if k != "hx_post"}),
-        Script(WORKFLOW_JS),
+        Script(COLUMN_FILTER_JS), Script(ENHANCED_TABLE_JS), Script(WORKFLOW_JS),
         id="workflow-section",
         cls="detail-card recipe-block",
         **{"data-base": base},
@@ -5403,14 +5419,12 @@ def _worksheet_unit_label(unit: str) -> str:
     return {"min": "min", "hr": "hr", "day": "day"}.get(unit, unit or "min")
 
 
-def _worksheet_print_view(entity_id: str, item: dict, currency: str | None, today: str) -> FT:
-    """Standalone printable production worksheet: product info + images + recipe + workflow.
-    Mirrors the document print view (auto window.print(); the browser saves it as one PDF)."""
+def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
+    """Standalone printable production worksheet: product info + images + materials + workflow.
+    Costs never appear here — this is a shop-floor build sheet, not a costing document. Mirrors
+    the document print view (auto window.print(); the browser saves it as one PDF)."""
     recipe = item.get("recipe") or {}
     EM = EMPTY
-
-    def _money(v):
-        return _recipe_money(v, currency)
 
     # ── Product images ──
     images = _item_image_files(item)
@@ -5423,51 +5437,22 @@ def _worksheet_print_view(entity_id: str, item: dict, currency: str | None, toda
         ) if images else ""
     )
 
-    # ── Recipe: materials / labor / overhead ──
+    # ── Materials to gather (no costs) ──
     comps = recipe.get("components", []) or []
     materials = (
         Div(
             H2("Materials"),
             Table(
-                Thead(Tr(Th("Component"), Th("Qty", cls="ws-num"), Th("Unit"), Th("Cost", cls="ws-num"))),
+                Thead(Tr(Th("Component"), Th("Qty", cls="ws-num"), Th("Unit"))),
                 Tbody(*[Tr(
                     Td(f"{c.get('sku') or ''} {('- ' + c['name']) if c.get('name') else ''}".strip(" -") or EM),
                     Td(f"{float(c.get('quantity') or 0):g}", cls="ws-num"),
                     Td(c.get("unit") or EM),
-                    Td(_money(c.get("line_cost")), cls="ws-num"),
                 ) for c in comps]),
                 cls="ws-tbl",
             ),
             cls="ws-section",
         ) if comps else ""
-    )
-    labor_rows = recipe.get("labor", []) or []
-    labor = (
-        Div(
-            H2("Labor"),
-            Table(
-                Thead(Tr(Th("Operation"), Th("Type"), Th("Total", cls="ws-num"))),
-                Tbody(*[Tr(
-                    Td(l.get("operation") or EM),
-                    Td((l.get("kind") or "hourly").title()),
-                    Td(_money((float(l.get("hours") or 0) * float(l.get("rate") or 0)) if (l.get("kind") or "hourly") != "fixed" else l.get("amount")), cls="ws-num"),
-                ) for l in labor_rows]),
-                cls="ws-tbl",
-            ),
-            cls="ws-section",
-        ) if labor_rows else ""
-    )
-    oh_rows = recipe.get("overhead", []) or []
-    overhead = (
-        Div(
-            H2("Overhead"),
-            Table(
-                Thead(Tr(Th("Description"), Th("Amount", cls="ws-num"))),
-                Tbody(*[Tr(Td(o.get("description") or EM), Td(_money(o.get("amount")), cls="ws-num")) for o in oh_rows]),
-                cls="ws-tbl",
-            ),
-            cls="ws-section",
-        ) if oh_rows else ""
     )
 
     # ── Workflow steps ──
@@ -5490,13 +5475,12 @@ def _worksheet_print_view(entity_id: str, item: dict, currency: str | None, toda
         Div(
             H2("Production workflow"),
             Table(
-                Thead(Tr(Th("#", cls="ws-num"), Th("Step"), Th("Instructions"), Th("Station"),
+                Thead(Tr(Th("#", cls="ws-num"), Th("Station"), Th("Instructions"),
                          Th("Time", cls="ws-num"), Th("Ref"))),
                 Tbody(*[Tr(
                     Td(str(i + 1), cls="ws-num"),
-                    Td(s.get("name") or EM),
-                    Td(s.get("instructions") or EM),
                     Td(s.get("station") or EM),
+                    Td(s.get("instructions") or EM),
                     _time_cell(s),
                     _step_ref(s),
                 ) for i, s in enumerate(steps)]),
@@ -5525,14 +5509,13 @@ def _worksheet_print_view(entity_id: str, item: dict, currency: str | None, toda
                 Div(
                     Div("Production Worksheet"),
                     Div(f"Output {float(recipe.get('output_qty') or 1):g} / batch"),
-                    Div(Span("Unit cost "), Strong(_money(recipe.get("unit_cost")))),
                     Div(today, cls="ws-muted"),
                     cls="ws-meta",
                 ),
                 cls="ws-header",
             ),
             img_section,
-            materials, labor, overhead,
+            materials,
             workflow,
             Div(Span(f"{sku} - {name}"), Span("Powered by celerp.com"), cls="ws-foot"),
             Script("window.onload = function() { window.print(); }"),
@@ -5725,7 +5708,13 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     # Mark-to-market is automatic: changing a component's cost recosts every item that uses it
     # (see the inventory pricing endpoint + manufacturing set_item_recipe), so there is no
     # manual "re-cost dependents" control here.
-    right_col = [_workflow_gallery(entity_id, item), _recipe_cost_card(entity_id, item, currency)]
+    # Right column, top to bottom: product images, the drop-files area (directly under the
+    # images), then the Cost summary. The workflow renders full-width below the grid.
+    right_col = [
+        _workflow_gallery(entity_id, item),
+        _item_files_section(entity_id, item),
+        _recipe_cost_card(entity_id, item, currency),
+    ]
 
     has_rows = bool(components or labor_rows or overhead_rows)
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
@@ -5948,16 +5937,15 @@ def _item_detail_tabs(
                 cls="detail-grid detail-grid--single",
             )
     elif active_tab == "manufacturing":
-        # Lazy-loaded sections, each self-contained: the recipe editor (with the image
-        # gallery + cost summary), the production documents, the workflow, and the
-        # production hub (demand + runs). Order forms the printable worksheet top-down.
+        # Lazy-loaded sections. recipe-section holds the recipe (left) plus the image gallery,
+        # drop-files area, and cost summary (right column). The workflow renders full-width below
+        # the cost summary, then the production hub (demand + runs).
         panel = Div(
             Div(
                 P("Loading…", cls="hint"),
                 hx_get=f"/api/items/{entity_id}/recipe-section",
                 hx_trigger="load", hx_swap="outerHTML", id="recipe-section",
             ),
-            _item_files_section(entity_id, item),
             Div(
                 P("Loading…", cls="hint"),
                 hx_get=f"/api/items/{entity_id}/workflow-section",
