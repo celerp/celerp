@@ -222,18 +222,34 @@ def bulk_toolbar(table_id: str, actions: list[dict]) -> FT:
 
 
 def filter_th(label: str, col: int, *, center: bool = False, sortable: bool = False,
-              right: bool = False) -> FT:
+              right: bool = False, default_exclude: list[str] | None = None) -> FT:
     """A column header with an Excel-style filter funnel (client-side checkbox value list).
     `col` is the 0-based cell index the funnel filters on. Pair with COLUMN_FILTER_JS on the page.
     With sortable=True the label also sorts the column (needs ENHANCED_TABLE_JS); the sort arrow sits
     inner (right after the label) and the funnel arrow outer - matching the inventory list. right=True
-    right-aligns the header to match numeric cells. The funnel is guarded so clicking it filters."""
+    right-aligns the header to match numeric cells. The funnel is guarded so clicking it filters.
+    default_exclude: values hidden by default (the funnel starts with them unchecked) - e.g. Status
+    excludes Completed/Cancelled until the user re-checks them."""
     attrs = {"data-col": str(col), "aria-label": f"Filter by {label}"}
+    if default_exclude:
+        attrs["data-filter-exclude"] = "␟".join(default_exclude)  # unit-separator: values may contain commas
     inner = [Span(label)] + ([Span(cls="sort-ind")] if sortable else [])
     inner.append(Button("▾", type="button", cls="colfilter", title=f"Filter by {label}", **attrs))
     cls = ("colfilter-th" + (" sortable-th" if sortable else "")
            + (" cell--center" if center else "") + (" cell--number" if right else ""))
     return Th(*inner, cls=cls, **({"data-sort": str(col)} if sortable else {}))
+
+
+def date_range_filter(table_id: str, col: int, label: str) -> FT:
+    """A from/to date-range filter bound to a client table column (composes with the Excel funnels
+    via COLUMN_FILTER_JS). `col` is the 0-based cell index holding an ISO date (YYYY-MM-DD)."""
+    return Span(
+        Span(f"{label}:", cls="daterange-label"),
+        Input(type="date", cls="daterange-input", aria_label=f"{label} from", **{"data-bound": "from"}),
+        Span("to", cls="daterange-sep"),
+        Input(type="date", cls="daterange-input", aria_label=f"{label} to", **{"data-bound": "to"}),
+        cls="daterange", **{"data-daterange-table": table_id, "data-daterange-col": str(col)},
+    )
 
 
 # Excel-style column filters: each `.colfilter` funnel (in a `filter_th`) opens a checkbox list of
@@ -252,7 +268,16 @@ COLUMN_FILTER_JS = """
     var a=active(t);
     rows(t).forEach(function(r){
       var show=true;
-      for(var col in a){var s=a[col];if(s&&!s.has(cellText(r,+col))){show=false;break;}}
+      for(var key in a){
+        var s=a[key];
+        if(key.indexOf('_range_')===0){
+          // Date-range filter: cell must be an ISO date within [from, to].
+          var rc=+key.slice(7), cv=cellText(r,rc), ok=/^\\d{4}-\\d{2}-\\d{2}/.test(cv);
+          if(!ok){show=false;break;}
+          if(s.from&&cv<s.from){show=false;break;}
+          if(s.to&&cv>s.to){show=false;break;}
+        } else if(s&&!s.has(cellText(r,+key))){show=false;break;}
+      }
       r.classList.toggle('dp-row-hidden',!show);
       if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}
     });
@@ -260,6 +285,21 @@ COLUMN_FILTER_JS = """
     if(window.celerpBulkRefresh)window.celerpBulkRefresh();
     if(window.celerpTableEnhance)window.celerpTableEnhance(t);
   }
+  // Seed a column's default-excluded values (e.g. Status hides Completed/Cancelled) once per table.
+  function seedDefaults(t){
+    var a=active(t);
+    t.querySelectorAll('thead .colfilter[data-filter-exclude]').forEach(function(b){
+      var col=b.getAttribute('data-col'); if(col in a) return;
+      var ex=b.getAttribute('data-filter-exclude').split('\\u241f');
+      var keep=distinct(t,+col).filter(function(v){return ex.indexOf(v)<0;});
+      a[col]=new Set(keep);
+    });
+  }
+  function refresh(t){ if(t){seedDefaults(t);apply(t);} }
+  // Seed default filters for tables under `root` (called by sections after an htmx swap, since
+  // htmx:afterSwap's target is unreliable for outerHTML swaps). A freshly swapped table is a new
+  // element with empty state, so this seeds it without wiping user filters elsewhere.
+  window.celerpRefreshFilters=function(root){(root||document).querySelectorAll('table.js-table,table.data-table').forEach(refresh);};
   function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
   function open(btn){
     var t=btn.closest('table');if(!t)return;
@@ -309,10 +349,25 @@ COLUMN_FILTER_JS = """
     if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
   });
   document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+  // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.
+  document.addEventListener('change',function(e){
+    var inp=e.target;
+    if(!(inp.classList&&inp.classList.contains('daterange-input')))return;
+    var wrap=inp.closest('.daterange');if(!wrap)return;
+    var t=document.getElementById(wrap.getAttribute('data-daterange-table'));if(!t)return;
+    var col=wrap.getAttribute('data-daterange-col'),a=active(t);
+    var from=(wrap.querySelector('[data-bound=from]')||{}).value||'';
+    var to=(wrap.querySelector('[data-bound=to]')||{}).value||'';
+    if(from||to)a['_range_'+col]={from:from,to:to};else delete a['_range_'+col];
+    apply(t);
+  });
   document.addEventListener('htmx:afterSwap',function(e){
     var tg=e.detail&&e.detail.target;if(!tg)return;
-    var t=tg.tagName==='TABLE'?tg:(tg.querySelector?tg.querySelector('table'):null);
-    if(t){state.delete(t);closeAll();apply(t);}});
+    var tables=tg.tagName==='TABLE'?[tg]:(tg.querySelectorAll?tg.querySelectorAll('table'):[]);
+    if(tables.length){closeAll();Array.prototype.forEach.call(tables,function(t){state.delete(t);refresh(t);});}
+  });
+  if(document.readyState!=='loading')document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);
+  else document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);});
 })();
 """
 

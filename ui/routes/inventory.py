@@ -21,7 +21,7 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
 from celerp.events.schemas import _WORKFLOW_TIME_UNITS
@@ -1402,14 +1402,13 @@ function celerpPrintLabel(entityId, templateId) {
             return Div(P(e.detail, cls="cell-error"), id="recipe-section")
 
     async def _production_block_response(token: str, entity_id: str, flash_msg: str | None = None,
-                                         flash_kind: str = "success", show_completed: bool = False):
+                                         flash_kind: str = "success"):
         item, company, hub = await asyncio.gather(
             api.get_item(token, entity_id), api.get_company(token),
             api.manufacturing_item_hub(token, entity_id),
         )
         cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
-        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind,
-                                 show_completed=show_completed)
+        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind)
 
     @app.get("/api/items/{entity_id}/production-block")
     async def production_block(request: Request, entity_id: str):
@@ -1417,8 +1416,7 @@ function celerpPrintLabel(entityId, templateId) {
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
         try:
-            return await _production_block_response(
-                token, entity_id, show_completed=request.query_params.get("wo") == "all")
+            return await _production_block_response(token, entity_id)
         except APIError as e:
             if e.status == 401:
                 return P(t("error.unauthorized"), cls="cell-error")
@@ -5792,21 +5790,15 @@ def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str
     )
 
 
-_WO_CLOSED = ("completed", "cancelled")
-
-
 def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
-                      flash_msg: str | None = None, flash_kind: str = "success",
-                      show_completed: bool = False) -> FT:
+                      flash_msg: str | None = None, flash_kind: str = "success") -> FT:
     """The product Manufacturing-tab production hub: open demand for this product (with coverage) +
-    its work orders. Completed/cancelled work orders are hidden by default (toggle to show). Both
-    tables are client-sortable and Excel-filterable, and paginate when long."""
+    its work orders. Both tables are client-sortable and Excel-filterable with from/to due-date
+    filters, and paginate when long. Completed/cancelled work orders are hidden by default via the
+    Status filter (re-check them in its funnel to show them) - no separate toggle."""
     from ui.routes.manufacturing import _status_badge as _coverage_badge
     demand = hub.get("demand", []) or []
-    all_runs = hub.get("runs", []) or []
-    runs = (all_runs if show_completed
-            else [r for r in all_runs if (r.get("status") or "").lower() not in _WO_CLOSED])
-    completed_n = sum(1 for r in all_runs if (r.get("status") or "").lower() in _WO_CLOSED)
+    runs = hub.get("runs", []) or []
     flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
 
     def _doc_url(d: dict) -> str:
@@ -5826,6 +5818,7 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         for d in demand
     ]
     demand_tbl = Div(
+        date_range_filter("wo-demand-table", 4, "Due date") if demand_rows else "",
         Table(
             Thead(Tr(
                 sortable_th("Document", 0), filter_th("Type", 1, sortable=True),
@@ -5886,11 +5879,13 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         )
 
     runs_view = (Div(
+        date_range_filter("wo-orders-table", 4, "Due date"),
         Table(
             Thead(Tr(
                 sortable_th("Work order", 0), filter_th("Source order", 1, sortable=True),
                 filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3, right=True),
-                sortable_th("Due", 4, center=True), filter_th("Status", 5, sortable=True),
+                sortable_th("Due", 4, center=True),
+                filter_th("Status", 5, sortable=True, default_exclude=["Completed", "Cancelled"]),
                 Th("", cls="cell--actions"),
             )),
             Tbody(*[_wo_row(r) for r in runs]),
@@ -5899,24 +5894,22 @@ def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
         table_pager("wo-orders-table"),
     ) if runs else P("No work orders to show. Create them from an order or on the Demand Planning page.", cls="hint"))
 
-    toggle = (A(f"Show completed ({completed_n})" if not show_completed else "Hide completed",
-                hx_get=f"/api/items/{entity_id}/production-block?wo={'active' if show_completed else 'all'}",
-                hx_target="#production-block", hx_swap="outerHTML", cls="btn btn--xs btn--ghost")
-              if (completed_n or show_completed) else "")
-
     return Div(
         flash_el,
         Div(H3("Open demand", cls="section-title"),
             P("Orders that have this item on order, with how well current supply covers each.", cls="hint"),
             demand_tbl, cls="detail-card recipe-block"),
         Div(
-            Div(H3("Work orders", cls="section-title"), toggle, cls="flex-row flex-between"),
-            P("Production tasks for this item, each shown with the order it fulfils. Completed work "
-              "orders are hidden by default. Create them from an order or on the Demand Planning page; "
-              "advance one with its Action menu.", cls="hint"),
+            H3("Work orders", cls="section-title"),
+            P("Production tasks for this item, each shown with the order it fulfils. Completed and "
+              "cancelled work orders are hidden by default - re-check them in the Status filter to "
+              "show them. Advance one with its Action menu.", cls="hint"),
             runs_view, cls="detail-card recipe-block"),
         Script(COLUMN_FILTER_JS),
         Script(ENHANCED_TABLE_JS),
+        # Re-seed the Status default-exclude (hide Completed/Cancelled) on every (re)render — runs
+        # on the initial lazy load and after each Action-dropdown swap.
+        Script("window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('production-block'));"),
         id="production-block",
     )
 

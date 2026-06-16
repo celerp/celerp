@@ -539,6 +539,10 @@ a:hover { text-decoration: underline; }
 .wf-ref-hint { color: var(--c-text2); font-size: 12px; font-style: italic; cursor: default; }
 .wf-ref-img { height: 40px; width: auto; border-radius: 3px; vertical-align: middle; }
 .wf-summary { font-size: 13px; color: var(--c-text2); font-variant-numeric: tabular-nums; }
+/* From/to date-range filter (date_range_filter), shown above a client-filtered table. */
+.daterange { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--c-text2); margin-bottom: 8px; }
+.daterange-input { font-size: 12px; padding: 2px 5px; }
+.daterange-label { font-weight: 600; }
 /* Multi-line text cells (e.g. workflow instructions): preserve line breaks; clamp the display. */
 .cell-textarea { white-space: pre-wrap; display: block; max-height: 4.6em; overflow: hidden; }
 .cell-textarea-input { width: 100%; min-height: 4.5em; resize: vertical; font: inherit; line-height: 1.4; }

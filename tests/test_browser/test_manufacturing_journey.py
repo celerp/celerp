@@ -139,9 +139,15 @@ def test_full_manufacturing_journey(page, ui_server, api):
     page.wait_for_selector("#production-block .wo-action-select", timeout=8000)
     block.locator(".wo-action-select").first.select_option(value="complete")
     _wait_status("completed")
-    # Completed work orders are hidden by default; reveal them with the toggle to confirm.
-    page.locator("#production-block a:has-text('Show completed')").click()
-    page.wait_for_selector("#production-block .badge:has-text('Completed')", timeout=8000)
+    # Completed work orders are hidden by default via the Status filter (no toggle), but the row is
+    # still rendered (just filtered out of view) — confirm it exists and is hidden.
+    page.wait_for_selector("#wo-orders-table", timeout=8000)
+    badge = page.locator("#wo-orders-table .badge:has-text('Completed')")
+    assert badge.count() >= 1, "completed work order should be rendered"
+    deadline = _t2.time() + 5
+    while _t2.time() < deadline and badge.first.is_visible():
+        _t2.sleep(0.2)
+    assert not badge.first.is_visible(), "completed work order should be hidden by default"
     page.screenshot(path=str(SHOTS / "run-completed.png"), full_page=True)
 
     assert api.get(f"/manufacturing/{run_id}").json()["status"] == "completed"

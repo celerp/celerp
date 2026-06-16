@@ -334,7 +334,8 @@ def _files_section(
             Td(
                 Img(src=file_download_url, style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
                 if (show_preview and f.get("mime", "").startswith("image/")) else "",
-                A(fname, href=file_download_url, cls="file-link file-link--clip", title=fname),
+                A(fname, href=file_download_url, target="_blank", rel="noopener",
+                  cls="file-link file-link--clip", title=fname),
                 cls="files-name-cell",
             ),
             tag_cell,
