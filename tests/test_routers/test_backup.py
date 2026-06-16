@@ -248,15 +248,21 @@ async def test_restore_failure(auth_client, monkeypatch):
 # ── Router registration (regression: ImportError must not silence registration) ─
 
 def test_backup_routes_are_registered():
-    """Regression: setup_api_routes must register /backup/* (ImportError must not silence it).
+    """Regression: the backup router must be registered on the app (ImportError must not silence it).
 
-    Built on a throwaway app so the check exercises setup_api_routes directly and is independent of
-    the process-global celerp.main.app, whose route table is not stable across an xdist worker's
-    test sequence (the suite does sys.modules surgery on module packages)."""
-    from fastapi import FastAPI
-    from celerp_backup.setup import setup_api_routes as _setup_backup
-    _tmp = FastAPI()
-    _setup_backup(_tmp)
+    Asserts against the production app object (`celerp.main.app`) — the SAME app that
+    production registers backup routes onto. celerp/main.py puts default_modules/celerp-backup
+    on sys.path at import time and calls `celerp_backup.setup.setup_api_routes(app)` directly
+    (backup is "core-folded": it is wired at app construction, not via the module loader — see
+    celerp.modules.loader._CORE_FOLDED). Importing `celerp.main.app` here therefore exercises the
+    real registration path.
+
+    This is deterministic under xdist (no test-order dependence): routes are only ever ADDED to the
+    app (at import time, once per worker) and never removed, so the route table only grows. The
+    earlier throwaway-app variant was fragile — it re-imported celerp_backup.setup's module-level
+    `router` object, whose identity / population depends on import ordering, so under xdist a worker
+    could observe an empty router and register nothing onto the throwaway app."""
+    from celerp.main import app as _app
 
     # Flatten the route tree: include_router(...) may put leaf routes directly on
     # the app (older Starlette) or behind a wrapper holding a `.routes` list
@@ -272,7 +278,7 @@ def test_backup_routes_are_registered():
                 if path is not None:
                     yield path
 
-    registered = set(_leaf_paths(_tmp.routes))
+    registered = set(_leaf_paths(_app.routes))
     assert "/backup/trigger" in registered
     assert "/backup/list" in registered
     assert "/backup/restore/{backup_id}" in registered
