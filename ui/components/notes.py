@@ -86,6 +86,9 @@ def notes_tab(
         hx_target=refresh_target,
         hx_swap="innerHTML",
         cls="section-card",
+        # .section-card has no inner padding, so pad the form itself - otherwise the textarea and the
+        # Add Note button sit flush against the card edges.
+        style="padding:0.75rem",
     )
 
     if not notes:

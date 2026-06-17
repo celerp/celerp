@@ -205,14 +205,17 @@ def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = Non
     return _shared_files_section("contact", contact_id, merged, **kwargs)
 
 
-def _contact_info_card(c: dict, *, oob: bool = False) -> FT:
-    """Left-column contact info: click-to-edit fields."""
+def _contact_info_card(c: dict, *, oob: bool = False, hide_fields: tuple = ()) -> FT:
+    """Left-column contact info: click-to-edit fields. hide_fields drops rows that would be redundant in
+    a given context (e.g. the Company Details page hides Currency - it's in the Settings card - and the
+    Billing/Shipping text fields, which the dedicated two-column address book already covers)."""
     cid = c.get("entity_id") or c.get("id") or ""
     fields = [
         ("name", "Name"), ("company_name", "Company"), ("email", "Email"), ("phone", "Phone"),
         ("website", "Website"), ("billing_address", "Billing Address"), ("shipping_address", "Shipping Address"),
         ("tax_id", "Tax ID"), ("currency", "Currency"),
     ]
+    fields = [(k, lbl) for k, lbl in fields if k not in hide_fields]
     attrs = {"hx_swap_oob": "outerHTML:#contact-info-card"} if oob else {}
     return Div(
         H3(t("page.contact_info"), cls="section-title"),
@@ -442,7 +445,11 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
     The Company Details page passes show_files=False because company files have their own page."""
     # Related documents table
     if not docs:
-        docs_section = P(t("label.no_documents_yet"), cls="empty-state-msg")
+        docs_section = Div(
+            P(t("label.no_documents_yet"), cls="empty-state-msg"),
+            P("Invoices, quotes, receipts, bills and other transactional documents involving this contact "
+              "will appear here automatically as you create them.", cls="hint", style="text-align:center;"),
+        )
     else:
         sorted_docs = sorted(docs, key=lambda d: d.get("issue_date") or d.get("created_at") or "", reverse=True)
         rows = []
@@ -1181,7 +1188,8 @@ def setup_routes(app):
             breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", None)]),
             page_header("Company Details"),
             Div(
-                Div(_contact_info_card(contact), cls="detail-col-left"),
+                Div(_contact_info_card(contact, hide_fields=("currency", "billing_address", "shipping_address")),
+                    cls="detail-col-left"),
                 Div(_company_settings_card(company, get_lang(request)), cls="detail-col-right"),
                 cls="detail-layout",
             ),
