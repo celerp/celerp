@@ -57,6 +57,37 @@ def _assert_balanced(entries: list[dict]) -> None:
 
 
 @pytest.mark.asyncio
+async def test_line_level_tax_splits_revenue_and_output_vat_in_finalize_je(client, session):
+    """Regression: an invoice with LINE-LEVEL tax must persist the effective tax on the doc and the
+    finalize JE must credit Revenue (4100) net of tax and Output VAT (2120) for the tax — not book the
+    whole tax-inclusive total as revenue with zero VAT. Previously `tax` was computed for `total` then
+    discarded (stayed 0 for line taxes), overstating revenue and understating the VAT liability."""
+    token = await _register(client)
+    r = await client.post("/docs", headers=_h(token), json={
+        "doc_type": "invoice", "contact_id": "contact:1",
+        "line_items": [{"name": "Widget", "quantity": 1, "unit_price": 1000,
+                        "taxes": [{"code": "VAT", "name": "VAT", "rate": 10.0}]}],
+        "currency": "USD",
+    })
+    assert r.status_code == 200
+    doc_id = r.json()["id"]
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=_h(token))).json()
+    assert doc["subtotal"] == 1000.0
+    assert doc["total"] == 1100.0
+    assert doc["tax"] == 100.0, f"effective line tax must be persisted on the doc, got {doc['tax']}"
+
+    assert (await client.post(f"/docs/{doc_id}/finalize", headers=_h(token))).status_code == 200
+    je = await _find_je(client, token, "doc.finalized", doc_id)
+    entries = je["data"]["entries"]
+    _assert_balanced(entries)
+    by_acct = {e["account"]: e for e in entries}
+    assert by_acct["1120"]["debit"] == 1100.0           # AR = tax-inclusive total
+    assert by_acct["4100"]["credit"] == 1000.0          # Revenue = NET of tax
+    assert by_acct["2120"]["credit"] == 100.0           # Output VAT liability = the tax
+
+
+@pytest.mark.asyncio
 async def test_invoice_create_send_finalize_and_sequence(client, session):
     token = await _register(client)
 

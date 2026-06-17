@@ -667,6 +667,11 @@ async def create_doc(
         total_d = round_money(subtotal_d + effective_tax_d + shipping_d, currency)
         data["total"] = to_stored_float(total_d)
         data["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
+        # Persist the EFFECTIVE tax (doc-level + line-level) into `tax`. Previously this was computed
+        # for `total` but discarded, leaving `tax`=0 for line-level taxes — so the finalize JE booked
+        # the tax-inclusive total entirely to revenue (4100) and recorded zero output VAT (2120),
+        # overstating revenue and understating the VAT liability. total = subtotal + tax + shipping.
+        data["tax"] = to_stored_float(round_money(effective_tax_d, currency))
 
     data["amount_outstanding"] = payload.amount_outstanding if payload.amount_outstanding is not None else float(data.get("total", 0))
 
