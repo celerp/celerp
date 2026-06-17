@@ -11,7 +11,20 @@ Celerp is simple to use, flexible, customizable, and designed to transition your
 [![Tests](https://github.com/celerp/celerp/actions/workflows/ci.yml/badge.svg)](https://github.com/celerp/celerp/actions)
 [![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
 
-![Celerp Inventory](docs/screenshot-inventory.png)
+![Celerp manufacturing cost worksheet](docs/press-kit/screenshots/manufacturing-worksheet.png)
+
+## Screenshots
+
+Real double-entry accounting, multi-location inventory, manufacturing, and a built-in REST API - one self-hosted app.
+
+| | |
+|---|---|
+| ![Double-entry trial balance that ties out to zero](docs/press-kit/screenshots/trial-balance.png)<br>**Trial balance** - ties out to zero | ![Balance sheet generated from the event-sourced ledger](docs/press-kit/screenshots/balance-sheet.png)<br>**Balance sheet** - live from the ledger |
+| ![General ledger with account drill-down](docs/press-kit/screenshots/general-ledger.png)<br>**General ledger** - full drill-down | ![Multi-location inventory with barcode scanning and valuation](docs/press-kit/screenshots/inventory.png)<br>**Inventory** - multi-location, barcode, valuation |
+| ![Production planning by status, priority, and due date](docs/press-kit/screenshots/production-planning.png)<br>**Production planning** - work orders, priorities, due dates | ![Built-in REST API for integrations](docs/press-kit/screenshots/rest-api.png)<br>**REST API** - integrate anything |
+| ![Dashboard with revenue trend, receivables aging, and inventory mix](docs/press-kit/screenshots/dashboard.png)<br>**Dashboard** - revenue trend, AR aging, inventory mix | |
+
+More in the [press kit](docs/press-kit/).
 
 ---
 
