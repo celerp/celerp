@@ -40,7 +40,7 @@
     {
       "key": "expiry_date",
       "label": "Expiry / Use By",
-      "type": "text",
+      "type": "date",
       "options": [],
       "visible_to_roles": []
     },

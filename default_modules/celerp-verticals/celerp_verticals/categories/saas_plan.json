@@ -34,7 +34,7 @@
     {
       "key": "price_per_extra_seat",
       "label": "Extra Seat Price",
-      "type": "number",
+      "type": "money",
       "options": [],
       "visible_to_roles": []
     },
@@ -67,11 +67,8 @@
     {
       "key": "is_public",
       "label": "Publicly Listed",
-      "type": "select",
-      "options": [
-        "Yes",
-        "No"
-      ],
+      "type": "boolean",
+      "options": [],
       "visible_to_roles": []
     },
     {

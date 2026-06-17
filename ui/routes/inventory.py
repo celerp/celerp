@@ -498,7 +498,7 @@ async def _inventory_content(
     total_items = valuation.get("item_count", 0)
 
     return Div(
-        _category_tabs(category_counts, p, total_scoped=total_scoped),
+        _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
@@ -4302,9 +4302,11 @@ def _inventory_empty_state(p: dict) -> FT:
     return empty_state_cta("No items in inventory.", "Import from CSV", "/inventory/import")
 
 
-def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = None) -> FT:
+def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = None,
+                   label_map: dict | None = None) -> FT:
     if not category_counts and not total_scoped:
         return ""
+    label_map = label_map or {}
 
     # Strip skus/q: clicking a category tab is a catalog navigation action and should
     # clear any transient item-specific filters (post-split/merge result views etc.)
@@ -4327,7 +4329,8 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
     total = total_scoped if total_scoped is not None else sum(category_counts.values())
     tabs = [_tab(f"All ({total})", "", not p.get("category"))]
     for cat, count in sorted(category_counts.items()):
-        tabs.append(_tab(f"{cat} ({count})", cat, p.get("category") == cat))
+        # cat is the schema key (a slug); show its human display label, keep the slug as the filter value.
+        tabs.append(_tab(f"{label_map.get(cat, cat)} ({count})", cat, p.get("category") == cat))
     return Div(*tabs, cls="category-tabs", id="category-tabs")
 
 

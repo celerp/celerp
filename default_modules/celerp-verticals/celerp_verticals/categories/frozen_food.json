@@ -52,7 +52,7 @@
     {
       "key": "expiry_date",
       "label": "Expiry / Best Before",
-      "type": "text",
+      "type": "date",
       "options": [],
       "visible_to_roles": []
     },

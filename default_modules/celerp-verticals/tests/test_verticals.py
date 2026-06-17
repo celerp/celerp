@@ -271,13 +271,14 @@ async def test_apply_category_seeds_schema(client: AsyncClient):
         headers=_auth(token),
     )
     assert r.status_code == 200
-    display = r.json()["display_name"]
+    # Schemas are keyed by the stable category slug, not the display_name.
+    slug = r.json()["applied"]
 
     r2 = await client.get("/companies/me/category-schemas", headers=_auth(token))
     schemas = r2.json()
-    assert display in schemas
-    assert isinstance(schemas[display], list)
-    assert len(schemas[display]) > 0
+    assert slug in schemas
+    assert isinstance(schemas[slug], list)
+    assert len(schemas[slug]) > 0
 
 
 async def test_apply_category_not_found(client: AsyncClient):

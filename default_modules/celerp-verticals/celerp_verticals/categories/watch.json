@@ -122,7 +122,7 @@
     {
       "key": "service_date",
       "label": "Last Service",
-      "type": "text",
+      "type": "date",
       "options": [],
       "visible_to_roles": []
     }

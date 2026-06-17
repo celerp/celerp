@@ -13,7 +13,7 @@
   ],
   "modules": [
     "celerp-inventory",
-    "celerp-warehousing",
+    "celerp-manufacturing",
     "celerp-docs",
     "celerp-contacts",
     "celerp-accounting",

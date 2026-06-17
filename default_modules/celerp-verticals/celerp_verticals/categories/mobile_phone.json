@@ -70,7 +70,7 @@
     {
       "key": "warranty_exp",
       "label": "Warranty Expires",
-      "type": "text",
+      "type": "date",
       "options": [],
       "visible_to_roles": []
     }

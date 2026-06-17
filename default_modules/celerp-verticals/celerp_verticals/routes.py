@@ -93,10 +93,17 @@ _DEFAULT_UNITS: list[dict] = [
 async def _apply_category_schema(
     session: AsyncSession,
     company_id,
-    category_name: str,
+    category_key: str,
+    display_name: str,
     fields: list[dict],
 ) -> None:
-    """Idempotently write a category field schema into company settings."""
+    """Idempotently write a category field schema into company settings.
+
+    Schemas are keyed by the stable category slug (``name``) - the same key an
+    item's ``category`` value carries - so demo rows and seeded schemas bind. The
+    friendly label is stored in the parallel ``category_display_names`` map, which
+    is the canonical pattern used by the create/rename category endpoints.
+    """
     import uuid as _uuid
     cid = _uuid.UUID(str(company_id)) if isinstance(company_id, str) else company_id
     company = await session.get(Company, cid)
@@ -104,8 +111,11 @@ async def _apply_category_schema(
         raise HTTPException(status_code=404, detail="Company not found")
     settings = dict(company.settings or {})
     cat_schemas = dict(settings.get("category_schemas") or {})
-    cat_schemas[category_name] = fields
+    cat_schemas[category_key] = fields
     settings["category_schemas"] = cat_schemas
+    display_names = dict(settings.get("category_display_names") or {})
+    display_names[category_key] = display_name
+    settings["category_display_names"] = display_names
     company.settings = settings
 
 
@@ -162,13 +172,26 @@ def _build_router() -> APIRouter:
         company_id=Depends(get_current_company_id),
         session: AsyncSession = Depends(get_session),
     ) -> dict:
+        import logging as _logging
         from celerp.modules.registry import enable as _registry_enable
+        from celerp.modules.audit import _installed_package_names
         from celerp.config import set_enabled_modules
         import uuid as _uuid
 
+        _log = _logging.getLogger(__name__)
         preset = _load_preset(vertical)
         cats = _all_categories()
-        preset_modules: list[str] = preset.get("modules") or []
+
+        # Skip module slugs that do not resolve to an installed module (mirror the
+        # category `if cat is None: continue` guard) so a dangling slug is logged
+        # rather than silently persisted into company settings + the config file.
+        installed = _installed_package_names()
+        preset_modules: list[str] = []
+        for mod_name in (preset.get("modules") or []):
+            if mod_name not in installed:
+                _log.warning("apply_preset(%s): skipping unknown module slug %r", vertical, mod_name)
+                continue
+            preset_modules.append(mod_name)
 
         # Apply category schemas + seed required units
         applied: list[str] = []
@@ -176,7 +199,7 @@ def _build_router() -> APIRouter:
             cat = cats.get(cat_name)
             if cat is None:
                 continue
-            await _apply_category_schema(session, company_id, cat["display_name"], cat["fields"])
+            await _apply_category_schema(session, company_id, cat["name"], cat["display_name"], cat["fields"])
             applied.append(cat_name)
 
         # Enable declared modules in DB (company settings) + config file (survives restart)
@@ -217,7 +240,7 @@ def _build_router() -> APIRouter:
     ) -> dict:
         import uuid as _uuid
         cat = _load_category(name)
-        await _apply_category_schema(session, company_id, cat["display_name"], cat["fields"])
+        await _apply_category_schema(session, company_id, cat["name"], cat["display_name"], cat["fields"])
 
         # Seed the default_sell_by unit if needed
         cid = _uuid.UUID(str(company_id)) if isinstance(company_id, str) else company_id

@@ -9,8 +9,6 @@
   ],
   "modules": [
     "celerp-inventory",
-    "celerp-warehousing",
-    "celerp-labels",
     "celerp-subscriptions",
     "celerp-docs",
     "celerp-contacts",
