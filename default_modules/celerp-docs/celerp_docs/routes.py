@@ -4198,27 +4198,6 @@ async def set_audit_count(
     return {"ok": True}
 
 
-@lists_router.post("/{entity_id}/lines/zero-uncounted")
-async def zero_uncounted_audit_lines(
-    entity_id: str, company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Bulk action: write 0 into every uncounted line. The zeros become visible, editable values the
-    user can review/undo (not a hidden 'treat-as-zero' mode); Adjust then treats them as any count."""
-    row = await _get_audit(session, company_id, entity_id)
-    if row.state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Counts can only be entered on a finalized audit")
-    lines = [dict(l) for l in (row.state.get("line_items") or [])]
-    zeroed = 0
-    for l in lines:
-        if l.get("counted_qty") is None:
-            l["counted_qty"] = 0.0
-            zeroed += 1
-    await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
-    await session.commit()
-    return {"zeroed": zeroed}
-
-
 @lists_router.post("/{entity_id}/adjust")
 async def adjust_audit(
     entity_id: str, company_id=Depends(get_current_company_id),
@@ -4307,19 +4286,87 @@ async def undo_audit_adjust(
     return {"ok": True}
 
 
-@lists_router.post("/{entity_id}/receive")
-async def receive_transfer(
-    entity_id: str, company_id=Depends(get_current_company_id),
+@lists_router.post("/{entity_id}/send")
+async def send_list(
+    entity_id: str, payload: DocSendBody = DocSendBody(),
+    company_id: str = Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Record a finalized list as sent (sets the `sent_at` milestone; status stays finalized) and,
+    if a recipient is given, fire the relay email — the same Send / Mark-as-sent mechanism documents
+    use. `sent_via="manual"` (no recipient) is the Mark-as-sent path."""
+    row = await _get_list(session, company_id, entity_id)
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Issue the list before sending it")
+    now = datetime.now(UTC).isoformat()
+    await _set_list_fields(session, company_id, entity_id, user,
+                           {"sent_at": now, "sent_via": payload.sent_via or "email",
+                            "sent_to": payload.sent_to})
+    await session.commit()
+    if payload.sent_to:
+        ref = row.state.get("ref_id") or entity_id.split(":")[-1]
+        company_row = await session.get(Company, company_id)
+        sender = company_row.name if company_row else "Your supplier"
+        contact = row.state.get("customer_name") or "there"
+        total = row.state.get("total", 0)
+        cur = row.state.get("currency", "USD")
+        subject = f"Quotation #{ref} from {sender}"
+        html = (f"<p>Hi {contact},</p><p>Please find your <strong>Quotation #{ref}</strong> from "
+                f"<strong>{sender}</strong>.</p><p>Amount: <strong>{cur} {total}</strong></p>")
+        text = f"Hi {contact},\n\nPlease find your Quotation #{ref} from {sender}.\nAmount: {cur} {total}\n"
+        from celerp.services.email import send_email
+        asyncio.create_task(send_email(payload.sent_to, subject, html, body_text=text,
+                                       cc=payload.cc or "", bcc=payload.bcc or ""))
+    return {"ok": True}
+
+
+@lists_router.post("/{entity_id}/unmark-sent")
+async def unmark_list_sent(
+    entity_id: str, company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Transfer terminal action: mark an issued (finalized) transfer received (finalized -> closed).
-    The physical stock move between locations is the Phase 4 seam — recorded here, applied later."""
+    """Clear the sent milestone (the list stays finalized)."""
+    row = await _get_list(session, company_id, entity_id)
+    await _set_list_fields(session, company_id, entity_id, user,
+                           {"sent_at": None, "sent_via": None, "sent_to": None})
+    await session.commit()
+    return {"ok": True}
+
+
+class ListMoveBody(BaseModel):
+    to_location_id: str
+
+
+@lists_router.post("/{entity_id}/move")
+async def move_transfer(
+    entity_id: str, payload: ListMoveBody,
+    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Transfer action: relocate every item on a finalized transfer to one location, by emitting the
+    inventory `item.transferred` event per line (stock is owned by inventory; docs only emits the
+    event). Repeatable — the transfer stays finalized so it can be moved again."""
     row = await _get_list(session, company_id, entity_id)
     if (row.state.get("list_type") or "") != "transfer":
-        raise HTTPException(status_code=409, detail="Only transfers can be received")
+        raise HTTPException(status_code=409, detail="Only transfers can move stock")
     if row.state.get("status") != FINALIZED:
-        raise HTTPException(status_code=409, detail="Issue the transfer before receiving it")
-    entry = await _emit_list(session, company_id, entity_id, "list.closed",
-                             {"result": "received", "received_at": datetime.now(UTC).isoformat()}, user)
+        raise HTTPException(status_code=409, detail="Issue the transfer before moving its items")
+    if not payload.to_location_id:
+        raise HTTPException(status_code=422, detail="A destination location is required")
+    moved = 0
+    for l in (row.state.get("line_items") or []):
+        item_id = l.get("item_id") or l.get("entity_id")
+        if not item_id:
+            continue
+        await emit_event(
+            session, company_id=company_id, entity_id=item_id, entity_type="item",
+            event_type="item.transferred", data={"to_location_id": str(payload.to_location_id)},
+            actor_id=user.id, location_id=payload.to_location_id, source="transfer",
+            idempotency_key=str(uuid.uuid4()), metadata_={"transfer_id": entity_id},
+        )
+        moved += 1
+    await _set_list_fields(session, company_id, entity_id, user,
+                           {"moved_to_location_id": payload.to_location_id,
+                            "moved_at": datetime.now(UTC).isoformat()})
     await session.commit()
-    return {"event_id": entry.id}
+    return {"moved": moved, "to_location_id": payload.to_location_id}

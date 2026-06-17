@@ -47,7 +47,9 @@ class ListBehavior:
 # THE table. One row per type — the only place a type's behaviour is declared.
 LIST_BEHAVIOR: dict[str, ListBehavior] = {
     "quotation": ListBehavior(
-        label="Quotation", money=True, finalize_label="Send", finalize_milestone="sent_at",
+        label="Quotation", money=True, finalize_label="Issue", finalize_milestone=None,
+        # Issue just locks the draft; Send / Mark-as-sent set the sent milestone afterwards (like an
+        # invoice). Convert (to invoice/memo) is the closing terminal.
         terminal=(
             TerminalAction("convert-invoice", "Convert to invoice", "converted"),
             TerminalAction("convert-memo", "Convert to memo", "converted"),
@@ -56,8 +58,10 @@ LIST_BEHAVIOR: dict[str, ListBehavior] = {
     ),
     "transfer": ListBehavior(
         label="Transfer", money=False, finalize_label="Issue", finalize_milestone="issued_at",
-        terminal=(TerminalAction("receive", "Receive", "received"),),
-        scan_finalized="receive",
+        # No closing terminal: a finalized transfer's action is "Move all to <location>", which moves
+        # stock and stays finalized (repeatable). Handled in the UI/route, not as a close.
+        terminal=(),
+        scan_finalized="noop",
     ),
     "audit": ListBehavior(
         label="Audit", money=False, extra_columns=("on_hand", "counted"),
@@ -117,5 +121,7 @@ def status_label(state: dict) -> str:
     if lt == "transfer":
         return "In transit"
     if lt == "quotation":
-        return "Accepted" if state.get("accepted_at") else "Sent"
+        if state.get("accepted_at"):
+            return "Accepted"
+        return "Sent" if state.get("sent_at") else "Issued"
     return "Finalized"

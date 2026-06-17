@@ -1281,9 +1281,19 @@ async def set_audit_count(token: str, entity_id: str, item_id: str, counted_qty:
         return _raise(await c.patch(f"/lists/{entity_id}/line/{item_id}", json={"counted_qty": counted_qty})).json()
 
 
-async def zero_uncounted(token: str, entity_id: str) -> dict:
+async def move_transfer(token: str, entity_id: str, to_location_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/lines/zero-uncounted")).json()
+        return _raise(await c.post(f"/lists/{entity_id}/move", json={"to_location_id": to_location_id})).json()
+
+
+async def send_list(token: str, entity_id: str, data: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/send", json=data or {})).json()
+
+
+async def unmark_list_sent(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/unmark-sent")).json()
 
 
 async def list_action(token: str, entity_id: str, action: str) -> dict:

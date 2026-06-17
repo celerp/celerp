@@ -204,7 +204,7 @@ async def test_count_zero_sets_quantity_to_zero(client):
 
 
 @pytest.mark.asyncio
-async def test_uncounted_lines_skipped_and_zero_fill_bulk_action(client):
+async def test_uncounted_lines_skipped(client):
     t = await _register(client)
     loc = await _location(client, t)
     a = await _item(client, t, "S1", loc=loc, qty=5, cost_total=50, barcode="1008")
@@ -214,14 +214,6 @@ async def test_uncounted_lines_skipped_and_zero_fill_bulk_action(client):
     r = await client.post(f"/lists/{audit}/adjust", headers=_h(t))
     assert r.status_code == 200 and r.json()["adjusted"] == 0 and r.json()["skipped"] == 1
     assert (await client.get(f"/items/{a}", headers=_h(t))).json()["quantity"] == 5
-    # Undo back to counting, then the explicit "set uncounted to 0" bulk action zero-fills visibly.
-    await client.post(f"/lists/{audit}/undo-adjust", headers=_h(t))
-    zr = await client.post(f"/lists/{audit}/lines/zero-uncounted", headers=_h(t))
-    assert zr.status_code == 200 and zr.json()["zeroed"] == 1
-    assert (await _state(client, t, audit))["line_items"][0]["counted_qty"] == 0.0
-    r = await client.post(f"/lists/{audit}/adjust", headers=_h(t))
-    assert r.status_code == 200 and r.json()["adjusted"] == 1
-    assert (await client.get(f"/items/{a}", headers=_h(t))).json()["quantity"] == 0
 
 
 @pytest.mark.asyncio

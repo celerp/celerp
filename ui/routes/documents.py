@@ -3884,10 +3884,22 @@ celerpUpdateBulkAlloc();
         ref = lst.get("ref_id") or entity_id
         status_label = _list_status_label(lst)
         list_type_label = _list_behavior(lst.get("list_type")).label
+        # Locations feed the transfer "Move all to" dropdown; relay state gates the quotation Send
+        # modal (same as documents).
+        try:
+            _list_locations = (await api.get_locations(token)).get("items", [])
+        except APIError:
+            _list_locations = []
+        try:
+            _list_relay = bool((await api.get_relay_status(token)).get("connected"))
+        except Exception:
+            _list_relay = False
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
-            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), notes=list_notes, item_meta_map=item_meta_map),
+            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request),
+                        notes=list_notes, item_meta_map=item_meta_map, locations=_list_locations,
+                        relay_connected=_list_relay),
             title=f"List {ref} - Celerp",
             nav_active="lists",
             request=request,
@@ -4027,9 +4039,25 @@ celerpUpdateBulkAlloc();
             elif action == "convert-memo":
                 result = await api.convert_list(token, entity_id, "memo")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{result['target_doc_id']}"})
-            elif action == "zero_uncounted":
-                await api.zero_uncounted(token, entity_id)
-            elif action in ("adjust", "undo-adjust", "receive"):
+            elif action == "move":
+                to_loc = str(form.get("to_location_id", "")).strip()
+                if not to_loc:
+                    return _action_error("Pick a destination location.")
+                await api.move_transfer(token, entity_id, to_loc)
+            elif action == "send":
+                sent_to = str(form.get("sent_to", "")).strip()
+                if not sent_to:  # no relay recipient -> point at relay setup (mirrors docs)
+                    return _R("", status_code=204, headers={"HX-Redirect": "/settings/general?tab=cloud-relay"})
+                await api.send_list(token, entity_id, {
+                    "sent_to": sent_to, "sent_via": "email",
+                    "cc": str(form.get("cc", "")).strip() or None,
+                    "bcc": str(form.get("bcc", "")).strip() or None,
+                })
+            elif action == "mark_sent":
+                await api.send_list(token, entity_id, {"sent_via": "manual"})
+            elif action == "unmark_sent":
+                await api.unmark_list_sent(token, entity_id)
+            elif action in ("adjust", "undo-adjust"):
                 await api.list_action(token, entity_id, action)
             else:
                 return _R("", status_code=400)
@@ -5123,28 +5151,36 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Button(t("btn.convert_to_vendor_bill"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary")
         )
-    # List lifecycle buttons — uniform across every type, driven by the behaviour registry
-    # (a list behaves like a list whatever its type: same slots, same go-back, same next step).
+    # List lifecycle buttons — uniform invoice-style across every type (a list behaves like a list
+    # whatever its type): Draft -> [Issue] -> finalized, then the type's primary action in the same
+    # slot. Revert-to-draft is rendered by the shared doc block below (consistent placement); the
+    # quotation's relay-gated Send / Mark-as-sent come from the shared _can_send block.
     if is_list:
-        _lb = _list_behavior(list_type)
         if status == _LD:
-            # Draft: the single "what's next" cue for every type is Finalize (GDR 2b).
-            action_btns_left.append(Button(_lb.finalize_label, hx_post=f"/lists/{entity_id}/action/finalize",
+            # The single "what's next" cue for every type (mirrors the invoice's finalize). GDR 2b.
+            action_btns_left.append(Button("Issue", hx_post=f"/lists/{entity_id}/action/finalize",
                                            hx_swap="none", cls="btn btn--primary"))
         elif status == _LF:
-            # Finalized: this type's terminal action(s) in the same primary slot.
-            for _ta in _lb.terminal:
-                _attrs = {"hx_confirm": _ta.confirm} if _ta.confirm else {}
-                action_btns_left.append(Button(_ta.label, hx_post=f"/lists/{entity_id}/action/{_ta.key}",
-                                               hx_swap="none", cls="btn btn--primary", **_attrs))
             if pol["audit"]:
-                # Visible bulk action (not a hidden mode): zero-fill uncounted lines (GDR 2d/2f).
-                action_btns_left.append(Button("Set uncounted to 0", hx_post=f"/lists/{entity_id}/action/zero_uncounted",
-                                               hx_swap="none", cls="btn btn--secondary",
-                                               hx_confirm="Write 0 into every uncounted line? You can edit any of them back afterwards."))
-            # Go back, identically for every type (GDR 2c), until a terminal action has closed it.
-            action_btns_left.append(Button(t("doc.revert_to_draft"), hx_post=f"/lists/{entity_id}/action/revert_to_draft",
-                                           hx_swap="none", cls="btn btn--secondary"))
+                action_btns_left.append(Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust",
+                                               hx_swap="none", cls="btn btn--primary",
+                                               hx_confirm="Apply the counted quantities to stock? This posts a journal entry."))
+            elif list_type == "transfer":
+                # Move every item on the transfer to a chosen location (repeatable — stays finalized).
+                _move_opts = [Option("Move all to…", value="", disabled=True, selected=True)] + [
+                    Option(_l.get("name", ""), value=_l.get("id", "")) for _l in (locations or [])]
+                action_btns_left.append(Form(
+                    Select(*_move_opts, name="to_location_id", cls="form-input form-input--sm",
+                           required=True, onchange="if(this.value)this.closest('form').requestSubmit()"),
+                    Button("Move", type="submit", cls="btn btn--primary btn--sm"),
+                    hx_post=f"/lists/{entity_id}/action/move", hx_swap="none", cls="inline-form-row",
+                ))
+            elif list_type == "quotation":
+                # Convert is the quote's terminal (closes); Send / Mark-as-sent come from _can_send.
+                action_btns_left.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice",
+                                               hx_swap="none", cls="btn btn--secondary"))
+                action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo",
+                                               hx_swap="none", cls="btn btn--secondary"))
         elif status == _LC and pol["audit"] and doc.get("result") == "stock_adjusted":
             # Closed audit: the terminal stock adjustment is reversible (GDR 2a).
             action_btns_left.append(Button("Undo stock adjustment", hx_post=f"/lists/{entity_id}/action/undo-adjust",
@@ -5186,7 +5222,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     has_received_items = bool(doc.get("received_items"))
     _is_inbound_doc = doc_type in ("bill", "consignment_in")
     _revertable_statuses = (
-        {"final", "sent", "awaiting_payment", "received", "partially_received", "fulfilled"}
+        {"finalized"}  # lists: revert from finalized (before a terminal close), same UI as docs
+        if is_list
+        else {"final", "sent", "awaiting_payment", "received", "partially_received", "fulfilled"}
         if _is_inbound_doc
         else {"final", "sent"}
     )
@@ -5232,14 +5270,18 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # Refund is now handled via credit notes + void in the payment section
     # Send (relay modal) + Mark as Sent - hidden for internal/receiving doc types (bill, consignment_in)
     from celerp_docs.doc_constants import NO_SEND_DOC_TYPES, NO_SEND_STATUSES
+    # Quotations get the same Send / Mark-as-sent as documents (relay-gated). For a list, "sent" is a
+    # milestone (sent_at) on the finalized state, so the gates below are list-aware.
+    _list_sendable = is_list and list_type == "quotation"
+    _list_sent = bool(doc.get("sent_at"))
     _can_send = (
-        not is_list
-        and not suppress_doc_actions
-        and doc_type not in NO_SEND_DOC_TYPES
+        not suppress_doc_actions
+        and ((not is_list and doc_type not in NO_SEND_DOC_TYPES) or _list_sendable)
     )
     if _can_send:
         # Send via relay - modal popup, only when relay connected and status allows it
-        if relay_connected and status not in NO_SEND_STATUSES:
+        _send_ok = (status == _LF and not _list_sent) if is_list else (status not in NO_SEND_STATUSES)
+        if relay_connected and _send_ok:
             contact_email = doc.get("contact_email") or ""
             doc_number = doc.get("ref_id") or doc.get("doc_number") or ""
             company_name = doc.get("company_name") or "Your Company"
@@ -5298,7 +5340,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                             Button(t("btn.send_document"), type="submit", cls="btn btn--primary"),
                             cls="modal-dialog__actions",
                         ),
-                        hx_post=f"/docs/{entity_id}/action/send",
+                        hx_post=f"{_base}/action/send",
                         hx_swap="none",
                         hx_on__htmx_after_request=f"if(event.detail.successful)document.getElementById('{modal_id}').close()",
                     ),
@@ -5306,16 +5348,18 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cls="modal-dialog",
                 )
             )
-        # Mark as Sent (manual, no relay needed) - only on draft
-        if status == "draft":
+        # Mark as Sent (manual, no relay needed): a draft document, or a finalized-not-yet-sent quote.
+        _mark_ok = (status == _LF and not _list_sent) if is_list else (status == "draft")
+        if _mark_ok:
             action_btns_left.append(
-                Button(t("btn.mark_as_sent"), hx_post=f"/docs/{entity_id}/action/mark_sent",
+                Button(t("btn.mark_as_sent"), hx_post=f"{_base}/action/mark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
-        # Unmark Sent - only when status == "sent"
-        if status == "sent":
+        # Unmark Sent: a "sent" document, or a finalized quote whose sent milestone is set.
+        _unmark_ok = (status == _LF and _list_sent) if is_list else (status == "sent")
+        if _unmark_ok:
             action_btns_left.append(
-                Button(t("btn.unmark_sent"), hx_post=f"/docs/{entity_id}/action/unmark_sent",
+                Button(t("btn.unmark_sent"), hx_post=f"{_base}/action/unmark_sent",
                        hx_swap="none", cls="btn btn--secondary")
             )
     # PDF + CSV buttons → print group (hidden entirely when suppress_pdf is set)

@@ -220,12 +220,18 @@ class TestListLifecycle:
         token = await _register(client)
         eid = await _create_list(client, token)  # default list_type = quotation
 
-        # finalize (draft -> finalized) records the sent_at milestone
+        # Issue (draft -> finalized). Issue does NOT auto-send a quotation; sent_at is set later.
         r = await client.post(f"/lists/{eid}/finalize", headers=_h(token))
         assert r.status_code == 200
         detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
-        assert detail["status"] == "finalized"
-        assert detail.get("sent_at") and detail.get("finalized_at")
+        assert detail["status"] == "finalized" and detail.get("finalized_at") and not detail.get("sent_at")
+
+        # Mark as sent sets the milestone; status stays finalized; unmark clears it.
+        assert (await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})).status_code == 200
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["status"] == "finalized" and detail.get("sent_at")
+        assert (await client.post(f"/lists/{eid}/unmark-sent", headers=_h(token))).status_code == 200
+        assert not (await client.get(f"/lists/{eid}", headers=_h(token))).json().get("sent_at")
 
         # convert (finalized -> closed, result=converted)
         r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "invoice"})
@@ -762,3 +768,38 @@ async def test_list_revert_only_from_finalized(client):
     await client.post(f"/lists/{eid}/finalize", headers=_h(token))
     await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "invoice"})
     assert (await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_transfer_move_relocates_items_and_stays_finalized(client):
+    """A finalized transfer's 'Move all to <location>' relocates every line item (via the inventory
+    item.transferred event) and stays finalized so it can be moved again (repeatable, no close)."""
+    token = await _register(client)
+    h = _h(token)
+    loc_a = (await client.post("/companies/me/locations", headers=h, json={"name": "A", "type": "warehouse"})).json()["id"]
+    loc_b = (await client.post("/companies/me/locations", headers=h, json={"name": "B", "type": "warehouse"})).json()["id"]
+    it = (await client.post("/items", headers=h, json={
+        "sku": "MV1", "name": "Mover", "sell_by": "piece", "quantity": 5, "location_id": loc_a})).json()["id"]
+    eid = (await client.post("/lists", headers=h, json={
+        "list_type": "transfer", "line_items": [{"item_id": it, "sku": "MV1", "name": "Mover", "quantity": 5}]})).json()["id"]
+
+    # Move before Issue -> 409 (must finalize first).
+    assert (await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc_b})).status_code == 409
+    await client.post(f"/lists/{eid}/finalize", headers=h)
+    r = await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc_b})
+    assert r.status_code == 200 and r.json()["moved"] == 1
+    assert (await client.get(f"/items/{it}", headers=h)).json()["location_id"] == loc_b
+    # Repeatable: still finalized, can move again.
+    assert (await client.get(f"/lists/{eid}", headers=h)).json()["status"] == "finalized"
+    assert (await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc_a})).status_code == 200
+    assert (await client.get(f"/items/{it}", headers=h)).json()["location_id"] == loc_a
+
+
+@pytest.mark.asyncio
+async def test_only_transfer_can_move(client):
+    token = await _register(client)
+    h = _h(token)
+    loc = (await client.post("/companies/me/locations", headers=h, json={"name": "A", "type": "warehouse"})).json()["id"]
+    eid = await _create_list(client, token, list_type="quotation")
+    await client.post(f"/lists/{eid}/finalize", headers=h)
+    assert (await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc})).status_code == 409
