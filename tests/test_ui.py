@@ -8269,6 +8269,52 @@ class TestCompanyDetailsPage:
         assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard")
 
 
+class TestCompanyLetterhead:
+    """Document letterhead identity is canonical on the self-contact (edited at Company Details), so
+    name/phone/tax_id/email come from there and the address from the default Location."""
+
+    @pytest.mark.asyncio
+    async def test_reads_identity_from_self_contact(self):
+        from ui.routes.documents import _company_letterhead
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "WorkspaceName", "settings": {"self_contact_id": "contact:self"}})),
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test"})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [{"address": "1 Main St", "is_default": True}]})),
+        ):
+            lh = await _company_letterhead("tok")
+        assert lh["company_name"] == "Real Co Ltd"   # self-contact, not the workspace name
+        assert lh["company_address"] == "1 Main St"  # default location
+        assert lh["company_tax_id"] == "TAX9"
+        assert lh["company_phone"] == "555"
+        assert lh["company_email"] == "x@co.test"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_company_settings_when_no_self_contact(self):
+        from ui.routes.documents import _company_letterhead
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Legacy Co", "address": "Old Addr", "settings": {}})),
+            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": []})),
+            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
+        ):
+            lh = await _company_letterhead("tok")
+        assert lh["company_name"] == "Legacy Co"
+        assert lh["company_address"] == "Old Addr"
+
+
+class TestCompanySettingsTabSlimmed:
+    """The settings company tab no longer edits identity fields (now on the self-contact); only the
+    workspace name + operational regional settings remain."""
+
+    def test_identity_fields_removed_regional_kept(self):
+        from ui.routes.settings import _company_tab
+        from fasthtml.common import to_xml as _to_xml
+        html = _to_xml(_company_tab({"name": "Co", "settings": {}}))
+        for gone in ("tax_id", "phone", "email", "address"):
+            assert f"/settings/company/{gone}/edit" not in html, f"{gone} should no longer be editable here"
+        for kept in ("name", "currency", "timezone", "fiscal_year_start"):
+            assert f"/settings/company/{kept}/edit" in html
+
+
 class TestCalculateDueDate:
     """Unit tests for _calculate_due_date pure function."""
 

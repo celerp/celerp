@@ -3068,15 +3068,14 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
 
 
 def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
+    # Identity fields (tax_id / phone / email / address) live on the self-contact now and are edited at
+    # Finance > Company Details (the document letterhead reads them from there). Only the workspace name
+    # and the operational regional settings remain here.
     fields = [
         ("name", t("label.company_name", lang)),
         ("currency", t("label.currency", lang)),
         ("timezone", t("label.timezone", lang)),
         ("fiscal_year_start", t("label.fiscal_year_start", lang)),
-        ("tax_id", t("label.tax_id", lang)),
-        ("phone", t("label.phone", lang)),
-        ("email", t("label.email", lang)),
-        ("address", t("label.address", lang)),
     ]
     prefs = [
         ("docs_default_preset", t("label.docs_default_preset", lang)),

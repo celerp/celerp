@@ -21,6 +21,46 @@ from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form a
 from ui.components.files import _files_section as _shared_doc_files_section
 
 
+async def _company_letterhead(token: str) -> dict:
+    """The company's letterhead identity (name/address/phone/tax_id/email) for documents.
+
+    The company's identity is canonical on its self-contact (the company's own customer+vendor record,
+    edited on Finance > Company Details), so name/phone/tax_id/email are read from there - falling back
+    to company settings for legacy/unmigrated data. The address comes from the company's default
+    Location (the single address book), else the legacy settings address."""
+    company = await api.get_company(token)
+    self_id = (company.get("settings") or {}).get("self_contact_id")
+    contact: dict = {}
+    if self_id:
+        try:
+            contact = await api.get_contact(token, self_id) or {}
+        except Exception:
+            contact = {}
+    if not contact:  # legacy/unmigrated: locate the is_self contact
+        try:
+            for c in (await api.list_contacts(token, {"limit": 999})).get("items", []):
+                if c.get("is_self"):
+                    contact = c
+                    break
+        except Exception:
+            pass
+    address = ""
+    try:
+        locs = (await api.get_locations(token)).get("items") or []
+        primary = next((l for l in locs if l.get("is_default")), None) or (locs[0] if locs else None)
+        if primary:
+            address = primary.get("address") or ""
+    except Exception:
+        pass
+    return {
+        "company_name": contact.get("name") or company.get("name") or "",
+        "company_address": address or company.get("address") or "",
+        "company_phone": contact.get("phone") or company.get("phone") or "",
+        "company_tax_id": contact.get("tax_id") or company.get("tax_id") or "",
+        "company_email": contact.get("email") or company.get("email") or "",
+    }
+
+
 def _measure_pcs_field(val, *, locked: bool, show: bool, avail=None):
     """Inline PCS input for an invoice description cell ('pcs' suffix after the number).
     Hovering the unit shows the parcel's available pieces (max)."""
@@ -1548,14 +1588,7 @@ def setup_routes(app):
             lst["issue_date"] = lst.get("created_at") or lst.get("date")
         if not lst.get("company_name"):
             try:
-                company = await api.get_company(token)
-                lst.update({
-                    "company_name": company.get("name") or "",
-                    "company_address": company.get("address") or "",
-                    "company_phone": company.get("phone") or "",
-                    "company_tax_id": company.get("tax_id") or "",
-                    "company_email": company.get("email") or "",
-                })
+                lst.update(await _company_letterhead(token))
             except Exception:
                 pass
         await _enrich_print_lines(token, lst)
@@ -1589,14 +1622,7 @@ def setup_routes(app):
         # Inject company fields
         if not doc.get("company_name"):
             try:
-                company = await api.get_company(token)
-                doc = {**doc,
-                    "company_name": company.get("name") or "",
-                    "company_address": company.get("address") or "",
-                    "company_phone": company.get("phone") or "",
-                    "company_tax_id": company.get("tax_id") or "",
-                    "company_email": company.get("email") or "",
-                }
+                doc = {**doc, **await _company_letterhead(token)}
             except Exception:
                 pass
         # Resolve contact
@@ -1764,15 +1790,7 @@ celerpUpdateBulkAlloc();
         # Inject company fields so "My company info" box is populated
         if not doc.get("company_name"):
             try:
-                company = await api.get_company(token)
-                doc = {
-                    **doc,
-                    "company_name": company.get("name") or "",
-                    "company_address": company.get("address") or company.get("settings", {}).get("address") or "",
-                    "company_phone": company.get("phone") or company.get("settings", {}).get("phone") or "",
-                    "company_tax_id": company.get("tax_id") or company.get("settings", {}).get("tax_id") or "",
-                    "company_email": company.get("email") or company.get("settings", {}).get("email") or "",
-                }
+                doc = {**doc, **await _company_letterhead(token)}
             except Exception:
                 pass
 
@@ -3831,14 +3849,7 @@ celerpUpdateBulkAlloc();
         # Inject company fields
         if not lst.get("company_name"):
             try:
-                company = await api.get_company(token)
-                lst.update({
-                    "company_name": company.get("name") or "",
-                    "company_address": company.get("address") or company.get("settings", {}).get("address") or "",
-                    "company_phone": company.get("phone") or company.get("settings", {}).get("phone") or "",
-                    "company_tax_id": company.get("tax_id") or company.get("settings", {}).get("tax_id") or "",
-                    "company_email": company.get("email") or company.get("settings", {}).get("email") or "",
-                })
+                lst.update(await _company_letterhead(token))
             except Exception:
                 pass
 
