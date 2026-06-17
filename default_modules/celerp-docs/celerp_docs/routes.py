@@ -2634,7 +2634,19 @@ async def finalize_list(
     now = datetime.now(UTC).isoformat()
     data: dict = {"status": FINALIZED, "finalized_at": now}
     if milestone == "freeze_onhand":
-        lines = [dict(l) for l in (state.get("line_items") or [])]
+        # An audit counts each inventory item once, so its manifest is a set keyed by item_id. Collapse
+        # duplicate item_id lines at the gateway into counting: a single item record has one physical
+        # count, so two lines would leave the second unreachable when checking off (scan always matches
+        # the first) and double-count at Adjust. Lines without an item_id are kept as-is.
+        seen: set[str] = set()
+        lines = []
+        for l in (state.get("line_items") or []):
+            key = l.get("item_id")
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            lines.append(dict(l))
         for l in lines:
             item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
             l["on_hand"] = float(item.state.get("quantity") or 0) if (item and item.entity_type == "item") else 0.0

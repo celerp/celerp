@@ -259,3 +259,26 @@ async def test_scanned_highlight_persists_and_clears_via_bulk(client):
     r = await client.post(f"/lists/{audit}/set-scanned", headers=_h(t), json={"scanned": True})
     assert r.status_code == 200 and r.json()["changed"] == 1
     assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is not None
+
+
+@pytest.mark.asyncio
+async def test_finalize_dedupes_duplicate_item_lines(client):
+    """An audit counts each item once. If the draft manifest ends up with two lines for the same
+    item_id (hand-edited, or via a list-type round trip), Finalize collapses them to one — otherwise
+    check-off can never reach the second row (scan always matches the first) and Adjust double-counts."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    iid = await _item(client, t, "DUP-1", loc=loc, qty=4, barcode="9001")
+    audit = (await _audit(client, t, loc))["id"]
+
+    # Seeded with one line for the item; inject a second identical line via the editable-save path.
+    line = (await _state(client, t, audit))["line_items"][0]
+    await client.patch(f"/lists/{audit}", headers=_h(t),
+                       json={"fields_changed": {"line_items": {"old": [line], "new": [line, dict(line)]}}})
+    assert len((await _state(client, t, audit))["line_items"]) == 2  # duplicate present pre-finalize
+
+    await _finalize(client, t, audit)
+    lines = (await _state(client, t, audit))["line_items"]
+    assert len(lines) == 1                 # collapsed to one line per item_id
+    assert lines[0]["item_id"] == iid
+    assert lines[0]["on_hand"] == 4.0      # surviving line still froze its on-hand snapshot
