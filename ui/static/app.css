@@ -723,6 +723,13 @@ a:hover { text-decoration: underline; }
 .doc-lines th.col-tax,         .doc-lines td.col-tax         { width: 50px;  text-align: right; }
 .doc-lines th.col-account,     .doc-lines td.col-account     { width: 100px; }
 .doc-lines th.col-total,       .doc-lines td.col-total       { width: 100px; text-align: right; padding-right: 8px; }
+/* Audit columns. Without explicit widths these (under table-layout:fixed) soaked up all the space
+   freed by the hidden money columns, dwarfing qty and breaking proportional resize. */
+.doc-lines th.col-onhand,      .doc-lines td.col-onhand      { width: 92px;  text-align: right; }
+.doc-lines th.col-counted,     .doc-lines td.col-counted     { width: 92px;  text-align: right; }
+/* No-money lists (audit/transfer/production) hide price/disc/tax/total; let the description absorb
+   the freed width so the item name dominates rather than stretching the number columns. */
+.doc-lines--no-money th.col-desc, .doc-lines--no-money td.col-desc { width: 380px; }
 /* All line-table headers are centered. !important + higher specificity beats both the per-column
    right-align rules and the global `.data-table th.cell--number { text-align:right !important }`
    (the Total header carries cell--number); cell bodies keep their own alignment. */

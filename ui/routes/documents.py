@@ -3945,6 +3945,7 @@ celerpUpdateBulkAlloc();
 
     @app.patch("/lists/{entity_id}/field/{field}")
     async def list_field_patch(request: Request, entity_id: str, field: str):
+        from starlette.responses import Response as _R
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
@@ -3955,6 +3956,11 @@ celerpUpdateBulkAlloc();
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
+        # Changing the list type restructures the whole column set (audit gains On-hand/Counted;
+        # no-money types hide price/tax/total), so re-render the page rather than swap one cell.
+        # HX-Redirect to the same list is the codebase's idiom for structural list changes.
+        if field == "list_type":
+            return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         return _doc_display_cell(entity_id, field, lst.get(field), "list")
 
     @app.post("/lists/{entity_id}/lines")

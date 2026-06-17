@@ -2037,7 +2037,10 @@ def col_resize_script(table_selector: str, storage_key: str):
         "function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);return m?m[0]:'';}"
         "document.querySelectorAll(SEL).forEach(function(t){"
         "if(t.dataset.colResize)return;t.dataset.colResize='1';"
-        "var ths=Array.from(t.querySelectorAll('thead th'));if(!ths.length)return;"
+        # Only VISIBLE columns participate: a display:none column (e.g. price/tax hidden on a no-money
+        # audit/transfer list) must never be a resize neighbour, or dragging its visible left column
+        # resizes nothing (the qty-can't-grow-into-on-hand bug).
+        "var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){return getComputedStyle(h).display!=='none';});if(!ths.length)return;"
         "function tw(){return t.offsetWidth||1;}"
         "function pct(h){return h.offsetWidth/tw()*100;}"
         "function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}"
