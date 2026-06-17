@@ -77,6 +77,7 @@ def _files_section(
     can_describe: bool = True,
     can_set_hero: bool = False,
     can_upload: bool = True,
+    hide_product_images: bool = False,
     show_linked: bool = True,
     page: int = 1,
     sort_dir: str = "desc",
@@ -407,14 +408,16 @@ def _files_section(
     desc_th = Th(t("label.file_description") if can_describe else "",
                  style=None if compact else "min-width:200px;")
 
-    # Excel-style funnels: filter by Tag (product images hidden by default so they don't clutter) and,
-    # when present, by what each file is Linked To. Client-side, additive over the server filter bar.
+    # Excel-style funnels: filter by Tag and, when present, by what each file is Linked To. Client-side,
+    # additive over the server filter bar. Product images are hidden by default ONLY where they would
+    # clutter business documents (the aggregated Company Files view) - never on an item's own page, where
+    # the product images are the point.
     from ui.components.table import filter_th, COLUMN_FILTER_JS
-    _product_label = _tag_label("product_images")
+    _tag_exclude = [_tag_label("product_images")] if hide_product_images else None
     header_cells = [
         date_th,
         Th(t("th.filename")),
-        filter_th(t("label.tag"), 2, default_exclude=[_product_label]),
+        filter_th(t("label.tag"), 2, default_exclude=_tag_exclude),
         desc_th,
     ]
     if has_linked:

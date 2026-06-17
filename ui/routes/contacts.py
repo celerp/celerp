@@ -1216,7 +1216,7 @@ def setup_routes(app):
         # doc rows stay read-only via their per-row _no_delete override.
         return _shared_files_section(
             "company", "all", files, can_tag=False, can_describe=False, can_set_hero=False,
-            can_upload=True, show_linked=True, base_url="/finance/company-files",
+            can_upload=True, hide_product_images=True, show_linked=True, base_url="/finance/company-files",
             title="Company files", **section_kwargs,
         )
 

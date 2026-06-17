@@ -8258,25 +8258,41 @@ class TestCompanyDetailsPage:
 
 
 class TestFilesExcelFunnels:
-    """The shared files table carries Excel-style column funnels: a Tag funnel (product images excluded
-    by default) and rows tagged data-row so the client filter can sift them."""
+    """The shared files table carries Excel-style column funnels (a Tag funnel + data-row rows). Product
+    images are hidden by default ONLY when hide_product_images=True (the Company Files view) - never on
+    an item's own page, where the product images are the whole point."""
 
-    def test_tag_funnel_with_product_images_hidden_by_default(self):
+    _FILES = [
+        {"id": "f1", "filename": "registration.pdf", "size": 10, "document_tag": "registrations", "uploaded_at": "2026-06-18"},
+        {"id": "f2", "filename": "hero.jpg", "size": 20, "document_tag": "product_images", "uploaded_at": "2026-06-18"},
+    ]
+
+    def test_funnel_present_but_no_default_exclude_by_default(self):
         from ui.components.files import _files_section
         from fasthtml.common import to_xml
-        files = [
-            {"id": "f1", "filename": "registration.pdf", "size": 10, "document_tag": "registrations", "uploaded_at": "2026-06-18"},
-            {"id": "f2", "filename": "hero.jpg", "size": 20, "document_tag": "product_images", "uploaded_at": "2026-06-18"},
-        ]
-        html = to_xml(_files_section("contact", "contact:self", files, can_tag=True))
-        # A column funnel is present on the Tag column...
-        assert "colfilter" in html
-        # ...and it excludes the product-image label by default (built-in data-filter-exclude).
-        assert "data-filter-exclude" in html
-        # Rows are filterable and each tag cell exposes an explicit filter value (the select would
-        # otherwise leak every option into the funnel).
-        assert "data-row" in html
-        assert "data-filter-value" in html
+        html = to_xml(_files_section("item", "item:1", self._FILES, can_tag=True))
+        assert "colfilter" in html and "data-row" in html and "data-filter-value" in html
+        # Product images are NOT hidden on a normal (e.g. item) files table (no funnel default-exclude
+        # attribute - the bare string also appears inside COLUMN_FILTER_JS, so match the attribute form).
+        assert 'data-filter-exclude="' not in html
+
+    def test_product_images_hidden_only_when_requested(self):
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("company", "all", self._FILES, can_tag=True, hide_product_images=True))
+        assert 'data-filter-exclude="' in html
+
+    @pytest.mark.asyncio
+    async def test_item_file_description_route_accepts_post(self, ui_client):
+        """The files component saves descriptions with POST; the item UI route must accept POST (was
+        PATCH -> 405, which blocked describing a product image)."""
+        with (
+            patch("ui.api_client.describe_item_file", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:1", "files": []})),
+        ):
+            r = await ui_client.post("/items/item:1/files/f1/description",
+                                     data={"description": "front view"}, cookies=_authed())
+        assert r.status_code == 200, r.text  # not 405
 
 
 class TestCompanyAllFilesView:
@@ -8304,8 +8320,8 @@ class TestCompanyAllFilesView:
         assert "reg.pdf" in r.text and "Company" in r.text
         assert "hero.jpg" in r.text and "/inventory/item:1" in r.text and "SKU-1" in r.text
         assert "scan.pdf" in r.text and "/docs/doc:1" in r.text and "INV-001" in r.text
-        # Product images are hidden by default via the Tag funnel.
-        assert "data-filter-exclude" in r.text
+        # Product images are hidden by default via the Tag funnel (attribute form, not the JS ref).
+        assert 'data-filter-exclude="' in r.text
 
 
 class TestCompanyLetterhead:

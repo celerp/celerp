@@ -3847,7 +3847,7 @@ function celerpPrintLabel(entityId, templateId) {
             return P(str(e.detail), cls="cell-error")
         return _item_files_section(entity_id, item)
 
-    @app.patch("/items/{entity_id}/files/{file_id}/description")
+    @app.post("/items/{entity_id}/files/{file_id}/description")
     async def item_describe_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
