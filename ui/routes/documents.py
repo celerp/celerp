@@ -3511,7 +3511,16 @@ celerpUpdateBulkAlloc();
         all_issued_list = request.query_params.get("all_issued", "") in ("1", "true")
         page = int(request.query_params.get("page", 1))
         is_drafts_view = view == "drafts" or status == "draft"
-        effective_status = "draft" if is_drafts_view else ("exclude_draft" if not status else status)
+        # "all" is the show-everything view (no status filter), NOT a literal status to match — the
+        # default (no status) instead hides drafts, which have their own tab.
+        if is_drafts_view:
+            effective_status = "draft"
+        elif status == "all":
+            effective_status = ""          # no status / exclude filter -> every list
+        elif not status:
+            effective_status = "exclude_draft"
+        else:
+            effective_status = status
         # Date range: explicit selection wins, else company default. EXCEPTION: the drafts
         # view is never date-windowed — a draft is open work-in-progress, and many list types
         # (transfer/audit/blank) carry no issue date yet, so a default last_12m window would
@@ -3619,7 +3628,7 @@ celerpUpdateBulkAlloc();
                 params["q"] = q
             if list_type:
                 params["list_type"] = list_type
-            if status:
+            if status and status != "all":  # "all" = no status filter (show everything)
                 params["status"] = status
             lists = (await api.list_lists(token, params)).get("items", [])
         except APIError as e:
