@@ -4070,6 +4070,8 @@ celerpUpdateBulkAlloc();
                 await api.send_list(token, entity_id, {"sent_via": "manual"})
             elif action == "unmark_sent":
                 await api.unmark_list_sent(token, entity_id)
+            elif action == "clear-scanned":
+                await api.clear_scanned(token, entity_id)  # clear every scanned highlight
             elif action in ("adjust", "undo-adjust"):
                 await api.list_action(token, entity_id, action)
             else:
@@ -5913,14 +5915,19 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-toolbar",
             ),
             _li_bulk_toolbar(entity_id, is_list),
-            # Audit terminal action sits right above its Counted column (right-aligned), so the
-            # count-then-adjust flow reads top-to-bottom in one place rather than up in the toolbar.
+            # Audit actions sit right above the Counted column (right-aligned). Clear scanned reverts
+            # every scanned highlight in one bulk action; Adjust stock posts the count.
             (Div(
+                Button("Clear scanned", hx_post=f"/lists/{entity_id}/action/clear-scanned", hx_swap="none",
+                       cls="btn btn--secondary btn--sm",
+                       hx_confirm="Clear the scanned highlight on every counted row?"),
                 Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust", hx_swap="none",
                        cls="btn btn--primary btn--sm",
                        hx_confirm="Apply the counted quantities to stock? This posts a journal entry."),
-                cls="audit-adjust-bar",
-                style="display:flex;justify-content:flex-end;margin-bottom:0.4rem;",
+                cls="audit-adjust-bar gap-sm",
+                # Buffer top + bottom so the button never touches the scan bar above or the table
+                # below (consistent with button spacing elsewhere).
+                style="display:flex;justify-content:flex-end;margin:0.75rem 0;",
             ) if pol["audit"] and status == _LF else None),
             Div(
                 Table(

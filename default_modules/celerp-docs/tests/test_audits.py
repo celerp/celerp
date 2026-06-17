@@ -230,3 +230,27 @@ async def test_audit_list_cannot_be_converted(client):
     await _finalize(client, t, audit)
     r = await client.post(f"/lists/{audit}/convert", headers=_h(t), json={"target_type": "invoice"})
     assert r.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_scanned_highlight_persists_and_clears_via_bulk(client):
+    """A scanned line stays marked (audited_at) indefinitely — including across a list-type round
+    trip — and is reverted by the bulk Clear scanned action."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    await _item(client, t, "CS1", loc=loc, qty=5, barcode="7001")
+    audit = (await _audit(client, t, loc))["id"]
+    await _finalize(client, t, audit)
+
+    await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "7001"})
+    assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is not None
+
+    # Scanned status survives changing the type away and back.
+    await client.post(f"/lists/{audit}/change-type", headers=_h(t), json={"list_type": "quotation"})
+    await client.post(f"/lists/{audit}/change-type", headers=_h(t), json={"list_type": "audit"})
+    assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is not None
+
+    # Bulk Clear scanned reverts the highlight.
+    r = await client.post(f"/lists/{audit}/clear-scanned", headers=_h(t))
+    assert r.status_code == 200 and r.json()["cleared"] == 1
+    assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is None

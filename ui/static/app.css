@@ -2686,9 +2686,11 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .scan-bar-input:focus { border-color: var(--c-accent); }
 .audit-actions { display: flex; gap: 0.5rem; margin-bottom: 0.75rem; }
 .audit-count-input { max-width: 90px; }
-.data-row--audited td { background: var(--c-green-bg); }
-.data-row--audited:hover td { background: var(--c-green-badge-bg); }
-.data-row--audited td:first-child { box-shadow: inset 3px 0 0 var(--c-green); }
+/* Scanned/accounted-for audit row: a clearly visible green tint (the prior near-white was
+   imperceptible), plus the green left rail. Persists until cleared via the bulk action. */
+.data-row--audited td { background: rgba(14,165,122,0.14); }
+.data-row--audited:hover td { background: rgba(14,165,122,0.22); }
+.data-row--audited td:first-child { box-shadow: inset 4px 0 0 var(--c-green); }
 .data-row--adjusted td { background: var(--c-blue-light); }
 .data-row--adjusted:hover td { background: var(--c-blue-bg); }
 .data-row--adjusted td:first-child { box-shadow: inset 3px 0 0 var(--c-blue); }
