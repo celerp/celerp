@@ -4196,10 +4196,10 @@ celerpUpdateBulkAlloc();
             return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
-    @app.post("/lists/{entity_id}/clear-scanned")
-    async def list_clear_scanned(request: Request, entity_id: str):
-        """Bulk action: clear the scanned highlight on the selected rows (all rows if none selected).
-        Returns the re-rendered audit tbody for the same smooth #line-body swap that scanning uses."""
+    @app.post("/lists/{entity_id}/set-scanned")
+    async def list_set_scanned(request: Request, entity_id: str):
+        """Bulk action: mark or clear the scanned highlight on the selected rows (all rows if none
+        selected). Returns the re-rendered audit tbody for the same smooth #line-body swap scanning uses."""
         from starlette.responses import Response as _R
         from fasthtml.common import to_xml
         token = _token(request)
@@ -4207,8 +4207,9 @@ celerpUpdateBulkAlloc();
             return _action_error("Session expired.")
         form = await request.form()
         ids = [s for s in form.getlist("selected") if s]
+        scanned = str(form.get("scanned", "1")).strip() not in ("0", "false", "")
         try:
-            await api.clear_scanned(token, entity_id, ids or None)
+            await api.set_scanned(token, entity_id, ids or None, scanned)
         except APIError as e:
             return _R(str(e.detail), status_code=e.status or 400)
         return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
@@ -4959,7 +4960,7 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, clear_scanned: bool = False) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, scan_marks: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
     show_fulfill=True: add Fulfill/Revert Selected as dropdown options.
@@ -4992,8 +4993,9 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         if show_fulfill:
             options.append(Option(_fulfill_label, value="li-fulfill"))
             options.append(Option(_revert_label, value="li-revert"))
-    # Reverting scanned highlights on a finalized audit is a row-selection action, not a button.
-    if clear_scanned:
+    # Marking/reverting scanned highlights on a finalized audit is a row-selection action, not a button.
+    if scan_marks:
+        options.append(Option("Mark as scanned", value="li-mark-scanned"))
         options.append(Option("Clear scanned", value="li-clear-scanned"))
     children = [
         Span(t("doc.0_rows_selected"), id="li-bulk-count", cls="bulk-count"),
@@ -5012,12 +5014,15 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                onclick="liBulkLabelsConfirmed()"),
         Div(id="li-bulk-context"),
     ]
-    if clear_scanned:
-        children.append(
+    if scan_marks:
+        children += [
+            Button("Mark as scanned", type="button", id="li-bulk-markscan-btn",
+                   cls="btn btn--secondary btn--sm", style="display:none",
+                   onclick="liBulkSetScanned(true)"),
             Button("Clear scanned", type="button", id="li-bulk-clearscan-btn",
                    cls="btn btn--secondary btn--sm", style="display:none",
-                   onclick="liBulkClearScannedConfirmed()"),
-        )
+                   onclick="liBulkSetScanned(false)"),
+        ]
     if show_fulfill:
         if is_inbound:
             # Build hidden line-item inputs for POST /receive from the doc's line items.
@@ -5938,8 +5943,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _pl_bar,
                 cls="line-toolbar",
             ),
-            _li_bulk_toolbar(entity_id, is_list, clear_scanned=(pol["audit"] and status == _LF)),
-            # Audit terminal action sits right above its Counted column (right-aligned). (Reverting
+            _li_bulk_toolbar(entity_id, is_list, scan_marks=(pol["audit"] and status == _LF)),
+            # Audit terminal action sits right above its Counted column (right-aligned). (Marking/clearing
             # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
                 Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust", hx_swap="none",
@@ -6667,10 +6672,12 @@ async function celerpCsvImport(input, entityId) {{
   }});
   var deleteBtn=document.getElementById('li-bulk-delete-btn');
   var labelsBtn=document.getElementById('li-bulk-labels-btn');
+  var markScanBtn=document.getElementById('li-bulk-markscan-btn');
   var clearScanBtn=document.getElementById('li-bulk-clearscan-btn');
   function _hideBtns(){{
     if(deleteBtn) deleteBtn.style.display='none';
     if(labelsBtn) labelsBtn.style.display='none';
+    if(markScanBtn) markScanBtn.style.display='none';
     if(clearScanBtn) clearScanBtn.style.display='none';
   }}
   window.liBulkActionSelected=function(action){{
@@ -6678,19 +6685,22 @@ async function celerpCsvImport(input, entityId) {{
     if(!action) return;
     if(action==='li-delete'){{
       if(deleteBtn) deleteBtn.style.display='';
+    }} else if(action==='li-mark-scanned'){{
+      if(markScanBtn) markScanBtn.style.display='';
     }} else if(action==='li-clear-scanned'){{
       if(clearScanBtn) clearScanBtn.style.display='';
     }} else if(action.startsWith('mod:')){{
       if(labelsBtn) labelsBtn.style.display='';
     }}
   }};
-  window.liBulkClearScannedConfirmed=async function(){{
+  window.liBulkSetScanned=async function(scanned){{
     var ids=[];
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
     var fd=new URLSearchParams();
+    fd.append('scanned', scanned?'1':'0');
     ids.forEach(function(id){{ fd.append('selected', id); }});
     try{{
-      var resp=await fetch('/lists/{entity_id}/clear-scanned', {{method:'POST', body:fd}});
+      var resp=await fetch('/lists/{entity_id}/set-scanned', {{method:'POST', body:fd}});
       if(resp.ok){{
         var html=await resp.text();
         var tbody=document.getElementById('{line_body_id}');

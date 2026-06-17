@@ -251,6 +251,11 @@ async def test_scanned_highlight_persists_and_clears_via_bulk(client):
     assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is not None
 
     # Bulk Clear scanned reverts the highlight.
-    r = await client.post(f"/lists/{audit}/clear-scanned", headers=_h(t))
-    assert r.status_code == 200 and r.json()["cleared"] == 1
+    r = await client.post(f"/lists/{audit}/set-scanned", headers=_h(t), json={"scanned": False})
+    assert r.status_code == 200 and r.json()["changed"] == 1
     assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is None
+
+    # Bulk Mark as scanned re-applies the highlight (the inverse action).
+    r = await client.post(f"/lists/{audit}/set-scanned", headers=_h(t), json={"scanned": True})
+    assert r.status_code == 200 and r.json()["changed"] == 1
+    assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is not None

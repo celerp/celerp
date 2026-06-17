@@ -676,8 +676,13 @@ a:hover { text-decoration: underline; }
 .doc-lines--invoice td.col-desc { background: var(--c-bg3); }
 .doc-lines--invoice td.col-desc .catalog-ac-input { background-color: #e2f4ef; }
 /* Audit lines are static text (no desc input), so the editable-cell gray fill above looks out of
-   place — clear it so the Description cell matches the other cells (and the scanned-row green tint). */
-.doc-lines--audit td.col-desc { background: transparent; }
+   place. Drive the Description cell off a per-row variable instead so it matches the other cells:
+   white on a plain row, and the row-state tint on scanned/adjusted rows (the .data-row--* td rules
+   set the same colour on every other cell but are outranked on this cell by the invoice selector).
+   Hover tints come from the .data-row--*:hover td rules, which outrank this. */
+.doc-lines--audit td.col-desc { background: var(--audit-row-bg, transparent); }
+.doc-lines--audit tr.data-row--audited { --audit-row-bg: rgba(14,165,122,0.14); }
+.doc-lines--audit tr.data-row--adjusted { --audit-row-bg: var(--c-blue-light); }
 .doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 75px; }
 /* Inside the fixed-width description cell: description is fixed at 70% (no grow,
    no shrink) so every row's description is the same width and they all line up;

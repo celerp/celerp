@@ -4194,32 +4194,41 @@ async def set_audit_count(
     return {"ok": True}
 
 
-class ClearScannedBody(BaseModel):
+class SetScannedBody(BaseModel):
     item_ids: list[str] = Field(default_factory=list)
+    scanned: bool = True
 
 
-@lists_router.post("/{entity_id}/clear-scanned")
-async def clear_scanned(
-    entity_id: str, payload: ClearScannedBody = ClearScannedBody(),
+@lists_router.post("/{entity_id}/set-scanned")
+async def set_scanned(
+    entity_id: str, payload: SetScannedBody = SetScannedBody(),
     company_id=Depends(get_current_company_id), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Clear the scanned/accounted-for highlight on audit lines (drops audited_at). Pass item_ids to
-    clear specific rows, or none to clear them all. The highlight otherwise persists indefinitely."""
+    """Toggle the scanned/accounted-for highlight (audited_at) on audit lines. scanned=True marks the
+    rows as scanned (stamps audited_at), scanned=False clears it. Pass item_ids to target specific
+    rows, or none for every line. The highlight otherwise persists indefinitely."""
     row = await _get_audit(session, company_id, entity_id)
     if row.state.get("status") != FINALIZED:
         raise HTTPException(status_code=409, detail="Counting happens on a finalized audit")
     targets = set(payload.item_ids)
+    stamp = datetime.now(UTC).isoformat() if payload.scanned else None
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
-    cleared = 0
+    changed = 0
     for l in lines:
-        if l.get("audited_at") is not None and (not targets or l.get("item_id") in targets):
+        if targets and l.get("item_id") not in targets:
+            continue
+        already = l.get("audited_at") is not None
+        if payload.scanned and not already:
+            l["audited_at"] = stamp
+            changed += 1
+        elif not payload.scanned and already:
             l["audited_at"] = None
-            cleared += 1
-    if cleared:
+            changed += 1
+    if changed:
         await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
         await session.commit()
-    return {"cleared": cleared}
+    return {"changed": changed}
 
 
 @lists_router.post("/{entity_id}/adjust")
