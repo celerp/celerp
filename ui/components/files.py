@@ -76,6 +76,7 @@ def _files_section(
     can_tag: bool = True,
     can_describe: bool = True,
     can_set_hero: bool = False,
+    can_upload: bool = True,
     show_linked: bool = True,
     page: int = 1,
     sort_dir: str = "desc",
@@ -86,6 +87,7 @@ def _files_section(
     title: str | None = None,
     show_preview: bool = True,
     compact: bool = False,
+    base_url: str | None = None,
 ) -> FT:
     """Render the files section for any entity.
 
@@ -104,7 +106,9 @@ def _files_section(
         date_to:      filter uploaded_at <= this date (YYYY-MM-DD)
         search:       filter by filename, description, or linked_ref (case-insensitive substring)
     """
-    base_url = f"/{entity_type}s/{entity_id}/files"
+    # Default derives the per-entity REST base; an aggregated/virtual view (e.g. all company files)
+    # passes its own base_url so the sort + pagination links target a real _section route.
+    base_url = base_url or f"/{entity_type}s/{entity_id}/files"
     sid = _safe_id(entity_id)  # safe DOM id fragment (no colons)
     _tags = _ITEM_TAGS if entity_type == "item" else _DOCUMENT_TAGS
 
@@ -515,7 +519,8 @@ def _files_section(
     ]
     if pagination:
         children.append(pagination)
-    children.append(upload_zone)
+    if can_upload:
+        children.append(upload_zone)
 
     return Div(
         *children,

@@ -165,6 +165,40 @@ def _collect_contact_files(contact: dict, docs: list[dict]) -> list[dict]:
     return result
 
 
+def _collect_company_files(self_contact: dict, items: list[dict], docs: list[dict]) -> list[dict]:
+    """Aggregate a read-only company-wide files view: the company's own documents (self-contact files),
+    every inventory item's images, and every document's attachments. Each row keeps the right linked
+    ref/url + download/action overrides so it still points back at its owning entity (reuses the same
+    override shape as _collect_contact_files - DRY)."""
+    seen: set[str] = set()
+    out: list[dict] = []
+
+    def _add(f: dict, ref: str, url: str, base: str) -> None:
+        fid = f.get("id", "")
+        if not fid or fid in seen:
+            return
+        seen.add(fid)
+        row = {**f, "linked_ref": ref, "linked_url": url, "_no_delete": True}
+        if base:
+            row["_download_url"] = f"{base}/{fid}/download"
+            row["_action_base_url"] = base
+        out.append(row)
+
+    for f in (self_contact.get("files") or []):
+        _add(f, "Company", "/finance/company-details", "")
+    for it in items:
+        iid = it.get("id") or it.get("entity_id") or ""
+        ref = it.get("sku") or it.get("name") or "Item"
+        for f in (it.get("files") or []):
+            _add(f, f"Item: {ref}", f"/inventory/{iid}" if iid else "", f"/items/{iid}/files" if iid else "")
+    for d in docs:
+        did = d.get("id") or d.get("entity_id") or ""
+        ref = d.get("ref_id") or d.get("doc_number") or "Doc"
+        for f in (d.get("files") or []):
+            _add(f, f"Doc: {ref}", f"/docs/{did}" if did else "", f"/docs/{did}/files" if did else "")
+    return out
+
+
 def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = None, **kwargs) -> FT:
     """Wrapper - merges contact-own files with related doc files, then delegates to shared component."""
     merged = _collect_contact_files(contact, docs or [])
@@ -1152,9 +1186,65 @@ def setup_routes(app):
         return build_contact_detail(
             contact, docs, vocab, company, request, contact_id=sid,
             show_financials=False, show_delete=False, show_contact_addresses=False,
-            extra_sections=[_company_addresses_section(company_locations)],
+            extra_sections=[
+                _company_addresses_section(company_locations),
+                Div(A("View all company files →", href="/finance/company-files",
+                      cls="btn btn--secondary btn--sm"),
+                    cls="section-card", style="margin-top:12px;"),
+            ],
             back=("Finance", "/accounting"), nav_active="company-details", title="Company Details",
         )
+
+    async def _company_files_section(token: str, **section_kwargs) -> FT:
+        """Aggregate + render the read-only company-wide files section (company docs + item images +
+        doc attachments). Shared by the page and its sort/pagination _section route."""
+        sid = await _resolve_self_contact_id(token)
+        self_contact: dict = {}
+        if sid:
+            try:
+                self_contact = await api.get_contact(token, sid) or {}
+            except Exception:
+                self_contact = {}
+        try:
+            items = (await api.list_items(token, {"limit": 9999})).get("items", [])
+        except Exception:
+            items = []
+        try:
+            docs = (await api.list_docs(token, {"limit": 9999})).get("items", [])
+        except Exception:
+            docs = []
+        files = _collect_company_files(self_contact, items, docs)
+        return _shared_files_section(
+            "company", "all", files, can_tag=False, can_describe=False, can_set_hero=False,
+            can_upload=False, show_linked=True, base_url="/finance/company-files",
+            title="All company files", **section_kwargs,
+        )
+
+    @app.get("/finance/company-files")
+    async def company_files(request: Request):
+        from ui.routes.settings import _check_role
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := _check_role(request, "admin")):
+            return r
+        return base_shell(
+            breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", "/finance/company-details"), ("All files", None)]),
+            page_header("All Files"),
+            P("Every file across the company - documents, product images and attachments - in one place. "
+              "Product images are hidden by default; use the Tag funnel to show them.", cls="hint"),
+            await _company_files_section(token),
+            title="All Files - Celerp", nav_active="company-details", request=request,
+        )
+
+    @app.get("/finance/company-files/_section")
+    async def company_files_section(request: Request, page: int = 1, sort_dir: str = "desc",
+                                    tag_filter: str = "", date_from: str = "", date_to: str = "", search: str = ""):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        return await _company_files_section(token, page=page, sort_dir=sort_dir, tag_filter=tag_filter,
+                                            date_from=date_from, date_to=date_to, search=search)
 
     # ── Tab routes ────────────────────────────────────────────────────────
 

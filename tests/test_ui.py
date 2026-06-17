@@ -8291,6 +8291,35 @@ class TestFilesExcelFunnels:
         assert "data-filter-value" in html
 
 
+class TestCompanyAllFilesView:
+    """The unified Finance > All Files view aggregates company documents, item images and doc
+    attachments into one read-only table, each row linking back to its owning entity."""
+
+    @pytest.mark.asyncio
+    async def test_aggregates_company_item_and_doc_files(self, ui_client):
+        from contextlib import ExitStack
+        company = {"settings": {"self_contact_id": "contact:self"}}
+        self_contact = {"id": "contact:self", "name": "My Co", "is_self": True,
+                        "files": [{"id": "cf1", "filename": "reg.pdf", "document_tag": "registrations", "uploaded_at": "2026-06-18"}]}
+        items = {"items": [{"id": "item:1", "sku": "SKU-1",
+                            "files": [{"id": "if1", "filename": "hero.jpg", "document_tag": "product_images", "uploaded_at": "2026-06-18"}]}]}
+        docs = {"items": [{"id": "doc:1", "ref_id": "INV-001",
+                           "files": [{"id": "df1", "filename": "scan.pdf", "document_tag": "receipts", "uploaded_at": "2026-06-18"}]}]}
+        with ExitStack() as stack:
+            for name, val in (("get_company", company), ("get_contact", self_contact),
+                              ("list_items", items), ("list_docs", docs),
+                              ("list_contacts", {"items": [self_contact]})):
+                stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
+            r = await ui_client.get("/finance/company-files", cookies=_authed(role="admin"))
+        assert r.status_code == 200, r.text
+        # All three sources present, each linking back to its owning entity.
+        assert "reg.pdf" in r.text and "Company" in r.text
+        assert "hero.jpg" in r.text and "/inventory/item:1" in r.text and "SKU-1" in r.text
+        assert "scan.pdf" in r.text and "/docs/doc:1" in r.text and "INV-001" in r.text
+        # Product images are hidden by default via the Tag funnel.
+        assert "data-filter-exclude" in r.text
+
+
 class TestCompanyLetterhead:
     """Document letterhead identity is canonical on the self-contact (edited at Company Details), so
     name/phone/tax_id/email come from there and the address from the default Location."""
