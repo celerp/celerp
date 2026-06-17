@@ -95,6 +95,10 @@ def _raise(r: httpx.Response) -> httpx.Response:
         if r.status_code == 401:
             # 401 is expected during fresh init / token expiry; not a warning
             logger.debug("API 401: %s", detail)
+        elif r.status_code == 409 and detail == "direct_connection_limit":
+            # Expected when another session is already active (single-session enforcement);
+            # the caller handles it (force-login prompt), so it is not a warning.
+            logger.debug("API 409: %s", detail)
         else:
             logger.warning("API %s: %s", r.status_code, detail)
         raise APIError(r.status_code, detail)

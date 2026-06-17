@@ -110,6 +110,23 @@ _INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"
 # Internal demand docs that carry no money: hide price / discount / tax / total columns and the
 # financial totals panel. A production order is invoice-to-self demand, not a sale.
 _NO_MONEY_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
+# List facets that carry no money (same hiding mechanism as _NO_MONEY_DOC_TYPES).
+_NO_MONEY_LIST_TYPES: frozenset[str] = frozenset({"transfer", "audit"})
+
+
+def _list_column_policy(doc_type: str, list_type: str) -> dict:
+    """Single source of truth for type-driven columns in the list line table.
+
+    Read by header builders, row builders, the no-money class, and the totals/terms gates.
+    """
+    no_money = (doc_type in _NO_MONEY_DOC_TYPES) or (doc_type == "list" and list_type in _NO_MONEY_LIST_TYPES)
+    is_audit = doc_type == "list" and list_type == "audit"
+    return {
+        "no_money": no_money,
+        "show_onhand": is_audit,
+        "show_counted": is_audit,
+        "audit": is_audit,
+    }
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
 # show the button on statuses the backend will reject.  Update when backend allowlist changes.
 # Inbound doc types (bill, consignment_in) are excluded - they use POST /receive.
@@ -3482,10 +3499,15 @@ celerpUpdateBulkAlloc();
         page = int(request.query_params.get("page", 1))
         is_drafts_view = view == "drafts" or status == "draft"
         effective_status = "draft" if is_drafts_view else ("exclude_draft" if not status else status)
-        # Date range: same semantics as /docs (explicit selection wins, else company default).
+        # Date range: explicit selection wins, else company default. EXCEPTION: the drafts
+        # view is never date-windowed — a draft is open work-in-progress, and many list types
+        # (transfer/audit/blank) carry no issue date yet, so a default last_12m window would
+        # silently hide them and the page looks broken. Drafts always show in full.
         _has_explicit_date = (request.query_params.get("preset")
                               or request.query_params.get("from") or request.query_params.get("to"))
-        if _has_explicit_date:
+        if is_drafts_view and not _has_explicit_date:
+            date_from, date_to, preset = "", "", "all"
+        elif _has_explicit_date:
             date_from, date_to, preset = _parse_dates(request)
         else:
             try:
@@ -3526,12 +3548,18 @@ celerpUpdateBulkAlloc();
             lists, summary, draft_count, filtered_total = [], {}, 0, 0
         lang = get_lang(request)
         _lists_extra = f"q={q}&type={list_type}&status={status}&view={view}".strip("&")
+        # Audits are location-bound, not blank drafts: send the user through the location picker.
+        _new_btn = (
+            A("New audit", href="/lists/new-audit", cls="btn btn--primary")
+            if list_type == "audit"
+            else Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title="Create blank draft")
+        )
         return base_shell(
             page_header(
                 t("page.lists", lang),
                 _list_drafts_tab(draft_count, is_drafts_view, list_type),
                 search_bar(placeholder="Search ref, customer...", target="#list-table", url="/lists/search"),
-                Button(t("page.new_list"), hx_post="/lists/create-blank", hx_swap="none", cls="btn btn--primary", title="Create blank draft"),
+                _new_btn,
                 A(t("btn.export_csv"), href="/lists/export/csv", cls="btn btn--secondary"),
                 A(t("doc.import_csv"), href="/lists/import", cls="btn btn--secondary"),
             ),
@@ -3697,6 +3725,56 @@ celerpUpdateBulkAlloc();
         except APIError:
             items = []
         return _send_to_option_list(items, "list")
+
+    @app.get("/lists/new-audit")
+    async def list_new_audit_page(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            locations = (await api.get_locations(token)).get("items", [])
+        except APIError:
+            locations = []
+        if not locations:
+            return base_shell(
+                page_header("New Audit"),
+                P("Create a location first (Settings > Inventory > Locations) to audit it.", cls="hint"),
+                title="New Audit - Celerp", nav_active="lists", request=request,
+            )
+        loc_options = [(l.get("id"), l.get("name") or l.get("id")) for l in locations]
+        form = Form(
+            Div(
+                Label("Location", cls="form-label"),
+                searchable_select("location_id", loc_options, placeholder="Search a location..."),
+                P("The audit is pre-populated with the stocked items at this location.", cls="hint"),
+                cls="form-group",
+            ),
+            Button("Start audit", type="submit", cls="btn btn--primary"),
+            method="post", action="/lists/new-audit", cls="form-card",
+        )
+        return base_shell(
+            page_header("New Audit",
+                        A("All audits", href="/lists?type=audit", cls="btn btn--sm btn--secondary")),
+            P("Pick a location to count. Then scan barcodes to confirm stock and adjust it.", cls="hint"),
+            form,
+            title="New Audit - Celerp", nav_active="lists", request=request,
+        )
+
+    @app.post("/lists/new-audit")
+    async def list_create_audit(request: Request):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        location_id = str(form.get("location_id", "")).strip()
+        if not location_id:
+            return RedirectResponse("/lists/new-audit", status_code=303)
+        try:
+            res = await api.create_audit(token, location_id)
+        except APIError:
+            return RedirectResponse("/lists/new-audit", status_code=303)
+        return RedirectResponse(f"/lists/{res['id']}", status_code=303)
+
     @app.get("/lists/{entity_id}")
     async def list_detail(request: Request, entity_id: str):
         token = _token(request)
@@ -3761,6 +3839,35 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
+        # Build item_meta_map for On-hand quantities (needed for audit list_type).
+        # Mirrors the /docs/{id} gather block so _doc_detail gets the same data.
+        item_meta_map: dict[str, dict] = {}
+        if (lst.get("list_type") or "") in ("audit",) or True:
+            try:
+                _line_eids = [
+                    li.get("item_id") or li.get("entity_id") or ""
+                    for li in lst.get("line_items", [])
+                    if li.get("item_id") or li.get("entity_id")
+                ]
+                if _line_eids:
+                    from celerp.services.units import build_unit_map
+                    try:
+                        _unit_map = build_unit_map(await api.get_units(token))
+                    except Exception:
+                        _unit_map = {}
+                    import asyncio as _asyncio
+                    async def _fetch_item_l(eid: str) -> tuple[str, dict | None]:
+                        try:
+                            return eid, await api.get_item(token, eid)
+                        except Exception:
+                            return eid, None
+                    _results = await _asyncio.gather(*(_fetch_item_l(e) for e in _line_eids))
+                    for eid, item in _results:
+                        if item:
+                            item_meta_map[eid] = item_measure_meta(item, _unit_map)
+            except Exception:
+                pass
+
         ref = lst.get("ref_id") or entity_id
         status = lst.get("status", "draft")
         status_label = status.replace("_", " ").title()
@@ -3768,7 +3875,7 @@ celerpUpdateBulkAlloc();
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
-            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), notes=list_notes),
+            _doc_detail(lst, price_lists=price_lists, tz=tz, company_taxes=company_taxes, role=_get_role(request), notes=list_notes, item_meta_map=item_meta_map),
             title=f"List {ref} - Celerp",
             nav_active="lists",
             request=request,
@@ -3905,6 +4012,9 @@ celerpUpdateBulkAlloc();
             elif action == "convert-memo":
                 result = await api.convert_list(token, entity_id, "memo")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{result['target_doc_id']}"})
+            elif action in ("done", "reopen", "adjust", "undo_adjust"):
+                api_action = "undo-adjust" if action == "undo_adjust" else action
+                await api.audit_action(token, entity_id, api_action)
             else:
                 return _R("", status_code=400)
         except APIError as e:
@@ -3912,6 +4022,186 @@ celerpUpdateBulkAlloc();
                 return _R("", status_code=401, headers={"HX-Redirect": "/login"})
             return _action_error(str(e.detail))
         return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
+
+    async def _audit_line_tbody(token: str, entity_id: str) -> FT:
+        """Render the editable audit tbody for #line-body swap.
+
+        Re-fetches the list (so backend top-insert ordering is preserved per GDR 2.n),
+        rebuilds item_meta_map for On-hand, and emits the shared editable row set.
+        """
+        from fasthtml.common import to_xml
+        from ui.components.table import EMPTY as _EMPTY
+        lst = await api.get_list(token, entity_id)
+        line_items = lst.get("line_items") or []
+        # Build item_meta_map for On-hand column
+        item_meta_map: dict[str, dict] = {}
+        try:
+            _eids = [li.get("item_id") or li.get("entity_id") or "" for li in line_items if li.get("item_id") or li.get("entity_id")]
+            if _eids:
+                from celerp.services.units import build_unit_map
+                try:
+                    _unit_map = build_unit_map(await api.get_units(token))
+                except Exception:
+                    _unit_map = {}
+                import asyncio as _asyncio
+                async def _fi(eid: str) -> tuple[str, dict | None]:
+                    try:
+                        return eid, await api.get_item(token, eid)
+                    except Exception:
+                        return eid, None
+                for eid, item in await _asyncio.gather(*(_fi(e) for e in _eids)):
+                    if item:
+                        item_meta_map[eid] = item_measure_meta(item, _unit_map)
+        except Exception:
+            pass
+
+        # Build rows: reuse shared helpers via _audit_editable_row
+        rows = [_audit_editable_row(entity_id, li, item_meta_map) for li in line_items]
+        if not rows:
+            rows = [Tr(Td("No items. Scan a barcode to add.", colspan="4", cls="empty-row"))]
+        return Tbody(*rows, id="line-body")
+
+    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict) -> FT:
+        """Shared audit row builder used by both _doc_detail and the scan re-render."""
+        from ui.components.table import EMPTY as _EMPTY
+        item_key = li.get("item_id") or li.get("entity_id") or ""
+        audited = li.get("audited_at") is not None
+        adjusted = bool(li.get("adjusted"))
+        onhand = item_meta_map.get(item_key, {}).get("quantity")
+        counted = li.get("counted_qty")
+        counted_display = f"{float(counted):g}" if counted is not None else _EMPTY
+        edit_url = f"/lists/{audit_id}/line/{item_key}/counted/edit"
+
+        onhand_td = Td(f"{float(onhand):g}" if onhand is not None else "--", cls="cell--number col-onhand")
+        counted_td = Td(
+            Div(
+                Span(counted_display,
+                     hx_get=edit_url,
+                     hx_target="closest .editable-cell",
+                     hx_swap="outerHTML",
+                     cls="editable-cell",
+                     title="Click to edit count"),
+                cls="editable-cell",
+            ),
+            cls="cell--number col-counted",
+        )
+        qty = float(li.get("quantity", 0) or 0)
+        row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
+        return Tr(
+            Td(li.get("sku") or _EMPTY),
+            Td(li.get("name") or li.get("description") or _EMPTY),
+            Td(f"{qty:g}" if qty else "1", cls="col-qty"),
+            onhand_td,
+            counted_td,
+            cls=row_cls,
+        )
+
+    @app.post("/lists/{entity_id}/scan")
+    async def list_audit_scan(request: Request, entity_id: str):
+        """Scan a barcode for an audit - returns re-rendered #line-body tbody for swap."""
+        from fasthtml.common import to_xml
+        token = _token(request)
+        if not token:
+            return _action_error("Session expired.")
+        form = await request.form()
+        barcode = str(form.get("barcode", "")).strip()
+        if not barcode:
+            tbody = await _audit_line_tbody(token, entity_id)
+            return HTMLResponse(to_xml(tbody))
+        try:
+            await api.scan_audit(token, entity_id, barcode)
+        except APIError as e:
+            return _action_error(e.detail)
+        tbody = await _audit_line_tbody(token, entity_id)
+        return HTMLResponse(to_xml(tbody))
+
+    @app.post("/lists/{entity_id}/line/{item_id}")
+    async def list_audit_set_count(request: Request, entity_id: str, item_id: str):
+        """Set counted_qty for an audit line - returns the display editable-cell."""
+        from ui.components.table import EMPTY as _EMPTY
+        token = _token(request)
+        if not token:
+            return _action_error("Session expired.")
+        form = await request.form()
+        raw = str(form.get("counted_qty", "")).strip()
+        try:
+            cq = float(raw) if raw else None
+        except ValueError:
+            cq = None
+        try:
+            await api.set_audit_count(token, entity_id, item_id, cq)
+        except APIError as e:
+            return _action_error(e.detail)
+        display_val = f"{float(cq):g}" if cq is not None else _EMPTY
+        edit_url = f"/lists/{entity_id}/line/{item_id}/counted/edit"
+        return Div(
+            Span(display_val,
+                 hx_get=edit_url,
+                 hx_target="closest .editable-cell",
+                 hx_swap="outerHTML",
+                 cls="editable-cell",
+                 title="Click to edit count"),
+            cls="editable-cell",
+        )
+
+    @app.get("/lists/{entity_id}/line/{item_id}/counted/edit")
+    async def list_audit_counted_edit(request: Request, entity_id: str, item_id: str):
+        """Return an inline edit input for the Counted cell (standard editable-cell idiom)."""
+        from ui.components.table import EMPTY as _EMPTY
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            lst = await api.get_list(token, entity_id)
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
+        li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
+        counted = li.get("counted_qty") if li else None
+        prefill = f"{float(counted):g}" if counted is not None else ""
+        restore_url = f"/lists/{entity_id}/line/{item_id}/counted/display"
+        patch_url = f"/lists/{entity_id}/line/{item_id}"
+        esc_js = (
+            f"if(event.key==='Escape'){{"
+            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
+            f"event.preventDefault();}}"
+        )
+        enter_js = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
+        inp = Input(
+            type="number", name="counted_qty", value=prefill, step="any",
+            cls="cell-input cell-input--number cell-input--xs",
+            autofocus=True,
+            hx_post=patch_url,
+            hx_target="closest .editable-cell",
+            hx_swap="outerHTML",
+            hx_trigger="blur delay:200ms",
+            onkeydown=esc_js + enter_js,
+        )
+        return Div(inp, cls="editable-cell editable-cell--editing")
+
+    @app.get("/lists/{entity_id}/line/{item_id}/counted/display")
+    async def list_audit_counted_display(request: Request, entity_id: str, item_id: str):
+        """Return the display span for the Counted cell after save/cancel."""
+        from ui.components.table import EMPTY as _EMPTY
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            lst = await api.get_list(token, entity_id)
+        except APIError as e:
+            return P(f"Error: {e.detail}", cls="cell-error")
+        li = next((l for l in (lst.get("line_items") or []) if (l.get("item_id") or l.get("entity_id")) == item_id), None)
+        counted = li.get("counted_qty") if li else None
+        display_val = f"{float(counted):g}" if counted is not None else _EMPTY
+        edit_url = f"/lists/{entity_id}/line/{item_id}/counted/edit"
+        return Div(
+            Span(display_val,
+                 hx_get=edit_url,
+                 hx_target="closest .editable-cell",
+                 hx_swap="outerHTML",
+                 cls="editable-cell",
+                 title="Click to edit count"),
+            cls="editable-cell",
+        )
 
 
 def _doc_table(
@@ -4703,6 +4993,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     status = doc.get("status", "draft")
     doc_type = doc.get("doc_type", "")
     is_draft = status == "draft"
+    list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
+    # Audits are editable in unaudited/audited states; stock_adjusted is frozen (read-only).
+    is_editable = is_draft or (doc_type == "list" and list_type == "audit" and status != "stock_adjusted")
+    pol = _list_column_policy(doc_type, list_type)
     _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
     ref = _pick("ref_id", "doc_number", "ref", "external_id") or entity_id
     from celerp.services.auth import ROLE_LEVELS as _RL
@@ -4731,7 +5025,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     list_type_selector = ""
     if is_list:
         _current_lt = doc.get("list_type") or "quotation"
-        if is_draft:
+        # Show the editable dropdown whenever the doc is editable (draft or open audit).
+        if is_editable:
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
                 Select(
@@ -4789,15 +5084,27 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         )
     # List-specific lifecycle buttons
     if is_list:
-        if status == "draft":
-            action_btns_left.append(Button(t("btn.send"), hx_post=f"/lists/{entity_id}/action/send", hx_swap="none", cls="btn btn--primary"))
-        if status == "sent":
-            action_btns_left.append(Button(t("btn.accept"), hx_post=f"/lists/{entity_id}/action/accept", hx_swap="none", cls="btn btn--primary"))
-        if status == "accepted":
-            action_btns_left.append(Button(t("btn.complete"), hx_post=f"/lists/{entity_id}/action/complete", hx_swap="none", cls="btn btn--primary"))
-        if status not in ("void", "converted"):
-            action_btns_left.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice", hx_swap="none", cls="btn btn--secondary"))
-            action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo", hx_swap="none", cls="btn btn--secondary"))
+        if pol["audit"]:
+            # Audit lifecycle actions — shown in the shared primary action slot.
+            if status == "unaudited":
+                action_btns_left.append(Button("Done auditing", hx_post=f"/lists/{entity_id}/action/done", hx_swap="none", cls="btn btn--primary"))
+            if status == "audited":
+                action_btns_left.append(Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust", hx_swap="none", cls="btn btn--primary",
+                                                hx_confirm="Apply the counted quantities to stock? This posts a journal entry."))
+                action_btns_left.append(Button("Reopen", hx_post=f"/lists/{entity_id}/action/reopen", hx_swap="none", cls="btn btn--secondary"))
+            if status == "stock_adjusted":
+                action_btns_left.append(Button("Undo stock adjustment", hx_post=f"/lists/{entity_id}/action/undo_adjust", hx_swap="none", cls="btn btn--secondary",
+                                                hx_confirm="Reverse this audit's stock adjustment?"))
+        else:
+            if status == "draft":
+                action_btns_left.append(Button(t("btn.send"), hx_post=f"/lists/{entity_id}/action/send", hx_swap="none", cls="btn btn--primary"))
+            if status == "sent":
+                action_btns_left.append(Button(t("btn.accept"), hx_post=f"/lists/{entity_id}/action/accept", hx_swap="none", cls="btn btn--primary"))
+            if status == "accepted":
+                action_btns_left.append(Button(t("btn.complete"), hx_post=f"/lists/{entity_id}/action/complete", hx_swap="none", cls="btn btn--primary"))
+            if status not in ("void", "converted"):
+                action_btns_left.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice", hx_swap="none", cls="btn btn--secondary"))
+                action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo", hx_swap="none", cls="btn btn--secondary"))
         action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate", hx_swap="none", cls="btn btn--secondary"))
     if status in ("draft", "sent") and not is_list:
         _finalize_labels = {
@@ -5021,8 +5328,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     # --- Price list bar (positioned in line items section) ---
     _pl_names = [pl.get("name", "") for pl in (price_lists or []) if pl.get("name")]
     _current_pl = doc.get("price_list") or ""
-    if doc_type in _NO_MONEY_DOC_TYPES:
-        _pl_bar = ""  # Internal demand docs carry no pricing.
+    if pol["no_money"]:
+        _pl_bar = ""  # No-money types carry no pricing.
     elif doc_type in ("purchase_order", "bill"):
         _pl_bar = ""  # Vendor docs use cost price, not price lists
     elif is_draft and _pl_names:
@@ -5048,7 +5355,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 
     # --- Line items section ---
     line_body_id = "line-body"
-    if is_draft:
+    if is_editable:
         def _sku_input(val: str = "", entity_id: str = "") -> FT:
             eye_cls = "item-link item-link--active" if entity_id else "item-link item-link--inactive"
             eye_href = f"/inventory/{entity_id}" if entity_id else "#"
@@ -5128,6 +5435,30 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 custom_input,
                 Input(type="hidden", value=current_label, data_name="tax_label"),
                 style="display:flex;gap:2px;align-items:center;",
+            )
+
+        def _counted_cell(audit_id: str, item_id: str, li: dict) -> FT:
+            """Counted-qty cell: click-to-edit via standard editable-cell idiom.
+
+            Display shows '--' for None, '0' for 0. Saves to POST /lists/{id}/line/{item_id}.
+            Esc restores display; Enter/blur saves. GDR 2.f / 2.k / 2.k.i / 2.j.
+            """
+            from ui.components.table import EMPTY as _EMPTY
+            counted = li.get("counted_qty")
+            display_val = f"{float(counted):g}" if counted is not None else _EMPTY
+            edit_url = f"/lists/{audit_id}/line/{item_id}/counted/edit"
+            restore_url = f"/lists/{audit_id}/line/{item_id}/counted/display"
+            return Td(
+                Div(
+                    Span(display_val,
+                         hx_get=edit_url,
+                         hx_target="closest .editable-cell",
+                         hx_swap="outerHTML",
+                         cls="editable-cell",
+                         title="Click to edit count"),
+                    cls="editable-cell",
+                ),
+                cls="cell--number col-counted",
             )
 
         def _li_editable_row(li: dict, idx: int) -> FT:
@@ -5261,7 +5592,17 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value=str(li.get("item_quantity") or qty), data_name="item_quantity"),
                    cls="cell--number col-total"),
             ])
-            return Tr(*cells)
+            if pol["show_onhand"]:
+                _item_key = li.get("item_id") or li.get("entity_id") or ""
+                _onhand = (item_meta_map or {}).get(_item_key, {}).get("quantity")
+                cells.append(Td(f"{float(_onhand):g}" if _onhand is not None else "--", cls="cell--number col-onhand"))
+            if pol["show_counted"]:
+                _item_key = li.get("item_id") or li.get("entity_id") or ""
+                cells.append(_counted_cell(entity_id, _item_key, li))
+            audited = li.get("audited_at") is not None
+            adjusted = bool(li.get("adjusted"))
+            _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
+            return Tr(*cells, cls=_row_cls) if _row_cls else Tr(*cells)
 
         def _li_empty_row() -> FT:
             _show_category = doc_type in ("bill", "purchase_order", "consignment_in")
@@ -5349,6 +5690,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                    Input(type="hidden", value="", data_name="item_quantity"),
                    cls="cell--number col-total"),
             ])
+            # Audit columns: empty row has no item so show placeholder dashes.
+            if pol["show_onhand"]:
+                cells.append(Td("--", cls="cell--number col-onhand"))
+            if pol["show_counted"]:
+                cells.append(Td("--", cls="cell--number col-counted"))
             return Tr(*cells)
 
         rows = [_li_editable_row(li, i) for i, li in enumerate(line_items)]
@@ -5370,6 +5716,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
         if doc_type in ("purchase_order", "bill"):
             _line_headers.append(Th(t("th.account"), cls="col-account"))
         _line_headers.extend([Th(t("th.total"), cls="cell--number col-total")])
+        if pol["show_onhand"]:
+            _line_headers.append(Th("On hand", cls="cell--number col-onhand"))
+        if pol["show_counted"]:
+            _line_headers.append(Th("Counted", cls="cell--number col-counted"))
         _line_thead = Thead(Tr(*_line_headers))
         _line_colgroup = None
 
@@ -5440,7 +5790,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     _line_thead,
                     Tbody(*rows, id=line_body_id),
                     cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else "")
-                        + (" doc-lines--no-money" if doc_type in _NO_MONEY_DOC_TYPES else ""),
+                        + (" doc-lines--no-money" if pol["no_money"] else ""),
                 ),
                 cls="table-scroll-wrap",
             ),
@@ -5457,6 +5807,7 @@ const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* ── Price list / doc-type helpers ── */
 const _CELERP_DOC_TYPE = {repr(doc_type)};
+const _CELERP_IS_AUDIT = {repr("true" if pol["audit"] else "false")};
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
@@ -5474,35 +5825,58 @@ function _celerpDocTypeParam() {{
         e.preventDefault();
         const code = scanInput.value.trim();
         if (!code) return;
-        scanStatus.textContent = 'Looking up...';
+        scanStatus.textContent = 'Scanning...';
         scanStatus.className = 'scan-bar-status';
-        try {{
-            const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
-            if (!resp.ok) throw new Error('lookup failed');
-            const data = await resp.json();
-            if (data.description || data.sku) {{
-                // Add a new line with the item data
-                const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
-                const row = tpl.querySelector('tr') || tpl.children[0];
-                if (row) {{
-                    const d = {{...data, sku: data.sku || code}};
-                    celerpFillRow(row, d);
+        if (_CELERP_IS_AUDIT === 'true') {{
+            // Audit scan: server-side top-insert + highlight (GDR 2.n).
+            try {{
+                const fd = new URLSearchParams({{barcode: code}});
+                const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
+                if (!resp.ok) {{
+                    const txt = await resp.text();
+                    scanStatus.textContent = '✗ ' + (txt || 'Scan error');
+                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                }} else {{
+                    const html = await resp.text();
+                    const tbody = document.getElementById('{line_body_id}');
+                    if (tbody && html) tbody.outerHTML = html;
+                    htmx.process(document.getElementById('{line_body_id}'));
+                    scanStatus.textContent = '✓ Scanned: ' + code;
+                    scanStatus.className = 'scan-bar-status scan-bar-status--ok';
                 }}
-                const tbody2 = document.getElementById('{line_body_id}');
-                tbody2.appendChild(tpl);
-                const newRow2 = tbody2.lastElementChild;
-                if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
-                celerpUpdateTotals();
-                celerpAutoSave();
-                scanStatus.textContent = '✓ ' + (data.sku || code);
-                scanStatus.className = 'scan-bar-status scan-bar-status--ok';
-            }} else {{
-                scanStatus.textContent = '✗ Not found: ' + code;
+            }} catch (err) {{
+                scanStatus.textContent = '✗ Scan error';
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }}
-        }} catch (err) {{
-            scanStatus.textContent = '✗ Lookup error';
-            scanStatus.className = 'scan-bar-status scan-bar-status--err';
+        }} else {{
+            // Standard catalog lookup: client-side clone + append.
+            try {{
+                const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
+                if (!resp.ok) throw new Error('lookup failed');
+                const data = await resp.json();
+                if (data.description || data.sku) {{
+                    const tpl = document.getElementById('line-row-tpl').content.cloneNode(true);
+                    const row = tpl.querySelector('tr') || tpl.children[0];
+                    if (row) {{
+                        const d = {{...data, sku: data.sku || code}};
+                        celerpFillRow(row, d);
+                    }}
+                    const tbody2 = document.getElementById('{line_body_id}');
+                    tbody2.appendChild(tpl);
+                    const newRow2 = tbody2.lastElementChild;
+                    if (newRow2) newRow2.querySelectorAll('.combobox-wrap').forEach(initCombobox);
+                    celerpUpdateTotals();
+                    celerpAutoSave();
+                    scanStatus.textContent = '✓ ' + (data.sku || code);
+                    scanStatus.className = 'scan-bar-status scan-bar-status--ok';
+                }} else {{
+                    scanStatus.textContent = '✗ Not found: ' + code;
+                    scanStatus.className = 'scan-bar-status scan-bar-status--err';
+                }}
+            }} catch (err) {{
+                scanStatus.textContent = '✗ Lookup error';
+                scanStatus.className = 'scan-bar-status scan-bar-status--err';
+            }}
         }}
         scanInput.value = '';
         scanInput.focus();
@@ -6269,7 +6643,18 @@ async function celerpCsvImport(input, entityId) {{
                 acct_display = _acct_map.get(acct_code) or acct_code or ""
                 cells.append(Td(_li_field_display_cell(entity_id, str(idx), "account_code", acct_display), title=acct_display, cls="col-account"))
             cells.append(Td(format_value(line_total, "money"), cls="cell--number col-total"))
-            return Tr(*cells)
+            if pol["show_onhand"]:
+                _item_key = li.get("item_id") or li.get("entity_id") or ""
+                _onhand = (item_meta_map or {}).get(_item_key, {}).get("quantity")
+                cells.append(Td(f"{float(_onhand):g}" if _onhand is not None else "--", cls="cell--number col-onhand"))
+            if pol["show_counted"]:
+                _cq = li.get("counted_qty")
+                _cq_display = f"{float(_cq):g}" if _cq is not None else "--"
+                cells.append(Td(_cq_display, cls="cell--number col-counted"))
+            audited = li.get("audited_at") is not None
+            adjusted = bool(li.get("adjusted"))
+            _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
+            return Tr(*cells, cls=_row_cls) if _row_cls else Tr(*cells)
 
         _thead_base = []
         if _fin_show_bulk:
@@ -6283,6 +6668,10 @@ async function celerpCsvImport(input, entityId) {{
         if doc_type in ("purchase_order", "bill"):
             _thead_base.append(Th(t("th.account"), cls="col-account"))
         _thead_base.append(Th(t("th.total"), cls="cell--number col-total"))
+        if pol["show_onhand"]:
+            _thead_base.append(Th("On hand", cls="cell--number col-onhand"))
+        if pol["show_counted"]:
+            _thead_base.append(Th("Counted", cls="cell--number col-counted"))
         _colspan = len(_thead_base)
         _fin_bulk_id = "fin-lines-body"
         lines_section = Div(
@@ -6293,7 +6682,7 @@ async function celerpCsvImport(input, entityId) {{
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ]), id=_fin_bulk_id),
                 cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type in _INVOICE_LAYOUT_DOC_TYPES else "")
-                    + (" doc-lines--no-money" if doc_type in _NO_MONEY_DOC_TYPES else ""),
+                    + (" doc-lines--no-money" if pol["no_money"] else ""),
             ),
             Script(f"""
 (function(){{
@@ -6450,8 +6839,8 @@ async function celerpCsvImport(input, entityId) {{
         )] if currency != company_currency and doc.get("conversion_rate") else []),
         cls="total-panel",
     )
-    # Internal demand docs carry no money — no totals panel.
-    is_no_money = doc_type in _NO_MONEY_DOC_TYPES
+    # No-money types (production_order, transfer, audit) carry no totals panel.
+    is_no_money = pol["no_money"]
     if is_no_money:
         total_panel = ""
 
