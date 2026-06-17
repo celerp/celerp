@@ -422,20 +422,21 @@ def _people_section(contact: dict) -> FT:
     )
 
 
-def _tab_bar(cid: str, active: str = "documents") -> FT:
-    """HTMX-driven tab bar for Documents / Notes / Activity."""
-    tabs = [("documents", "Documents"), ("notes", "Notes"), ("activity", "Activity")]
+def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None) -> FT:
+    """HTMX-driven tab bar for Documents / Notes / Activity. lead_tabs prepends extra (key, label, href)
+    tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key})."""
+    tabs = list(lead_tabs or []) + [("documents", "Documents", None), ("notes", "Notes", None), ("activity", "Activity", None)]
     return Div(
         *[A(
             label,
-            hx_get=f"/contacts/{cid}/tab/{key}",
+            hx_get=(href or f"/contacts/{cid}/tab/{key}"),
             hx_target="#tab-content",
             hx_swap="innerHTML",
             cls="tab active" if key == active else "tab",
             id=f"tab-{key}",
             # JS: set active class on click
             onclick="document.querySelectorAll('.tab-bar .tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');",
-        ) for key, label in tabs],
+        ) for key, label, href in tabs],
         cls="tab-bar",
     )
 
@@ -1173,15 +1174,10 @@ def setup_routes(app):
             company = await api.get_company(token)
         except Exception:
             company = {}
-        try:
-            docs_resp = await api.list_contact_docs(token, sid, {"limit": 999})
-            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-        except Exception:
-            docs = []
         # Organized like a customer/vendor page: Contact Info card (the company's identity - name, email,
         # phone, tax id) on the left, a Settings card (currency/timezone/fiscal) on the right, then the
-        # billing/shipping address book, then the Documents/Notes/Activity tabs. The files upload zone is
-        # suppressed here - company files have their own page. No tags / financial cards.
+        # billing/shipping address book, then tabs. Files is the FIRST tab (the company's whole file
+        # library, with a quick-upload dropzone); Documents/Notes/Activity follow. No tags / financial cards.
         from ui.routes.settings import _company_settings_card
         from ui.i18n import get_lang
         return base_shell(
@@ -1194,8 +1190,9 @@ def setup_routes(app):
                 cls="detail-layout",
             ),
             _addresses_section(contact),
-            _tab_bar(sid),
-            Div(_documents_tab(docs, contact, sid, show_files=False), id="tab-content"),
+            _tab_bar(sid, active="company-files",
+                     lead_tabs=[("company-files", "Files", "/finance/company-files/_section")]),
+            Div(await _company_files_section(token), id="tab-content"),
             title="Company Details - Celerp", nav_active="company-details",
             extra_head=_phone_head_items(), request=request,
         )
@@ -1228,23 +1225,8 @@ def setup_routes(app):
             title="Company files", **section_kwargs,
         )
 
-    @app.get("/finance/company-files")
-    async def company_files(request: Request):
-        from ui.routes.settings import _check_role
-        token = _token(request)
-        if not token:
-            return RedirectResponse("/login", status_code=302)
-        if (r := _check_role(request, "admin")):
-            return r
-        return base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", "/finance/company-details"), ("All files", None)]),
-            page_header("All Files"),
-            P("Every file across the company - documents, product images and attachments - in one place. "
-              "Drop files here to add company documents; product images are hidden by default (use the "
-              "Tag funnel to show them).", cls="hint"),
-            await _company_files_section(token),
-            title="Company Files - Celerp", nav_active="company-files", request=request,
-        )
+    # Company files live as the first tab on the Company Details page (loaded via the _section route
+    # below + the POST upload route), so there is no standalone page.
 
     @app.post("/finance/company-files")
     async def company_files_upload(request: Request):
@@ -1297,7 +1279,8 @@ def setup_routes(app):
         except Exception:
             contact = {}
         cid = contact.get("entity_id") or contact.get("id") or contact_id
-        return _documents_tab(docs, contact, cid)
+        # The company self-contact has its own Files tab, so its Documents tab is docs-only (no dup files).
+        return _documents_tab(docs, contact, cid, show_files=not contact.get("is_self"))
 
     @app.get("/contacts/{contact_id}/tab/notes")
     async def contact_tab_notes(request: Request, contact_id: str):

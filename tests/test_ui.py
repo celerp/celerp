@@ -8231,6 +8231,7 @@ class TestCompanyDetailsPage:
         for name, val in (
             ("get_company", self._COMPANY), ("get_contact", self._SELF),
             ("list_contacts", {"items": [self._SELF]}), ("list_contact_docs", {"items": []}),
+            ("list_items", {"items": []}), ("list_docs", {"items": []}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
         return stack
@@ -8245,8 +8246,8 @@ class TestCompanyDetailsPage:
         assert "me@myco.test" in r.text                           # email shows (Contact Info card)
         assert "/settings/company/currency/edit" in r.text        # Settings card (regional)
         assert "Billing" in r.text and "Shipping" in r.text       # two-column address book
-        assert "tab-documents" in r.text                          # Documents/Notes/Activity tabs restored
-        assert "file-drop-zone" not in r.text                     # no upload zone here (files have own page)
+        assert "tab-company-files" in r.text and "tab-documents" in r.text   # Files first, then Documents/Notes/Activity
+        assert "file-drop-zone" in r.text                         # Files tab carries the quick-upload dropzone
 
     @pytest.mark.asyncio
     async def test_admin_allowed_below_admin_redirected(self, ui_client):
@@ -8314,7 +8315,7 @@ class TestCompanyAllFilesView:
                               ("list_items", items), ("list_docs", docs),
                               ("list_contacts", {"items": [self_contact]})):
                 stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
-            r = await ui_client.get("/finance/company-files", cookies=_authed(role="admin"))
+            r = await ui_client.get("/finance/company-files/_section", cookies=_authed(role="admin"))
         assert r.status_code == 200, r.text
         # All three sources present, each linking back to its owning entity.
         assert "reg.pdf" in r.text and "Company" in r.text

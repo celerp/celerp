@@ -1158,17 +1158,15 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
     else:
         empty_state = []
 
-    # Company Files + Company Details sit just above Global Config / Web Access in the footer. They are
-    # not module nav (the company is the tenant, not a Finance feature), so they live with the kernel
-    # bottom links rather than in a module group. Admin+ only.
+    # Company Details sits just above Global Config / Web Access in the footer. It is not module nav (the
+    # company is the tenant, not a Finance feature), so it lives with the kernel bottom links rather than
+    # in a module group. (Company files are a tab inside it, not a separate entry.) Admin+ only.
     settings_link = []
     if user_level >= ROLE_LEVELS["admin"]:
-        settings_link += [
-            A(t("nav.company_files", lang), href="/finance/company-files",
-              cls=f"nav-link {'nav-link--active' if active == 'company-files' else ''}"),
+        settings_link.append(
             A(t("nav.company_details", lang), href="/finance/company-details",
               cls=f"nav-link {'nav-link--active' if active == 'company-details' else ''}"),
-        ]
+        )
     settings_link.append(
         A(t("nav.settings", lang), href="/settings/general", cls=f"nav-link {'nav-link--active' if active == 'settings' else ''}"),
     )
