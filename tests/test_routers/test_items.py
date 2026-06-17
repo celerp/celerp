@@ -2264,3 +2264,56 @@ async def test_cost_price_edit_after_cost_total_edit(client):
     assert float(item2["cost_total"]) == pytest.approx(150.0), (
         f"cost_total should be 150.0 (15 × 10), got {item2['cost_total']}"
     )
+
+
+@pytest.mark.asyncio
+async def test_recipe_backed_cost_reads_at_standard_not_lot_total(client):
+    """A manufactured item's cost reads at its recipe's standard unit cost.
+
+    Regression: _flatten_item derives cost_price from a stored cost_total on every read.
+    For a recipe-backed item, a lingering lot cost_total (e.g. from a divergent manual cost
+    or a build that stamped actual input cost) must NOT override the recipe's rolled standard
+    — recipe.unit_cost is the single source of truth for a manufactured item's cost.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Baseline cost valuation before our items (register seeds demo items) — assert the delta.
+    base_cost = float((await client.get("/items/valuation", headers=h)).json()["cost_total"])
+
+    gold = (await client.post("/items", json={
+        "sku": f"GOLD-{_ts}", "name": "Gold", "quantity": 1.0, "sell_by": "piece", "cost_total": 80.0,
+    }, headers=h)).json()["id"]
+    ring = (await client.post("/items", json={
+        "sku": f"RING-{_ts}", "name": "Ring", "quantity": 2.0, "sell_by": "piece",
+    }, headers=h)).json()["id"]
+
+    # Recipe: 5 gold per ring → rolled standard unit cost 400.
+    r = await client.put(f"/manufacturing/items/{ring}/recipe", json={
+        "output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": [],
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["recipe"]["unit_cost"] == 400.0
+
+    # Now stamp a DIVERGENT lot cost_total (1000 → would imply unit 500). The standard must win.
+    r2 = await client.post(f"/items/{ring}/price", json={"price_type": "cost_total", "new_price": 1000.0}, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    item = (await client.get(f"/items/{ring}", headers=h)).json()
+    assert float(item["cost_price"]) == pytest.approx(400.0), (
+        f"cost_price must read at recipe standard 400.0, got {item['cost_price']} "
+        f"(lot cost_total leaked through?)"
+    )
+    assert float(item["cost_total"]) == pytest.approx(800.0), (
+        f"cost_total must be derived from standard (400 × 2), got {item['cost_total']}"
+    )
+
+    # Valuation aggregates at the same standard: our items add gold 80 + ring standard 800 = 880
+    # (never gold 80 + ring lot 1000 = 1080).
+    val = (await client.get("/items/valuation", headers=h)).json()
+    assert float(val["cost_total"]) - base_cost == pytest.approx(880.0), (
+        f"valuation Cost must value the ring at standard (gold 80 + ring 800), "
+        f"got delta {float(val['cost_total']) - base_cost}"
+    )

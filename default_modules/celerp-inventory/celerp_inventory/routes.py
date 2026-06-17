@@ -99,6 +99,19 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
 })
 
 
+def _recipe_standard_unit_cost(state: dict) -> float | None:
+    """The rolled standard unit cost of a recipe-backed (manufactured) item, else None.
+
+    For a manufactured item the recipe's rolled ``unit_cost`` is the SINGLE source of truth for
+    cost — read at standard, never at a lingering build-lot ``cost_total``. Read ``recipe.unit_cost``
+    (not the ``cost_price`` field, which ``_recompute_cost`` can pop) so it is robust and stays
+    consistent with the manufacturing cost roll-up. Only a recipe with components carries a cost.
+    """
+    recipe = state.get("recipe") or {}
+    unit_cost = recipe.get("unit_cost") if recipe.get("components") else None
+    return float(unit_cost) if unit_cost is not None else None
+
+
 def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields."""
     flat = dict(state)
@@ -117,7 +130,13 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
     if updated_at is not None:
         flat["updated_at"] = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
     qty = float(flat.get("quantity") or 0)
-    if flat.get("cost_total") is not None:
+    _recipe_unit = _recipe_standard_unit_cost(flat)
+    if _recipe_unit is not None:
+        # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
+        # let a lingering build-lot cost_total silently override it. See _recipe_standard_unit_cost.
+        flat["cost_price"] = _recipe_unit
+        flat["cost_total"] = round(_recipe_unit * qty, 2) if qty else 0.0
+    elif flat.get("cost_total") is not None:
         flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
     elif flat.get("cost_price") is not None:
         flat["cost_total"] = round(float(flat["cost_price"]) * qty, 2)
@@ -514,10 +533,14 @@ async def get_valuation(
             key = f"{pl_name.lower()}_price"
             try:
                 if pl_name.lower() in ("cost", "cost price", "landed"):
-                    # Cost uses stored cost_total (lot total), else fallback to unit price * qty
-                    tc = state.get("cost_total")
-                    if tc is not None:
-                        price_totals[pl_name] += Decimal(str(tc))
+                    # Recipe-backed item: value at the recipe's standard unit cost (single source of
+                    # truth, consistent with _flatten_item). Else stored cost_total (lot total),
+                    # else fallback to unit price * qty.
+                    _runit = _recipe_standard_unit_cost(state)
+                    if _runit is not None:
+                        price_totals[pl_name] += Decimal(str(_runit)) * Decimal(str(qty))
+                    elif state.get("cost_total") is not None:
+                        price_totals[pl_name] += Decimal(str(state.get("cost_total")))
                     elif state.get(key) is not None:
                         price_totals[pl_name] += Decimal(str(state[key])) * Decimal(str(qty))
                 else:
