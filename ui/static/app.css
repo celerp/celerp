@@ -675,6 +675,9 @@ a:hover { text-decoration: underline; }
    so the gray cell doesn't tint it. */
 .doc-lines--invoice td.col-desc { background: var(--c-bg3); }
 .doc-lines--invoice td.col-desc .catalog-ac-input { background-color: #e2f4ef; }
+/* Audit lines are static text (no desc input), so the editable-cell gray fill above looks out of
+   place — clear it so the Description cell matches the other cells (and the scanned-row green tint). */
+.doc-lines--audit td.col-desc { background: transparent; }
 .doc-lines--invoice th.col-qty, .doc-lines--invoice td.col-qty { width: 75px; }
 /* Inside the fixed-width description cell: description is fixed at 70% (no grow,
    no shrink) so every row's description is the same width and they all line up;

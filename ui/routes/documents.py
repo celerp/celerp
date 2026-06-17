@@ -4070,8 +4070,6 @@ celerpUpdateBulkAlloc();
                 await api.send_list(token, entity_id, {"sent_via": "manual"})
             elif action == "unmark_sent":
                 await api.unmark_list_sent(token, entity_id)
-            elif action == "clear-scanned":
-                await api.clear_scanned(token, entity_id)  # clear every scanned highlight
             elif action in ("adjust", "undo-adjust"):
                 await api.list_action(token, entity_id, action)
             else:
@@ -4197,6 +4195,23 @@ celerpUpdateBulkAlloc();
         if (lst.get("list_type") or "") == "audit":
             return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
+
+    @app.post("/lists/{entity_id}/clear-scanned")
+    async def list_clear_scanned(request: Request, entity_id: str):
+        """Bulk action: clear the scanned highlight on the selected rows (all rows if none selected).
+        Returns the re-rendered audit tbody for the same smooth #line-body swap that scanning uses."""
+        from starlette.responses import Response as _R
+        from fasthtml.common import to_xml
+        token = _token(request)
+        if not token:
+            return _action_error("Session expired.")
+        form = await request.form()
+        ids = [s for s in form.getlist("selected") if s]
+        try:
+            await api.clear_scanned(token, entity_id, ids or None)
+        except APIError as e:
+            return _R(str(e.detail), status_code=e.status or 400)
+        return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
 
     @app.post("/lists/{entity_id}/line/{item_id}")
     async def list_audit_set_count(request: Request, entity_id: str, item_id: str):
@@ -4944,7 +4959,7 @@ def _company_address_picker(doc_id: str, current_address: str, company_locations
 
 
 
-def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None) -> FT:
+def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, show_fulfill: bool = False, is_inbound: bool = False, inbound_line_items: list | None = None, locations: list | None = None, clear_scanned: bool = False) -> FT:
     """Bulk action toolbar for line items. Hidden until JS detects 1+ checked rows.
     labels_only=True: finalized docs - only Print Labels action, no delete.
     show_fulfill=True: add Fulfill/Revert Selected as dropdown options.
@@ -4977,6 +4992,9 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
         if show_fulfill:
             options.append(Option(_fulfill_label, value="li-fulfill"))
             options.append(Option(_revert_label, value="li-revert"))
+    # Reverting scanned highlights on a finalized audit is a row-selection action, not a button.
+    if clear_scanned:
+        options.append(Option("Clear scanned", value="li-clear-scanned"))
     children = [
         Span(t("doc.0_rows_selected"), id="li-bulk-count", cls="bulk-count"),
         Select(*options, id="li-bulk-select", cls="form-input form-input--sm",
@@ -4994,6 +5012,12 @@ def _li_bulk_toolbar(entity_id: str, is_list: bool, labels_only: bool = False, s
                onclick="liBulkLabelsConfirmed()"),
         Div(id="li-bulk-context"),
     ]
+    if clear_scanned:
+        children.append(
+            Button("Clear scanned", type="button", id="li-bulk-clearscan-btn",
+                   cls="btn btn--secondary btn--sm", style="display:none",
+                   onclick="liBulkClearScannedConfirmed()"),
+        )
     if show_fulfill:
         if is_inbound:
             # Build hidden line-item inputs for POST /receive from the doc's line items.
@@ -5914,17 +5938,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 _pl_bar,
                 cls="line-toolbar",
             ),
-            _li_bulk_toolbar(entity_id, is_list),
-            # Audit actions sit right above the Counted column (right-aligned). Clear scanned reverts
-            # every scanned highlight in one bulk action; Adjust stock posts the count.
+            _li_bulk_toolbar(entity_id, is_list, clear_scanned=(pol["audit"] and status == _LF)),
+            # Audit terminal action sits right above its Counted column (right-aligned). (Reverting
+            # scanned highlights is a row-selection bulk action — see the bulk toolbar, not a button.)
             (Div(
-                Button("Clear scanned", hx_post=f"/lists/{entity_id}/action/clear-scanned", hx_swap="none",
-                       cls="btn btn--secondary btn--sm",
-                       hx_confirm="Clear the scanned highlight on every counted row?"),
                 Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust", hx_swap="none",
                        cls="btn btn--primary btn--sm",
                        hx_confirm="Apply the counted quantities to stock? This posts a journal entry."),
-                cls="audit-adjust-bar gap-sm",
+                cls="audit-adjust-bar",
                 # Buffer top + bottom so the button never touches the scan bar above or the table
                 # below (consistent with button spacing elsewhere).
                 style="display:flex;justify-content:flex-end;margin:0.75rem 0;",
@@ -6646,18 +6667,39 @@ async function celerpCsvImport(input, entityId) {{
   }});
   var deleteBtn=document.getElementById('li-bulk-delete-btn');
   var labelsBtn=document.getElementById('li-bulk-labels-btn');
+  var clearScanBtn=document.getElementById('li-bulk-clearscan-btn');
   function _hideBtns(){{
     if(deleteBtn) deleteBtn.style.display='none';
     if(labelsBtn) labelsBtn.style.display='none';
+    if(clearScanBtn) clearScanBtn.style.display='none';
   }}
   window.liBulkActionSelected=function(action){{
     _hideBtns();
     if(!action) return;
     if(action==='li-delete'){{
       if(deleteBtn) deleteBtn.style.display='';
+    }} else if(action==='li-clear-scanned'){{
+      if(clearScanBtn) clearScanBtn.style.display='';
     }} else if(action.startsWith('mod:')){{
       if(labelsBtn) labelsBtn.style.display='';
     }}
+  }};
+  window.liBulkClearScannedConfirmed=async function(){{
+    var ids=[];
+    if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{ if(cb.value) ids.push(cb.value); }});
+    var fd=new URLSearchParams();
+    ids.forEach(function(id){{ fd.append('selected', id); }});
+    try{{
+      var resp=await fetch('/lists/{entity_id}/clear-scanned', {{method:'POST', body:fd}});
+      if(resp.ok){{
+        var html=await resp.text();
+        var tbody=document.getElementById('{line_body_id}');
+        if(tbody&&html) tbody.outerHTML=html;
+        htmx.process(document.getElementById('{line_body_id}'));
+      }}
+    }}catch(err){{}}
+    if(sel) sel.value='';
+    _hideBtns(); _update();
   }};
   window.liBulkDeleteConfirmed=function(){{
     if(table) table.querySelectorAll('tbody .li-select:checked').forEach(function(cb){{cb.closest('tr').remove();}});
