@@ -29,6 +29,25 @@ place, so anything pointing at the URLs below updates automatically on the next 
 
 All are optimized PNG, ≤1600 px wide, ~170–390 KB each (≈2 MB total).
 
+## Industry folders (full set per business type)
+
+For press covering a specific vertical, the complete screen set for each demo company is published
+under `docs/press-kit/screenshots/<industry>/` (13 screens each). These are **WebP** (q82, ≤1280 px)
+— a browse-and-pick archive, not the social-preview/CMS surface, so WebP's ~80% size win applies with
+no visible loss. Each folder has a generated `README.md` gallery that GitHub renders on open.
+
+| Industry | Folder | CDN base |
+|---|---|---|
+| Apparel & clothing (Northbound Apparel) | `apparel/` | …/screenshots/apparel/`<name>.webp` |
+| Coffee roasting (Meridian Coffee Roasters) | `coffee/` | …/screenshots/coffee/`<name>.webp` |
+| Cosmetics & skincare (Lumera Skincare) | `cosmetics/` | …/screenshots/cosmetics/`<name>.webp` |
+| Jewelry (Aurelia Atelier) | `jewelry/` | …/screenshots/jewelry/`<name>.webp` |
+
+Screen names per folder: `dashboard`, `inventory`, `manufacturing-worksheet`, `worksheet-print`,
+`invoices`, `production-planning`, `chart-of-accounts`, `trial-balance`, `general-ledger`,
+`balance-sheet`, `audit-log`, `permissions`, `rest-api` (all `.webp`). The four folders add ~2.4 MB
+to the tree.
+
 ## Keeping the CDN fresh after a regen
 jsDelivr caches `@main` aggressively. After pushing regenerated images, purge each so the website
 picks them up immediately:
