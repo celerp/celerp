@@ -134,3 +134,31 @@ async def test_migrate_single_survivor_just_retypes(client, session):
     assert win.state["contact_type"] == "both" and win.state["is_self"] is True
     await session.refresh(company)
     assert company.settings.get("self_contact_id") == only_id
+
+
+@pytest.mark.asyncio
+async def test_address_backfill_from_default_location(client, session):
+    """The company's default-Location address is copied onto the self-contact as a billing address when
+    the self-contact has none (so Company Details + letterhead show it). Idempotent."""
+    from celerp.models.company import Location
+    from celerp_contacts.migrations import backfill_self_contact_address
+    await _register(client)
+    company = (await session.execute(select(Company))).scalars().first()
+    cid = company.id
+    sid = (company.settings or {})["self_contact_id"]  # set by the P1 seed
+    # Registration seeds a default Head Office location; set its address (as company setup would).
+    loc = (await session.execute(
+        select(Location).where(Location.company_id == cid, Location.is_default.is_(True))
+    )).scalars().first()
+    loc.address = {"text": "1 Main St, Town"}
+    await session.commit()
+
+    assert await backfill_self_contact_address(session, cid) is True
+    await session.commit()
+    contact = await session.get(Projection, {"company_id": cid, "entity_id": sid})
+    addrs = contact.state.get("addresses") or []
+    assert len(addrs) == 1
+    assert addrs[0]["address_type"] == "billing" and addrs[0]["line1"] == "1 Main St, Town"
+
+    # Idempotent: re-run does not add another.
+    assert await backfill_self_contact_address(session, cid) is False

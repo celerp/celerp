@@ -20,11 +20,45 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.events.engine import emit_event
-from celerp.models.company import Company
+from celerp.models.company import Company, Location
 from celerp.models.ledger import LedgerEntry
 from celerp.models.projections import Projection
 
 _log = logging.getLogger(__name__)
+
+
+async def backfill_self_contact_address(session: AsyncSession, company_id) -> bool:
+    """Copy the company's default-Location address onto its self-contact as a billing address, if the
+    self-contact has none. Company setup stored the entered address on the Head Office Location, but the
+    Company Details page + document letterhead read the self-contact's billing address - so without this
+    the company address shows blank there. Idempotent: skips when the self-contact already has any address;
+    the event carries a deterministic key. Returns True if it added one."""
+    company = await session.get(Company, company_id)
+    sid = (company.settings or {}).get("self_contact_id") if company else None
+    if not sid:
+        return False
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
+    if row is None or (row.state.get("addresses") or []):
+        return False  # no self-contact, or it already has addresses (don't overwrite)
+    loc = (await session.execute(
+        select(Location).where(Location.company_id == company_id, Location.is_default.is_(True))
+    )).scalars().first() or (await session.execute(
+        select(Location).where(Location.company_id == company_id)
+    )).scalars().first()
+    addr = loc.address if loc else None
+    text = (addr.get("text") if isinstance(addr, dict) else addr if isinstance(addr, str) else "") or ""
+    text = text.strip()
+    if not text:
+        return False
+    await emit_event(
+        session, company_id=company_id, entity_id=sid, entity_type="contact",
+        event_type="crm.contact.address_added",
+        data={"address_id": f"address:self-{company_id}", "address_type": "billing",
+              "line1": text, "is_default": True},
+        actor_id=None, location_id=None, source="migration",
+        idempotency_key=f"self-migrate:address:{sid}", metadata_={},
+    )
+    return True
 
 # Identity fields filled onto the winner from the vendor record only when the winner's value is blank.
 # Customer record wins; vendor fills gaps (owner-approved precedence, Q1).
@@ -130,8 +164,14 @@ async def migrate_all_self_contacts(session: AsyncSession, actor_id=None) -> lis
 
 
 async def backfill_self_contacts_hook(*, session: AsyncSession) -> None:
-    """on_modules_ready lifecycle hook: collapse any legacy two-self-contact company into one
-    both+is_self record. Fires on every app startup (so it runs automatically after a version upgrade),
-    iterates existing companies, and is idempotent - migrated/new-seed companies are skipped. Mirrors
-    celerp-accounting's chart-of-accounts backfill hook."""
+    """on_modules_ready lifecycle hook (fires on every startup, so it runs automatically after an
+    upgrade): (1) collapse any legacy two-self-contact company into one both+is_self record, and (2) copy
+    each company's default-Location address onto its self-contact if missing. Idempotent throughout."""
     await migrate_all_self_contacts(session)
+    for cid in (await session.execute(select(Company.id))).scalars().all():
+        try:
+            if await backfill_self_contact_address(session, cid):
+                await session.commit()
+        except Exception as exc:  # one bad company must not abort the batch
+            await session.rollback()
+            _log.warning("self-contact address backfill failed for company %s: %s", cid, exc)

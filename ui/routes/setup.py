@@ -158,6 +158,15 @@ def setup_routes(app):
                 default_loc = next((l for l in locs if l.get("is_default")), None)
                 if default_loc:
                     await api.patch_location(token, str(default_loc["id"]), {"address": {"text": address_text}})
+                # Also seed the company self-contact's billing address - the Company Details page and the
+                # document letterhead read the self-contact, not the Location. Skip if it already has one.
+                company = await api.get_company(token)
+                sid = (company.get("settings") or {}).get("self_contact_id")
+                if sid:
+                    self_contact = await api.get_contact(token, sid)
+                    if not (self_contact.get("addresses") or []):
+                        await api.add_contact_address(token, sid, {"address_type": "billing",
+                                                                   "line1": address_text, "is_default": True})
             except Exception:
                 pass
 
