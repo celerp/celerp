@@ -5162,9 +5162,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                                            hx_swap="none", cls="btn btn--primary"))
         elif status == _LF:
             if pol["audit"]:
-                action_btns_left.append(Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust",
-                                               hx_swap="none", cls="btn btn--primary",
-                                               hx_confirm="Apply the counted quantities to stock? This posts a journal entry."))
+                # "Adjust stock" lives directly above the Counted column (see the line section),
+                # not in this top toolbar — keeps count-then-adjust together.
+                pass
             elif list_type == "transfer":
                 # Move every item on the transfer to a chosen location (repeatable — stays finalized).
                 _move_opts = [Option("Move all to…", value="", disabled=True, selected=True)] + [
@@ -5889,6 +5889,15 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="line-toolbar",
             ),
             _li_bulk_toolbar(entity_id, is_list),
+            # Audit terminal action sits right above its Counted column (right-aligned), so the
+            # count-then-adjust flow reads top-to-bottom in one place rather than up in the toolbar.
+            (Div(
+                Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust", hx_swap="none",
+                       cls="btn btn--primary btn--sm",
+                       hx_confirm="Apply the counted quantities to stock? This posts a journal entry."),
+                cls="audit-adjust-bar",
+                style="display:flex;justify-content:flex-end;margin-bottom:0.4rem;",
+            ) if pol["audit"] and status == _LF else None),
             Div(
                 Table(
                     *([_line_colgroup] if _line_colgroup else []),
@@ -6531,9 +6540,12 @@ async function _celerpPersist() {{
     }});
     if (resp.ok) {{
         statusEl.textContent = '✓';
+        statusEl.style.color = '';
         setTimeout(() => {{ statusEl.textContent = ''; }}, 1500);
     }} else {{
-        statusEl.textContent = '✗ Save failed';
+        let msg = 'Save failed';
+        try {{ const e = await resp.json(); if (e && e.error) msg = e.error; }} catch (_e) {{}}
+        statusEl.textContent = '✗ ' + msg;
         statusEl.style.color = 'red';
     }}
 }}

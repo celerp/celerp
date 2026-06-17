@@ -1166,6 +1166,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .badge--won { background: var(--c-green); color: #fff; border: 1px solid var(--c-green-dark); }
 .badge--lost { background: rgba(239,68,68,0.15); color: var(--c-red); border: 1px solid rgba(239,68,68,0.3); }
 .badge--quotation { background: rgba(139,92,246,0.15); color: var(--c-violet); border: 1px solid rgba(139,92,246,0.3); }
+/* List types — every type renders as a coloured badge (not some as plain text). */
+.badge--transfer { background: rgba(59,130,246,0.15); color: var(--c-blue); border: 1px solid rgba(59,130,246,0.3); }
+.badge--audit { background: rgba(217,119,6,0.15); color: var(--c-amber); border: 1px solid rgba(217,119,6,0.3); }
 .badge--purchase-order { background: rgba(59,130,246,0.15); color: var(--c-blue); border: 1px solid rgba(59,130,246,0.3); }
 .badge--received { background: rgba(34,197,94,0.15); color: var(--c-green-dark); border: 1px solid rgba(34,197,94,0.3); }
 .badge--reserved { background: rgba(234,179,8,0.15); color: var(--c-yellow); border: 1px solid rgba(234,179,8,0.3); }

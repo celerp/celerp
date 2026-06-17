@@ -2457,7 +2457,13 @@ async def list_lists(
     rows = (await session.execute(
         select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "list")
     )).scalars().all()
-    out = [r.state | {"id": r.entity_id} for r in rows]
+    # Surface the projection's created_at column: a list's state has no date of its own, so without
+    # this the date-window filter/sort below (default last 12 months) silently drops every list while
+    # the count/summary — which ignores dates — still shows them. (Bug: "All issued (3)" but 0 rows.)
+    out = [r.state | {"id": r.entity_id,
+                      "created_at": (r.created_at.isoformat() if r.created_at is not None
+                                     else r.state.get("created_at") or "")}
+           for r in rows]
     if list_type:
         out = [x for x in out if x.get("list_type") == list_type]
     if all_issued:
