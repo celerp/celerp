@@ -7026,8 +7026,13 @@ async function celerpCsvImport(input, entityId) {{
         # Line items + price list bar
         Div(
             lines_section,
-            # _wpct_ key: widths are now stored as percentages (old _w_ px prefs are ignored).
-            col_resize_script("table.doc-lines", f"celerp_dline_wpct_{doc_type}"),
+            # _wpct_ key: widths stored as percentages. Namespaced PER list_type (+ a version bump):
+            # the three list types have different column sets, so a single shared "list" key let one
+            # type's saved widths corrupt another's layout. _v2 discards the old shared prefs once.
+            col_resize_script(
+                "table.doc-lines",
+                f"celerp_dline_wpct_{doc_type}" + (f"_{list_type}" if is_list and list_type else "") + "_v2",
+            ),
             cls="doc-section doc-section--lines",
         ),
         # Totals + optional quotation valid-until
