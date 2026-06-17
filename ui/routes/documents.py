@@ -3986,16 +3986,20 @@ celerpUpdateBulkAlloc();
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         value = str(form.get("value", ""))
+        # The type can change while draft OR issued — it goes through its own endpoint (allows
+        # finalized, re-freezes audit on-hand). It restructures the whole column set, so re-render the
+        # page (HX-Redirect, the codebase's idiom for structural list changes) rather than swap a cell.
+        if field == "list_type":
+            try:
+                await api.change_list_type(token, entity_id, value)
+            except APIError as e:
+                return _action_error(str(e.detail))
+            return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         try:
             await api.patch_list(token, entity_id, {field: value})
             lst = await api.get_list(token, entity_id)
         except APIError as e:
             return _action_error(str(e.detail))
-        # Changing the list type restructures the whole column set (audit gains On-hand/Counted;
-        # no-money types hide price/tax/total), so re-render the page rather than swap one cell.
-        # HX-Redirect to the same list is the codebase's idiom for structural list changes.
-        if field == "list_type":
-            return _R("", status_code=204, headers={"HX-Redirect": f"/lists/{entity_id}"})
         return _doc_display_cell(entity_id, field, lst.get(field), "list")
 
     @app.post("/lists/{entity_id}/lines")
@@ -5102,9 +5106,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     list_type_selector = ""
     if is_list:
         _current_lt = doc.get("list_type") or "quotation"
-        # Type is switchable only while a DRAFT (a finalized list is locked to its type); otherwise
-        # show a read-only badge. Patching list_type after finalize is rejected server-side too.
-        if is_draft:
+        # Type is switchable while a draft OR issued (finalized) — the change is recorded in history
+        # and forward actions stay status-gated. A closed/void list is terminal: show a read-only badge.
+        if is_draft or status == _LF:
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
                 Select(

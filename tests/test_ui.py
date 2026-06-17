@@ -8733,11 +8733,9 @@ class TestListFieldPatch:
     @pytest.mark.asyncio
     async def test_patch_list_type_rerenders_page(self, ui_client):
         # Changing list type restructures the column set, so the handler re-renders the page
-        # (HX-Redirect to the same list) rather than swapping a single display cell.
-        with (
-            patch("ui.api_client.patch_list", new=AsyncMock(return_value={"event_id": "e1"})),
-            patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._LST, "list_type": "transfer"})),
-        ):
+        # (HX-Redirect to the same list) rather than swapping a single display cell. It routes
+        # through change_list_type (allowed while issued), not the draft-only patch.
+        with patch("ui.api_client.change_list_type", new=AsyncMock(return_value={"ok": True, "list_type": "transfer"})):
             r = await ui_client.patch("/lists/list:1/field/list_type",
                                       data={"value": "transfer"}, cookies=_authed())
         assert r.status_code == 204, r.text

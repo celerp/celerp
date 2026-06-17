@@ -803,3 +803,39 @@ async def test_only_transfer_can_move(client):
     eid = await _create_list(client, token, list_type="quotation")
     await client.post(f"/lists/{eid}/finalize", headers=h)
     assert (await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc})).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_change_type_while_issued(client):
+    """A list's type can be changed while draft or issued (finalized); the change is recorded and the
+    status is preserved. Switching a finalized list to audit re-freezes the on-hand baseline. Closed
+    lists are terminal and reject the change."""
+    token = await _register(client)
+    h = _h(token)
+    loc = (await client.post("/companies/me/locations", headers=h, json={"name": "WH", "type": "warehouse"})).json()["id"]
+    it = (await client.post("/items", headers=h, json={"sku": "CT1", "name": "W", "sell_by": "piece", "quantity": 12, "location_id": loc})).json()["id"]
+
+    eid = (await client.post("/lists", headers=h, json={
+        "list_type": "transfer", "line_items": [{"item_id": it, "sku": "CT1", "name": "W", "quantity": 3}]})).json()["id"]
+    await client.post(f"/lists/{eid}/finalize", headers=h)
+
+    # Issued transfer -> quotation: type changes, status stays finalized.
+    r = await client.post(f"/lists/{eid}/change-type", headers=h, json={"list_type": "quotation"})
+    assert r.status_code == 200
+    st = (await client.get(f"/lists/{eid}", headers=h)).json()
+    assert st["list_type"] == "quotation" and st["status"] == "finalized"
+
+    # Issued -> audit re-freezes on-hand from live qty (12), so Adjust/variance have a baseline.
+    r = await client.post(f"/lists/{eid}/change-type", headers=h, json={"list_type": "audit"})
+    assert r.status_code == 200
+    st = (await client.get(f"/lists/{eid}", headers=h)).json()
+    assert st["list_type"] == "audit" and st["line_items"][0]["on_hand"] == 12.0
+
+    # Unknown type -> 422.
+    assert (await client.post(f"/lists/{eid}/change-type", headers=h, json={"list_type": "nope"})).status_code == 422
+
+    # Closed list -> 409 (terminal).
+    q = await _create_list(client, token, list_type="quotation")
+    await client.post(f"/lists/{q}/finalize", headers=h)
+    await client.post(f"/lists/{q}/convert", headers=h, json={"target_type": "invoice"})
+    assert (await client.post(f"/lists/{q}/change-type", headers=h, json={"list_type": "transfer"})).status_code == 409

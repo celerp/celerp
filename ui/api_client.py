@@ -1286,6 +1286,11 @@ async def move_transfer(token: str, entity_id: str, to_location_id: str) -> dict
         return _raise(await c.post(f"/lists/{entity_id}/move", json={"to_location_id": to_location_id})).json()
 
 
+async def change_list_type(token: str, entity_id: str, list_type: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/change-type", json={"list_type": list_type})).json()
+
+
 async def send_list(token: str, entity_id: str, data: dict | None = None) -> dict:
     async with _api_client(token) as c:
         return _raise(await c.post(f"/lists/{entity_id}/send", json=data or {})).json()

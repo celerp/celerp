@@ -32,7 +32,7 @@ from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_li
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
 from celerp.services.list_behavior import (
-    DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, behavior, terminal_action, is_money_list,
+    DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
 )
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -4290,6 +4290,44 @@ async def undo_audit_adjust(
     await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)
     await session.commit()
     return {"ok": True}
+
+
+class ListChangeTypeBody(BaseModel):
+    list_type: str
+
+
+@lists_router.post("/{entity_id}/change-type")
+async def change_list_type(
+    entity_id: str, payload: ListChangeTypeBody,
+    company_id: str = Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change a list's type while it is a draft OR issued (finalized). The change is just another
+    event in history, so everything the list did under its old type stays recorded; terminal/
+    financial actions are gated by status, so re-typing can't undo or fabricate past work. Type
+    fields persist (nothing is zeroed). Switching a FINALIZED list to audit re-freezes the on-hand
+    baseline that the audit's own finalize would have captured, so variance/Adjust stay correct.
+    Closed/void lists are terminal — duplicate instead."""
+    row = await _get_list(session, company_id, entity_id)
+    state = row.state
+    new_type = payload.list_type
+    if new_type not in LIST_TYPES:
+        raise HTTPException(status_code=422, detail=f"Unknown list type: {new_type}")
+    status = state.get("status")
+    if status not in (DRAFT, FINALIZED):
+        raise HTTPException(status_code=409,
+                            detail="A list's type can only be changed while it is a draft or issued")
+    fields: dict = {"list_type": new_type}
+    if new_type == "audit" and status == FINALIZED:
+        lines = [dict(l) for l in (state.get("line_items") or [])]
+        for l in lines:
+            item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
+            l["on_hand"] = (float(item.state.get("quantity") or 0)
+                            if (item and item.entity_type == "item") else l.get("on_hand", 0.0))
+        fields["line_items"] = lines
+    await _set_list_fields(session, company_id, entity_id, user, fields)
+    await session.commit()
+    return {"ok": True, "list_type": new_type}
 
 
 @lists_router.post("/{entity_id}/send")
