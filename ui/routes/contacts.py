@@ -715,6 +715,100 @@ def _clean_external_ref(ref: str | None) -> str | None:
     return ref
 
 
+def build_contact_detail(contact: dict, docs: list, vocab: list, company: dict, request: Request, *,
+                         contact_id: str = "", show_financials: bool = True, show_delete: bool = True,
+                         show_contact_addresses: bool = True, extra_sections: list | None = None,
+                         back: tuple | None = None, nav_active: str | None = None,
+                         title: str | None = None) -> FT:
+    """Shared assembly for the contact detail page. The Company Details page reuses this verbatim with
+    show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
+    customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
+    fork. The only differences are the conditional sections gated by the flags."""
+    contact_name = contact.get("name", "Contact")
+    contact_type = contact.get("contact_type", "")
+    if back is not None:
+        back_label, back_href = back
+        nav_active_key = nav_active or back_label.lower()
+    elif contact_type == "vendor":
+        back_label, back_href, nav_active_key = "Vendors", "/contacts/vendors", "vendors"
+    else:
+        back_label, back_href, nav_active_key = "Customers", "/contacts/customers", "customers"
+    if nav_active:
+        nav_active_key = nav_active
+    cid = contact.get("entity_id") or contact.get("id") or contact_id
+    is_deleted = bool(contact.get("deleted"))
+    fiscal_year_start = company.get("fiscal_year_start") or "01-01"
+    page_title = title or contact_name
+
+    autofocus_script = (
+        Script("document.querySelector('.cell--clickable')?.click();")
+        if contact_name in ("New Customer", "New Vendor", "New Both", "New Contact") else ""
+    )
+
+    delete_btn = "" if (is_deleted or not show_delete) else Script(f"""
+(function(){{
+  var btn = document.getElementById('contact-delete-btn');
+  if (!btn) return;
+  btn.addEventListener('click', function(){{
+    if (!confirm('Delete this contact? This cannot be undone if the contact has no associated documents.')) return;
+    fetch('/crm/contacts/bulk/delete', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{contact_ids: ['{cid}']}})
+    }}).then(function(r){{ return r.json(); }}).then(function(d){{
+      if (d.deleted !== undefined) {{
+        sessionStorage.removeItem('celerp_contact_selection');
+        window.location.href = '{back_href}';
+      }} else {{
+        alert(d.detail || 'Delete failed.');
+      }}
+    }}).catch(function(err){{ alert('Delete failed: ' + err.message); }});
+  }});
+}})();
+""")
+
+    action_bar = Div(
+        Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
+               type="button", style="margin-left:auto;") if (show_delete and not is_deleted) else
+        (Span(t("label.deleted"), cls="status-badge status-badge--void") if is_deleted else ""),
+        cls="action-bar",
+        style="display:flex; align-items:center; padding: 0.5rem 0;",
+    )
+
+    return base_shell(
+        breadcrumbs([("Dashboard", "/dashboard"), (back_label, back_href), (page_title, None)]),
+        page_header(page_title),
+        autofocus_script,
+        action_bar,
+        delete_btn,
+        *([_financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start)] if show_financials else []),
+        Div(
+            Div(
+                _contact_info_card(contact),
+                _people_section(contact),
+                cls="detail-col-left",
+            ),
+            Div(
+                _settings_card(contact),
+                _contact_tags_section(contact, vocab),
+                cls="detail-col-right",
+            ),
+            cls="detail-layout",
+        ),
+        *([_addresses_section(contact)] if show_contact_addresses else []),
+        *(extra_sections or []),
+        _tab_bar(cid),
+        Div(
+            _documents_tab(docs, contact, cid),
+            id="tab-content",
+        ),
+        title=f"{page_title} - Celerp",
+        nav_active=nav_active_key,
+        extra_head=_phone_head_items(),
+        request=request,
+    )
+
+
 def setup_routes(app):
 
     # ── /contacts/customers ───────────────────────────────────────────────
@@ -981,100 +1075,75 @@ def setup_routes(app):
         except Exception:
             docs = []
         try:
-            ledger_resp = await api.list_ledger(token, {"entity_id": contact_id, "limit": 10})
-            ledger = ledger_resp.get("items", []) if isinstance(ledger_resp, dict) else []
-        except Exception:
-            ledger = []
-        try:
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
             vocab = []
-
         try:
             company = await api.get_company(token)
         except Exception:
             company = {}
-        fiscal_year_start = company.get("fiscal_year_start") or "01-01"
 
-        contact_name = contact.get("name", "Contact")
-        contact_type = contact.get("contact_type", "")
-        if contact_type in ("vendor",):
-            back_href = "/contacts/vendors"
-            back_label = "Vendors"
-            nav_active_key = "vendors"
-        else:
-            back_href = "/contacts/customers"
-            back_label = "Customers"
-            nav_active_key = "customers"
+        return build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id)
 
-        autofocus_script = (
-            Script("document.querySelector('.cell--clickable')?.click();")
-            if contact_name in ("New Customer", "New Vendor", "New Both", "New Contact") else ""
-        )
+    # ── Company Details (Finance) ─────────────────────────────────────────
+    # The company is its own customer+vendor self-contact, so this page is the same contact-detail
+    # layout reused verbatim, minus the financial-summary cards (no financials against yourself) and
+    # the delete affordance. Identity edits here flow to every customer/vendor context at once.
 
-        cid = contact.get("entity_id") or contact.get("id") or contact_id
-        is_deleted = bool(contact.get("deleted"))
+    async def _resolve_self_contact_id(token: str) -> str | None:
+        """The company's own contact id: the cached settings value, else the contact flagged is_self."""
+        try:
+            company = await api.get_company(token)
+            sid = (company.get("settings") or {}).get("self_contact_id")
+            if sid:
+                return sid
+        except Exception:
+            pass
+        try:
+            items = (await api.list_contacts(token, {"limit": 999})).get("items", [])
+            for c in items:
+                if c.get("is_self"):
+                    return c.get("id") or c.get("entity_id")
+        except Exception:
+            pass
+        return None
 
-        delete_btn = "" if is_deleted else Script(f"""
-(function(){{
-  var btn = document.getElementById('contact-delete-btn');
-  if (!btn) return;
-  btn.addEventListener('click', function(){{
-    if (!confirm('Delete this contact? This cannot be undone if the contact has no associated documents.')) return;
-    fetch('/crm/contacts/bulk/delete', {{
-      method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{contact_ids: ['{cid}']}})
-    }}).then(function(r){{ return r.json(); }}).then(function(d){{
-      if (d.deleted !== undefined) {{
-        sessionStorage.removeItem('celerp_contact_selection');
-        window.location.href = '{back_href}';
-      }} else {{
-        alert(d.detail || 'Delete failed.');
-      }}
-    }}).catch(function(err){{ alert('Delete failed: ' + err.message); }});
-  }});
-}})();
-""")
-
-        action_bar = Div(
-            Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
-                   type="button", style="margin-left:auto;") if not is_deleted else
-            Span(t("label.deleted"), cls="status-badge status-badge--void"),
-            cls="action-bar",
-            style="display:flex; align-items:center; padding: 0.5rem 0;",
-        )
-
-        return base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), (back_label, back_href), (contact_name, None)]),
-            page_header(contact_name),
-            autofocus_script,
-            action_bar,
-            delete_btn,
-            _financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start),
-            Div(
-                Div(
-                    _contact_info_card(contact),
-                    _people_section(contact),
-                    cls="detail-col-left",
-                ),
-                Div(
-                    _settings_card(contact),
-                    _contact_tags_section(contact, vocab),
-                    cls="detail-col-right",
-                ),
-                cls="detail-layout",
-            ),
-            _addresses_section(contact),
-            _tab_bar(cid),
-            Div(
-                _documents_tab(docs, contact, cid),
-                id="tab-content",
-            ),
-            title=f"{contact_name} - Celerp",
-            nav_active=nav_active_key,
-            extra_head=_phone_head_items(),
-            request=request,
+    @app.get("/finance/company-details")
+    async def company_details(request: Request):
+        from ui.routes.settings import _check_role
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := _check_role(request, "admin")):
+            return r
+        sid = await _resolve_self_contact_id(token)
+        if not sid:
+            return base_shell(
+                page_header("Company Details"),
+                empty_state_cta("Your company's own contact record has not been initialised yet."),
+                title="Company Details - Celerp", nav_active="company-details", request=request,
+            )
+        try:
+            contact = await api.get_contact(token, sid)
+        except Exception:
+            contact = {}
+        try:
+            docs_resp = await api.list_contact_docs(token, sid, {"limit": 999})
+            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+        except Exception:
+            docs = []
+        try:
+            vocab = await api.get_contact_tags_vocabulary(token)
+        except Exception:
+            vocab = []
+        try:
+            company = await api.get_company(token)
+        except Exception:
+            company = {}
+        return build_contact_detail(
+            contact, docs, vocab, company, request, contact_id=sid,
+            show_financials=False, show_delete=False, show_contact_addresses=False,
+            back=("Finance", "/accounting"), nav_active="company-details", title="Company Details",
         )
 
     # ── Tab routes ────────────────────────────────────────────────────────

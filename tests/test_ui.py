@@ -8225,6 +8225,47 @@ class TestAuditColumnAlignment:
         assert 'onclick="celerpAddLine()"' not in counting.text
 
 
+class TestCompanyDetailsPage:
+    """The Finance > Company Details page reuses the contact-detail layout for the self-contact, minus
+    the four financial cards, and is gated to admin and above."""
+
+    _COMPANY = {"settings": {"self_contact_id": "contact:self"}, "fiscal_year_start": "01-01", "name": "My Co"}
+    _SELF = {"id": "contact:self", "entity_id": "contact:self", "name": "My Co",
+             "contact_type": "both", "is_self": True, "email": "me@myco.test"}
+
+    def _patches(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for name, val in (
+            ("get_company", self._COMPANY), ("get_contact", self._SELF),
+            ("list_contact_docs", {"items": []}), ("get_contact_tags_vocabulary", []),
+            ("list_contacts", {"items": [self._SELF]}),
+        ):
+            stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
+        return stack
+
+    @pytest.mark.asyncio
+    async def test_renders_without_financial_cards(self, ui_client):
+        with self._patches():
+            r = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"))
+        assert r.status_code == 200, r.text
+        # The four financial-summary cards must be absent...
+        assert "Total Invoiced" not in r.text
+        assert "Avg Days to Pay" not in r.text
+        assert "Outstanding" not in r.text
+        # ...but the page identity + the contact-info card are present.
+        assert "Company Details" in r.text
+        assert "My Co" in r.text
+
+    @pytest.mark.asyncio
+    async def test_admin_allowed_below_admin_redirected(self, ui_client):
+        with self._patches():
+            ok = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"), follow_redirects=False)
+            low = await ui_client.get("/finance/company-details", cookies=_authed(role="operator"), follow_redirects=False)
+        assert ok.status_code == 200
+        assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard")
+
+
 class TestCalculateDueDate:
     """Unit tests for _calculate_due_date pure function."""
 
