@@ -1047,12 +1047,6 @@ async def manufacturing_make_work_orders(token: str, lines: list[dict], complete
                                    json={"lines": lines, "complete": complete})).json()
 
 
-async def manufacturing_make_work_orders_for_doc(token: str, doc_id: str) -> dict:
-    """Create linked work orders for every manufacturable line on a document at its shortfall."""
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/documents/{doc_id}/make-work-orders")).json()
-
-
 async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
     """Aggregated raw-material + sub-assembly requirements to make the selected products' shortfall."""
     async with _api_client(token) as c:
@@ -1093,11 +1087,6 @@ async def build_item(token: str, item_id: str, quantity: float, complete: bool =
     async with _api_client(token) as c:
         return _raise(await c.post(f"/manufacturing/items/{item_id}/build",
                                    json={"quantity": quantity, "complete": complete})).json()
-
-
-async def document_components_summary(token: str, doc_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/manufacturing/documents/{doc_id}/components-summary")).json()
 
 
 async def start_mfg_order(token: str, order_id: str) -> dict:

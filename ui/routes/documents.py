@@ -53,7 +53,7 @@ async def _company_letterhead(token: str) -> dict:
             pass
     addrs = contact.get("addresses") or []
     primary = next((a for a in addrs if a.get("address_type") == "billing"), None) or (addrs[0] if addrs else None)
-    address = (_compose_company_address(primary) if primary else "") or company.get("address") or ""
+    address = (_compose_company_address(primary) if primary else "") or unwrap_address(company.get("address")) or ""
     return {
         "company_name": company.get("name") or contact.get("name") or "",
         "company_address": address,
@@ -838,79 +838,6 @@ async def _doc_notes_section_response(token: str, entity_id: str, is_list: bool)
         note_field="note",
         author_field="author_name",
         tz=tz,
-    )
-
-
-_MANUFACTURABLE_DOC_TYPES = ("invoice", "list", "quotation")
-
-
-def _doc_manufacture_mount(doc_id: str, doc_type: str) -> FT | str:
-    """Lazily-loaded manufacturing panel mount — only for sales docs you'd build for."""
-    if doc_type not in _MANUFACTURABLE_DOC_TYPES:
-        return ""
-    return Div(P("Loading…", cls="hint"), hx_get=f"/docs/{doc_id}/manufacture-panel",
-               hx_trigger="load", hx_swap="outerHTML", id="doc-mfg-panel")
-
-
-def _doc_manufacture_panel(doc_id: str, summary: dict) -> FT:
-    """Manufacturing panel for a document (product-centric): the manufactured items on this doc,
-    each linking to its product Manufacturing tab (the hub for production), plus the JIT
-    components summary. Production itself is managed from the Production Queue / product tab,
-    not from the document.
-    """
-    fgs = summary.get("finished_goods", []) or []
-    subs = summary.get("sub_assemblies", []) or []
-    raws = summary.get("raw_materials", []) or []
-
-    if not fgs and not subs and not raws:
-        return Div(
-            H3("Manufacturing", cls="section-title"),
-            P("No items on this document have a manufacturing recipe.", cls="hint"),
-            id="doc-mfg-panel", cls="detail-card recipe-block",
-        )
-
-    def _qty_rows(items):
-        return [Tr(Td(it.get("sku") or it.get("item_id")), Td(it.get("name") or EMPTY),
-                   Td(f"{float(it.get('quantity', 0)):g}", cls="cell--number")) for it in items]
-
-    tables = []
-    if fgs:
-        fg_rows = [
-            Tr(Td(A(it.get("sku") or it.get("item_id"),
-                    href=f"/inventory/{it.get('item_id')}?tab=manufacturing", cls="table-link")),
-               Td(it.get("name") or EMPTY),
-               Td(f"{float(it.get('quantity', 0)):g}", cls="cell--number"), cls="data-row")
-            for it in fgs
-        ]
-        tables.append(Div(
-            Div(H3("Items to manufacture", cls="section-title"),
-                Button("Create work orders", type="button", cls="btn btn--sm btn--primary",
-                       hx_post=f"/docs/{doc_id}/make-work-orders", hx_target="#doc-mfg-panel",
-                       hx_swap="outerHTML", hx_disabled_elt="this",
-                       title="Create a linked work order for each item still short"),
-                cls="flex-row flex-between"),
-            P("Each item links to its Manufacturing tab. 'Create work orders' starts production for the "
-              "quantities still short, linked back to this order.", cls="hint"),
-            Table(Thead(Tr(Th("SKU"), Th("Name"), Th("Quantity", cls="cell--number"))),
-                  Tbody(*fg_rows), cls="data-table"),
-            cls="recipe-block"))
-    if subs:
-        tables.append(Div(
-            H3("Sub-assemblies to build", cls="section-title"),
-            Table(Thead(Tr(Th("SKU"), Th("Name"), Th("Quantity", cls="cell--number"))),
-                  Tbody(*_qty_rows(subs)), cls="data-table"),
-            cls="recipe-block"))
-    if raws:
-        tables.append(Div(
-            H3("Raw materials required", cls="section-title"),
-            Table(Thead(Tr(Th("SKU"), Th("Name"), Th("Quantity", cls="cell--number"))),
-                  Tbody(*_qty_rows(raws)), cls="data-table"),
-            cls="recipe-block"))
-
-    return Div(
-        H3("Manufacturing", cls="section-title"),
-        *tables,
-        id="doc-mfg-panel", cls="detail-card recipe-block",
     )
 
 
@@ -1977,51 +1904,10 @@ celerpUpdateBulkAlloc();
             breadcrumbs([("Dashboard", "/dashboard"), (section_label, section_url), (f"{status_label} {doc_ref}", None)]),
             page_header(f"{type_label} - {status_label} {doc_ref}"),
             _doc_detail(doc, locations=locations, ledger=ledger, price_lists=price_lists, tc_templates=tc_templates, tz=tz, company_taxes=company_taxes, bank_accounts=bank_accounts, company_locations=company_locations, role=_get_role(request), item_categories=item_categories, notes=doc_notes, company_currency=company_currency, relay_connected=_relay_connected, item_status_map=item_status_map, item_meta_map=item_meta_map, chart_accounts=chart_accounts, contact_shipping_addresses=contact_shipping_addresses),
-            _doc_manufacture_mount(entity_id, doc_type),
             title=f"{type_label} {doc_ref} - Celerp",
             nav_active=_doc_nav_key(doc_type),
             request=request,
         )
-
-    @app.get("/docs/{entity_id}/manufacture-panel")
-    async def doc_manufacture_panel(request: Request, entity_id: str):
-        """The doc's manufactured items (linked to their product Manufacturing tab) + JIT summary."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        try:
-            summary = await api.document_components_summary(token, entity_id)
-        except APIError as e:
-            if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
-            return Div(P(e.detail, cls="cell-error"), id="doc-mfg-panel")
-        return _doc_manufacture_panel(entity_id, summary)
-
-    @app.post("/docs/{entity_id}/make-work-orders")
-    async def doc_make_work_orders(request: Request, entity_id: str):
-        """Create linked work orders for this order's manufacturable lines (the 'Create work orders'
-        action), then refresh the panel with a toast."""
-        token = _token(request)
-        if not token:
-            return P(t("error.unauthorized"), cls="cell-error")
-        import json as _json
-        from starlette.responses import HTMLResponse as _HR
-        from fasthtml.common import to_xml
-        toast = {"message": "Could not create work orders.", "type": "error"}
-        try:
-            result = await api.manufacturing_make_work_orders_for_doc(token, entity_id)
-            n = len(result.get("created", []))
-            toast = ({"message": f"Created {n} work order(s).", "type": "success"} if n
-                     else {"message": "Nothing to make - all items are covered by stock or existing work orders.",
-                           "type": "info"})
-            summary = await api.document_components_summary(token, entity_id)
-        except APIError as e:
-            if e.status == 401:
-                return P(t("error.unauthorized"), cls="cell-error")
-            toast = {"message": str(e.detail) or "Could not create work orders.", "type": "error"}
-            summary = await api.document_components_summary(token, entity_id)
-        return _HR(to_xml(_doc_manufacture_panel(entity_id, summary)),
-                   headers={"HX-Trigger": _json.dumps({"celerpToast": toast})})
 
     @app.get("/docs/{entity_id}/field/{field}/display")
     async def doc_field_display(request: Request, entity_id: str, field: str):
@@ -4946,8 +4832,9 @@ def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_
     )
 
 
-def _company_address_picker(doc_id: str, current_address: str, company_locations: list) -> FT:
+def _company_address_picker(doc_id: str, current_address, company_locations: list) -> FT:
     """Render address as a location picker dropdown if locations exist, else a plain editable cell."""
+    current_address = unwrap_address(current_address)  # may arrive as a structured dict, not a string
     if not company_locations:
         # Fallback: plain editable cell (no locations configured)
         display = current_address or "--"

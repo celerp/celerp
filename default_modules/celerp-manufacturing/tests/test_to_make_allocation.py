@@ -108,31 +108,6 @@ async def test_make_work_orders_links_to_order_at_shortfall(client):
 
 
 @pytest.mark.asyncio
-async def test_make_work_orders_for_doc_links_all_lines(client):
-    """'Create work orders' on a document makes a linked work order for each manufacturable line."""
-    token = await _register(client)
-    gold = await _item(client, token, "GD", quantity=100, cost_total=8000)
-    ring = await _item(client, token, "RD", quantity=0)
-    bangle = await _item(client, token, "BD", quantity=0)
-    await _recipe(client, token, ring, [{"item_id": gold, "quantity": 1}])
-    await _recipe(client, token, bangle, [{"item_id": gold, "quantity": 2}])
-    # One invoice ordering both manufacturable items.
-    body = {"doc_type": "invoice", "total": 5, "line_items": [
-        {"item_id": ring, "sku": "RD", "name": "Ring", "quantity": 3, "unit_price": 1},
-        {"item_id": bangle, "sku": "BD", "name": "Bangle", "quantity": 2, "unit_price": 1}]}
-    inv = (await client.post("/docs", headers=_h(token), json=body)).json()
-    await client.post(f"/docs/{inv['id']}/finalize", headers=_h(token))
-
-    res = (await client.post(f"/manufacturing/documents/{inv['id']}/make-work-orders",
-                             headers=_h(token))).json()
-    assert len(res["created"]) == 2
-    runs = (await client.get("/manufacturing", headers=_h(token))).json()["items"]
-    by_item = {r["output_item_id"]: r for r in runs if r.get("output_item_id")}
-    assert by_item[ring]["source_doc_id"] == inv["id"] and by_item[ring]["expected_outputs"][0]["quantity"] == 3.0
-    assert by_item[bangle]["source_doc_id"] == inv["id"]
-
-
-@pytest.mark.asyncio
 async def test_auto_create_work_orders_on_finalize(client):
     """With the company setting on, finalizing an order auto-creates a linked work order per line."""
     token = await _register(client)

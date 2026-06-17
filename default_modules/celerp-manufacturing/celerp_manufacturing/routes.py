@@ -457,13 +457,6 @@ def _doc_lines(doc_state: dict) -> list[tuple[int, str | None, str, float, str]]
     return out
 
 
-async def _get_document(session: AsyncSession, company_id, doc_id: str) -> Projection:
-    row = await session.get(Projection, {"company_id": company_id, "entity_id": doc_id})
-    if row is None or row.entity_type not in ("doc", "list"):
-        raise HTTPException(status_code=404, detail="Document not found")
-    return row
-
-
 # Document statuses whose lines no longer drive production.
 _CLOSED_DOC_STATUSES = {"void", "cancelled", "converted", "expired"}
 
@@ -471,48 +464,19 @@ _CLOSED_DOC_STATUSES = {"void", "cancelled", "converted", "expired"}
 def _skip_as_demand(doc_state: dict) -> bool:
     """Should this document's lines be ignored as production demand?
 
-    Closed docs never drive production. A draft invoice is a pro forma - a tentative, pre-sale
-    document - so it is NOT counted as committed demand. An internal production order is likewise
-    only active demand once finalized (a draft production order is still being composed)."""
+    Only customer invoices and internal stock orders (production orders) drive production - nothing
+    else (quotations, transfers, audits and other lists, bills, POs, etc. are not demand). Closed docs
+    never drive production. A draft invoice is a pro forma - a tentative, pre-sale document - so it is
+    NOT counted as committed demand. An internal production order is likewise only active demand once
+    finalized (a draft production order is still being composed)."""
+    if doc_state.get("doc_type") not in ("invoice", "production_order"):
+        return True
     status = (doc_state.get("status") or "")
     if status in _CLOSED_DOC_STATUSES:
         return True
     if status == "draft" and doc_state.get("doc_type") in ("production_order", "invoice"):
         return True
     return False
-
-
-@router.get("/documents/{doc_id}/components-summary")
-async def document_components_summary(
-    doc_id: str,
-    company_id=Depends(get_current_company_id),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Aggregated, recursively-exploded component demand across all manufacturable lines (JIT)."""
-    doc = await _get_document(session, company_id, doc_id)
-    states = await _all_item_states(session, company_id)
-    lines = [(item_id, qty) for _, item_id, _, qty, _ in _doc_lines(doc.state) if item_id and qty > 0]
-    demand = explode_demand(lines, states.get)
-
-    def _detail(d: dict[str, float]) -> list[dict]:
-        return [
-            {"item_id": iid, "sku": (states.get(iid) or {}).get("sku"),
-             "name": (states.get(iid) or {}).get("name"), "quantity": q}
-            for iid, q in sorted(d.items(), key=lambda kv: (states.get(kv[0]) or {}).get("sku") or kv[0])
-        ]
-
-    # The finished goods on this document that are manufactured (have a recipe), aggregated by
-    # product, so the doc panel can link each to its product Manufacturing tab.
-    fg: dict[str, float] = {}
-    for item_id, qty in lines:
-        if is_manufacturable(states.get(item_id)):
-            fg[item_id] = fg.get(item_id, 0.0) + qty
-
-    return {
-        "finished_goods": _detail(fg),
-        "sub_assemblies": _detail(demand["sub_assemblies"]),
-        "raw_materials": _detail(demand["raw_materials"]),
-    }
 
 
 def _peg(supply: float, docs: list[dict]) -> None:
@@ -723,31 +687,6 @@ async def make_work_orders(
         created.append({"item_id": ln.item_id, "doc_id": ln.doc_id, "run_id": order_id, "quantity": qty})
     await session.commit()
     return {"created": created, "skipped": skipped}
-
-
-@router.post("/documents/{doc_id}/make-work-orders")
-async def make_work_orders_for_doc(
-    doc_id: str,
-    company_id=Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    """Create a linked work order for every manufacturable line on this document that still has a
-    shortfall (the 'Create work orders' action on an order). Lines already covered are skipped."""
-    states = await _all_item_states(session, company_id)
-    created: list[dict] = []
-    for row in await _compute_to_make(session, company_id):
-        st = states.get(row["item_id"])
-        if not is_manufacturable(st):
-            continue
-        doc = next((d for d in row.get("docs", []) if d.get("doc_id") == doc_id), None)
-        qty = float((doc or {}).get("shortfall") or 0)
-        if not doc or qty <= 0:
-            continue
-        order_id = await _emit_work_order(session, company_id, user.id, row["item_id"], st, qty, _line_source(doc))
-        created.append({"item_id": row["item_id"], "run_id": order_id, "quantity": qty})
-    await session.commit()
-    return {"created": created}
 
 
 async def auto_create_work_orders_on_finalize(session, entity_id, doc_state, company_id, user_id,

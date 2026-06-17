@@ -1,9 +1,7 @@
 # Copyright (c) 2026 Noah Severs
 # SPDX-License-Identifier: MIT
-"""API tests: the product-centric To-Make board aggregates open demand BY PRODUCT across all
-open demand documents (invoices/pro formas/lists). Runs are NOT auto-created from documents.
-Also covers the JIT components-summary endpoint (incl. finished_goods).
-"""
+"""API tests: the product-centric To-Make board aggregates open demand BY PRODUCT across the demand
+documents (finalized invoices + stock orders only). Runs are NOT auto-created from documents."""
 from __future__ import annotations
 
 import uuid
@@ -39,9 +37,9 @@ async def _doc(client, token, line_items, doc_type="invoice") -> str:
     r = await client.post("/docs", headers=_h(token), json={"doc_type": doc_type, "line_items": line_items, "total": 0})
     assert r.status_code in (200, 201), r.text
     doc_id = r.json()["id"]
-    # A draft invoice is a pro-forma (tentative) and is excluded from demand; finalize it so it
-    # represents committed demand. Other open doc types (e.g. list) count while still in draft.
-    if doc_type == "invoice":
+    # Only invoices and stock orders (production orders) drive demand, and a draft one is tentative
+    # (a pro forma), so finalize it to represent committed demand.
+    if doc_type in ("invoice", "production_order"):
         assert (await client.post(f"/docs/{doc_id}/finalize", headers=_h(token))).status_code == 200
     return doc_id
 
@@ -74,8 +72,7 @@ async def test_to_make_aggregates_demand_across_docs(client) -> None:
         {"item_id": ring, "sku": "RING2", "name": "Ring", "quantity": 2, "unit_price": 100},
         {"item_id": widget, "sku": "WIDGET", "name": "Widget", "quantity": 9, "unit_price": 1},
     ])
-    await _doc(client, token, [{"item_id": ring, "sku": "RING2", "name": "Ring", "quantity": 4, "unit_price": 100}],
-               doc_type="list")
+    await _doc(client, token, [{"item_id": ring, "sku": "RING2", "name": "Ring", "quantity": 4, "unit_price": 100}])
 
     board = await _to_make(client, token)
     assert widget not in board  # not manufacturable
@@ -147,22 +144,3 @@ async def test_item_hub_demand_and_runs(client) -> None:
     assert run["output_item_id"] == ring and run["status"] == "planned"
     # Input SKU resolved for display.
     assert run["inputs"][0]["sku"] == "GOLDHUB" and run["inputs"][0]["quantity"] == 5.0
-
-
-@pytest.mark.asyncio
-async def test_components_summary_nested_and_finished_goods(client) -> None:
-    token = await _register(client)
-    gold = await _item(client, token, "GOLD3", quantity=100, cost_total=8000)
-    sub = await _item(client, token, "SUB3")
-    ring = await _item(client, token, "RING3")
-    await _recipe(client, token, sub, [{"item_id": gold, "quantity": 2}])
-    await _recipe(client, token, ring, [{"item_id": sub, "quantity": 3}])
-    doc = await _doc(client, token, [{"item_id": ring, "sku": "RING3", "name": "Ring", "quantity": 1, "unit_price": 1}])
-
-    summary = (await client.get(f"/manufacturing/documents/{doc}/components-summary", headers=_h(token))).json()
-    raws = {r["item_id"]: r["quantity"] for r in summary["raw_materials"]}
-    subs = {s["item_id"]: s["quantity"] for s in summary["sub_assemblies"]}
-    fgs = {f["item_id"]: f["quantity"] for f in summary["finished_goods"]}
-    assert raws == {gold: 6.0}              # 1 * 3 * 2
-    assert subs == {ring: 1.0, sub: 3.0}
-    assert fgs == {ring: 1.0}              # the manufactured line item
