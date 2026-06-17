@@ -262,6 +262,31 @@ async def test_scanned_highlight_persists_and_clears_via_bulk(client):
 
 
 @pytest.mark.asyncio
+async def test_editable_save_keeps_item_link(client):
+    """The editable draft UI sends a line's item id in `entity_id` (no `item_id`). Persisting must
+    normalize it to `item_id`, else on-hand freeze (-> 0), scan check-off (-> "not on this audit") and
+    dedup all break. Reproduces the regression from making draft audits editable."""
+    t = await _register(client)
+    loc = await _location(client, t)
+    iid = await _item(client, t, "EL1", loc=loc, qty=7, barcode="8001")
+    audit = (await _audit(client, t, loc))["id"]
+
+    # Simulate an editable-row autosave: the frontend sends entity_id, not item_id.
+    line = (await _state(client, t, audit))["line_items"][0]
+    edited = {"entity_id": iid, "sku": "EL1", "name": "EL1", "quantity": 7}  # note: no item_id key
+    await client.patch(f"/lists/{audit}", headers=_h(t),
+                       json={"fields_changed": {"line_items": {"old": [line], "new": [edited]}}})
+    stored = (await _state(client, t, audit))["line_items"][0]
+    assert stored.get("item_id") == iid              # normalized on persist (was missing -> the bug)
+
+    await _finalize(client, t, audit)
+    assert (await _state(client, t, audit))["line_items"][0]["on_hand"] == 7.0  # freeze found the item
+
+    r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "8001"})
+    assert r.status_code == 200 and r.json()["state"] == "audited"  # check-off works (was 409)
+
+
+@pytest.mark.asyncio
 async def test_finalize_dedupes_duplicate_item_lines(client):
     """An audit counts each item once. If the draft manifest ends up with two lines for the same
     item_id (hand-edited, or via a list-type round trip), Finalize collapses them to one — otherwise

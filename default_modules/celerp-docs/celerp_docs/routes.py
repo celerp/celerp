@@ -2606,6 +2606,9 @@ async def patch_list(
     row = await _get_list(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
+    if isinstance(_new_lines, list):
+        _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              payload.model_dump(exclude_none=True), user, payload.idempotency_key)
     await session.commit()
@@ -2638,15 +2641,17 @@ async def finalize_list(
         # duplicate item_id lines at the gateway into counting: a single item record has one physical
         # count, so two lines would leave the second unreachable when checking off (scan always matches
         # the first) and double-count at Adjust. Lines without an item_id are kept as-is.
+        src = [dict(l) for l in (state.get("line_items") or [])]
+        _normalize_line_item_ids(src)  # heal legacy entity_id-only lines so dedup + freeze find the item
         seen: set[str] = set()
         lines = []
-        for l in (state.get("line_items") or []):
+        for l in src:
             key = l.get("item_id")
             if key:
                 if key in seen:
                     continue
                 seen.add(key)
-            lines.append(dict(l))
+            lines.append(l)
         for l in lines:
             item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
             l["on_hand"] = float(item.state.get("quantity") or 0) if (item and item.entity_type == "item") else 0.0
@@ -4061,6 +4066,16 @@ async def _resolve_barcode(session, company_id, code: str):
     return hit or next((r for r in rows if str(r.state.get("sku") or "") == code), None)
 
 
+def _normalize_line_item_ids(lines: list) -> None:
+    """In-place: ensure every line carries `item_id`. The editable list UI sends the item's id in
+    `entity_id` (what celerpFillRow + the hidden field carry), but scan check-off, finalize dedup and
+    the on-hand freeze all key on `item_id` (as `_scan_line_from_item` and the LineItem model set it).
+    Without this, any autosave on an editable draft strips the item link and those operations break."""
+    for l in lines:
+        if isinstance(l, dict) and l.get("entity_id") and not l.get("item_id"):
+            l["item_id"] = l["entity_id"]
+
+
 def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None) -> dict:
     """Build a new line for a scanned item. Money lists carry a unit_price resolved from the chosen
     price list (mirrors resolve_price: the list name, then the conventional `<name>_price` key)."""
@@ -4143,6 +4158,7 @@ async def scan_list(
     if item is None:
         raise HTTPException(status_code=404, detail=f"Unknown barcode or SKU: {code}")
     lines = [dict(l) for l in (state.get("line_items") or [])]
+    _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
     idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
     now = datetime.now(UTC).isoformat()
 
