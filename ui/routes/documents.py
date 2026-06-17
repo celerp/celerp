@@ -5951,9 +5951,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                        cls="btn btn--primary btn--sm",
                        hx_confirm="Apply the counted quantities to stock? This posts a journal entry."),
                 cls="audit-adjust-bar",
-                # Buffer top + bottom so the button never touches the scan bar above or the table
-                # below (consistent with button spacing elsewhere).
-                style="display:flex;justify-content:flex-end;margin:0.75rem 0;",
+                # Buffer on every side so the button never touches the scan bar above, the table
+                # below, or the right edge (consistent with button spacing elsewhere).
+                style="display:flex;justify-content:flex-end;margin:0.75rem 0;padding:0 0.75rem;",
             ) if pol["audit"] and status == _LF else None),
             Div(
                 Table(
