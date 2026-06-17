@@ -3067,7 +3067,7 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
     )
 
 
-def _company_tab(company: dict, locations: list | None = None, lang: str = "en", is_owner: bool = False) -> FT:
+def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
     fields = [
         ("name", t("label.company_name", lang)),
         ("currency", t("label.currency", lang)),
@@ -3132,7 +3132,8 @@ def _company_tab(company: dict, locations: list | None = None, lang: str = "en",
             lang_row,
             cls="detail-table",
         ),
-        _company_addresses_section(locations or []),
+        # Company addresses live on the Company Details page (Finance > Company Details) now - one book,
+        # not duplicated here. The /settings/company/addresses CRUD routes are unchanged and serve it there.
         H3(t("settings.preferences", lang), cls="settings-section-title"),
         P(t("msg.preferences_hint", lang), cls="settings-hint"),
         Table(

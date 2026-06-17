@@ -1140,9 +1140,19 @@ def setup_routes(app):
             company = await api.get_company(token)
         except Exception:
             company = {}
+        # One unified address book for the company entity: the Locations book (documents already draw
+        # company addresses from Locations). The self-contact's own billing/shipping addresses are NOT
+        # shown - there is a single book, not two (owner decision Q4).
+        from ui.routes.settings import _company_addresses_section
+        try:
+            loc_resp = await api.get_locations(token)
+            company_locations = loc_resp.get("items") or loc_resp.get("locations") or (loc_resp if isinstance(loc_resp, list) else [])
+        except Exception:
+            company_locations = []
         return build_contact_detail(
             contact, docs, vocab, company, request, contact_id=sid,
             show_financials=False, show_delete=False, show_contact_addresses=False,
+            extra_sections=[_company_addresses_section(company_locations)],
             back=("Finance", "/accounting"), nav_active="company-details", title="Company Details",
         )
 

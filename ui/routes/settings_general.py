@@ -112,17 +112,8 @@ def setup_routes(app):
                     return RedirectResponse("/login", status_code=302)
                 company, users, modules = {}, [], []
 
-            company_locations: list[dict] = []
-            if tab in ("company",):
-                try:
-                    loc_resp = await api.get_locations(token)
-                    company_locations = loc_resp.get("items") or loc_resp.get("locations") or (loc_resp if isinstance(loc_resp, list) else [])
-                except Exception:
-                    company_locations = []
-
             if tab == "company":
-                company_content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
-                content = company_content
+                content = _company_tab(company, lang=lang, is_owner=is_owner)
             elif tab == "users":
                 content = _users_tab(users, lang=lang)
             elif tab == "modules":
@@ -135,12 +126,7 @@ def setup_routes(app):
                     pass
                 content = _backup_tab(backup_data=backup_data)
             else:
-                try:
-                    loc_resp = await api.get_locations(token)
-                    company_locations = loc_resp.get("items") or loc_resp.get("locations") or (loc_resp if isinstance(loc_resp, list) else [])
-                except Exception:
-                    company_locations = []
-                content = _company_tab(company, locations=company_locations, lang=lang, is_owner=is_owner)
+                content = _company_tab(company, lang=lang, is_owner=is_owner)
                 if is_owner:
                     tab = "company"
 

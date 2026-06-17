@@ -8240,6 +8240,7 @@ class TestCompanyDetailsPage:
             ("get_company", self._COMPANY), ("get_contact", self._SELF),
             ("list_contact_docs", {"items": []}), ("get_contact_tags_vocabulary", []),
             ("list_contacts", {"items": [self._SELF]}),
+            ("get_locations", {"items": [{"id": "loc:1", "name": "Head Office", "address": "1 Main St"}]}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
         return stack
@@ -8256,6 +8257,8 @@ class TestCompanyDetailsPage:
         # ...but the page identity + the contact-info card are present.
         assert "Company Details" in r.text
         assert "My Co" in r.text
+        # The single (Locations) address book renders on the page.
+        assert "company-addresses-section" in r.text
 
     @pytest.mark.asyncio
     async def test_admin_allowed_below_admin_redirected(self, ui_client):
