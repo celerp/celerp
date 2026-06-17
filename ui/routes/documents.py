@@ -126,15 +126,17 @@ def _list_column_policy(doc_type: str, list_type: str, status: str | None = None
     if doc_type == "list":
         b = _list_behavior(list_type)
         is_audit = "counted" in b.extra_columns
-        # On-hand/Counted belong to the counting stage only: on-hand is frozen AT Finalize and Counted
-        # is finalize-only. A draft audit is the build/seed-the-manifest table (sku/desc/qty), so those
-        # columns stay hidden until finalized (and remain on the closed results view).
+        # `counting` is the finalized/closed audit stage: the manifest is locked, so its rows render as
+        # static text and only the Counted cell opens. A DRAFT audit is the build/seed-the-manifest
+        # stage and keeps editable rows like any other list. The On-hand/Counted columns show in every
+        # audit state (a draft just has no frozen on-hand or counts yet).
         counting = is_audit and status in (_LF, _LC)
         return {
             "no_money": not b.money,
-            "show_onhand": ("on_hand" in b.extra_columns) and counting,
-            "show_counted": ("counted" in b.extra_columns) and counting,
+            "show_onhand": "on_hand" in b.extra_columns,
+            "show_counted": "counted" in b.extra_columns,
             "audit": is_audit,
+            "counting": counting,
             "counted_editable": is_audit and status == _LF,
         }
     return {
@@ -142,6 +144,7 @@ def _list_column_policy(doc_type: str, list_type: str, status: str | None = None
         "show_onhand": False,
         "show_counted": False,
         "audit": False,
+        "counting": False,
         "counted_editable": False,
     }
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
@@ -4116,21 +4119,17 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
-        # On-hand/Counted exist only in the counting stage (finalized/closed); a draft audit scan
-        # builds the manifest, so the swapped rows must match the header's column set. Counts are
-        # editable only while finalized.
-        _status = lst.get("status")
-        _show_counting = _status in (_LF, _LC)
-        _counted_editable = _status == _LF
-        rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable, _show_counting) for li in line_items]
+        # This fast tbody swap only runs for a finalized audit (the locked counting manifest); a draft
+        # audit reloads instead. Counts are editable only while finalized.
+        _counted_editable = lst.get("status") == _LF
+        rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable) for li in line_items]
         if not rows:
             rows = [Tr(Td("No items. Scan a barcode to add.", colspan="4", cls="empty-row"))]
         return Tbody(*rows, id="line-body")
 
-    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True, show_counting: bool = True) -> FT:
-        """Shared audit row builder for the scan re-render. On-hand prefers the snapshot frozen at
-        Finalize (else live), and Counted is click-to-edit only while counting (counted_editable).
-        show_counting=False (draft manifest) drops the On-hand/Counted cells to match the header."""
+    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True) -> FT:
+        """Shared audit row builder for the finalized-audit scan re-render. On-hand prefers the
+        snapshot frozen at Finalize (else live); Counted is click-to-edit only while counting."""
         from ui.components.table import EMPTY as _EMPTY
         item_key = li.get("item_id") or li.get("entity_id") or ""
         audited = li.get("audited_at") is not None
@@ -4163,26 +4162,27 @@ celerpUpdateBulkAlloc();
         # Must mirror the editable header's FULL column structure (checkbox + hidden money cells) so
         # the scan-swapped tbody stays aligned. Audit identity is static text (never inputs); the
         # money/total cells are empty placeholders hidden by the doc-lines--no-money CSS.
-        cells = [
+        return Tr(
             Td(Input(type="checkbox", cls="li-select", value=item_key), cls="col-checkbox li-checkbox-cell"),
             Td(li.get("sku") or _EMPTY, cls="col-sku"),
             Td(li.get("name") or li.get("description") or _EMPTY, cls="col-desc"),
             Td(f"{qty:g}" if qty else "--", cls="col-qty"),
             Td("", cls="col-unit-price"), Td("", cls="col-disc"), Td("", cls="col-tax"),
             Td("", cls="cell--number col-total"),
-        ]
-        if show_counting:
-            cells += [onhand_td, counted_td]
-        return Tr(*cells, cls=row_cls)
+            onhand_td,
+            counted_td,
+            cls=row_cls,
+        )
 
     @app.post("/lists/{entity_id}/scan")
     async def list_scan(request: Request, entity_id: str):
         """One scan endpoint for every list type (the client fork is gone — DRY). The backend
         dispatches on (list_type, status); here we only choose the response shape:
 
-        - audit (the rapid-scan case): swap the re-rendered #line-body tbody for speed;
-        - quotation / transfer: reload via HX-Refresh so the correct column layout renders through
-          the same detail renderer (no duplicated row builder).
+        - a finalized audit (the rapid check-off case): swap the re-rendered #line-body tbody for speed;
+        - everything else, including a DRAFT audit building its manifest: reload via HX-Refresh so the
+          correct (editable) column layout renders through the same detail renderer (no duplicated row
+          builder).
         """
         from starlette.responses import Response as _R
         from fasthtml.common import to_xml
@@ -4201,7 +4201,9 @@ celerpUpdateBulkAlloc();
             # return the real reason + status (e.g. "X is not on this audit") rather than a 200 toast.
             return _R(str(e.detail), status_code=e.status or 400)
         lst = await api.get_list(token, entity_id)
-        if (lst.get("list_type") or "") == "audit":
+        # Only a finalized audit (the locked counting manifest) gets the fast static tbody swap; a draft
+        # audit is editable, so it reloads like every other building list to keep its inputs.
+        if (lst.get("list_type") or "") == "audit" and lst.get("status") in (_LF, _LC):
             return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
         return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
@@ -5688,14 +5690,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cls="desc-measures"), cls="col-desc")
             else:
                 _desc_cell = Td(_desc_inner, cls="col-desc")
-            # Audit lines are a scan/seed-built manifest — identity is never typed. Render SKU /
-            # Description / Qty as static text (in every state) so nothing looks editable that isn't;
-            # only the Counted cell opens, and only while finalized. Keeps the full column structure.
-            if pol["audit"]:
+            # Once an audit is finalized (counting stage) its manifest is locked, so SKU / Description /
+            # Qty render as static text and only the Counted cell opens. While DRAFT, the audit is still
+            # being built, so its rows stay editable like any other list.
+            if pol["counting"]:
                 _desc_cell = Td(li.get("description") or li.get("name") or "--", cls="col-desc")
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id), cls="col-checkbox li-checkbox-cell"),
-                Td((li.get("sku") or "--") if pol["audit"] else _sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
+                Td((li.get("sku") or "--") if pol["counting"] else _sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
                 _desc_cell,
             ]
             if category_cell:
@@ -5704,8 +5706,8 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(receive_as_cell)
             _unit_span = Span(li.get("unit", "") or "", data_name="unit",
                               cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
-            if pol["audit"]:
-                # Static qty (the system figure is On hand) — no editable input on a manifest line.
+            if pol["counting"]:
+                # Static qty once counting (the system figure is On hand) — no input on a locked line.
                 cells.append(Td(f"{float(qty):g}" if qty else "--", cls="col-qty"))
             else:
                 _qty_input = Input(type="number", value=str(qty), step="any",
@@ -5759,8 +5761,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 else:
                     _cq = li.get("counted_qty")
                     cells.append(Td(f"{float(_cq):g}" if _cq is not None else "--", cls="cell--number col-counted"))
-            audited = li.get("audited_at") is not None
-            adjusted = bool(li.get("adjusted"))
+            # The scanned/adjusted highlight only means something on an audit. If the list was switched
+            # to another type, the stored audited_at/adjusted flags persist but carry no meaning there
+            # (no row action), so don't paint the highlight.
+            audited = pol["audit"] and li.get("audited_at") is not None
+            adjusted = pol["audit"] and bool(li.get("adjusted"))
             _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
             return Tr(*cells, cls=_row_cls) if _row_cls else Tr(*cells)
 
@@ -6870,8 +6875,11 @@ async function celerpCsvImport(input, entityId) {{
                 _cq = li.get("counted_qty")
                 _cq_display = f"{float(_cq):g}" if _cq is not None else "--"
                 cells.append(Td(_cq_display, cls="cell--number col-counted"))
-            audited = li.get("audited_at") is not None
-            adjusted = bool(li.get("adjusted"))
+            # The scanned/adjusted highlight only means something on an audit. If the list was switched
+            # to another type, the stored audited_at/adjusted flags persist but carry no meaning there
+            # (no row action), so don't paint the highlight.
+            audited = pol["audit"] and li.get("audited_at") is not None
+            adjusted = pol["audit"] and bool(li.get("adjusted"))
             _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
             return Tr(*cells, cls=_row_cls) if _row_cls else Tr(*cells)
 

@@ -8110,37 +8110,72 @@ class TestModuleSlotInjection:
 # ---------------------------------------------------------------------------
 
 class TestListColumnPolicy:
-    """Audit On-hand/Counted columns belong to the counting stage (finalized/closed) only — a draft
-    audit is the build-the-manifest table, so reverting to draft drops those columns."""
+    """`counting` is the locked finalized/closed audit stage (static rows + editable Counted). A DRAFT
+    audit is editable like any other list (counting False) but still shows the On-hand/Counted columns."""
 
-    def test_draft_audit_hides_counting_columns(self):
+    def test_draft_audit_is_editable_but_shows_columns(self):
         from ui.routes.documents import _list_column_policy
         pol = _list_column_policy("list", "audit", "draft")
         assert pol["audit"] is True
-        assert pol["show_onhand"] is False
-        assert pol["show_counted"] is False
+        assert pol["counting"] is False          # draft -> editable rows, not the locked manifest
+        assert pol["show_onhand"] is True         # columns show in every audit state
+        assert pol["show_counted"] is True
         assert pol["counted_editable"] is False
 
-    def test_finalized_audit_shows_counting_columns(self):
+    def test_finalized_audit_is_counting_stage(self):
         from ui.routes.documents import _list_column_policy
         pol = _list_column_policy("list", "audit", "finalized")
+        assert pol["counting"] is True            # locked manifest -> static rows
         assert pol["show_onhand"] is True
         assert pol["show_counted"] is True
         assert pol["counted_editable"] is True
 
-    def test_closed_audit_keeps_counting_columns_read_only(self):
+    def test_closed_audit_is_counting_read_only(self):
         from ui.routes.documents import _list_column_policy
         pol = _list_column_policy("list", "audit", "closed")
+        assert pol["counting"] is True
         assert pol["show_onhand"] is True
         assert pol["show_counted"] is True
-        assert pol["counted_editable"] is False  # results view, not editable
+        assert pol["counted_editable"] is False   # results view, not editable
 
-    def test_quotation_never_has_counting_columns(self):
+    def test_quotation_is_never_audit(self):
         from ui.routes.documents import _list_column_policy
         pol = _list_column_policy("list", "quotation", "finalized")
         assert pol["audit"] is False
+        assert pol["counting"] is False
         assert pol["show_onhand"] is False
         assert pol["show_counted"] is False
+
+
+class TestAuditHighlightScoping:
+    """The scanned/adjusted row highlight only renders on the audit type. The audited_at/adjusted flags
+    persist in the data through a type switch, but carry no meaning (no row action) on other types."""
+
+    def _list(self, list_type: str) -> dict:
+        return {
+            "entity_id": "list:1", "list_type": list_type, "status": "finalized",
+            "receiver_type": "location", "receiver": "Main", "currency": "USD",
+            "discount": 0, "tax": 0, "subtotal": 0, "total": 0,
+            "line_items": [{
+                "entity_id": "li:1", "item_id": "item:1", "sku": "A1", "name": "Widget",
+                "description": "Widget", "quantity": 5, "audited_at": "2026-06-17T00:00:00Z",
+            }],
+        }
+
+    @pytest.mark.asyncio
+    async def test_audit_renders_scanned_highlight(self, ui_client):
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._list("audit"))):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        assert "data-row--audited" in r.text
+
+    @pytest.mark.asyncio
+    async def test_non_audit_drops_scanned_highlight(self, ui_client):
+        # Same audited_at in the data, but a quotation must not paint the highlight.
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._list("quotation"))):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        assert "data-row--audited" not in r.text
 
 
 class TestCalculateDueDate:
