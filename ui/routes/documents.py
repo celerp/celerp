@@ -4188,7 +4188,9 @@ celerpUpdateBulkAlloc();
         try:
             await api.scan_list(token, entity_id, barcode, price_list)
         except APIError as e:
-            return _action_error(e.detail)
+            # The scan bar reads resp.text() on a non-2xx response and shows it ("✗ <reason>"), so
+            # return the real reason + status (e.g. "X is not on this audit") rather than a 200 toast.
+            return _R(str(e.detail), status_code=e.status or 400)
         lst = await api.get_list(token, entity_id)
         if (lst.get("list_type") or "") == "audit":
             return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
@@ -5886,13 +5888,22 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
 """),
             ]
 
+        # Scan-bar wording follows what a scan actually does for this (type, state): a finalized
+        # audit's manifest is locked, so scanning checks items OFF the list (it never adds); a draft
+        # audit is still being built, so scanning ADDS; other lists just add a line.
+        if pol["audit"] and status == _LF:
+            _scan_placeholder = "Scan to check items off this audit"
+        elif pol["audit"]:
+            _scan_placeholder = "Scan or type a SKU to add it to the count"
+        else:
+            _scan_placeholder = "Scan barcode or type SKU and press Enter"
         lines_section = Div(
             *_ai_dropzone,
             _csv_import_el,
             Template(_li_empty_row(), id="line-row-tpl"),
             Div(
                 Span("📷", cls="scan-bar-icon"),
-                Input(type="text", id="scan-bar-input", placeholder="Scan barcode or type SKU and press Enter",
+                Input(type="text", id="scan-bar-input", placeholder=_scan_placeholder,
                       cls="scan-bar-input", autocomplete="off", autofocus=False),
                 Span("", id="scan-bar-status", cls="scan-bar-status"),
                 cls="scan-bar",

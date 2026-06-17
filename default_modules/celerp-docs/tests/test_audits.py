@@ -114,12 +114,18 @@ async def test_scan_adds_in_draft_records_presence_when_finalized(client):
     assert state["line_items"][0].get("audited_at") is None  # presence is a counting-stage concept
 
     await _finalize(client, t, audit)
-    # FINALIZED scan: records presence (audited_at), top-insert.
+    # FINALIZED scan: the manifest is LOCKED — scanning only checks off items already on the list
+    # (records presence, top-insert). It never adds.
     r = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})
     assert r.status_code == 200 and r.json()["state"] == "audited"
     assert (await _state(client, t, audit))["line_items"][0]["audited_at"] is not None
-    # Scanning the same item again -> already scanned.
-    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})).status_code == 409
+    # Re-scanning the same item just re-confirms it (no error) — you can re-check anything.
+    assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1002"})).status_code == 200
+    # Scanning an item NOT on the locked manifest is rejected (409 with a clear reason), not added.
+    await _item(client, t, "EXTRA-1", loc=loc, qty=2, barcode="1099")
+    rej = await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "1099"})
+    assert rej.status_code == 409 and "not on this audit" in rej.json()["detail"].lower()
+    assert "EXTRA-1" not in {l["sku"] for l in (await _state(client, t, audit))["line_items"]}  # not added
     # Unknown barcode -> 404 in any state.
     assert (await client.post(f"/lists/{audit}/scan", headers=_h(t), json={"barcode": "NOPE"})).status_code == 404
 

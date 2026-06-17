@@ -4154,31 +4154,21 @@ async def scan_list(
         raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
 
     scan_mode = behavior(lt).scan_finalized
-    if scan_mode == "count":  # audit: record presence (top-insert), add + audit if new
+    if scan_mode == "count":
+        # An issued audit's manifest is LOCKED: scanning only checks off items already on the list
+        # (so you can see what's accounted for) and never adds. An item not on the list is rejected
+        # — add it while the audit is still a draft. Re-scanning an item is fine (it re-confirms).
         if idx is None:
-            line = _scan_line_from_item(item, lt, None)
-            line["on_hand"] = float(item.state.get("quantity") or 0)
-            line["audited_at"] = now
-            lines.insert(0, line)
-            result_state = "added"
-        elif lines[idx].get("audited_at") is None:
-            ln = lines.pop(idx)
-            ln["audited_at"] = now
-            lines.insert(0, ln)
-            result_state = "audited"
-        else:
-            raise HTTPException(status_code=409, detail=f"Already scanned: {item.state.get('sku') or code}")
+            # 409 (not 404): the item exists, it's just not on this locked manifest. A 404 here would
+            # be rewritten to a generic "Not found" by the global 404 handler, hiding the reason.
+            raise HTTPException(status_code=409,
+                                detail=f"{item.state.get('sku') or code} is not on this audit")
+        ln = lines.pop(idx)
+        ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
+        lines.insert(0, ln)           # newest scan to the top (GDR 2n)
         await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
         await session.commit()
-        return {"state": result_state, "item_id": item.entity_id, "sku": item.state.get("sku")}
-
-    if scan_mode == "receive":  # transfer: scan-to-receive (stock move is the Phase 4 seam)
-        if idx is None:
-            raise HTTPException(status_code=404, detail=f"{item.state.get('sku') or code} is not on this transfer")
-        lines[idx]["received_at"] = now
-        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
-        await session.commit()
-        return {"state": "received", "item_id": item.entity_id, "sku": item.state.get("sku")}
+        return {"state": "audited", "item_id": item.entity_id, "sku": item.state.get("sku")}
 
     raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
 
