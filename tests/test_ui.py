@@ -2273,10 +2273,10 @@ class TestSettingsPolish:
                 assert b"cell--clickable" in r.content, f"No clickable cells on tab={tab} (url={url})"
 
     def test_settings_cells_have_title_attribute(self):
-        """The editable company cells must carry title='Click to edit' (now on the company-details form)."""
-        from ui.routes.settings import _company_details_form
+        """The editable company cells must carry title='Click to edit' (now on the company settings card)."""
+        from ui.routes.settings import _company_settings_card
         from fasthtml.common import to_xml
-        assert "Click to edit" in to_xml(_company_details_form({"name": "Co", "settings": {}}))
+        assert "Click to edit" in to_xml(_company_settings_card({"name": "Co", "settings": {}}))
 
 
 class TestColumnManager:
@@ -6909,10 +6909,10 @@ class TestNikolaiFixedBugs:
 
     @pytest.mark.asyncio
     def test_company_tab_shows_currency_code(self):
-        """Currency must show the currency code (e.g. THB) on the company-details form."""
-        from ui.routes.settings import _company_details_form
+        """Currency must show the currency code (e.g. THB) on the company settings card."""
+        from ui.routes.settings import _company_settings_card
         from fasthtml.common import to_xml
-        html = to_xml(_company_details_form({"settings": {"currency": "THB"}}))
+        html = to_xml(_company_settings_card({"settings": {"currency": "THB"}}))
         assert "THB" in html
 
     @pytest.mark.asyncio
@@ -6944,10 +6944,10 @@ class TestNikolaiFixedBugs:
 
     @pytest.mark.asyncio
     def test_company_tab_shows_fiscal_year_human_label(self):
-        """fiscal_year_start must render as a human month name on the company-details form."""
-        from ui.routes.settings import _company_details_form
+        """fiscal_year_start must render as a human month name on the company settings card."""
+        from ui.routes.settings import _company_settings_card
         from fasthtml.common import to_xml
-        html = to_xml(_company_details_form({"settings": {"fiscal_year_start": "01-01"}}))
+        html = to_xml(_company_settings_card({"settings": {"fiscal_year_start": "01-01"}}))
         assert "January" in html
 
     @pytest.mark.asyncio
@@ -6978,10 +6978,10 @@ class TestNikolaiFixedBugs:
 
     @pytest.mark.asyncio
     def test_company_tab_shows_timezone(self):
-        """Timezone must render on the company-details form (not blank)."""
-        from ui.routes.settings import _company_details_form
+        """Timezone must render on the company settings card (not blank)."""
+        from ui.routes.settings import _company_settings_card
         from fasthtml.common import to_xml
-        html = to_xml(_company_details_form({"settings": {"timezone": "Asia/Bangkok"}}))
+        html = to_xml(_company_settings_card({"settings": {"timezone": "Asia/Bangkok"}}))
         assert "Asia/Bangkok" in html
 
     @pytest.mark.asyncio
@@ -8214,10 +8214,13 @@ class TestAuditColumnAlignment:
 
 
 class TestCompanyDetailsPage:
-    """The Finance > Company Details page shows the company-details form (moved from settings) plus the
-    self-contact's billing/shipping address book, with no contact cards / tags / files. Admin+ only."""
+    """The Finance > Company Details page is organized like a customer/vendor page: a Contact Info card
+    (the company's identity, incl. its email) + a Settings card (currency/timezone/fiscal), the
+    billing/shipping address book, and the Documents/Notes/Activity tabs - minus the financial cards,
+    tags, and the file-upload zone (files have their own page). Admin+ only."""
 
-    _COMPANY = {"settings": {"self_contact_id": "contact:self"}, "fiscal_year_start": "01-01", "name": "My Co"}
+    _COMPANY = {"settings": {"self_contact_id": "contact:self"}, "fiscal_year_start": "01-01",
+                "name": "My Co", "currency": "USD"}
     _SELF = {"id": "contact:self", "entity_id": "contact:self", "name": "My Co",
              "contact_type": "both", "is_self": True, "email": "me@myco.test",
              "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]}
@@ -8227,22 +8230,23 @@ class TestCompanyDetailsPage:
         stack = ExitStack()
         for name, val in (
             ("get_company", self._COMPANY), ("get_contact", self._SELF),
-            ("list_contacts", {"items": [self._SELF]}),
+            ("list_contacts", {"items": [self._SELF]}), ("list_contact_docs", {"items": []}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
         return stack
 
     @pytest.mark.asyncio
-    async def test_renders_form_and_addresses_no_cards(self, ui_client):
+    async def test_renders_info_settings_addresses_tabs(self, ui_client):
         with self._patches():
             r = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"))
         assert r.status_code == 200, r.text
-        # No financial cards, no contact-detail clutter.
-        assert "Total Invoiced" not in r.text
-        # The company-details form (its inline-edit cells) + the billing/shipping address book are here.
+        assert "Total Invoiced" not in r.text                     # no financial cards
         assert "Company Details" in r.text
-        assert "/settings/company/name/edit" in r.text          # company-details form
-        assert "Billing" in r.text and "Shipping" in r.text     # two-column address book
+        assert "me@myco.test" in r.text                           # email shows (Contact Info card)
+        assert "/settings/company/currency/edit" in r.text        # Settings card (regional)
+        assert "Billing" in r.text and "Shipping" in r.text       # two-column address book
+        assert "tab-documents" in r.text                          # Documents/Notes/Activity tabs restored
+        assert "file-drop-zone" not in r.text                     # no upload zone here (files have own page)
 
     @pytest.mark.asyncio
     async def test_admin_allowed_below_admin_redirected(self, ui_client):
@@ -8305,18 +8309,18 @@ class TestCompanyAllFilesView:
 
 
 class TestCompanyLetterhead:
-    """Document letterhead reads the scalar identity (name/phone/tax_id/email) from company settings -
-    the company-details form is the edit point - and the address from the self-contact's billing book."""
+    """Document letterhead reads identity (name/phone/tax_id/email + billing address) from the company's
+    self-contact - the Contact Info card / address book is the edit point - falling back to settings."""
 
     @pytest.mark.asyncio
-    async def test_scalars_from_settings_address_from_self_contact(self):
+    async def test_identity_from_self_contact(self):
         from ui.routes.documents import _company_letterhead
         with (
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test", "settings": {"self_contact_id": "contact:self"}})),
-            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Workspace", "settings": {"self_contact_id": "contact:self"}})),
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test", "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]})),
         ):
             lh = await _company_letterhead("tok")
-        assert lh["company_name"] == "Real Co Ltd"          # from company settings (the form)
+        assert lh["company_name"] == "Real Co Ltd"          # from the self-contact, not the workspace name
         assert lh["company_address"] == "1 Main St, Town"   # composed from the self-contact billing addr
         assert lh["company_tax_id"] == "TAX9"
         assert lh["company_phone"] == "555"
@@ -8334,19 +8338,21 @@ class TestCompanyLetterhead:
         assert lh["company_address"] == "Old Addr"
 
 
-class TestCompanyDetailsFormMoved:
-    """The company-details form moved out of the settings General tab onto Finance > Company Details:
-    the settings tab no longer renders its edit cells, the form component does."""
+class TestCompanySettingsCardMoved:
+    """The company regional settings moved out of the settings General tab onto the Company Details
+    settings card: currency/timezone/fiscal are editable there, and language is omitted (header switcher)."""
 
-    def test_form_fields_gone_from_settings_present_in_form(self):
-        from ui.routes.settings import _company_tab, _company_details_form
+    def test_regional_fields_in_card_not_in_settings_tab(self):
+        from ui.routes.settings import _company_tab, _company_settings_card
         from fasthtml.common import to_xml as _to_xml
         company = {"name": "Co", "settings": {}}
         settings_html = _to_xml(_company_tab(company))
-        form_html = _to_xml(_company_details_form(company))
-        for key in ("name", "tax_id", "phone", "email", "currency", "timezone", "fiscal_year_start"):
+        card_html = _to_xml(_company_settings_card(company))
+        for key in ("currency", "timezone", "fiscal_year_start"):
             assert f"/settings/company/{key}/edit" not in settings_html, f"{key} should not be in the settings tab"
-            assert f"/settings/company/{key}/edit" in form_html, f"{key} should be in the company-details form"
+            assert f"/settings/company/{key}/edit" in card_html, f"{key} should be in the settings card"
+        # Language is set from the header switcher, so it is not duplicated on the card.
+        assert "/settings/company/language" not in card_html
 
 
 class TestCalculateDueDate:

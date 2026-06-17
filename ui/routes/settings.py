@@ -3067,51 +3067,25 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
     )
 
 
-def _company_details_form(company: dict, lang: str = "en") -> FT:
-    """The company identity form (name + currency/timezone/fiscal + language), edited inline via the
-    existing /settings/company/{field} routes. Rendered on Finance > Company Details (moved out of the
-    settings General tab so company info is managed in one place)."""
-    # Name + contact identity (tax_id/phone/email used on document letterhead) + regional settings. The
-    # address itself is managed in the address book below this form (self-contact billing/shipping).
+def _company_settings_card(company: dict, lang: str = "en") -> FT:
+    """The company's regional settings (Currency / Timezone / Fiscal Year Start), edited inline via the
+    existing /settings/company/{field} routes. Sits to the right of the Contact Info card on Company
+    Details, mirroring the customer/vendor settings card. Language is omitted - it is set from the header
+    language switcher, so duplicating it here would be cruft."""
     fields = [
-        ("name", t("label.company_name", lang)),
-        ("tax_id", t("label.tax_id", lang)),
-        ("phone", t("label.phone", lang)),
-        ("email", t("label.email", lang)),
         ("currency", t("label.currency", lang)),
         ("timezone", t("label.timezone", lang)),
         ("fiscal_year_start", t("label.fiscal_year_start", lang)),
     ]
-    from pathlib import Path as _Path2
-    _LANGUAGES = sorted(
-        [(p.stem, t(f"settings.language_{p.stem}", lang))
-         for p in (_Path2(__file__).parent.parent / "locales").glob("*.json")],
-        key=lambda x: x[1],
-    )
-    lang_row = Tr(
-        Td(t("settings.language_label", lang), cls="detail-label"),
-        Td(
-            Select(
-                *[Option(label, value=code, selected=(code == lang)) for code, label in _LANGUAGES],
-                name="language",
-                hx_post="/settings/company/language",
-                hx_target="this",
-                hx_swap="outerHTML",
-                hx_trigger="change",
-                cls="cell-input cell-input--select",
-            ),
-        ),
-    )
     flat = {**company, **(company.get("settings") or {})}
     return Div(
-        H3(t("settings.company_details", lang), cls="section-title"),
+        H3(t("page.settings", lang), cls="section-title"),
         Table(
             *[Tr(Td(label, cls="detail-label"), _company_display_cell(key, flat.get(key)))
               for key, label in fields],
-            lang_row,
             cls="detail-table",
         ),
-        cls="section-card",
+        cls="detail-card section-card",
     )
 
 

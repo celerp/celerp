@@ -437,8 +437,9 @@ def _tab_bar(cid: str, active: str = "documents") -> FT:
     )
 
 
-def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: str = "") -> FT:
-    """Documents tab content: table of related docs + file upload zone."""
+def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: str = "", show_files: bool = True) -> FT:
+    """Documents tab content: table of related docs (+ the file upload zone unless show_files=False).
+    The Company Details page passes show_files=False because company files have their own page."""
     # Related documents table
     if not docs:
         docs_section = P(t("label.no_documents_yet"), cls="empty-state-msg")
@@ -462,8 +463,8 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
             cls="data-table",
         )
 
-    # Files / upload section
-    if contact is not None and contact_id:
+    # Files / upload section (suppressed on the Company Details page - files live on Company Files)
+    if show_files and contact is not None and contact_id:
         files_content = _files_section(contact, contact_id, docs)
     else:
         files_content = ""
@@ -1165,17 +1166,28 @@ def setup_routes(app):
             company = await api.get_company(token)
         except Exception:
             company = {}
-        # The page is the company's identity: the company-details form (moved here from settings) plus
-        # the self-contact's billing/shipping address book (same two-column layout as customers/vendors).
-        # No contact-info card, settings card, tags or files section - those live elsewhere (files have
-        # their own Company Files page).
-        from ui.routes.settings import _company_details_form
+        try:
+            docs_resp = await api.list_contact_docs(token, sid, {"limit": 999})
+            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
+        except Exception:
+            docs = []
+        # Organized like a customer/vendor page: Contact Info card (the company's identity - name, email,
+        # phone, tax id) on the left, a Settings card (currency/timezone/fiscal) on the right, then the
+        # billing/shipping address book, then the Documents/Notes/Activity tabs. The files upload zone is
+        # suppressed here - company files have their own page. No tags / financial cards.
+        from ui.routes.settings import _company_settings_card
         from ui.i18n import get_lang
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", None)]),
             page_header("Company Details"),
-            _company_details_form(company, get_lang(request)),
+            Div(
+                Div(_contact_info_card(contact), cls="detail-col-left"),
+                Div(_company_settings_card(company, get_lang(request)), cls="detail-col-right"),
+                cls="detail-layout",
+            ),
             _addresses_section(contact),
+            _tab_bar(sid),
+            Div(_documents_tab(docs, contact, sid, show_files=False), id="tab-content"),
             title="Company Details - Celerp", nav_active="company-details",
             extra_head=_phone_head_items(), request=request,
         )

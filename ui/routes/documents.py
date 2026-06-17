@@ -31,10 +31,9 @@ def _compose_company_address(a: dict) -> str:
 async def _company_letterhead(token: str) -> dict:
     """The company's letterhead identity (name/address/phone/tax_id/email) for documents.
 
-    The company-details form (Finance > Company Details) is the edit point and writes company settings,
-    so name/phone/tax_id/email are read from there (with the self-contact as a fallback). The address
-    comes from the company's own (self-)contact billing address - the same address book shown on that
-    page - falling back to the legacy settings address."""
+    The company's identity is edited on its self-contact (the Contact Info card + address book on Finance
+    > Company Details), so name/phone/tax_id/email and the billing address are read from there - falling
+    back to company settings for legacy/unmigrated data."""
     company = await api.get_company(token)
     self_id = (company.get("settings") or {}).get("self_contact_id")
     contact: dict = {}
@@ -55,11 +54,11 @@ async def _company_letterhead(token: str) -> dict:
     primary = next((a for a in addrs if a.get("address_type") == "billing"), None) or (addrs[0] if addrs else None)
     address = (_compose_company_address(primary) if primary else "") or unwrap_address(company.get("address")) or ""
     return {
-        "company_name": company.get("name") or contact.get("name") or "",
+        "company_name": contact.get("name") or company.get("name") or "",
         "company_address": address,
-        "company_phone": company.get("phone") or contact.get("phone") or "",
-        "company_tax_id": company.get("tax_id") or contact.get("tax_id") or "",
-        "company_email": company.get("email") or contact.get("email") or "",
+        "company_phone": contact.get("phone") or company.get("phone") or "",
+        "company_tax_id": contact.get("tax_id") or company.get("tax_id") or "",
+        "company_email": contact.get("email") or company.get("email") or "",
     }
 
 
