@@ -72,10 +72,10 @@ async def test_audit_adjustment_uses_canonical_inventory_account(client):
     item = (await client.post("/items", headers=_h(t), json={
         "sku": "AUD-RECON", "name": "W", "quantity": 10, "sell_by": "piece", "cost_total": 100,
         "location_id": loc, "barcode": "55510001"})).json()["id"]
-    audit = (await client.post("/audits", headers=_h(t), json={"location_id": loc})).json()["id"]
-    await client.patch(f"/audits/{audit}/line/{item}", headers=_h(t), json={"counted_qty": 8})  # shrink 2 -> 20
-    await client.post(f"/audits/{audit}/done", headers=_h(t))
-    assert (await client.post(f"/audits/{audit}/adjust", headers=_h(t))).status_code == 200
+    audit = (await client.post("/lists/audit", headers=_h(t), json={"location_id": loc})).json()["id"]
+    assert (await client.post(f"/lists/{audit}/finalize", headers=_h(t))).status_code == 200
+    await client.patch(f"/lists/{audit}/line/{item}", headers=_h(t), json={"counted_qty": 8})  # shrink 2 -> 20
+    assert (await client.post(f"/lists/{audit}/adjust", headers=_h(t))).status_code == 200
 
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(t))).json()["items"]
     je = next(e for e in ledger if audit in (e["data"].get("memo") or "") and e["data"].get("entries"))

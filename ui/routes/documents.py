@@ -92,7 +92,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Lists constants
 # ---------------------------------------------------------------------------
-_LIST_TYPES = ["quotation", "transfer", "audit"]
+from celerp.services.list_behavior import (
+    behavior as _list_behavior, status_label as _list_status_label,
+    LIST_TYPES as _REG_LIST_TYPES, DRAFT as _LD, FINALIZED as _LF, CLOSED as _LC, VOID as _LV,
+)
+# Selectable list types come straight from the behaviour registry (one source — adding a type
+# there surfaces it here automatically).
+_LIST_TYPES = list(_REG_LIST_TYPES)
 _LIST_DATE_FIELDS = {"date", "link_expiry"}
 
 _PER_PAGE = 50
@@ -110,22 +116,29 @@ _INVOICE_LAYOUT_DOC_TYPES: frozenset[str] = frozenset({"invoice", "memo", "list"
 # Internal demand docs that carry no money: hide price / discount / tax / total columns and the
 # financial totals panel. A production order is invoice-to-self demand, not a sale.
 _NO_MONEY_DOC_TYPES: frozenset[str] = frozenset({"production_order"})
-# List facets that carry no money (same hiding mechanism as _NO_MONEY_DOC_TYPES).
-_NO_MONEY_LIST_TYPES: frozenset[str] = frozenset({"transfer", "audit"})
-
-
-def _list_column_policy(doc_type: str, list_type: str) -> dict:
+def _list_column_policy(doc_type: str, list_type: str, status: str | None = None) -> dict:
     """Single source of truth for type-driven columns in the list line table.
 
+    For list docs this defers to the behaviour registry (money flag + extra columns), so a new
+    list type needs no edit here. `counted` is editable only in the finalized (counting) stage.
     Read by header builders, row builders, the no-money class, and the totals/terms gates.
     """
-    no_money = (doc_type in _NO_MONEY_DOC_TYPES) or (doc_type == "list" and list_type in _NO_MONEY_LIST_TYPES)
-    is_audit = doc_type == "list" and list_type == "audit"
+    if doc_type == "list":
+        b = _list_behavior(list_type)
+        is_audit = "counted" in b.extra_columns
+        return {
+            "no_money": not b.money,
+            "show_onhand": "on_hand" in b.extra_columns,
+            "show_counted": "counted" in b.extra_columns,
+            "audit": is_audit,
+            "counted_editable": is_audit and status == _LF,
+        }
     return {
-        "no_money": no_money,
-        "show_onhand": is_audit,
-        "show_counted": is_audit,
-        "audit": is_audit,
+        "no_money": doc_type in _NO_MONEY_DOC_TYPES,
+        "show_onhand": False,
+        "show_counted": False,
+        "audit": False,
+        "counted_editable": False,
     }
 # Mirror of doc_constants.FULFILLABLE_STATUSES - gates the fulfill/revert UI so we never
 # show the button on statuses the backend will reject.  Update when backend allowlist changes.
@@ -3869,9 +3882,8 @@ celerpUpdateBulkAlloc();
                 pass
 
         ref = lst.get("ref_id") or entity_id
-        status = lst.get("status", "draft")
-        status_label = status.replace("_", " ").title()
-        list_type_label = (lst.get("list_type") or "List").replace("_", " ").title()
+        status_label = _list_status_label(lst)
+        list_type_label = _list_behavior(lst.get("list_type")).label
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Lists", "/lists"), (f"{status_label} {ref}", None)]),
             page_header(f"{list_type_label} - {status_label} {ref}"),
@@ -3915,7 +3927,9 @@ celerpUpdateBulkAlloc();
                 onkeydown=esc_js + enter_js,
             )
         elif field == "status":
-            _list_statuses = ["draft", "sent", "accepted", "completed", "void", "converted"]
+            # Status is lifecycle-driven (finalize / terminal actions), not freely set; this branch
+            # only survives for any legacy cell that still mounts it. Offer the uniform spine.
+            _list_statuses = ["draft", "finalized", "closed", "void"]
             input_el = Select(
                 *[Option(s.replace("_", " ").title(), value=s, selected=(s == value)) for s in _list_statuses],
                 name="value",
@@ -3993,18 +4007,13 @@ celerpUpdateBulkAlloc();
             return _R("", status_code=401, headers={"HX-Redirect": "/login"})
         try:
             form = await request.form()
-            if action == "send":
-                await api.send_list(token, entity_id)
-            elif action == "accept":
-                await api.accept_list(token, entity_id)
-            elif action == "complete":
-                await api.complete_list(token, entity_id)
+            if action == "finalize":
+                await api.finalize_list(token, entity_id)
+            elif action == "revert_to_draft":
+                await api.revert_list(token, entity_id)
             elif action == "void":
                 reason = str(form.get("reason", "")).strip() or None
                 await api.void_list(token, entity_id, reason)
-            elif action == "revert_to_draft":
-                reason = str(form.get("reason", "")).strip() or None
-                await api.revert_list_to_draft(token, entity_id, reason)
             elif action == "delete":
                 await api.delete_list(token, entity_id)
                 list_type = str(form.get("list_type", "")).strip() or "quotation"
@@ -4018,9 +4027,10 @@ celerpUpdateBulkAlloc();
             elif action == "convert-memo":
                 result = await api.convert_list(token, entity_id, "memo")
                 return _R("", status_code=204, headers={"HX-Redirect": f"/docs/{result['target_doc_id']}"})
-            elif action in ("done", "reopen", "adjust", "undo_adjust"):
-                api_action = "undo-adjust" if action == "undo_adjust" else action
-                await api.audit_action(token, entity_id, api_action)
+            elif action == "zero_uncounted":
+                await api.zero_uncounted(token, entity_id)
+            elif action in ("adjust", "undo-adjust", "receive"):
+                await api.list_action(token, entity_id, action)
             else:
                 return _R("", status_code=400)
         except APIError as e:
@@ -4061,65 +4071,87 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
-        # Build rows: reuse shared helpers via _audit_editable_row
-        rows = [_audit_editable_row(entity_id, li, item_meta_map) for li in line_items]
+        # Counts are editable only while the audit is finalized (counting stage).
+        _counted_editable = lst.get("status") == _LF
+        rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable) for li in line_items]
         if not rows:
             rows = [Tr(Td("No items. Scan a barcode to add.", colspan="4", cls="empty-row"))]
         return Tbody(*rows, id="line-body")
 
-    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict) -> FT:
-        """Shared audit row builder used by both _doc_detail and the scan re-render."""
+    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True) -> FT:
+        """Shared audit row builder for the scan re-render. On-hand prefers the snapshot frozen at
+        Finalize (else live), and Counted is click-to-edit only while counting (counted_editable)."""
         from ui.components.table import EMPTY as _EMPTY
         item_key = li.get("item_id") or li.get("entity_id") or ""
         audited = li.get("audited_at") is not None
         adjusted = bool(li.get("adjusted"))
-        onhand = item_meta_map.get(item_key, {}).get("quantity")
+        onhand = li.get("on_hand")
+        if onhand is None:
+            onhand = item_meta_map.get(item_key, {}).get("quantity")
         counted = li.get("counted_qty")
         counted_display = f"{float(counted):g}" if counted is not None else _EMPTY
         edit_url = f"/lists/{audit_id}/line/{item_key}/counted/edit"
 
         onhand_td = Td(f"{float(onhand):g}" if onhand is not None else "--", cls="cell--number col-onhand")
-        counted_td = Td(
-            Div(
-                Span(counted_display,
-                     hx_get=edit_url,
-                     hx_target="closest .editable-cell",
-                     hx_swap="outerHTML",
-                     cls="editable-cell",
-                     title="Click to edit count"),
-                cls="editable-cell",
-            ),
-            cls="cell--number col-counted",
-        )
+        if counted_editable:
+            counted_td = Td(
+                Div(
+                    Span(counted_display,
+                         hx_get=edit_url,
+                         hx_target="closest .editable-cell",
+                         hx_swap="outerHTML",
+                         cls="editable-cell",
+                         title="Click to edit count"),
+                    cls="editable-cell",
+                ),
+                cls="cell--number col-counted",
+            )
+        else:
+            counted_td = Td(counted_display, cls="cell--number col-counted")
         qty = float(li.get("quantity", 0) or 0)
         row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
+        # Must mirror the editable header's FULL column structure (checkbox + hidden money cells) so
+        # the scan-swapped tbody stays aligned. Audit identity is static text (never inputs); the
+        # money/total cells are empty placeholders hidden by the doc-lines--no-money CSS.
         return Tr(
-            Td(li.get("sku") or _EMPTY),
-            Td(li.get("name") or li.get("description") or _EMPTY),
-            Td(f"{qty:g}" if qty else "1", cls="col-qty"),
+            Td(Input(type="checkbox", cls="li-select", value=item_key), cls="col-checkbox li-checkbox-cell"),
+            Td(li.get("sku") or _EMPTY, cls="col-sku"),
+            Td(li.get("name") or li.get("description") or _EMPTY, cls="col-desc"),
+            Td(f"{qty:g}" if qty else "--", cls="col-qty"),
+            Td("", cls="col-unit-price"), Td("", cls="col-disc"), Td("", cls="col-tax"),
+            Td("", cls="cell--number col-total"),
             onhand_td,
             counted_td,
             cls=row_cls,
         )
 
     @app.post("/lists/{entity_id}/scan")
-    async def list_audit_scan(request: Request, entity_id: str):
-        """Scan a barcode for an audit - returns re-rendered #line-body tbody for swap."""
+    async def list_scan(request: Request, entity_id: str):
+        """One scan endpoint for every list type (the client fork is gone — DRY). The backend
+        dispatches on (list_type, status); here we only choose the response shape:
+
+        - audit (the rapid-scan case): swap the re-rendered #line-body tbody for speed;
+        - quotation / transfer: reload via HX-Refresh so the correct column layout renders through
+          the same detail renderer (no duplicated row builder).
+        """
+        from starlette.responses import Response as _R
         from fasthtml.common import to_xml
         token = _token(request)
         if not token:
             return _action_error("Session expired.")
         form = await request.form()
         barcode = str(form.get("barcode", "")).strip()
+        price_list = str(form.get("price_list", "")).strip() or None
         if not barcode:
-            tbody = await _audit_line_tbody(token, entity_id)
-            return HTMLResponse(to_xml(tbody))
+            return _R("", status_code=204)
         try:
-            await api.scan_audit(token, entity_id, barcode)
+            await api.scan_list(token, entity_id, barcode, price_list)
         except APIError as e:
             return _action_error(e.detail)
-        tbody = await _audit_line_tbody(token, entity_id)
-        return HTMLResponse(to_xml(tbody))
+        lst = await api.get_list(token, entity_id)
+        if (lst.get("list_type") or "") == "audit":
+            return HTMLResponse(to_xml(await _audit_line_tbody(token, entity_id)))
+        return _R("", status_code=204, headers={"HX-Refresh": "true"})
 
     @app.post("/lists/{entity_id}/line/{item_id}")
     async def list_audit_set_count(request: Request, entity_id: str, item_id: str):
@@ -5000,9 +5032,11 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     doc_type = doc.get("doc_type", "")
     is_draft = status == "draft"
     list_type = (doc.get("list_type") or "") if doc_type == "list" else ""
-    # Audits are editable in unaudited/audited states; stock_adjusted is frozen (read-only).
-    is_editable = is_draft or (doc_type == "list" and list_type == "audit" and status != "stock_adjusted")
-    pol = _list_column_policy(doc_type, list_type)
+    pol = _list_column_policy(doc_type, list_type, status)
+    # The interactive line section renders while BUILDING (draft, any type) or COUNTING (a finalized
+    # audit: scan-to-count + editable Counted cells). Line structure edits are draft-only; a finalized
+    # audit only gates the Counted cells open (pol["counted_editable"]).
+    is_editable = is_draft or (pol["audit"] and status == _LF)
     _is_vendor_doc = doc_type in ("bill", "purchase_order", "consignment_in")
     ref = _pick("ref_id", "doc_number", "ref", "external_id") or entity_id
     from celerp.services.auth import ROLE_LEVELS as _RL
@@ -5031,8 +5065,9 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
     list_type_selector = ""
     if is_list:
         _current_lt = doc.get("list_type") or "quotation"
-        # Show the editable dropdown whenever the doc is editable (draft or open audit).
-        if is_editable:
+        # Type is switchable only while a DRAFT (a finalized list is locked to its type); otherwise
+        # show a read-only badge. Patching list_type after finalize is rejected server-side too.
+        if is_draft:
             list_type_selector = Div(
                 Span(t("doc.list_type"), cls="meta-label"),
                 Select(
@@ -5088,30 +5123,35 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             Button(t("btn.convert_to_vendor_bill"), hx_post=f"/docs/{entity_id}/convert",
                    hx_swap="none", cls="btn btn--secondary")
         )
-    # List-specific lifecycle buttons
+    # List lifecycle buttons — uniform across every type, driven by the behaviour registry
+    # (a list behaves like a list whatever its type: same slots, same go-back, same next step).
     if is_list:
-        if pol["audit"]:
-            # Audit lifecycle actions — shown in the shared primary action slot.
-            if status == "unaudited":
-                action_btns_left.append(Button("Done auditing", hx_post=f"/lists/{entity_id}/action/done", hx_swap="none", cls="btn btn--primary"))
-            if status == "audited":
-                action_btns_left.append(Button("Adjust stock", hx_post=f"/lists/{entity_id}/action/adjust", hx_swap="none", cls="btn btn--primary",
-                                                hx_confirm="Apply the counted quantities to stock? This posts a journal entry."))
-                action_btns_left.append(Button("Reopen", hx_post=f"/lists/{entity_id}/action/reopen", hx_swap="none", cls="btn btn--secondary"))
-            if status == "stock_adjusted":
-                action_btns_left.append(Button("Undo stock adjustment", hx_post=f"/lists/{entity_id}/action/undo_adjust", hx_swap="none", cls="btn btn--secondary",
-                                                hx_confirm="Reverse this audit's stock adjustment?"))
-        else:
-            if status == "draft":
-                action_btns_left.append(Button(t("btn.send"), hx_post=f"/lists/{entity_id}/action/send", hx_swap="none", cls="btn btn--primary"))
-            if status == "sent":
-                action_btns_left.append(Button(t("btn.accept"), hx_post=f"/lists/{entity_id}/action/accept", hx_swap="none", cls="btn btn--primary"))
-            if status == "accepted":
-                action_btns_left.append(Button(t("btn.complete"), hx_post=f"/lists/{entity_id}/action/complete", hx_swap="none", cls="btn btn--primary"))
-            if status not in ("void", "converted"):
-                action_btns_left.append(Button(t("btn.convert"), hx_post=f"/lists/{entity_id}/action/convert-invoice", hx_swap="none", cls="btn btn--secondary"))
-                action_btns_left.append(Button(t("btn.convert_to_memo"), hx_post=f"/lists/{entity_id}/action/convert-memo", hx_swap="none", cls="btn btn--secondary"))
-        action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate", hx_swap="none", cls="btn btn--secondary"))
+        _lb = _list_behavior(list_type)
+        if status == _LD:
+            # Draft: the single "what's next" cue for every type is Finalize (GDR 2b).
+            action_btns_left.append(Button(_lb.finalize_label, hx_post=f"/lists/{entity_id}/action/finalize",
+                                           hx_swap="none", cls="btn btn--primary"))
+        elif status == _LF:
+            # Finalized: this type's terminal action(s) in the same primary slot.
+            for _ta in _lb.terminal:
+                _attrs = {"hx_confirm": _ta.confirm} if _ta.confirm else {}
+                action_btns_left.append(Button(_ta.label, hx_post=f"/lists/{entity_id}/action/{_ta.key}",
+                                               hx_swap="none", cls="btn btn--primary", **_attrs))
+            if pol["audit"]:
+                # Visible bulk action (not a hidden mode): zero-fill uncounted lines (GDR 2d/2f).
+                action_btns_left.append(Button("Set uncounted to 0", hx_post=f"/lists/{entity_id}/action/zero_uncounted",
+                                               hx_swap="none", cls="btn btn--secondary",
+                                               hx_confirm="Write 0 into every uncounted line? You can edit any of them back afterwards."))
+            # Go back, identically for every type (GDR 2c), until a terminal action has closed it.
+            action_btns_left.append(Button(t("doc.revert_to_draft"), hx_post=f"/lists/{entity_id}/action/revert_to_draft",
+                                           hx_swap="none", cls="btn btn--secondary"))
+        elif status == _LC and pol["audit"] and doc.get("result") == "stock_adjusted":
+            # Closed audit: the terminal stock adjustment is reversible (GDR 2a).
+            action_btns_left.append(Button("Undo stock adjustment", hx_post=f"/lists/{entity_id}/action/undo-adjust",
+                                           hx_swap="none", cls="btn btn--secondary",
+                                           hx_confirm="Reverse this audit's stock adjustment?"))
+        action_btns_left.append(Button(t("btn.duplicate"), hx_post=f"/lists/{entity_id}/action/duplicate",
+                                       hx_swap="none", cls="btn btn--secondary"))
     if status in ("draft", "sent") and not is_list:
         _finalize_labels = {
             "invoice": "Issue Invoice",
@@ -5549,9 +5589,14 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     cls="desc-measures"), cls="col-desc")
             else:
                 _desc_cell = Td(_desc_inner, cls="col-desc")
+            # Audit lines are a scan/seed-built manifest — identity is never typed. Render SKU /
+            # Description / Qty as static text (in every state) so nothing looks editable that isn't;
+            # only the Counted cell opens, and only while finalized. Keeps the full column structure.
+            if pol["audit"]:
+                _desc_cell = Td(li.get("description") or li.get("name") or "--", cls="col-desc")
             cells = [
                 Td(Input(type="checkbox", cls="li-select", value=li_entity_id), cls="col-checkbox li-checkbox-cell"),
-                Td(_sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
+                Td((li.get("sku") or "--") if pol["audit"] else _sku_input(li.get("sku", "") or "", li_entity_id), cls="col-sku"),
                 _desc_cell,
             ]
             if category_cell:
@@ -5560,17 +5605,21 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(receive_as_cell)
             _unit_span = Span(li.get("unit", "") or "", data_name="unit",
                               cls="meta-value meta-value--muted unit-label", style="font-size:12px;")
-            _qty_input = Input(type="number", value=str(qty), step="any",
-                               data_name="quantity", **{"data-qty-measure": _qty_measure},
-                               oninput="celerpFieldEdited(this); celerpSyncQtyMeasure(this)",
-                               onblur="celerpQtyBlur(this); celerpAutoSave()",
-                               disabled=bool(_qty_disabled),
-                               cls="cell-input cell-input--xs")
-            if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
-                # Quantity and its (read-only) unit share one cell; only the number edits.
-                cells.append(Td(Div(_qty_input, _unit_span, cls="qty-unit-wrap"), cls="col-qty"))
+            if pol["audit"]:
+                # Static qty (the system figure is On hand) — no editable input on a manifest line.
+                cells.append(Td(f"{float(qty):g}" if qty else "--", cls="col-qty"))
             else:
-                cells.append(Td(_qty_input, cls="col-qty"))
+                _qty_input = Input(type="number", value=str(qty), step="any",
+                                   data_name="quantity", **{"data-qty-measure": _qty_measure},
+                                   oninput="celerpFieldEdited(this); celerpSyncQtyMeasure(this)",
+                                   onblur="celerpQtyBlur(this); celerpAutoSave()",
+                                   disabled=bool(_qty_disabled),
+                                   cls="cell-input cell-input--xs")
+                if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
+                    # Quantity and its (read-only) unit share one cell; only the number edits.
+                    cells.append(Td(Div(_qty_input, _unit_span, cls="qty-unit-wrap"), cls="col-qty"))
+                else:
+                    cells.append(Td(_qty_input, cls="col-qty"))
                 cells.append(Td(_unit_span, cls="col-unit"))
             cells.extend([
                 Td(Input(type="number", value=str(price), step="any",
@@ -5600,11 +5649,17 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
             ])
             if pol["show_onhand"]:
                 _item_key = li.get("item_id") or li.get("entity_id") or ""
-                _onhand = (item_meta_map or {}).get(_item_key, {}).get("quantity")
+                _onhand = li.get("on_hand")  # frozen at Finalize; else the live qty
+                if _onhand is None:
+                    _onhand = (item_meta_map or {}).get(_item_key, {}).get("quantity")
                 cells.append(Td(f"{float(_onhand):g}" if _onhand is not None else "--", cls="cell--number col-onhand"))
             if pol["show_counted"]:
                 _item_key = li.get("item_id") or li.get("entity_id") or ""
-                cells.append(_counted_cell(entity_id, _item_key, li))
+                if pol["counted_editable"]:
+                    cells.append(_counted_cell(entity_id, _item_key, li))
+                else:
+                    _cq = li.get("counted_qty")
+                    cells.append(Td(f"{float(_cq):g}" if _cq is not None else "--", cls="cell--number col-counted"))
             audited = li.get("audited_at") is not None
             adjusted = bool(li.get("adjusted"))
             _row_cls = "data-row--adjusted" if adjusted else ("data-row--audited" if audited else "")
@@ -5796,13 +5851,16 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                     _line_thead,
                     Tbody(*rows, id=line_body_id),
                     cls="data-table doc-lines" + (" doc-lines--invoice" if is_invoice_layout else "")
-                        + (" doc-lines--no-money" if pol["no_money"] else ""),
+                        + (" doc-lines--no-money" if pol["no_money"] else "")
+                    + (" doc-lines--audit" if pol["audit"] else ""),
                 ),
                 cls="table-scroll-wrap",
             ),
             Div(
+                # Audits build their manifest by scanning / location seed, not manual rows — no
+                # "Add item" affordance (and none at all on a locked manifest).
                 Button(t("btn._add_item"), type="button", cls="btn btn--secondary",
-                       onclick="celerpAddLine()"),
+                       onclick="celerpAddLine()") if not pol["audit"] else None,
                 Span("", id="save-status", cls="save-status"),
                 cls="line-actions gap-sm",
             ),
@@ -5813,7 +5871,7 @@ const _CELERP_TAXES = {_json.dumps(_taxes_list)};
 const _CELERP_DEFAULT_TAX = {repr(_default_tax_value)};
 /* ── Price list / doc-type helpers ── */
 const _CELERP_DOC_TYPE = {repr(doc_type)};
-const _CELERP_IS_AUDIT = {repr("true" if pol["audit"] else "false")};
+const _CELERP_IS_LIST = {repr("true" if is_list else "false")};
 function _celerpPriceListParam() {{
     const plSelect = document.getElementById('doc-price-list');
     return plSelect ? '&price_list=' + encodeURIComponent(plSelect.value) : '';
@@ -5833,11 +5891,16 @@ function _celerpDocTypeParam() {{
         if (!code) return;
         scanStatus.textContent = 'Scanning...';
         scanStatus.className = 'scan-bar-status';
-        if (_CELERP_IS_AUDIT === 'true') {{
-            // Audit scan: server-side top-insert + highlight (GDR 2.n).
+        if (_CELERP_IS_LIST === 'true') {{
+            // Every list type scans through ONE server endpoint that dispatches on (type, status).
+            // The response is either a re-rendered tbody (audit fast-path) or an HX-Refresh (reload
+            // so the correct columns render via the same detail renderer). No client fork.
             try {{
                 const fd = new URLSearchParams({{barcode: code}});
+                const plSelect = document.getElementById('doc-price-list');
+                if (plSelect) fd.append('price_list', plSelect.value);
                 const resp = await fetch('/lists/' + _CELERP_EID + '/scan', {{method: 'POST', body: fd}});
+                if (resp.headers.get('HX-Refresh')) {{ location.reload(); return; }}
                 if (!resp.ok) {{
                     const txt = await resp.text();
                     scanStatus.textContent = '✗ ' + (txt || 'Scan error');
@@ -5855,7 +5918,7 @@ function _celerpDocTypeParam() {{
                 scanStatus.className = 'scan-bar-status scan-bar-status--err';
             }}
         }} else {{
-            // Standard catalog lookup: client-side clone + append.
+            // Documents (invoices, POs, ...): client-side catalog lookup + append.
             try {{
                 const resp = await fetch('/docs/catalog-lookup?sku=' + encodeURIComponent(code) + _celerpPriceListParam() + _celerpDocTypeParam());
                 if (!resp.ok) throw new Error('lookup failed');
@@ -6641,7 +6704,7 @@ async function celerpCsvImport(input, entityId) {{
             cells.extend([
                 Td(qty_label(li), cls="col-qty"),
                 Td(format_value(li.get("unit_price"), "money"), cls="cell--number col-unit-price"),
-                Td(f"{discount_pct:.1f}%" if discount_pct else "-", cls="col-disc"),
+                Td(f"{discount_pct:.1f}%" if discount_pct else "--", cls="col-disc"),
                 Td(format_value(li.get("tax_rate")), cls="col-tax"),
             ])
             if doc_type in ("purchase_order", "bill"):
@@ -6651,7 +6714,9 @@ async function celerpCsvImport(input, entityId) {{
             cells.append(Td(format_value(line_total, "money"), cls="cell--number col-total"))
             if pol["show_onhand"]:
                 _item_key = li.get("item_id") or li.get("entity_id") or ""
-                _onhand = (item_meta_map or {}).get(_item_key, {}).get("quantity")
+                _onhand = li.get("on_hand")  # frozen at Finalize; else the live qty
+                if _onhand is None:
+                    _onhand = (item_meta_map or {}).get(_item_key, {}).get("quantity")
                 cells.append(Td(f"{float(_onhand):g}" if _onhand is not None else "--", cls="cell--number col-onhand"))
             if pol["show_counted"]:
                 _cq = li.get("counted_qty")
@@ -6688,7 +6753,8 @@ async function celerpCsvImport(input, entityId) {{
                     Tr(Td(t("doc.no_line_items"), colspan=str(_colspan), cls="empty-state-msg"))
                 ]), id=_fin_bulk_id),
                 cls="data-table doc-lines" + (" doc-lines--fin-invoice" if doc_type in _INVOICE_LAYOUT_DOC_TYPES else "")
-                    + (" doc-lines--no-money" if pol["no_money"] else ""),
+                    + (" doc-lines--no-money" if pol["no_money"] else "")
+                    + (" doc-lines--audit" if pol["audit"] else ""),
             ),
             Script(f"""
 (function(){{
@@ -6869,7 +6935,11 @@ async function celerpCsvImport(input, entityId) {{
     ]
     if not is_list and not is_no_money:
         _contact_rows.append(Div(Div(t("doc.payment_terms"), cls="form-label"), _cell("payment_terms", doc.get("payment_terms")), cls="form-group"))
-    _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _cell("status", status), *_slot_badges, cls="form-group"))
+    # Lists show the friendly, type-aware lifecycle label (Sent / In transit / Counting / Converted /
+    # Adjusted / ...) — matching the page title — not the raw spine enum. Status is lifecycle-driven,
+    # so it is read-only here for lists.
+    _status_field = P(_list_status_label(doc), cls="meta-value") if is_list else _cell("status", status)
+    _contact_rows.append(Div(Div(t("doc.status"), cls="form-label"), _status_field, *_slot_badges, cls="form-group"))
     # Currency row: always show (except money-less internal docs); rate row only when foreign.
     if not is_no_money:
         _contact_rows.append(Div(Div(t("doc.currency"), cls="form-label"), _cell("currency", currency), cls="form-group"))

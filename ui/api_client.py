@@ -1258,46 +1258,47 @@ async def patch_list(token: str, entity_id: str, data: dict) -> dict:
         return _raise(await c.patch(f"/lists/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
-# ── Inventory audits (location-bound list_type=audit) ─────────────────────────
+# ── Inventory audits (a list_type=audit on the unified /lists lifecycle) ──────
 async def create_audit(token: str, location_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post("/audits", json={"location_id": location_id})).json()
+        return _raise(await c.post("/lists/audit", json={"location_id": location_id})).json()
 
 
 async def get_audit(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/audits/{entity_id}")).json()
+    return await get_list(token, entity_id)
 
 
-async def scan_audit(token: str, entity_id: str, barcode: str) -> dict:
+async def scan_list(token: str, entity_id: str, barcode: str, price_list: str | None = None) -> dict:
+    body: dict = {"barcode": barcode}
+    if price_list:
+        body["price_list"] = price_list
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/audits/{entity_id}/scan", json={"barcode": barcode})).json()
+        return _raise(await c.post(f"/lists/{entity_id}/scan", json=body)).json()
 
 
 async def set_audit_count(token: str, entity_id: str, item_id: str, counted_qty: float | None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.patch(f"/audits/{entity_id}/line/{item_id}", json={"counted_qty": counted_qty})).json()
+        return _raise(await c.patch(f"/lists/{entity_id}/line/{item_id}", json={"counted_qty": counted_qty})).json()
 
 
-async def audit_action(token: str, entity_id: str, action: str) -> dict:
-    """action in {done, reopen, adjust, undo-adjust}."""
+async def zero_uncounted(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/audits/{entity_id}/{action}")).json()
+        return _raise(await c.post(f"/lists/{entity_id}/lines/zero-uncounted")).json()
 
 
-async def send_list(token: str, entity_id: str) -> dict:
+async def list_action(token: str, entity_id: str, action: str) -> dict:
+    """Unified lifecycle/terminal action: finalize, revert-to-draft, adjust, undo-adjust, receive."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/send", json={})).json()
+        return _raise(await c.post(f"/lists/{entity_id}/{action}")).json()
 
 
-async def accept_list(token: str, entity_id: str) -> dict:
+async def finalize_list(token: str, entity_id: str) -> dict:
+    return await list_action(token, entity_id, "finalize")
+
+
+async def revert_list(token: str, entity_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/accept", json={})).json()
-
-
-async def complete_list(token: str, entity_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/complete", json={})).json()
+        return _raise(await c.post(f"/lists/{entity_id}/revert-to-draft", json={})).json()
 
 
 async def void_list(token: str, entity_id: str, reason: str | None = None) -> dict:

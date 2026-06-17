@@ -662,6 +662,9 @@ a:hover { text-decoration: underline; }
 .doc-lines--no-money th.col-disc,       .doc-lines--no-money td.col-disc,
 .doc-lines--no-money th.col-tax,        .doc-lines--no-money td.col-tax,
 .doc-lines--no-money th.col-total,      .doc-lines--no-money td.col-total { display: none; }
+/* Audit lines: the system figure is shown as On hand, so the generic Qty column is redundant —
+   hide it (cells remain in the row for alignment, like the money columns above). */
+.doc-lines--audit th.col-qty, .doc-lines--audit td.col-qty { display: none; }
 /* Invoice draft: the description cell holds the desc input plus inline editable
    PCS / WEIGHT for the secondary measure; the column is bordered off. */
 .doc-lines--invoice th.col-desc, .doc-lines--invoice td.col-desc {

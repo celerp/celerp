@@ -31,6 +31,9 @@ from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequen
 from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
+from celerp.services.list_behavior import (
+    DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, behavior, terminal_action, is_money_list,
+)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -2410,7 +2413,6 @@ class ListCreatePayload(BaseModel):
 
 
 ListPatch = DocPatch
-ListSendBody = DocSendBody
 ListVoidBody = DocVoidBody
 
 
@@ -2498,17 +2500,17 @@ async def get_list_summary(
     for row in rows:
         st = row.state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
-        if st != "void":
+        if st != VOID:
             total_value += float(row.state.get("total", 0) or 0)
-        if st == "converted":
+        if st == CLOSED and row.state.get("result") == "converted":
             ctt = row.state.get("converted_to_type") or ""
             if ctt == "memo":
                 converted_to_memo_count += 1
             elif ctt == "invoice":
                 converted_to_invoice_count += 1
-    draft_count = count_by_status.get("draft", 0)
-    void_count = count_by_status.get("void", 0)
-    all_issued_count = sum(v for k, v in count_by_status.items() if k not in ("draft", "void"))
+    draft_count = count_by_status.get(DRAFT, 0)
+    void_count = count_by_status.get(VOID, 0)
+    all_issued_count = sum(v for k, v in count_by_status.items() if k not in (DRAFT, VOID))
     return {
         "total_count": len(rows),
         "draft_count": draft_count,
@@ -2604,49 +2606,58 @@ async def patch_list(
     return {"event_id": entry.id}
 
 
-@lists_router.post("/{entity_id}/send")
-async def send_list(
+@lists_router.post("/{entity_id}/finalize")
+async def finalize_list(
     entity_id: str,
-    payload: ListSendBody = ListSendBody(),
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Lock a draft list (draft -> finalized). The single draft->open transition for every type.
+
+    Type-specific on-finalize (from the behaviour registry): a quotation records `sent_at`, a
+    transfer `issued_at`, an audit freezes each line's on-hand snapshot (for variance + a stable
+    On-hand column while counting). Counting / terminal actions happen in the finalized stage.
+    """
     row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") not in ("draft",):
-        raise HTTPException(status_code=409, detail="Can only send draft lists")
-    entry = await _emit_list(session, company_id, entity_id, "list.sent",
-                             payload.model_dump(exclude_none=True), user, payload.idempotency_key)
+    state = row.state
+    if state.get("status") != DRAFT:
+        raise HTTPException(status_code=409, detail="Only a draft list can be finalized")
+    lt = state.get("list_type") or DEFAULT_LIST_TYPE
+    milestone = behavior(lt).finalize_milestone
+    now = datetime.now(UTC).isoformat()
+    data: dict = {"status": FINALIZED, "finalized_at": now}
+    if milestone == "freeze_onhand":
+        lines = [dict(l) for l in (state.get("line_items") or [])]
+        for l in lines:
+            item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
+            l["on_hand"] = float(item.state.get("quantity") or 0) if (item and item.entity_type == "item") else 0.0
+        data["line_items"] = lines
+    elif milestone:
+        data[milestone] = now
+    entry = await _emit_list(session, company_id, entity_id, "list.finalized", data, user)
     await session.commit()
-    return {"event_id": entry.id}
+    return {"event_id": entry.id, "status": FINALIZED}
 
 
-@lists_router.post("/{entity_id}/accept")
-async def accept_list(
+@lists_router.post("/{entity_id}/revert-to-draft")
+async def revert_list_to_draft(
     entity_id: str,
+    payload: DocRevertBody = DocRevertBody(),
     company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Go back from finalized to draft, allowed only before a terminal action has run (GDR 2c)."""
     row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") != "sent":
-        raise HTTPException(status_code=409, detail="Can only accept sent lists")
-    entry = await _emit_list(session, company_id, entity_id, "list.accepted", {}, user)
-    await session.commit()
-    return {"event_id": entry.id}
-
-
-@lists_router.post("/{entity_id}/complete")
-async def complete_list(
-    entity_id: str,
-    company_id: str = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") != "accepted":
-        raise HTTPException(status_code=409, detail="Can only complete accepted lists")
-    entry = await _emit_list(session, company_id, entity_id, "list.completed", {}, user)
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409,
+                            detail="Only a finalized list (before its terminal action) can be reverted to draft")
+    event_data: dict = {"status": DRAFT, "reverted_by": str(user.id)}
+    if payload.reason:
+        event_data["reason"] = payload.reason
+    entry = await _emit_list(session, company_id, entity_id, "list.reverted", event_data, user)
     await session.commit()
     return {"event_id": entry.id}
 
@@ -2660,31 +2671,13 @@ async def void_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") == "void":
+    status = row.state.get("status")
+    if status == VOID:
         raise HTTPException(status_code=409, detail="Already voided")
+    if status == CLOSED:
+        raise HTTPException(status_code=409, detail="Cannot void a closed list; undo its terminal action first")
     entry = await _emit_list(session, company_id, entity_id, "list.voided",
                              payload.model_dump(exclude_none=True), user, payload.idempotency_key)
-    await session.commit()
-    return {"event_id": entry.id}
-
-
-@lists_router.post("/{entity_id}/revert-to-draft")
-async def revert_list_to_draft(
-    entity_id: str,
-    payload: DocRevertBody,
-    company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") != "sent":
-        raise HTTPException(status_code=409, detail="Only sent lists can be reverted to draft")
-    event_data: dict = {"reverted_by": str(user.id), "previous_status": "sent"}
-    if payload.reason:
-        event_data["reason"] = payload.reason
-    entry = await _emit_list(session, company_id, entity_id, "list.patched",
-                             {"status": "draft", **event_data}, user)
     await session.commit()
     return {"event_id": entry.id}
 
@@ -2718,25 +2711,29 @@ async def convert_list(
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
     state = row.state
-    if state.get("list_type") == "audit":
-        raise HTTPException(status_code=409, detail="Audit lists cannot be converted to a sales document")
-    if state.get("status") in ("void", "converted"):
-        raise HTTPException(status_code=409, detail="Cannot convert list in current status")
+    lt = state.get("list_type") or DEFAULT_LIST_TYPE
     if payload.target_type not in ("invoice", "memo"):
         raise HTTPException(status_code=422, detail="target_type must be 'invoice' or 'memo'")
+    if terminal_action(lt, f"convert-{payload.target_type}") is None:
+        raise HTTPException(status_code=409,
+                            detail=f"{behavior(lt).label} lists cannot be converted to a sales document")
+    if state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
 
     company = await session.get(Company, company_id)
     ref = next_doc_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
-    new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "list_type"}}
+    new_data = {k: v for k, v in state.items()
+                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at"}}
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
         source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
-    entry = await _emit_list(session, company_id, entity_id, "list.converted",
-                             {"target_doc_id": new_doc_id, "target_doc_type": payload.target_type}, user)
+    entry = await _emit_list(session, company_id, entity_id, "list.closed",
+                             {"result": "converted", "converted_to": new_doc_id,
+                              "converted_to_type": payload.target_type}, user)
     await session.commit()
     return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
@@ -3984,12 +3981,14 @@ async def delete_doc_file(
 
 
 # ---------------------------------------------------------------------------
-# Inventory Audit (a location-bound list_type="audit": scan to confirm presence,
-# optionally re-count, then adjust stock - all reversible). See
-# context/2026-0614-inventory-audit-scanner-plan.md.
+# Type-specific list activities, all on lists_router (one lifecycle, type strategies):
+#   - audit creation pre-seeds a draft manifest from a location;
+#   - /scan dispatches on (list_type, status) — draft always ADDS a line; finalized is
+#     type-specific (audit records presence, transfer receives, quotation is locked);
+#   - terminal actions close a finalized list: convert (quotation, above), adjust (audit),
+#     receive (transfer). Adjust + undo route stock through inventory events + auto_je.
+# See context/2026-0617-unified-lists-lifecycle-plan.md.
 # ---------------------------------------------------------------------------
-
-audits_router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # Physical item types an audit counts (services / non-stocked have no stock to count).
 _AUDIT_STOCK_TYPES = frozenset({"stocked", "component"})
@@ -4000,12 +3999,13 @@ class AuditCreateBody(BaseModel):
     idempotency_key: str | None = None
 
 
-class AuditScanBody(BaseModel):
+class ListScanBody(BaseModel):
     barcode: str
+    price_list: str | None = None  # money lists price the added line from this list (default Retail)
 
 
-class AuditCountBody(BaseModel):
-    counted_qty: float | None = None  # None clears the pending adjustment (no change)
+class ListCountBody(BaseModel):
+    counted_qty: float | None = None  # None clears the count (line skipped on adjust)
 
 
 def _audit_unit_cost(state: dict) -> float:
@@ -4029,8 +4029,8 @@ async def _get_audit(session: AsyncSession, company_id, entity_id: str) -> Proje
     return row
 
 
-async def _audit_update(session, company_id, entity_id, user, fields: dict):
-    """Emit list.updated carrying the given top-level field changes."""
+async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
+    """Emit list.updated carrying the given top-level field changes (used by every type)."""
     fc = {k: {"new": v} for k, v in fields.items()}
     return await _emit_list(session, company_id, entity_id, "list.updated", {"fields_changed": fc}, user)
 
@@ -4043,14 +4043,36 @@ async def _resolve_barcode(session, company_id, code: str):
     return hit or next((r for r in rows if str(r.state.get("sku") or "") == code), None)
 
 
-@audits_router.post("")
-async def create_audit(
+def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None) -> dict:
+    """Build a new line for a scanned item. Money lists carry a unit_price resolved from the chosen
+    price list (mirrors resolve_price: the list name, then the conventional `<name>_price` key)."""
+    st = item.state
+    line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
+            "description": st.get("name"), "barcode": st.get("barcode")}
+    if list_type == "audit":
+        # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
+        line["quantity"] = float(st.get("quantity") or 0)
+    else:
+        line["quantity"] = 1
+        if is_money_list(list_type):
+            pl = price_list or "Retail"
+            val = st.get(pl)
+            if val is None:
+                val = st.get(f"{pl.lower()}_price")
+            line["unit_price"] = float(val or 0)
+    return line
+
+
+@lists_router.post("/audit")
+async def create_audit_list(
     payload: AuditCreateBody,
     company_id=Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Create a location-bound audit pre-populated with the physical items at that location."""
+    """Create a location-bound audit as a DRAFT manifest pre-seeded with the location's physical
+    items. The manifest is reviewed/extended in draft (scan adds more); Finalize freezes each line's
+    on-hand snapshot, then counting happens in the finalized stage."""
     company = await session.get(Company, company_id)
     rows = (await session.execute(select(Projection).where(
         Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
@@ -4064,13 +4086,12 @@ async def create_audit(
         if (st.get("inventory_type") or "stocked") not in _AUDIT_STOCK_TYPES:
             continue
         lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
-                      "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0),
-                      "audited_at": None, "counted_qty": None})
+                      "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
     ref_id = next_doc_ref(company, "audit")
     entity_id = f"list:{ref_id}"
     if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
         raise HTTPException(status_code=409, detail=f"Audit number '{ref_id}' already exists")
-    data = {"list_type": "audit", "location_id": payload.location_id, "status": "unaudited",
+    data = {"list_type": "audit", "location_id": payload.location_id, "status": DRAFT,
             "ref_id": ref_id, "line_items": lines, "adjust_count": 0,
             "currency": company.settings.get("currency", "USD")}
     entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
@@ -4078,154 +4099,193 @@ async def create_audit(
     return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
 
 
-@audits_router.get("/{entity_id}")
-async def get_audit(entity_id: str, company_id=Depends(get_current_company_id),
-                    session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_audit(session, company_id, entity_id)
-    return row.state | {"id": row.entity_id}
-
-
-@audits_router.post("/{entity_id}/scan")
-async def scan_audit(
-    entity_id: str, payload: AuditScanBody,
+@lists_router.post("/{entity_id}/scan")
+async def scan_list(
+    entity_id: str, payload: ListScanBody,
     company_id=Depends(get_current_company_id), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Uniform scan rule: not on the list -> add + audit (top-insert); on the list but un-audited ->
-    audit (move to top); already audited -> reject. Unknown barcode -> reject."""
-    row = await _get_audit(session, company_id, entity_id)
-    if row.state.get("status") == "stock_adjusted":
-        raise HTTPException(status_code=409, detail="This audit's stock has been adjusted; reopen to scan again")
+    """One scan endpoint for every list type, dispatching on (list_type, status):
+
+    - DRAFT (all types): always ADD a line (audit dedups its manifest + moves to top; money lists
+      price the new line). No status change (GDR 2d) — building the list never finalizes it.
+    - FINALIZED audit: record presence (audited_at), add + audit if not yet on the manifest.
+    - FINALIZED transfer: scan-to-receive (records receipt on the line; the stock move is the
+      Phase 4 seam).
+    - FINALIZED quotation / any closed|void list: scanning is disabled (clear 409).
+    """
+    row = await _get_list(session, company_id, entity_id)
+    state = row.state
+    status = state.get("status")
+    lt = state.get("list_type") or DEFAULT_LIST_TYPE
     code = (payload.barcode or "").strip()
     if not code:
         raise HTTPException(status_code=422, detail="Empty scan")
     item = await _resolve_barcode(session, company_id, code)
     if item is None:
         raise HTTPException(status_code=404, detail=f"Unknown barcode or SKU: {code}")
-    now = datetime.now(UTC).isoformat()
-    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    lines = [dict(l) for l in (state.get("line_items") or [])]
     idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
-    if idx is None:
-        lines.insert(0, {"item_id": item.entity_id, "sku": item.state.get("sku"), "name": item.state.get("name"),
-                         "barcode": item.state.get("barcode"), "quantity": float(item.state.get("quantity") or 0),
-                         "audited_at": now, "counted_qty": None})
-        result_state = "added"
-    elif lines[idx].get("audited_at") is None:
-        ln = lines.pop(idx)
-        ln["audited_at"] = now
-        lines.insert(0, ln)
-        result_state = "audited"
-    else:
-        raise HTTPException(status_code=409, detail=f"Already scanned: {item.state.get('sku') or code}")
-    await _audit_update(session, company_id, entity_id, user, {"line_items": lines})
-    await session.commit()
-    return {"state": result_state, "item_id": item.entity_id, "sku": item.state.get("sku")}
+    now = datetime.now(UTC).isoformat()
+
+    if status == DRAFT:
+        if lt == "audit":
+            # Manifest is a set: move an existing line to top, else add it (no count yet).
+            if idx is not None:
+                lines.insert(0, lines.pop(idx))
+                result_state = "present"
+            else:
+                lines.insert(0, _scan_line_from_item(item, lt, None))
+                result_state = "added"
+        else:
+            lines.append(_scan_line_from_item(item, lt, payload.price_list))
+            result_state = "added"
+        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+        await session.commit()
+        return {"state": result_state, "item_id": item.entity_id, "sku": item.state.get("sku")}
+
+    if status != FINALIZED:
+        raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
+
+    scan_mode = behavior(lt).scan_finalized
+    if scan_mode == "count":  # audit: record presence (top-insert), add + audit if new
+        if idx is None:
+            line = _scan_line_from_item(item, lt, None)
+            line["on_hand"] = float(item.state.get("quantity") or 0)
+            line["audited_at"] = now
+            lines.insert(0, line)
+            result_state = "added"
+        elif lines[idx].get("audited_at") is None:
+            ln = lines.pop(idx)
+            ln["audited_at"] = now
+            lines.insert(0, ln)
+            result_state = "audited"
+        else:
+            raise HTTPException(status_code=409, detail=f"Already scanned: {item.state.get('sku') or code}")
+        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+        await session.commit()
+        return {"state": result_state, "item_id": item.entity_id, "sku": item.state.get("sku")}
+
+    if scan_mode == "receive":  # transfer: scan-to-receive (stock move is the Phase 4 seam)
+        if idx is None:
+            raise HTTPException(status_code=404, detail=f"{item.state.get('sku') or code} is not on this transfer")
+        lines[idx]["received_at"] = now
+        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+        await session.commit()
+        return {"state": "received", "item_id": item.entity_id, "sku": item.state.get("sku")}
+
+    raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
 
 
-@audits_router.patch("/{entity_id}/line/{item_id}")
+@lists_router.patch("/{entity_id}/line/{item_id}")
 async def set_audit_count(
-    entity_id: str, item_id: str, payload: AuditCountBody,
+    entity_id: str, item_id: str, payload: ListCountBody,
     company_id=Depends(get_current_company_id), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Set a line's physical count. Editable only while the audit is finalized (counting stage)."""
     row = await _get_audit(session, company_id, entity_id)
-    if row.state.get("status") == "stock_adjusted":
-        raise HTTPException(status_code=409, detail="Cannot edit an adjusted audit; reopen it first")
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Counts can only be entered on a finalized audit")
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Item is not on this audit")
     cq = payload.counted_qty
     lines[idx]["counted_qty"] = float(cq) if cq is not None else None
-    await _audit_update(session, company_id, entity_id, user, {"line_items": lines})
+    await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
     await session.commit()
     return {"ok": True}
 
 
-@audits_router.post("/{entity_id}/done")
-async def mark_audit_done(entity_id: str, company_id=Depends(get_current_company_id),
-                          user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
+@lists_router.post("/{entity_id}/lines/zero-uncounted")
+async def zero_uncounted_audit_lines(
+    entity_id: str, company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Bulk action: write 0 into every uncounted line. The zeros become visible, editable values the
+    user can review/undo (not a hidden 'treat-as-zero' mode); Adjust then treats them as any count."""
     row = await _get_audit(session, company_id, entity_id)
-    if row.state.get("status") != "unaudited":
-        raise HTTPException(status_code=409, detail="Audit is not in the unaudited state")
-    await _audit_update(session, company_id, entity_id, user, {"status": "audited"})
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Counts can only be entered on a finalized audit")
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    zeroed = 0
+    for l in lines:
+        if l.get("counted_qty") is None:
+            l["counted_qty"] = 0.0
+            zeroed += 1
+    await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
     await session.commit()
-    return {"ok": True}
+    return {"zeroed": zeroed}
 
 
-@audits_router.post("/{entity_id}/reopen")
-async def reopen_audit(entity_id: str, company_id=Depends(get_current_company_id),
-                       user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
-    row = await _get_audit(session, company_id, entity_id)
-    if row.state.get("status") != "audited":
-        raise HTTPException(status_code=409, detail="Only an audited (not yet adjusted) audit can be reopened")
-    await _audit_update(session, company_id, entity_id, user, {"status": "unaudited"})
-    await session.commit()
-    return {"ok": True}
-
-
-@audits_router.post("/{entity_id}/adjust")
+@lists_router.post("/{entity_id}/adjust")
 async def adjust_audit(
     entity_id: str, company_id=Depends(get_current_company_id),
     _: None = Depends(require_manager), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    """Apply each line's counted_qty to its item (manager/owner). Lines with counted_qty=None are
-    skipped. Posts a Shrinkage/Overage JE and records prior_qty so the action is undoable."""
+    """Audit terminal action: overwrite each counted line's item qty to its count (finalized ->
+    closed). The magnitude and the shrinkage/overage JE are computed against the LIVE item qty at
+    adjust time (decision 5.2) — `new_qty = counted`, `delta = counted - live`. Uncounted (blank)
+    lines are skipped and reported. Reversible via undo-adjust."""
     row = await _get_audit(session, company_id, entity_id)
-    if row.state.get("status") != "audited":
-        raise HTTPException(status_code=409, detail="Mark the audit done before adjusting stock")
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Finalize the count before adjusting stock")
     cycle = int(row.state.get("adjust_count") or 0)
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
     shrink_val = 0.0
     over_val = 0.0
     adjusted = 0
+    skipped = 0
     for l in lines:
         cq = l.get("counted_qty")
         if cq is None:
-            continue  # report-and-skip
+            skipped += 1  # report-and-skip (item qty untouched)
+            continue
         item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
         if item is None or item.entity_type != "item":
             continue
-        prior = float(item.state.get("quantity") or 0)
+        live = float(item.state.get("quantity") or 0)  # LIVE qty drives the delta + JE (decision 5.2)
         cqf = float(cq)
-        if abs(cqf - prior) < 1e-9:
+        if abs(cqf - live) < 1e-9:
             continue  # no change
         unit_cost = _audit_unit_cost(item.state)
-        if cqf < prior:
-            shrink_val += (prior - cqf) * unit_cost
+        if cqf < live:
+            shrink_val += (live - cqf) * unit_cost
         else:
-            over_val += (cqf - prior) * unit_cost
+            over_val += (cqf - live) * unit_cost
         await emit_event(
             session, company_id=company_id, entity_id=l["item_id"], entity_type="item",
             event_type="item.quantity.adjusted",
-            data={"new_qty": cqf, "reason": "audit", "source_list_id": entity_id, "prior_qty": prior},
+            data={"new_qty": cqf, "reason": "audit", "source_list_id": entity_id, "prior_qty": live},
             actor_id=user.id, location_id=None, source="audit", idempotency_key=str(uuid.uuid4()),
             metadata_={"audit_id": entity_id},
         )
-        l["prior_qty"] = prior
+        l["prior_qty"] = live
         l["adjusted"] = True
         adjusted += 1
     await auto_je.create_for_audit_adjustment(
         session, company_id=company_id, user_id=user.id, list_id=entity_id,
         shrinkage_value=shrink_val, overage_value=over_val, cycle=cycle,
     )
-    await _audit_update(session, company_id, entity_id, user,
-                        {"status": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1})
+    await _emit_list(session, company_id, entity_id, "list.closed",
+                     {"result": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1}, user)
     await session.commit()
-    return {"adjusted": adjusted, "shrinkage_value": round(shrink_val, 2), "overage_value": round(over_val, 2)}
+    return {"adjusted": adjusted, "skipped": skipped,
+            "shrinkage_value": round(shrink_val, 2), "overage_value": round(over_val, 2)}
 
 
-@audits_router.post("/{entity_id}/undo-adjust")
+@lists_router.post("/{entity_id}/undo-adjust")
 async def undo_audit_adjust(
     entity_id: str, company_id=Depends(get_current_company_id),
     _: None = Depends(require_manager), user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     """Reverse the last stock adjustment (manager/owner): restore each item's prior quantity and void
-    the audit JE. Returns the audit to the 'audited' state."""
+    the audit JE. Reopens the audit (closed -> finalized) so it can be re-counted or re-adjusted."""
     row = await _get_audit(session, company_id, entity_id)
-    if row.state.get("status") != "stock_adjusted":
+    if row.state.get("status") != CLOSED or row.state.get("result") != "stock_adjusted":
         raise HTTPException(status_code=409, detail="This audit has no adjustment to undo")
     cycle = int(row.state.get("adjust_count") or 1) - 1
     lines = [dict(l) for l in (row.state.get("line_items") or [])]
@@ -4242,6 +4302,24 @@ async def undo_audit_adjust(
             l.pop("prior_qty", None)
     await auto_je.void_for_audit_adjustment(session, company_id=company_id, user_id=user.id,
                                             list_id=entity_id, cycle=cycle)
-    await _audit_update(session, company_id, entity_id, user, {"status": "audited", "line_items": lines})
+    await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)
     await session.commit()
     return {"ok": True}
+
+
+@lists_router.post("/{entity_id}/receive")
+async def receive_transfer(
+    entity_id: str, company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Transfer terminal action: mark an issued (finalized) transfer received (finalized -> closed).
+    The physical stock move between locations is the Phase 4 seam — recorded here, applied later."""
+    row = await _get_list(session, company_id, entity_id)
+    if (row.state.get("list_type") or "") != "transfer":
+        raise HTTPException(status_code=409, detail="Only transfers can be received")
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Issue the transfer before receiving it")
+    entry = await _emit_list(session, company_id, entity_id, "list.closed",
+                             {"result": "received", "received_at": datetime.now(UTC).isoformat()}, user)
+    await session.commit()
+    return {"event_id": entry.id}

@@ -806,26 +806,29 @@ class ListPatched(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class ListSent(BaseModel):
-    sent_via: str | None = None
-    sent_to: str | None = None
+class ListFinalized(BaseModel):
+    """draft -> finalized. Carries status, finalize milestone(s), and (audit) the frozen snapshot."""
+    model_config = {"extra": "allow"}
 
 
-class ListAccepted(BaseModel):
-    notes: str | None = None
+class ListReverted(BaseModel):
+    """finalized -> draft (go back before a terminal action)."""
+    model_config = {"extra": "allow"}
 
 
-class ListCompleted(BaseModel):
-    notes: str | None = None
+class ListClosed(BaseModel):
+    """finalized -> closed. `result` is the terminal outcome; terminal-specific fields ride along."""
+    result: str
+    model_config = {"extra": "allow"}
+
+
+class ListReopened(BaseModel):
+    """closed -> finalized (undo a terminal action)."""
+    model_config = {"extra": "allow"}
 
 
 class ListVoided(BaseModel):
     reason: str | None = None
-
-
-class ListConverted(BaseModel):
-    target_doc_id: str
-    target_doc_type: str
 
 
 # ── Entity File schemas (shared by contacts, docs) ───────────────────────────
@@ -1006,11 +1009,11 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "list.created": ListCreated,
     "list.updated": ListUpdated,
     "list.patched": ListPatched,
-    "list.sent": ListSent,
-    "list.accepted": ListAccepted,
-    "list.completed": ListCompleted,
+    "list.finalized": ListFinalized,
+    "list.reverted": ListReverted,
+    "list.closed": ListClosed,
+    "list.reopened": ListReopened,
     "list.voided": ListVoided,
-    "list.converted": ListConverted,
 
     # Subscriptions
     "sub.created": SubCreated,

@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: LicenseRef-Proprietary
 """Browser tests for the inventory audit, which is just a `list` with list_type="audit".
 
-The audit renders through the SAME shared list/`_doc_detail` layout as a quotation/transfer
-(LIST TYPE dropdown, From/Customer chrome) and differs only in type-appropriate columns
-(On hand + Counted, money hidden) and actions (Done / Adjust stock / Undo). It is reached at
-`/lists/{id}` and `/lists/new-audit`; the old `/audits/*` page tree no longer exists.
+The audit renders through the SAME shared list/`_doc_detail` layout as a quotation/transfer and
+differs only in type-appropriate columns (On hand + Counted, money hidden) and the type's terminal
+action (Adjust stock). It rides the unified lifecycle draft -> finalized -> closed: a draft manifest
+is built, Finalize freezes on-hand and opens counting, then Adjust closes it (reversible via Undo).
+Reached at `/lists/{id}` and `/lists/new-audit`; the old `/audits/*` page tree no longer exists.
 
-Flow proven end to end: scan -> highlight, set count, Done -> Adjust stock (item qty changes)
--> Undo (reverts). Plus that other list types have no audit UI and `/audits/*` is gone.
+Flow proven end to end: finalize -> scan (highlight) -> count -> Adjust stock (item qty changes)
+-> Undo (reverts). Plus that other list types have no audit columns and `/audits/*` is gone.
 """
 from __future__ import annotations
 
@@ -29,27 +30,31 @@ def _seed_audit(api):
     api.post("/items", json={"sku": f"AUD-{tag}-B", "name": "Widget B", "sell_by": "piece",
              "quantity": 4, "barcode": bc_b, "location_id": str(loc_id)})
     a_id = a.json()["id"]
-    audit = api.post("/audits", json={"location_id": str(loc_id)})
+    audit = api.post("/lists/audit", json={"location_id": str(loc_id)})
     return audit.json()["id"], a_id, bc_a
 
 
 def test_audit_renders_as_shared_list_and_adjusts(page, ui_server, api):
-    """An audit renders as a normal list (dropdown + shared chrome, money hidden, On hand/Counted
-    shown), and scan -> count -> Done -> Adjust changes the item quantity; Undo reverts."""
+    """An audit renders as a normal list (money hidden, On hand/Counted shown). Finalize opens
+    counting; scan -> count -> Adjust changes the item quantity; Undo reverts."""
     audit_id, a_id, bc_a = _seed_audit(api)
 
     page.goto(f"{ui_server}/lists/{audit_id}", wait_until="domcontentloaded")
     page.wait_for_selector(".doc-detail", timeout=8000)
 
-    # Interchangeable list: the LIST TYPE selector is present (an open audit is editable, so it is a
-    # dropdown that can be switched to quotation/transfer).
-    assert page.locator(".list-type-bar select").count() >= 1, "LIST TYPE dropdown missing"
+    # Draft manifest: the LIST TYPE selector is an editable dropdown (type switchable in draft only).
+    assert page.locator(".list-type-bar select").count() >= 1, "LIST TYPE dropdown missing in draft"
     # Type-appropriate columns: On hand + Counted shown; the shared scan bar is present.
     assert page.locator(".col-counted").count() >= 1, "Counted column missing"
     assert page.locator(".col-onhand").count() >= 1, "On hand column missing"
     assert page.locator("#scan-bar-input").count() == 1, "shared scan bar missing"
 
-    # Scan item A -> its row highlights as audited.
+    # Finalize freezes on-hand and opens the counting stage.
+    assert page.request.post(f"{ui_server}/lists/{audit_id}/action/finalize").ok
+    page.goto(f"{ui_server}/lists/{audit_id}", wait_until="domcontentloaded")
+    page.wait_for_selector(".doc-detail", timeout=8000)
+
+    # Scan item A -> its row highlights as audited (presence recorded).
     page.locator("#scan-bar-input").fill(bc_a)
     page.locator("#scan-bar-input").press("Enter")
     page.wait_for_selector(".data-row--audited", timeout=8000)
@@ -58,19 +63,19 @@ def test_audit_renders_as_shared_list_and_adjusts(page, ui_server, api):
     # Set the counted qty to 8 via the line route (what the inline Counted cell posts).
     assert page.request.post(f"{ui_server}/lists/{audit_id}/line/{a_id}", form={"counted_qty": "8"}).ok
 
-    # Done auditing, then Adjust stock -> item A quantity becomes the counted 8.
-    assert page.request.post(f"{ui_server}/lists/{audit_id}/action/done").ok
+    # Adjust stock -> item A quantity becomes the counted 8.
     assert page.request.post(f"{ui_server}/lists/{audit_id}/action/adjust").ok
     assert api.get(f"/items/{a_id}").json()["quantity"] == 8
 
     # Undo stock adjustment -> back to 10.
-    assert page.request.post(f"{ui_server}/lists/{audit_id}/action/undo_adjust").ok
+    assert page.request.post(f"{ui_server}/lists/{audit_id}/action/undo-adjust").ok
     assert api.get(f"/items/{a_id}").json()["quantity"] == 10
 
 
 def test_audit_counted_blank_until_set(page, ui_server, api):
-    """An uncounted line shows '--' (not 0); a counted 0 is distinct from blank."""
+    """An uncounted line shows '--' (not 0); a counted 0 is distinct from blank (finalized stage)."""
     audit_id, a_id, _bc = _seed_audit(api)
+    assert page.request.post(f"{ui_server}/lists/{audit_id}/action/finalize").ok  # counting needs finalize
     page.goto(f"{ui_server}/lists/{audit_id}", wait_until="domcontentloaded")
     page.wait_for_selector(".col-counted", timeout=8000)
     texts = page.locator(".col-counted .editable-cell").all_inner_texts()
