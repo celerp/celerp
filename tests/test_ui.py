@@ -8109,6 +8109,40 @@ class TestModuleSlotInjection:
 # Payment terms auto-populate + due_date calculation tests
 # ---------------------------------------------------------------------------
 
+class TestListColumnPolicy:
+    """Audit On-hand/Counted columns belong to the counting stage (finalized/closed) only — a draft
+    audit is the build-the-manifest table, so reverting to draft drops those columns."""
+
+    def test_draft_audit_hides_counting_columns(self):
+        from ui.routes.documents import _list_column_policy
+        pol = _list_column_policy("list", "audit", "draft")
+        assert pol["audit"] is True
+        assert pol["show_onhand"] is False
+        assert pol["show_counted"] is False
+        assert pol["counted_editable"] is False
+
+    def test_finalized_audit_shows_counting_columns(self):
+        from ui.routes.documents import _list_column_policy
+        pol = _list_column_policy("list", "audit", "finalized")
+        assert pol["show_onhand"] is True
+        assert pol["show_counted"] is True
+        assert pol["counted_editable"] is True
+
+    def test_closed_audit_keeps_counting_columns_read_only(self):
+        from ui.routes.documents import _list_column_policy
+        pol = _list_column_policy("list", "audit", "closed")
+        assert pol["show_onhand"] is True
+        assert pol["show_counted"] is True
+        assert pol["counted_editable"] is False  # results view, not editable
+
+    def test_quotation_never_has_counting_columns(self):
+        from ui.routes.documents import _list_column_policy
+        pol = _list_column_policy("list", "quotation", "finalized")
+        assert pol["audit"] is False
+        assert pol["show_onhand"] is False
+        assert pol["show_counted"] is False
+
+
 class TestCalculateDueDate:
     """Unit tests for _calculate_due_date pure function."""
 

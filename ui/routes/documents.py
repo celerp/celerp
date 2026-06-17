@@ -126,10 +126,14 @@ def _list_column_policy(doc_type: str, list_type: str, status: str | None = None
     if doc_type == "list":
         b = _list_behavior(list_type)
         is_audit = "counted" in b.extra_columns
+        # On-hand/Counted belong to the counting stage only: on-hand is frozen AT Finalize and Counted
+        # is finalize-only. A draft audit is the build/seed-the-manifest table (sku/desc/qty), so those
+        # columns stay hidden until finalized (and remain on the closed results view).
+        counting = is_audit and status in (_LF, _LC)
         return {
             "no_money": not b.money,
-            "show_onhand": "on_hand" in b.extra_columns,
-            "show_counted": "counted" in b.extra_columns,
+            "show_onhand": ("on_hand" in b.extra_columns) and counting,
+            "show_counted": ("counted" in b.extra_columns) and counting,
             "audit": is_audit,
             "counted_editable": is_audit and status == _LF,
         }
@@ -4112,16 +4116,21 @@ celerpUpdateBulkAlloc();
         except Exception:
             pass
 
-        # Counts are editable only while the audit is finalized (counting stage).
-        _counted_editable = lst.get("status") == _LF
-        rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable) for li in line_items]
+        # On-hand/Counted exist only in the counting stage (finalized/closed); a draft audit scan
+        # builds the manifest, so the swapped rows must match the header's column set. Counts are
+        # editable only while finalized.
+        _status = lst.get("status")
+        _show_counting = _status in (_LF, _LC)
+        _counted_editable = _status == _LF
+        rows = [_audit_editable_row(entity_id, li, item_meta_map, _counted_editable, _show_counting) for li in line_items]
         if not rows:
             rows = [Tr(Td("No items. Scan a barcode to add.", colspan="4", cls="empty-row"))]
         return Tbody(*rows, id="line-body")
 
-    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True) -> FT:
+    def _audit_editable_row(audit_id: str, li: dict, item_meta_map: dict, counted_editable: bool = True, show_counting: bool = True) -> FT:
         """Shared audit row builder for the scan re-render. On-hand prefers the snapshot frozen at
-        Finalize (else live), and Counted is click-to-edit only while counting (counted_editable)."""
+        Finalize (else live), and Counted is click-to-edit only while counting (counted_editable).
+        show_counting=False (draft manifest) drops the On-hand/Counted cells to match the header."""
         from ui.components.table import EMPTY as _EMPTY
         item_key = li.get("item_id") or li.get("entity_id") or ""
         audited = li.get("audited_at") is not None
@@ -4154,17 +4163,17 @@ celerpUpdateBulkAlloc();
         # Must mirror the editable header's FULL column structure (checkbox + hidden money cells) so
         # the scan-swapped tbody stays aligned. Audit identity is static text (never inputs); the
         # money/total cells are empty placeholders hidden by the doc-lines--no-money CSS.
-        return Tr(
+        cells = [
             Td(Input(type="checkbox", cls="li-select", value=item_key), cls="col-checkbox li-checkbox-cell"),
             Td(li.get("sku") or _EMPTY, cls="col-sku"),
             Td(li.get("name") or li.get("description") or _EMPTY, cls="col-desc"),
             Td(f"{qty:g}" if qty else "--", cls="col-qty"),
             Td("", cls="col-unit-price"), Td("", cls="col-disc"), Td("", cls="col-tax"),
             Td("", cls="cell--number col-total"),
-            onhand_td,
-            counted_td,
-            cls=row_cls,
-        )
+        ]
+        if show_counting:
+            cells += [onhand_td, counted_td]
+        return Tr(*cells, cls=row_cls)
 
     @app.post("/lists/{entity_id}/scan")
     async def list_scan(request: Request, entity_id: str):
