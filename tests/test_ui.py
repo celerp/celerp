@@ -8178,6 +8178,40 @@ class TestAuditHighlightScoping:
         assert "data-row--audited" not in r.text
 
 
+class TestAuditColumnAlignment:
+    """A draft audit is editable, but audits have no Unit column. Editable invoice rows otherwise emit
+    a col-unit cell with no matching header, which on an audit would leak the unit label and shove
+    On-hand/Counted out of alignment. Every body row must match the header column set exactly."""
+
+    _AUDIT = {
+        "entity_id": "list:1", "doc_type": "list", "list_type": "audit", "status": "draft",
+        "receiver_type": "location", "receiver": "Main", "currency": "USD",
+        "discount": 0, "tax": 0, "subtotal": 0, "total": 0,
+        "line_items": [
+            {"entity_id": "li:1", "item_id": "item:1", "sku": "A1", "name": "Plain",
+             "description": "Plain", "quantity": 5},
+            {"entity_id": "li:2", "item_id": "item:2", "sku": "A2", "name": "Gem",
+             "description": "Gem", "quantity": 3, "unit": "carat"},
+        ],
+    }
+
+    @pytest.mark.asyncio
+    async def test_draft_audit_rows_align_with_header_and_drop_unit(self, ui_client):
+        import re
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        headers = re.findall(r'<th[^>]*class="[^"]*?(col-[\w-]+)', r.text)
+        body = re.search(r'id="line-body"(.*?)</tbody>', r.text, re.S).group(1)
+        rows = re.findall(r"<tr.*?</tr>", body, re.S)
+        assert rows, "expected rendered audit rows"
+        for row in rows:
+            tds = re.findall(r'<td[^>]*class="[^"]*?(col-[\w-]+)', row)
+            assert tds == headers              # every row aligns cell-for-cell with the header
+        assert "col-unit\"" not in body         # no stray Unit column on an audit
+        assert "carat" not in body              # unit label never leaks into the manifest
+
+
 class TestCalculateDueDate:
     """Unit tests for _calculate_due_date pure function."""
 

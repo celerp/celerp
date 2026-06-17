@@ -5716,12 +5716,19 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                                    onblur="celerpQtyBlur(this); celerpAutoSave()",
                                    disabled=bool(_qty_disabled),
                                    cls="cell-input cell-input--xs")
-                if doc_type in _INVOICE_LAYOUT_DOC_TYPES:
+                if pol["audit"]:
+                    # Draft audit manifest: editable qty, but no unit label and no separate col-unit
+                    # cell. Audits are counts; the audit header has no Unit column (and col-qty is
+                    # CSS-hidden), so emitting the unit as invoice rows do would add an unheadered
+                    # column and leak the label, pushing On-hand/Counted out of alignment.
+                    cells.append(Td(_qty_input, cls="col-qty"))
+                elif doc_type in _INVOICE_LAYOUT_DOC_TYPES:
                     # Quantity and its (read-only) unit share one cell; only the number edits.
                     cells.append(Td(Div(_qty_input, _unit_span, cls="qty-unit-wrap"), cls="col-qty"))
+                    cells.append(Td(_unit_span, cls="col-unit"))
                 else:
                     cells.append(Td(_qty_input, cls="col-qty"))
-                cells.append(Td(_unit_span, cls="col-unit"))
+                    cells.append(Td(_unit_span, cls="col-unit"))
             cells.extend([
                 Td(Input(type="number", value=str(price), step="any",
                          data_name="unit_price", oninput="celerpFieldEdited(this)",
