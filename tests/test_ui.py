@@ -8269,6 +8269,28 @@ class TestCompanyDetailsPage:
         assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard")
 
 
+class TestFilesExcelFunnels:
+    """The shared files table carries Excel-style column funnels: a Tag funnel (product images excluded
+    by default) and rows tagged data-row so the client filter can sift them."""
+
+    def test_tag_funnel_with_product_images_hidden_by_default(self):
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        files = [
+            {"id": "f1", "filename": "registration.pdf", "size": 10, "document_tag": "registrations", "uploaded_at": "2026-06-18"},
+            {"id": "f2", "filename": "hero.jpg", "size": 20, "document_tag": "product_images", "uploaded_at": "2026-06-18"},
+        ]
+        html = to_xml(_files_section("contact", "contact:self", files, can_tag=True))
+        # A column funnel is present on the Tag column...
+        assert "colfilter" in html
+        # ...and it excludes the product-image label by default (built-in data-filter-exclude).
+        assert "data-filter-exclude" in html
+        # Rows are filterable and each tag cell exposes an explicit filter value (the select would
+        # otherwise leak every option into the funnel).
+        assert "data-row" in html
+        assert "data-filter-value" in html
+
+
 class TestCompanyLetterhead:
     """Document letterhead identity is canonical on the self-contact (edited at Company Details), so
     name/phone/tax_id/email come from there and the address from the default Location."""

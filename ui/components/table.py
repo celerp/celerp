@@ -284,7 +284,7 @@ COLUMN_FILTER_JS = """
   var state=new WeakMap();
   function active(t){if(!state.has(t))state.set(t,{});return state.get(t);}
   function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}
-  function cellText(r,col){var c=r.children[col];return c?c.textContent.trim():'';}
+  function cellText(r,col){var c=r.children[col];if(!c)return '';var dv=c.getAttribute('data-filter-value');return (dv!==null?dv:c.textContent).trim();}
   function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}
   function apply(t){
     var a=active(t);

@@ -241,6 +241,9 @@ def _files_section(
                 f"}});"
             )
 
+        # The Excel funnel reads this explicit value (the tag's display label) rather than the cell's
+        # textContent, which for the editable <select> would be every option concatenated.
+        _tag_fv = _tag_label(doc_tag) if doc_tag else ""
         if can_tag:
             tag_opts_row = [Option(t("label.no_tag"), value="")] + [
                 Option(_tag_label(slug), value=slug, selected=(slug == doc_tag))
@@ -258,6 +261,7 @@ def _files_section(
                             f".then(function(){{" + _refresh_section_js() + f"}})}})this"
                         ),
                     ),
+                    data_filter_value=_tag_fv,
                 )
             else:
                 tag_cell = Td(
@@ -270,9 +274,11 @@ def _files_section(
                         hx_swap="outerHTML",
                         hx_trigger="change",
                     ),
+                    data_filter_value=_tag_fv,
                 )
         else:
-            tag_cell = Td(Span(_tag_label(doc_tag), cls="badge badge--muted") if doc_tag else Span())
+            tag_cell = Td(Span(_tag_label(doc_tag), cls="badge badge--muted") if doc_tag else Span(),
+                          data_filter_value=_tag_fv)
 
         if can_describe:
             _desc_fetch_then = (
@@ -374,8 +380,9 @@ def _files_section(
                 ) if not no_delete else Span(),
             ),
         ]
-        row_cls = "files-row--hero" if f.get("is_hero") else ""
-        file_rows.append(Tr(*row_cells, cls=row_cls) if row_cls else Tr(*row_cells))
+        # data-row is required for the Excel column funnels (COLUMN_FILTER_JS filters tr.data-row).
+        row_cls = ("data-row files-row--hero" if f.get("is_hero") else "data-row")
+        file_rows.append(Tr(*row_cells, cls=row_cls))
 
     # Date column header with sort arrow (clickable)
     col_count = 6 + (1 if has_linked else 0) + (1 if can_set_hero else 0)
@@ -396,14 +403,18 @@ def _files_section(
     desc_th = Th(t("label.file_description") if can_describe else "",
                  style=None if compact else "min-width:200px;")
 
+    # Excel-style funnels: filter by Tag (product images hidden by default so they don't clutter) and,
+    # when present, by what each file is Linked To. Client-side, additive over the server filter bar.
+    from ui.components.table import filter_th, COLUMN_FILTER_JS
+    _product_label = _tag_label("product_images")
     header_cells = [
         date_th,
         Th(t("th.filename")),
-        Th(t("label.tag")) if can_tag else Th(),
+        filter_th(t("label.tag"), 2, default_exclude=[_product_label]),
         desc_th,
     ]
     if has_linked:
-        header_cells.append(Th(t("label.linked_to")))
+        header_cells.append(filter_th(t("label.linked_to"), 4))
     if can_set_hero:
         header_cells.append(Th("Hero", style="text-align:center;width:48px;"))
     header_cells += [Th(t("th.size")), Th()]
@@ -499,6 +510,8 @@ def _files_section(
         filter_bar,
         table,
         Script(resize_js),
+        Script(COLUMN_FILTER_JS),
+        Script(f"window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('files-section-{sid}'));"),
     ]
     if pagination:
         children.append(pagination)
