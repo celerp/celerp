@@ -8211,6 +8211,19 @@ class TestAuditColumnAlignment:
         assert "col-unit\"" not in body         # no stray Unit column on an audit
         assert "carat" not in body              # unit label never leaks into the manifest
 
+    @pytest.mark.asyncio
+    async def test_draft_audit_shows_add_item_but_counting_hides_it(self, ui_client):
+        # A draft audit is editable, so it keeps the Add item affordance; a finalized (counting) audit
+        # locks the manifest and hides it.
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)):
+            draft = await ui_client.get("/lists/list:1", cookies=_authed())
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._AUDIT, "status": "finalized"})):
+            counting = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert draft.status_code == 200 and counting.status_code == 200
+        # Match the button's onclick (the celerpAddLine() helper is always defined in the page script).
+        assert 'onclick="celerpAddLine()"' in draft.text
+        assert 'onclick="celerpAddLine()"' not in counting.text
+
 
 class TestCalculateDueDate:
     """Unit tests for _calculate_due_date pure function."""

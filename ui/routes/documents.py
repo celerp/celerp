@@ -5988,10 +5988,10 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cls="table-scroll-wrap",
             ),
             Div(
-                # Audits build their manifest by scanning / location seed, not manual rows — no
-                # "Add item" affordance (and none at all on a locked manifest).
+                # Hidden only on a locked (counting) audit manifest. A draft audit is editable like any
+                # other building list, so it keeps the "Add item" affordance alongside scan-to-add.
                 Button(t("btn._add_item"), type="button", cls="btn btn--secondary",
-                       onclick="celerpAddLine()") if not pol["audit"] else None,
+                       onclick="celerpAddLine()") if not pol["counting"] else None,
                 Span("", id="save-status", cls="save-status"),
                 cls="line-actions gap-sm",
             ),
