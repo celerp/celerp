@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """Pure CSV parser for bank statements. No DB access."""
 
 from __future__ import annotations

@@ -76,6 +76,8 @@ def _files_section(
     can_tag: bool = True,
     can_describe: bool = True,
     can_set_hero: bool = False,
+    can_upload: bool = True,
+    hide_product_images: bool = False,
     show_linked: bool = True,
     page: int = 1,
     sort_dir: str = "desc",
@@ -83,6 +85,10 @@ def _files_section(
     date_from: str = "",
     date_to: str = "",
     search: str = "",
+    title: str | None = None,
+    show_preview: bool = True,
+    compact: bool = False,
+    base_url: str | None = None,
 ) -> FT:
     """Render the files section for any entity.
 
@@ -101,7 +107,9 @@ def _files_section(
         date_to:      filter uploaded_at <= this date (YYYY-MM-DD)
         search:       filter by filename, description, or linked_ref (case-insensitive substring)
     """
-    base_url = f"/{entity_type}s/{entity_id}/files"
+    # Default derives the per-entity REST base; an aggregated/virtual view (e.g. all company files)
+    # passes its own base_url so the sort + pagination links target a real _section route.
+    base_url = base_url or f"/{entity_type}s/{entity_id}/files"
     sid = _safe_id(entity_id)  # safe DOM id fragment (no colons)
     _tags = _ITEM_TAGS if entity_type == "item" else _DOCUMENT_TAGS
 
@@ -147,59 +155,27 @@ def _files_section(
 
     # Hidden fields carry all filter state so every individual control can
     # include the form and get a complete refresh URL.
+    _hx = {"hx_get": f"{base_url}/_section", "hx_target": f"#files-section-{sid}",
+           "hx_swap": "outerHTML", "hx_include": f"#files-filter-form-{sid}"}
+    # Compact (narrow column, e.g. the Manufacturing tab): tag + search only, narrower; the date
+    # range stays as hidden state so it survives refreshes but doesn't wrap the bar to two rows.
+    if compact:
+        date_controls = [Input(type="hidden", name="date_from", value=date_from),
+                         Input(type="hidden", name="date_to", value=date_to)]
+    else:
+        date_controls = [
+            Input(type="text", name="date_from", value=date_from, placeholder="YYYY-MM-DD",
+                  cls="form-input form-input--sm", style="width:130px;", **_hx, hx_trigger="change"),
+            Input(type="text", name="date_to", value=date_to, placeholder="YYYY-MM-DD",
+                  cls="form-input form-input--sm", style="width:130px;", **_hx, hx_trigger="change"),
+        ]
     filter_bar = Form(
-        Select(
-            *tag_opts,
-            name="tag_filter",
-            cls="form-input form-input--sm",
-            style="width:160px;",
-            hx_get=f"{base_url}/_section",
-            hx_target=f"#files-section-{sid}",
-            hx_swap="outerHTML",
-            hx_include=f"#files-filter-form-{sid}",
-            hx_trigger="change",
-        ),
-        Input(
-            type="text",
-            name="date_from",
-            value=date_from,
-            placeholder="YYYY-MM-DD",
-            cls="form-input form-input--sm",
-            style="width:130px;",
-            hx_get=f"{base_url}/_section",
-            hx_target=f"#files-section-{sid}",
-            hx_swap="outerHTML",
-            hx_include=f"#files-filter-form-{sid}",
-            hx_trigger="change",
-        ),
-        Input(
-            type="text",
-            name="date_to",
-            value=date_to,
-            placeholder="YYYY-MM-DD",
-            cls="form-input form-input--sm",
-            style="width:130px;",
-            hx_get=f"{base_url}/_section",
-            hx_target=f"#files-section-{sid}",
-            hx_swap="outerHTML",
-            hx_include=f"#files-filter-form-{sid}",
-            hx_trigger="change",
-        ),
-        Input(
-            type="search",
-            name="search",
-            value=search,
-            placeholder=t("label.search"),
-            cls="form-input form-input--sm",
-            style="width:180px;",
-            hx_get=f"{base_url}/_section",
-            hx_target=f"#files-section-{sid}",
-            hx_swap="outerHTML",
-            hx_include=f"#files-filter-form-{sid}",
-            # keyup+blur: keyup fires on each keystroke so the cursor stays in
-            # place; delay:400ms debounces; blur covers paste+clear
-            hx_trigger="keyup changed delay:400ms, blur",
-        ),
+        Select(*tag_opts, name="tag_filter", cls="form-input form-input--sm",
+               style=f"width:{'120px' if compact else '160px'};", **_hx, hx_trigger="change"),
+        *date_controls,
+        Input(type="search", name="search", value=search, placeholder=t("label.search"),
+              cls="form-input form-input--sm", style=f"width:{'130px' if compact else '180px'};",
+              **_hx, hx_trigger="keyup changed delay:400ms, blur"),
         # Hidden state fields - keep current values across partial refreshes
         Input(type="hidden", name="sort_dir", value=sort_dir),
         Input(type="hidden", name="page", value=str(page)),
@@ -270,6 +246,9 @@ def _files_section(
                 f"}});"
             )
 
+        # The Excel funnel reads this explicit value (the tag's display label) rather than the cell's
+        # textContent, which for the editable <select> would be every option concatenated.
+        _tag_fv = _tag_label(doc_tag) if doc_tag else ""
         if can_tag:
             tag_opts_row = [Option(t("label.no_tag"), value="")] + [
                 Option(_tag_label(slug), value=slug, selected=(slug == doc_tag))
@@ -287,6 +266,7 @@ def _files_section(
                             f".then(function(){{" + _refresh_section_js() + f"}})}})this"
                         ),
                     ),
+                    data_filter_value=_tag_fv,
                 )
             else:
                 tag_cell = Td(
@@ -299,9 +279,11 @@ def _files_section(
                         hx_swap="outerHTML",
                         hx_trigger="change",
                     ),
+                    data_filter_value=_tag_fv,
                 )
         else:
-            tag_cell = Td(Span(_tag_label(doc_tag), cls="badge badge--muted") if doc_tag else Span())
+            tag_cell = Td(Span(_tag_label(doc_tag), cls="badge badge--muted") if doc_tag else Span(),
+                          data_filter_value=_tag_fv)
 
         if can_describe:
             _desc_fetch_then = (
@@ -362,8 +344,10 @@ def _files_section(
             Td(Span(uploaded_at, cls="muted")),
             Td(
                 Img(src=file_download_url, style="height:48px;width:auto;border-radius:3px;margin-right:6px;vertical-align:middle;object-fit:cover;")
-                if f.get("mime", "").startswith("image/") else "",
-                A(fname, href=file_download_url, cls="file-link"),
+                if (show_preview and f.get("mime", "").startswith("image/")) else "",
+                A(fname, href=file_download_url, target="_blank", rel="noopener",
+                  cls="file-link file-link--clip", title=fname),
+                cls="files-name-cell",
             ),
             tag_cell,
             desc_cell,
@@ -401,8 +385,9 @@ def _files_section(
                 ) if not no_delete else Span(),
             ),
         ]
-        row_cls = "files-row--hero" if f.get("is_hero") else ""
-        file_rows.append(Tr(*row_cells, cls=row_cls) if row_cls else Tr(*row_cells))
+        # data-row is required for the Excel column funnels (COLUMN_FILTER_JS filters tr.data-row).
+        row_cls = ("data-row files-row--hero" if f.get("is_hero") else "data-row")
+        file_rows.append(Tr(*row_cells, cls=row_cls))
 
     # Date column header with sort arrow (clickable)
     col_count = 6 + (1 if has_linked else 0) + (1 if can_set_hero else 0)
@@ -419,17 +404,24 @@ def _files_section(
         ),
     )
 
-    # Description column gets extra width via inline style
-    desc_th = Th(t("label.file_description") if can_describe else "", style="min-width:200px;")
+    # Description column gets extra width via inline style (not in compact/narrow columns).
+    desc_th = Th(t("label.file_description") if can_describe else "",
+                 style=None if compact else "min-width:200px;")
 
+    # Excel-style funnels: filter by Tag and, when present, by what each file is Linked To. Client-side,
+    # additive over the server filter bar. Product images are hidden by default ONLY where they would
+    # clutter business documents (the aggregated Company Files view) - never on an item's own page, where
+    # the product images are the point.
+    from ui.components.table import filter_th, COLUMN_FILTER_JS
+    _tag_exclude = [_tag_label("product_images")] if hide_product_images else None
     header_cells = [
         date_th,
         Th(t("th.filename")),
-        Th(t("label.tag")) if can_tag else Th(),
+        filter_th(t("label.tag"), 2, default_exclude=_tag_exclude),
         desc_th,
     ]
     if has_linked:
-        header_cells.append(Th(t("label.linked_to")))
+        header_cells.append(filter_th(t("label.linked_to"), 4))
     if can_set_hero:
         header_cells.append(Th("Hero", style="text-align:center;width:48px;"))
     header_cells += [Th(t("th.size")), Th()]
@@ -521,14 +513,17 @@ def _files_section(
     )
 
     children = [
-        H3(t("label.files"), cls="section-title"),
+        H3(title or t("label.files"), cls="section-title"),
         filter_bar,
         table,
         Script(resize_js),
+        Script(COLUMN_FILTER_JS),
+        Script(f"window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('files-section-{sid}'));"),
     ]
     if pagination:
         children.append(pagination)
-    children.append(upload_zone)
+    if can_upload:
+        children.append(upload_zone)
 
     return Div(
         *children,

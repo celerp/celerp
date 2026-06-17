@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 """Canonical unit-of-measure definitions and quantity precision validation.
 
@@ -27,6 +27,23 @@ DEFAULT_UNITS: list[dict] = [
 
 # sell_by values that represent services - quantity precision is not enforced.
 SERVICE_SELL_BY: frozenset[str] = frozenset({"service", "hour"})
+
+# Inventory types that carry no pickable stock: the stock guard and fulfillment skip them.
+# (non_stocked is intentionally NOT here - it keeps its existing fulfillment behaviour.)
+NON_STOCK_INVENTORY_TYPES: frozenset[str] = frozenset({"service", "freight"})
+
+# Landed-cost component kinds carried on a freight-typed charge line (refines reporting + GL routing).
+LANDED_COST_KINDS: frozenset[str] = frozenset({"freight", "insurance", "duty", "import_vat"})
+
+
+def is_non_stock_line(inventory_type: str | None, sell_by: str | None = None) -> bool:
+    """True for charge/service lines that have no stock to pick (service or freight, by type or unit)."""
+    return (inventory_type or "stocked") in NON_STOCK_INVENTORY_TYPES or (sell_by or "") in SERVICE_SELL_BY
+
+
+def is_landed_component(inventory_type: str | None) -> bool:
+    """True for a freight-typed line (a landed-cost component: freight/insurance/duty/import_vat)."""
+    return (inventory_type or "stocked") == "freight"
 
 
 def build_unit_map(units: list[dict]) -> dict[str, dict]:

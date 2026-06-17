@@ -173,63 +173,8 @@ def test_create_location(page, ui_server, api):
 
 # ── CREATE-06: BOM ────────────────────────────────────────────────────────────
 
-def test_create_bom(page, ui_server, api):
-    """
-    CREATE-06: Navigate to new BOM form → create BOM → row exists in API.
-
-    Seeds two dummy components via API first so the BOM has valid item references.
-    """
-    # Seed a location
-    loc_r = api.post("/companies/me/locations", json={"name": "BOM Warehouse", "type": "warehouse"})
-    if loc_r.status_code == 409:
-        location_name = api.get("/companies/me/locations").json()["items"][0]["name"]
-    else:
-        location_name = "BOM Warehouse"
-
-    # Seed two component items via API
-    comp_sku_a = _unique("BOM-COMP-A")
-    comp_sku_b = _unique("BOM-COMP-B")
-    bom_name = _unique("E2E BOM")
-
-    for sku, nm in [(comp_sku_a, "BOM Component A"), (comp_sku_b, "BOM Component B")]:
-        r = api.post("/items", json={
-            "sku": sku, "name": nm, "quantity": 100, "sell_by": "piece",
-            "location_name": location_name, "category": "Raw Material",
-        })
-        assert r.status_code in {200, 201}, f"Component seed failed: {r.text}"
-
-    # Navigate to BOM creation
-    page.goto(f"{ui_server}/manufacturing/boms/new", wait_until="domcontentloaded")
-    _assert_no_crash(page, "new-BOM page load")
-
-    # Fill BOM name
-    name_input = page.locator("input[name='name'], input[name='bom_name']").first
-    if name_input.count() > 0:
-        name_input.wait_for(state="visible", timeout=5000)
-        name_input.fill(bom_name)
-
-        # Add first component if there's a component field
-        comp_input = page.locator(
-            "input[name*='component'], input[name*='sku'], input[list][name*='item']"
-        ).first
-        if comp_input.count() > 0:
-            comp_input.fill(comp_sku_a)
-
-        page.locator("button[type='submit'], input[type='submit']").first.click()
-        page.wait_for_load_state("networkidle", timeout=10000)
-        _assert_no_crash(page, "after BOM submit")
-
-        # Assert in DB
-        r = api.get("/manufacturing/boms", params={"search": bom_name})
-        if r.status_code == 200:
-            boms = r.json().get("items", r.json().get("boms", []))
-            assert any(b.get("name") == bom_name for b in boms), (
-                f"BOM {bom_name!r} not found in DB after UI create. "
-                f"BOMs: {[b.get('name') for b in boms]}"
-            )
-    else:
-        # BOM creation might be inline or list-only — skip gracefully
-        pytest.skip("No BOM name input found — BOM creation may be inline-only")
+# CREATE-06 (BOM creation) removed: the standalone BOM entity and its /manufacturing/boms/new form
+# were retired — recipes live on the inventory item (see test_manufacturing_recipe.py).
 
 
 # ── CREATE-07: contact via blank-create ──────────────────────────────────────

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Module reconciliation: diff enabled_modules against on-disk package dirs.
 
 Used by the restore flow to surface missing modules to the user before they

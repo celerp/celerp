@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """celerp-contacts — Contact management module for Celerp.
 
 Provides:
@@ -13,7 +13,7 @@ PLUGIN_MANIFEST = {
     "version": "1.0.0",
     "display_name": "Contacts",
     "description": "Contact management, memos, notes, tags, import/export.",
-    "license": "BSL-1.1",
+    "license": "MIT",
     "author": "Celerp",
     "api_routes": "celerp_contacts.routes",
     "ui_routes": "celerp_contacts.ui_routes",
@@ -26,6 +26,9 @@ PLUGIN_MANIFEST = {
         "projection_handler": [
             {"prefix": "crm.contact.", "handler": "celerp_contacts.projections:apply_contact_event"},
         ],
+        # Auto-run on every startup (incl. after a version upgrade): collapse legacy companies that
+        # were seeded with two separate customer+vendor self-contacts into one both+is_self record.
+        "on_modules_ready": {"handler": "celerp_contacts.migrations:backfill_self_contacts_hook"},
         "send_to_targets": [],
     },
     "migrations": None,

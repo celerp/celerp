@@ -115,13 +115,16 @@ def test_list_detail_loads(page, ui_server, api):
 
 def test_subscription_pause_resume(page, ui_server, api):
     """SUB-LIFECYCLE-01: Create subscription → pause → resume → no crash."""
-    r = api.post("/subscriptions", json={
-        "name": _unique("Lifecycle Sub"),
-        "doc_type": "invoice",
+    # Subscriptions are documents: created via POST /docs with a subscription doc_type.
+    r = api.post("/docs", json={
+        "doc_type": "subscription_invoice",
         "frequency": "monthly",
         "start_date": "2026-01-01",
+        "status": "active",
+        "next_run_date": "2026-02-01",
+        "line_items": [{"description": _unique("Service"), "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
     })
-    assert r.status_code in {200, 201}, f"POST /subscriptions failed: {r.text}"
+    assert r.status_code in {200, 201}, f"POST /docs (subscription) failed: {r.text}"
     sub_id = r.json().get("id", "")
     assert sub_id, f"No id in response: {r.json()}"
 
@@ -138,8 +141,8 @@ def test_subscription_pause_resume(page, ui_server, api):
 
 # ── Manufacturing order lifecycle ─────────────────────────────────────────────
 
-def test_manufacturing_order_start_complete(page, ui_server, api):
-    """MFG-LIFECYCLE-01: Create order → start → consume → attempt complete → detail loads."""
+def test_manufacturing_order_issue_complete(page, ui_server, api):
+    """MFG-LIFECYCLE-01: Create run → issue components → complete → Demand Planning page loads."""
     item_r = api.post("/items", json={
         "sku": _unique("MFG-LC-IN"),
         "sell_by": "piece",
@@ -160,20 +163,15 @@ def test_manufacturing_order_start_complete(page, ui_server, api):
     order_id = r.json().get("id", "")
     assert order_id, f"No id in mfg order response: {r.json()}"
 
-    start_r = api.post(f"/manufacturing/{order_id}/start")
-    assert start_r.status_code in {200, 204}, f"Start failed: {start_r.status_code}"
+    issue_r = api.post(f"/manufacturing/{order_id}/issue")
+    assert issue_r.status_code in {200, 204}, f"Issue failed: {issue_r.status_code}"
 
-    consume_r = api.post(f"/manufacturing/{order_id}/consume",
-                         json={"item_id": item_id, "quantity": 1})
-    assert consume_r.status_code in {200, 204}, f"Consume failed: {consume_r.status_code}"
-
-    # Complete: projection may lag so 422 (not all consumed yet) is tolerated; 500 is not
     complete_r = api.post(f"/manufacturing/{order_id}/complete")
     assert complete_r.status_code != 500, f"Complete returned 500: {complete_r.text}"
 
-    resp = page.goto(f"{ui_server}/manufacturing/{order_id}", wait_until="domcontentloaded")
+    resp = page.goto(f"{ui_server}/manufacturing", wait_until="domcontentloaded")
     assert resp.status != 500
-    _no_crash(page, "mfg order detail after complete")
+    _no_crash(page, "production queue after complete")
 
 
 # ── Doc payment ───────────────────────────────────────────────────────────────

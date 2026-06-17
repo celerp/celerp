@@ -255,7 +255,7 @@ def test_cif_document_with_dates() -> None:
 
 
 def test_cif_batch_defaults() -> None:
-    batch = CIFBatch(source="test", source_system="gemcloud")
+    batch = CIFBatch(source="test", source_system="old_system")
     assert batch.cif_version == CIF_VERSION
     assert batch.record_count == 0
     assert batch.notes is None

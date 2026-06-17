@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 from __future__ import annotations
 
@@ -174,19 +174,6 @@ class BatchImportResult(BaseModel):
     errors: list[str]
 
 
-class BOMPayload(BaseModel):
-    bom_id: str
-    name: str
-    description: str | None = None
-    version: int | str = 1
-    inputs: list[dict] = Field(default_factory=list)
-    outputs: list[dict] = Field(default_factory=list)
-    estimated_labor_hours: float | None = None
-    estimated_cost: float | None = None
-    instructions: str | None = None
-    is_active: bool = True
-
-
 class UnitRecord(BaseModel):
     name: str
     label: str
@@ -196,18 +183,6 @@ class UnitRecord(BaseModel):
 
 class UnitsPatch(BaseModel):
     units: list[UnitRecord]
-
-
-class BOMPatch(BaseModel):
-    name: str | None = None
-    description: str | None = None
-    version: int | str | None = None
-    inputs: list[dict] | None = None
-    outputs: list[dict] | None = None
-    estimated_labor_hours: float | None = None
-    estimated_cost: float | None = None
-    instructions: str | None = None
-    is_active: bool | None = None
 
 
 class CompanyCreate(BaseModel):
@@ -236,7 +211,7 @@ async def create_company(
     # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle("on_company_created", session=session, company_id=company.id)
-    # Seed owner as customer + vendor contact (mirrors registration flow)
+    # Seed the company's single self-contact (typed `both`, mirrors registration flow)
     from celerp.services.demo import seed_self_contacts
     await seed_self_contacts(
         session,
@@ -293,7 +268,12 @@ async def patch_me(payload: CompanyPatch, company_id=Depends(get_current_company
         raise HTTPException(status_code=404, detail="Not found")
     if payload.name is not None:
         company.name = payload.name.strip()
-    company.settings = payload.settings
+    # Merge (PATCH semantics): a partial settings payload must not wipe other
+    # keys. Replacing wholesale erased e.g. the numbering `sequences`, currency,
+    # and category_schemas whenever a caller sent only one field (the UI happens
+    # to pre-merge, but partial callers — and a name-only patch — must be safe).
+    if payload.settings:
+        company.settings = {**(company.settings or {}), **payload.settings}
     await session.commit()
     return {"ok": True}
 
@@ -323,7 +303,10 @@ async def batch_import_settings(
 
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        _select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key.in_(keys),
+        )
     )).scalars().all())
 
     created = skipped = 0
@@ -1453,91 +1436,6 @@ async def put_units(
     company.settings = settings
     await session.commit()
     return settings["units"]
-
-
-# ---------------------------------------------------------------------------
-# BOM configuration
-# ---------------------------------------------------------------------------
-
-
-@router.get("/me/boms")
-async def list_boms(company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    items = company.settings.get("boms") or []
-    return {"items": items, "total": len(items)}
-
-
-@router.post("/me/boms")
-async def create_bom(payload: BOMPayload, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    settings = dict(company.settings)
-    boms = list(settings.get("boms") or [])
-    if any(x.get("bom_id") == payload.bom_id for x in boms):
-        raise HTTPException(status_code=409, detail="BOM already exists")
-    now = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
-    new_bom = payload.model_dump()
-    new_bom["created_at"] = now
-    new_bom["updated_at"] = now
-    boms.append(new_bom)
-    settings["boms"] = boms
-    company.settings = settings
-    await session.commit()
-    return {"ok": True, "bom_id": payload.bom_id}
-
-
-@router.get("/me/boms/{bom_id}")
-async def get_bom(bom_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    for bom in company.settings.get("boms") or []:
-        if bom.get("bom_id") == bom_id:
-            return bom
-    raise HTTPException(status_code=404, detail="BOM not found")
-
-
-@router.patch("/me/boms/{bom_id}")
-async def patch_bom(bom_id: str, payload: BOMPatch, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    settings = dict(company.settings)
-    boms = list(settings.get("boms") or [])
-    for i, bom in enumerate(boms):
-        if bom.get("bom_id") == bom_id:
-            raw_updates = payload.model_dump(exclude_unset=True)
-            updates = {k: v for k, v in raw_updates.items() if v is not None}
-            bom = {**bom, **updates}
-            bom["updated_at"] = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
-            boms[i] = bom
-            settings["boms"] = list(boms)
-            company.settings = dict(settings)
-            await session.commit()
-            return {"ok": True}
-    raise HTTPException(status_code=404, detail="BOM not found")
-
-
-@router.delete("/me/boms/{bom_id}")
-async def delete_bom(bom_id: str, company_id=Depends(get_current_company_id), session: AsyncSession = Depends(get_session)) -> dict:
-    company = await session.get(Company, company_id)
-    if company is None:
-        raise HTTPException(status_code=404, detail="Not found")
-    settings = dict(company.settings)
-    boms = list(settings.get("boms") or [])
-    for i, bom in enumerate(boms):
-        if bom.get("bom_id") == bom_id:
-            bom = {**bom, "is_active": False}
-            bom["updated_at"] = __import__("datetime").datetime.now(__import__("datetime").UTC).isoformat()
-            boms[i] = bom
-            settings["boms"] = list(boms)
-            company.settings = dict(settings)
-            await session.commit()
-            return {"ok": True}
-    raise HTTPException(status_code=404, detail="BOM not found")
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -23,15 +23,17 @@ from celerp.modules.slots import fire_lifecycle
 from celerp.models.projections import Projection
 from celerp_docs.taxes import TaxApplication, compute_tax_amounts
 from celerp.services import auto_je
+from celerp.services.landed_cost import compute_bill_landed_allocation
 from celerp.services.attachments import store_upload
 from ui.components.currency import CURRENCY_CODES
 from celerp.services.auth import get_current_company_id, get_current_user, require_manager, require_operator
 from celerp_docs.sequences import next_doc_ref, get_all_sequences, update_sequence, validate_pattern
-from celerp.services.fulfill import execute_fulfill, execute_unfulfill
-from celerp.services.pick import PickResult, compute_pick_plan
-from celerp.services.units import DEFAULT_UNITS, build_unit_map, validate_line_quantity
+from celerp.services.units import DEFAULT_UNITS, build_unit_map, is_non_stock_line, is_pieces_unit, is_weight_unit, validate_line_quantity
 from celerp.services.money import round_money, to_decimal, to_stored_float
-from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES
+from celerp_docs.doc_constants import INBOUND_DOC_TYPES, FULFILLABLE_STATUSES, FULFILLED_ITEM_STATUSES, NON_FINANCIAL_DOC_TYPES
+from celerp.services.list_behavior import (
+    DRAFT, FINALIZED, CLOSED, VOID, DEFAULT_LIST_TYPE, LIST_TYPES, behavior, terminal_action, is_money_list,
+)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -49,6 +51,11 @@ class LineItem(BaseModel):
     taxes: list[TaxApplication] = Field(default_factory=list)
     sell_by: str | None = None
     line_total: float | None = None
+    # Invoice fulfillment: how much of the linked parcel this line draws, by piece
+    # and by weight. Drive the split-on-fulfill (child_pieces / child_weight). Only
+    # editable when the parcel actually tracks that measure and splitting is allowed.
+    pieces: float | None = None
+    weight: float | None = None
 
     @model_validator(mode="after")
     def _resolve_entity_id(self) -> "LineItem":
@@ -542,7 +549,7 @@ async def get_doc_pdf(
 ):
     """Return a PDF of the document with 'Powered by Celerp' footer branding."""
     from fastapi.responses import Response as _Resp
-    from celerp_docs.pdf import generate_document_pdf
+    from celerp.output.pdf import generate_document_pdf
 
     row = await _get_doc(session, company_id, entity_id)
     doc = row.state | {"entity_id": row.entity_id}
@@ -592,7 +599,14 @@ async def create_doc(
             resolved_sell_by = li.sell_by or (sell_by_map.get(li.sku) if li.sku else None)
             validate_line_quantity(li.quantity, resolved_sell_by, unit_map, label=li.name or li.sku or "Line item")
 
-    company = await session.get(Company, company_id)
+    # Lock the company row (SELECT ... FOR UPDATE) for the rest of the
+    # transaction so concurrent doc creation can't read the same numbering
+    # counter and mint duplicate refs (e.g. two CN-2606-0002).
+    company = (
+        await session.execute(
+            select(Company).where(Company.id == company_id).with_for_update()
+        )
+    ).scalar_one_or_none()
     # Invoices get proforma numbering at draft stage; real INV number assigned on finalize
     seq_type = "proforma" if payload.doc_type == "invoice" and not payload.ref_id else payload.doc_type
     ref_id = payload.ref_id or next_doc_ref(company, seq_type)
@@ -656,6 +670,11 @@ async def create_doc(
         total_d = round_money(subtotal_d + effective_tax_d + shipping_d, currency)
         data["total"] = to_stored_float(total_d)
         data["subtotal"] = to_stored_float(round_money(subtotal_d, currency))
+        # Persist the EFFECTIVE tax (doc-level + line-level) into `tax`. Previously this was computed
+        # for `total` but discarded, leaving `tax`=0 for line-level taxes — so the finalize JE booked
+        # the tax-inclusive total entirely to revenue (4100) and recorded zero output VAT (2120),
+        # overstating revenue and understating the VAT liability. total = subtotal + tax + shipping.
+        data["tax"] = to_stored_float(round_money(effective_tax_d, currency))
 
     data["amount_outstanding"] = payload.amount_outstanding if payload.amount_outstanding is not None else float(data.get("total", 0))
 
@@ -1172,6 +1191,8 @@ async def record_payment(entity_id: str, payload: DocPaymentBody, company_id: st
     # (emit_event -> flush() -> ORM expires row -> MissingGreenlet on subsequent row.state access).
     _doc_state = dict(row.state)
     _user_id = user.id
+    if _doc_state.get("doc_type") in NON_FINANCIAL_DOC_TYPES:
+        raise HTTPException(status_code=409, detail="This document type carries no money and cannot take a payment")
     if _doc_state.get("status") not in {"sent", "final", "partial", "paid", "received", "partially_received", "awaiting_payment"}:
         raise HTTPException(status_code=409, detail="Cannot record payment in current status")
     outstanding = float(_doc_state.get("amount_outstanding", _doc_state.get("total", 0)) or 0)
@@ -1692,6 +1713,14 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         for li in (row.state.get("line_items") or [])
         if li.get("sku")
     }
+    # Landed-cost allocation: spread this bill's freight/duty/insurance/non-recoverable-VAT charges
+    # across its stocked goods lines (by value). Received parcels carry their per-unit share so each
+    # item's cost reflects landed cost; per-unit storage prorates naturally to the received quantity.
+    bill_alloc: dict[str, dict[str, float]] = {}
+    landed_drawdown: dict[str, float] = {}   # per-kind landed cost capitalised by this receipt
+    if doc_type == "bill":
+        bill_alloc = await compute_bill_landed_allocation(session, company_id, row.state)
+
     for it in payload.received_items:
         sell_by = sell_by_map.get(it.sku or "") or doc_line_sell_by.get(it.sku or "", "") or None
         validate_line_quantity(it.quantity_received, sell_by, unit_map, label=it.name or it.sku or "Received item")
@@ -1775,6 +1804,14 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
                 # Emit cost_total when quantity is known (cost_total is the primitive)
                 _recv_qty = float(it.quantity_received) * conversion
                 item_data["cost_total"] = it.cost_price * _recv_qty if _recv_qty else it.cost_price
+            # Attach the per-unit landed cost allocated to this goods line: the projection derives
+            # cost_total = cost_base + Σ(unit × quantity), so the parcel carries its landed share.
+            _landed = bill_alloc.get(_sku.strip(), {})
+            if _landed:
+                item_data["landed_contributions"] = {f"{entity_id}::{k}": u for k, u in _landed.items()}
+                _recv_qty_total = float(it.quantity_received) * conversion
+                for _k, _u in _landed.items():
+                    landed_drawdown[_k] = round(landed_drawdown.get(_k, 0.0) + _u * _recv_qty_total, 2)
             if is_consignment:
                 item_data["consignment_flag"] = "in"
             new_eid = f"item:{uuid.uuid4()}"
@@ -1806,8 +1843,8 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()), metadata_={},
     )
 
-    if not is_consignment:
-        # PO/Bill: create accounting journal entry; consignment_in has no JE (goods not owned)
+    if doc_type == "purchase_order":
+        # A purchase order recognises goods + AP at receipt (its accounting point): Dr inventory / Cr AP.
         po_total = float(row.state.get("total", 0) or 0)
         if po_total == 0:
             po_total = sum(
@@ -1827,6 +1864,16 @@ async def receive_po(entity_id: str, payload: ReceiveBody, company_id: str = Dep
             base_currency=_rcv_base_currency,
             receive_date=datetime.now(UTC).date().isoformat(),
         )
+    elif doc_type == "bill" and landed_drawdown:
+        # A bill already recognised goods + AP at finalize (create_for_bill_conversion); receiving must
+        # NOT re-post that JE (it would double-count inventory and AP). Receipt only capitalises the
+        # received landed cost from the clearing accounts into 1130-P (Dr 1130-P / Cr clearing).
+        await auto_je.create_for_landed_capitalisation(
+            session, company_id=company_id, user_id=user.id, doc_id=entity_id,
+            landed_by_kind=landed_drawdown, receive_suffix=str(uuid.uuid4()),
+            receive_date=datetime.now(UTC).date().isoformat(),
+        )
+    # consignment_in: no JE (goods not owned).
     await session.commit()
     return {"event_id": entry.id}
 
@@ -2212,7 +2259,10 @@ async def batch_import_docs(
 
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        _select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key.in_(keys),
+        )
     )).scalars().all())
 
     # Pre-check existing entity_ids for doc.created events (entity guard)
@@ -2238,7 +2288,8 @@ async def batch_import_docs(
                 upsert_already = set(
                     (await session.execute(
                         _select(LedgerEntry.idempotency_key).where(
-                            LedgerEntry.idempotency_key == upsert_idem
+                            LedgerEntry.company_id == company_id,
+                            LedgerEntry.idempotency_key == upsert_idem,
                         )
                     )).scalars().all()
                 )
@@ -2362,7 +2413,6 @@ class ListCreatePayload(BaseModel):
 
 
 ListPatch = DocPatch
-ListSendBody = DocSendBody
 ListVoidBody = DocVoidBody
 
 
@@ -2407,7 +2457,13 @@ async def list_lists(
     rows = (await session.execute(
         select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "list")
     )).scalars().all()
-    out = [r.state | {"id": r.entity_id} for r in rows]
+    # Surface the projection's created_at column: a list's state has no date of its own, so without
+    # this the date-window filter/sort below (default last 12 months) silently drops every list while
+    # the count/summary — which ignores dates — still shows them. (Bug: "All issued (3)" but 0 rows.)
+    out = [r.state | {"id": r.entity_id,
+                      "created_at": (r.created_at.isoformat() if r.created_at is not None
+                                     else r.state.get("created_at") or "")}
+           for r in rows]
     if list_type:
         out = [x for x in out if x.get("list_type") == list_type]
     if all_issued:
@@ -2450,17 +2506,17 @@ async def get_list_summary(
     for row in rows:
         st = row.state.get("status", "")
         count_by_status[st] = count_by_status.get(st, 0) + 1
-        if st != "void":
+        if st != VOID:
             total_value += float(row.state.get("total", 0) or 0)
-        if st == "converted":
+        if st == CLOSED and row.state.get("result") == "converted":
             ctt = row.state.get("converted_to_type") or ""
             if ctt == "memo":
                 converted_to_memo_count += 1
             elif ctt == "invoice":
                 converted_to_invoice_count += 1
-    draft_count = count_by_status.get("draft", 0)
-    void_count = count_by_status.get("void", 0)
-    all_issued_count = sum(v for k, v in count_by_status.items() if k not in ("draft", "void"))
+    draft_count = count_by_status.get(DRAFT, 0)
+    void_count = count_by_status.get(VOID, 0)
+    all_issued_count = sum(v for k, v in count_by_status.items() if k not in (DRAFT, VOID))
     return {
         "total_count": len(rows),
         "draft_count": draft_count,
@@ -2550,55 +2606,81 @@ async def patch_list(
     row = await _get_list(session, company_id, entity_id)
     if row.state.get("status") != "draft":
         raise HTTPException(status_code=409, detail="Cannot edit non-draft list")
+    _new_lines = (payload.fields_changed.get("line_items") or {}).get("new")
+    if isinstance(_new_lines, list):
+        _normalize_line_item_ids(_new_lines)  # keep the item link the editable UI sends as entity_id
     entry = await _emit_list(session, company_id, entity_id, "list.updated",
                              payload.model_dump(exclude_none=True), user, payload.idempotency_key)
     await session.commit()
     return {"event_id": entry.id}
 
 
-@lists_router.post("/{entity_id}/send")
-async def send_list(
+@lists_router.post("/{entity_id}/finalize")
+async def finalize_list(
     entity_id: str,
-    payload: ListSendBody = ListSendBody(),
     company_id: str = Depends(get_current_company_id),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Lock a draft list (draft -> finalized). The single draft->open transition for every type.
+
+    Type-specific on-finalize (from the behaviour registry): a quotation records `sent_at`, a
+    transfer `issued_at`, an audit freezes each line's on-hand snapshot (for variance + a stable
+    On-hand column while counting). Counting / terminal actions happen in the finalized stage.
+    """
     row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") not in ("draft",):
-        raise HTTPException(status_code=409, detail="Can only send draft lists")
-    entry = await _emit_list(session, company_id, entity_id, "list.sent",
-                             payload.model_dump(exclude_none=True), user, payload.idempotency_key)
+    state = row.state
+    if state.get("status") != DRAFT:
+        raise HTTPException(status_code=409, detail="Only a draft list can be finalized")
+    lt = state.get("list_type") or DEFAULT_LIST_TYPE
+    milestone = behavior(lt).finalize_milestone
+    now = datetime.now(UTC).isoformat()
+    data: dict = {"status": FINALIZED, "finalized_at": now}
+    if milestone == "freeze_onhand":
+        # An audit counts each inventory item once, so its manifest is a set keyed by item_id. Collapse
+        # duplicate item_id lines at the gateway into counting: a single item record has one physical
+        # count, so two lines would leave the second unreachable when checking off (scan always matches
+        # the first) and double-count at Adjust. Lines without an item_id are kept as-is.
+        src = [dict(l) for l in (state.get("line_items") or [])]
+        _normalize_line_item_ids(src)  # heal legacy entity_id-only lines so dedup + freeze find the item
+        seen: set[str] = set()
+        lines = []
+        for l in src:
+            key = l.get("item_id")
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            lines.append(l)
+        for l in lines:
+            item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
+            l["on_hand"] = float(item.state.get("quantity") or 0) if (item and item.entity_type == "item") else 0.0
+        data["line_items"] = lines
+    elif milestone:
+        data[milestone] = now
+    entry = await _emit_list(session, company_id, entity_id, "list.finalized", data, user)
     await session.commit()
-    return {"event_id": entry.id}
+    return {"event_id": entry.id, "status": FINALIZED}
 
 
-@lists_router.post("/{entity_id}/accept")
-async def accept_list(
+@lists_router.post("/{entity_id}/revert-to-draft")
+async def revert_list_to_draft(
     entity_id: str,
+    payload: DocRevertBody = DocRevertBody(),
     company_id: str = Depends(get_current_company_id),
+    _: None = Depends(require_operator),
     user=Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    """Go back from finalized to draft, allowed only before a terminal action has run (GDR 2c)."""
     row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") != "sent":
-        raise HTTPException(status_code=409, detail="Can only accept sent lists")
-    entry = await _emit_list(session, company_id, entity_id, "list.accepted", {}, user)
-    await session.commit()
-    return {"event_id": entry.id}
-
-
-@lists_router.post("/{entity_id}/complete")
-async def complete_list(
-    entity_id: str,
-    company_id: str = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") != "accepted":
-        raise HTTPException(status_code=409, detail="Can only complete accepted lists")
-    entry = await _emit_list(session, company_id, entity_id, "list.completed", {}, user)
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409,
+                            detail="Only a finalized list (before its terminal action) can be reverted to draft")
+    event_data: dict = {"status": DRAFT, "reverted_by": str(user.id)}
+    if payload.reason:
+        event_data["reason"] = payload.reason
+    entry = await _emit_list(session, company_id, entity_id, "list.reverted", event_data, user)
     await session.commit()
     return {"event_id": entry.id}
 
@@ -2612,31 +2694,13 @@ async def void_list(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") == "void":
+    status = row.state.get("status")
+    if status == VOID:
         raise HTTPException(status_code=409, detail="Already voided")
+    if status == CLOSED:
+        raise HTTPException(status_code=409, detail="Cannot void a closed list; undo its terminal action first")
     entry = await _emit_list(session, company_id, entity_id, "list.voided",
                              payload.model_dump(exclude_none=True), user, payload.idempotency_key)
-    await session.commit()
-    return {"event_id": entry.id}
-
-
-@lists_router.post("/{entity_id}/revert-to-draft")
-async def revert_list_to_draft(
-    entity_id: str,
-    payload: DocRevertBody,
-    company_id: str = Depends(get_current_company_id),
-    _: None = Depends(require_operator),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> dict:
-    row = await _get_list(session, company_id, entity_id)
-    if row.state.get("status") != "sent":
-        raise HTTPException(status_code=409, detail="Only sent lists can be reverted to draft")
-    event_data: dict = {"reverted_by": str(user.id), "previous_status": "sent"}
-    if payload.reason:
-        event_data["reason"] = payload.reason
-    entry = await _emit_list(session, company_id, entity_id, "list.patched",
-                             {"status": "draft", **event_data}, user)
     await session.commit()
     return {"event_id": entry.id}
 
@@ -2670,23 +2734,29 @@ async def convert_list(
 ) -> dict:
     row = await _get_list(session, company_id, entity_id)
     state = row.state
-    if state.get("status") in ("void", "converted"):
-        raise HTTPException(status_code=409, detail="Cannot convert list in current status")
+    lt = state.get("list_type") or DEFAULT_LIST_TYPE
     if payload.target_type not in ("invoice", "memo"):
         raise HTTPException(status_code=422, detail="target_type must be 'invoice' or 'memo'")
+    if terminal_action(lt, f"convert-{payload.target_type}") is None:
+        raise HTTPException(status_code=409,
+                            detail=f"{behavior(lt).label} lists cannot be converted to a sales document")
+    if state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Finalize the quotation before converting it")
 
     company = await session.get(Company, company_id)
     ref = next_doc_ref(company, payload.target_type)
     new_doc_id = f"doc:{ref}"
-    new_data = {k: v for k, v in state.items() if k not in {"status", "entity_type", "list_type"}}
+    new_data = {k: v for k, v in state.items()
+                if k not in {"status", "result", "entity_type", "list_type", "finalized_at", "sent_at", "accepted_at"}}
     new_data.update({"doc_type": payload.target_type, "ref_id": ref, "source_list_id": entity_id, "status": "draft"})
     await emit_event(
         session, company_id=company_id, entity_id=new_doc_id, entity_type="doc",
         event_type="doc.created", data=new_data, actor_id=user.id, location_id=None,
         source="api", idempotency_key=str(uuid.uuid4()), metadata_={},
     )
-    entry = await _emit_list(session, company_id, entity_id, "list.converted",
-                             {"target_doc_id": new_doc_id, "target_doc_type": payload.target_type}, user)
+    entry = await _emit_list(session, company_id, entity_id, "list.closed",
+                             {"result": "converted", "converted_to": new_doc_id,
+                              "converted_to_type": payload.target_type}, user)
     await session.commit()
     return {"event_id": entry.id, "target_doc_id": new_doc_id}
 
@@ -2862,7 +2932,10 @@ async def batch_import_lists(
 
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        _select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key.in_(keys),
+        )
     )).scalars().all())
 
     create_entity_ids = [r.entity_id for r in body.records if r.event_type == "list.created"]
@@ -2884,7 +2957,8 @@ async def batch_import_lists(
                 upsert_already = set(
                     (await session.execute(
                         _select(LedgerEntry.idempotency_key).where(
-                            LedgerEntry.idempotency_key == upsert_idem
+                            LedgerEntry.company_id == company_id,
+                            LedgerEntry.idempotency_key == upsert_idem,
                         )
                     )).scalars().all()
                 )
@@ -2972,13 +3046,32 @@ async def fulfill_lines(
     if not body.line_entity_ids:
         raise HTTPException(status_code=422, detail="line_entity_ids must not be empty")
 
-    errors: list[str] = []
+    # Each line keyed by the item parcel it references (for qty + split measures).
+    line_qty_by_eid: dict[str, float] = {}
+    line_by_eid: dict[str, dict] = {}
+    for li in state.get("line_items", []):
+        _eid = li.get("entity_id") or li.get("item_id") or ""
+        if _eid:
+            line_qty_by_eid[_eid] = float(li.get("quantity") or 0)
+            line_by_eid[_eid] = li
+
+    _unit_map = await _get_unit_map(session, company_id)
+
+    errors: list[str] = []          # 422: item not found / not available
+    blocked: list[str] = []         # 409: stock shortage / non-splittable partial
     to_fulfill: list[str] = []
+    service_eids: set[str] = set()  # service lines: rendered, not picked from stock
+    split_plan: dict[str, dict] = {}  # parent_eid -> child measures (partial draws)
     fetched: dict[str, Projection] = {}
     for item_eid in body.line_entity_ids:
         item_proj = await session.get(Projection, {"company_id": company_id, "entity_id": item_eid})
         if item_proj is None:
             errors.append(f"{item_eid}: item not found")
+            continue
+        # Non-stock lines (service or freight charge) have no physical stock: mark them done
+        # without any stock/availability guard.
+        if is_non_stock_line(item_proj.state.get("inventory_type"), item_proj.state.get("sell_by")):
+            service_eids.add(item_eid)
             continue
         item_status = item_proj.state.get("status", "")
         if item_status != "available":
@@ -2986,18 +3079,102 @@ async def fulfill_lines(
                 f"{item_eid} ({item_proj.state.get('sku', '')}): must be 'available', is '{item_status}'"
             )
             continue
+        # Stock guard: the invoiced quantity must not exceed the parcel's stock,
+        # and a partial draw is only allowed when the item permits splitting.
+        sku = item_proj.state.get("sku", "")
+        line_qty = line_qty_by_eid.get(item_eid, 0.0)
+        available = float(item_proj.state.get("quantity", 0))
+        if line_qty > available + 1e-9:
+            blocked.append(
+                f"{sku}: insufficient stock — invoiced {line_qty:g}, available {available:g}"
+            )
+            continue
+        if line_qty + 1e-9 < available and not item_proj.state.get("allow_splitting", True):
+            blocked.append(
+                f"{sku}: invoiced {line_qty:g} of {available:g} but 'Allow Splitting' is off — "
+                f"enable splitting or invoice the full quantity"
+            )
+            continue
+        _line = line_by_eid.get(item_eid, {})
+        _sb = item_proj.state.get("sell_by")
+        # Whole draw: taking all the quantity takes the whole parcel, so the secondary
+        # measures (not the sell-by one) must match the parcel exactly.
+        if abs(line_qty - available) <= 1e-9:
+            _checks = []
+            if not is_pieces_unit(_sb, _unit_map):
+                _checks.append(("pcs", (item_proj.state.get("attributes") or {}).get("pieces"), _line.get("pieces")))
+            if not is_weight_unit(_sb, _unit_map):
+                _checks.append(("weight", item_proj.state.get("weight"), _line.get("weight")))
+            _bad = next(((n, p, v) for n, p, v in _checks
+                         if p is not None and v is not None and abs(float(v) - float(p)) > 1e-9), None)
+            if _bad:
+                _n, _p, _v = _bad
+                blocked.append(
+                    f"{sku}: invoicing the whole quantity must take all {float(_p):g} {_n} (got {float(_v):g})"
+                )
+                continue
         fetched[item_eid] = item_proj
         to_fulfill.append(item_eid)
+        if line_qty + 1e-9 < available:
+            # Partial draw of a splittable parcel: split off the invoiced amount as a
+            # child and fulfill that; the mother keeps the remainder. For a parcel sold
+            # BY pieces/weight the quantity IS that measure, so derive it (the line
+            # doesn't carry it separately); otherwise take the line's entered value
+            # (defaults to the parcel's, so by default the child takes all).
+            split_plan[item_eid] = {
+                "child_qty": line_qty,
+                "child_weight": line_qty if is_weight_unit(_sb, _unit_map) else _line.get("weight"),
+                "child_pieces": line_qty if is_pieces_unit(_sb, _unit_map) else _line.get("pieces"),
+            }
 
-    if errors and not to_fulfill:
+    # A shortage or a non-splittable partial prohibits the whole fulfill.
+    if blocked:
+        raise HTTPException(status_code=409, detail="Cannot fulfill: " + "; ".join(blocked))
+
+    if errors and not to_fulfill and not service_eids:
         raise HTTPException(status_code=422, detail={"errors": errors})
 
-    if not to_fulfill:
+    if not to_fulfill and not service_eids:
         raise HTTPException(status_code=422, detail="No fulfillable items in the provided line_entity_ids")
 
     now = datetime.now(UTC).isoformat()
     cid = uuid.UUID(str(company_id))
     uid = user.id
+
+    # Split partial draws: carve the invoiced amount off each parcel as a child,
+    # retarget fulfillment to the child, and rewrite the doc line to reference it.
+    if split_plan:
+        from celerp_inventory.routes import split_off_child
+        new_line_items = [dict(li) for li in state.get("line_items", [])]
+        for parent_eid, plan in split_plan.items():
+            try:
+                child_eid, child_sku = await split_off_child(
+                    session, company_id=cid, user_id=uid, parent_proj=fetched[parent_eid],
+                    child_qty=plan["child_qty"], child_weight=plan.get("child_weight"),
+                    child_pieces=plan.get("child_pieces"),
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Cannot split {fetched[parent_eid].state.get('sku', '')}: {exc}",
+                )
+            to_fulfill[to_fulfill.index(parent_eid)] = child_eid
+            fetched[child_eid] = await session.get(Projection, {"company_id": company_id, "entity_id": child_eid})
+            del fetched[parent_eid]
+            for nli in new_line_items:
+                if (nli.get("entity_id") or nli.get("item_id")) == parent_eid:
+                    nli["entity_id"] = child_eid
+                    nli["item_id"] = child_eid
+                    nli["sku"] = child_sku
+                    break
+        await emit_event(
+            session, company_id=cid, entity_id=entity_id, entity_type="doc",
+            event_type="doc.updated",
+            data={"fields_changed": {"line_items": {"old": state.get("line_items"), "new": new_line_items}}},
+            actor_id=uid, location_id=None, source="fulfillment",
+            idempotency_key=str(uuid.uuid4()), metadata_={},
+        )
+        state["line_items"] = new_line_items
 
     total_cogs = 0.0
     for item_eid in to_fulfill:
@@ -3027,15 +3204,16 @@ async def fulfill_lines(
             metadata_={"doc_id": entity_id},
         )
 
-    # Optimistically compute doc fulfillment_status
-    newly_out = set(to_fulfill)
+    # Optimistically compute doc fulfillment_status. Service lines count as fulfilled (they are
+    # rendered, not drawn from stock) so a service-only or mixed doc can reach "fulfilled".
+    fulfilled_eids = set(to_fulfill) | service_eids
     line_items = state.get("line_items", [])
     all_statuses: list[str] = []
     for li in line_items:
         li_eid = li.get("entity_id") or li.get("item_id") or ""
         if not li_eid:
             continue
-        if li_eid in newly_out:
+        if li_eid in fulfilled_eids:
             all_statuses.append("memo_out")
         else:
             li_proj = await session.get(Projection, {"company_id": company_id, "entity_id": li_eid})
@@ -3823,3 +4001,471 @@ async def delete_doc_file(
     await session.commit()
     updated = await session.get(Projection, {"company_id": company_id, "entity_id": entity_id})
     return (updated.state if updated else {}) | {"id": entity_id}
+
+
+# ---------------------------------------------------------------------------
+# Type-specific list activities, all on lists_router (one lifecycle, type strategies):
+#   - audit creation pre-seeds a draft manifest from a location;
+#   - /scan dispatches on (list_type, status) — draft always ADDS a line; finalized is
+#     type-specific (audit records presence, transfer receives, quotation is locked);
+#   - terminal actions close a finalized list: convert (quotation, above), adjust (audit),
+#     receive (transfer). Adjust + undo route stock through inventory events + auto_je.
+# See context/2026-0617-unified-lists-lifecycle-plan.md.
+# ---------------------------------------------------------------------------
+
+# Physical item types an audit counts (services / non-stocked have no stock to count).
+_AUDIT_STOCK_TYPES = frozenset({"stocked", "component"})
+
+
+class AuditCreateBody(BaseModel):
+    location_id: str
+    idempotency_key: str | None = None
+
+
+class ListScanBody(BaseModel):
+    barcode: str
+    price_list: str | None = None  # money lists price the added line from this list (default Retail)
+
+
+class ListCountBody(BaseModel):
+    counted_qty: float | None = None  # None clears the count (line skipped on adjust)
+
+
+def _audit_unit_cost(state: dict) -> float:
+    cp = state.get("cost_price")
+    try:
+        if cp is not None:
+            return float(cp)
+        total = state.get("cost_total")
+        qty = float(state.get("quantity") or 0)
+        if total is not None and qty > 0:
+            return float(total) / qty
+    except (TypeError, ValueError):
+        return 0.0
+    return 0.0
+
+
+async def _get_audit(session: AsyncSession, company_id, entity_id: str) -> Projection:
+    row = await _get_list(session, company_id, entity_id)
+    if row.state.get("list_type") != "audit":
+        raise HTTPException(status_code=404, detail="Audit not found")
+    return row
+
+
+async def _set_list_fields(session, company_id, entity_id, user, fields: dict):
+    """Emit list.updated carrying the given top-level field changes (used by every type)."""
+    fc = {k: {"new": v} for k, v in fields.items()}
+    return await _emit_list(session, company_id, entity_id, "list.updated", {"fields_changed": fc}, user)
+
+
+async def _resolve_barcode(session, company_id, code: str):
+    """Resolve a scanned code to an item: exact barcode first, then exact SKU. None if no match."""
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    hit = next((r for r in rows if str(r.state.get("barcode") or "") == code), None)
+    return hit or next((r for r in rows if str(r.state.get("sku") or "") == code), None)
+
+
+def _normalize_line_item_ids(lines: list) -> None:
+    """In-place: ensure every line carries `item_id`. The editable list UI sends the item's id in
+    `entity_id` (what celerpFillRow + the hidden field carry), but scan check-off, finalize dedup and
+    the on-hand freeze all key on `item_id` (as `_scan_line_from_item` and the LineItem model set it).
+    Without this, any autosave on an editable draft strips the item link and those operations break."""
+    for l in lines:
+        if isinstance(l, dict) and l.get("entity_id") and not l.get("item_id"):
+            l["item_id"] = l["entity_id"]
+
+
+def _scan_line_from_item(item: Projection, list_type: str, price_list: str | None) -> dict:
+    """Build a new line for a scanned item. Money lists carry a unit_price resolved from the chosen
+    price list (mirrors resolve_price: the list name, then the conventional `<name>_price` key)."""
+    st = item.state
+    line = {"item_id": item.entity_id, "sku": st.get("sku"), "name": st.get("name"),
+            "description": st.get("name"), "barcode": st.get("barcode")}
+    if list_type == "audit":
+        # System qty snapshot for the Qty column; on_hand is frozen separately at finalize.
+        line["quantity"] = float(st.get("quantity") or 0)
+    else:
+        line["quantity"] = 1
+        if is_money_list(list_type):
+            pl = price_list or "Retail"
+            val = st.get(pl)
+            if val is None:
+                val = st.get(f"{pl.lower()}_price")
+            line["unit_price"] = float(val or 0)
+    return line
+
+
+@lists_router.post("/audit")
+async def create_audit_list(
+    payload: AuditCreateBody,
+    company_id=Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Create a location-bound audit as a DRAFT manifest pre-seeded with the location's physical
+    items. The manifest is reviewed/extended in draft (scan adds more); Finalize freezes each line's
+    on-hand snapshot, then counting happens in the finalized stage."""
+    company = await session.get(Company, company_id)
+    rows = (await session.execute(select(Projection).where(
+        Projection.company_id == company_id, Projection.entity_type == "item"))).scalars().all()
+    lines: list[dict] = []
+    for r in rows:
+        st = r.state
+        if str(r.location_id or "") != payload.location_id:
+            continue
+        if (st.get("status") or "available") != "available":
+            continue
+        if (st.get("inventory_type") or "stocked") not in _AUDIT_STOCK_TYPES:
+            continue
+        lines.append({"item_id": r.entity_id, "sku": st.get("sku"), "name": st.get("name"),
+                      "barcode": st.get("barcode"), "quantity": float(st.get("quantity") or 0)})
+    ref_id = next_doc_ref(company, "audit")
+    entity_id = f"list:{ref_id}"
+    if await session.get(Projection, {"company_id": company_id, "entity_id": entity_id}) is not None:
+        raise HTTPException(status_code=409, detail=f"Audit number '{ref_id}' already exists")
+    data = {"list_type": "audit", "location_id": payload.location_id, "status": DRAFT,
+            "ref_id": ref_id, "line_items": lines, "adjust_count": 0,
+            "currency": company.settings.get("currency", "USD")}
+    entry = await _emit_list(session, company_id, entity_id, "list.created", data, user, payload.idempotency_key)
+    await session.commit()
+    return {"event_id": entry.id, "id": entity_id, "ref_id": ref_id, "line_count": len(lines)}
+
+
+@lists_router.post("/{entity_id}/scan")
+async def scan_list(
+    entity_id: str, payload: ListScanBody,
+    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """One scan endpoint for every list type, dispatching on (list_type, status):
+
+    - DRAFT (all types): always ADD a line (audit dedups its manifest + moves to top; money lists
+      price the new line). No status change (GDR 2d) — building the list never finalizes it.
+    - FINALIZED audit: record presence (audited_at), add + audit if not yet on the manifest.
+    - FINALIZED transfer: scan-to-receive (records receipt on the line; the stock move is the
+      Phase 4 seam).
+    - FINALIZED quotation / any closed|void list: scanning is disabled (clear 409).
+    """
+    row = await _get_list(session, company_id, entity_id)
+    state = row.state
+    status = state.get("status")
+    lt = state.get("list_type") or DEFAULT_LIST_TYPE
+    code = (payload.barcode or "").strip()
+    if not code:
+        raise HTTPException(status_code=422, detail="Empty scan")
+    item = await _resolve_barcode(session, company_id, code)
+    if item is None:
+        raise HTTPException(status_code=404, detail=f"Unknown barcode or SKU: {code}")
+    lines = [dict(l) for l in (state.get("line_items") or [])]
+    _normalize_line_item_ids(lines)  # heal any legacy lines stored with only entity_id so matching works
+    idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item.entity_id), None)
+    now = datetime.now(UTC).isoformat()
+
+    if status == DRAFT:
+        if lt == "audit":
+            # Manifest is a set: move an existing line to top, else add it (no count yet).
+            if idx is not None:
+                lines.insert(0, lines.pop(idx))
+                result_state = "present"
+            else:
+                lines.insert(0, _scan_line_from_item(item, lt, None))
+                result_state = "added"
+        else:
+            lines.append(_scan_line_from_item(item, lt, payload.price_list))
+            result_state = "added"
+        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+        await session.commit()
+        return {"state": result_state, "item_id": item.entity_id, "sku": item.state.get("sku")}
+
+    if status != FINALIZED:
+        raise HTTPException(status_code=409, detail="Cannot scan a closed or void list")
+
+    scan_mode = behavior(lt).scan_finalized
+    if scan_mode == "count":
+        # An issued audit's manifest is LOCKED: scanning only checks off items already on the list
+        # (so you can see what's accounted for) and never adds. An item not on the list is rejected
+        # — add it while the audit is still a draft. Re-scanning an item is fine (it re-confirms).
+        if idx is None:
+            # 409 (not 404): the item exists, it's just not on this locked manifest. A 404 here would
+            # be rewritten to a generic "Not found" by the global 404 handler, hiding the reason.
+            raise HTTPException(status_code=409,
+                                detail=f"{item.state.get('sku') or code} is not on this audit")
+        ln = lines.pop(idx)
+        ln["audited_at"] = now        # confirm presence -> the row highlights as accounted for
+        lines.insert(0, ln)           # newest scan to the top (GDR 2n)
+        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+        await session.commit()
+        return {"state": "audited", "item_id": item.entity_id, "sku": item.state.get("sku")}
+
+    raise HTTPException(status_code=409, detail="This list is finalized; scanning is disabled for this type")
+
+
+@lists_router.patch("/{entity_id}/line/{item_id}")
+async def set_audit_count(
+    entity_id: str, item_id: str, payload: ListCountBody,
+    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Set a line's physical count. Editable only while the audit is finalized (counting stage)."""
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Counts can only be entered on a finalized audit")
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    idx = next((i for i, l in enumerate(lines) if l.get("item_id") == item_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Item is not on this audit")
+    cq = payload.counted_qty
+    lines[idx]["counted_qty"] = float(cq) if cq is not None else None
+    await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+    await session.commit()
+    return {"ok": True}
+
+
+class SetScannedBody(BaseModel):
+    item_ids: list[str] = Field(default_factory=list)
+    scanned: bool = True
+
+
+@lists_router.post("/{entity_id}/set-scanned")
+async def set_scanned(
+    entity_id: str, payload: SetScannedBody = SetScannedBody(),
+    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Toggle the scanned/accounted-for highlight (audited_at) on audit lines. scanned=True marks the
+    rows as scanned (stamps audited_at), scanned=False clears it. Pass item_ids to target specific
+    rows, or none for every line. The highlight otherwise persists indefinitely."""
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Counting happens on a finalized audit")
+    targets = set(payload.item_ids)
+    stamp = datetime.now(UTC).isoformat() if payload.scanned else None
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    changed = 0
+    for l in lines:
+        if targets and l.get("item_id") not in targets:
+            continue
+        already = l.get("audited_at") is not None
+        if payload.scanned and not already:
+            l["audited_at"] = stamp
+            changed += 1
+        elif not payload.scanned and already:
+            l["audited_at"] = None
+            changed += 1
+    if changed:
+        await _set_list_fields(session, company_id, entity_id, user, {"line_items": lines})
+        await session.commit()
+    return {"changed": changed}
+
+
+@lists_router.post("/{entity_id}/adjust")
+async def adjust_audit(
+    entity_id: str, company_id=Depends(get_current_company_id),
+    _: None = Depends(require_manager), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Audit terminal action: overwrite each counted line's item qty to its count (finalized ->
+    closed). The magnitude and the shrinkage/overage JE are computed against the LIVE item qty at
+    adjust time (decision 5.2) — `new_qty = counted`, `delta = counted - live`. Uncounted (blank)
+    lines are skipped and reported. Reversible via undo-adjust."""
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Finalize the count before adjusting stock")
+    cycle = int(row.state.get("adjust_count") or 0)
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    shrink_val = 0.0
+    over_val = 0.0
+    adjusted = 0
+    skipped = 0
+    for l in lines:
+        cq = l.get("counted_qty")
+        if cq is None:
+            skipped += 1  # report-and-skip (item qty untouched)
+            continue
+        item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
+        if item is None or item.entity_type != "item":
+            continue
+        live = float(item.state.get("quantity") or 0)  # LIVE qty drives the delta + JE (decision 5.2)
+        cqf = float(cq)
+        if abs(cqf - live) < 1e-9:
+            continue  # no change
+        unit_cost = _audit_unit_cost(item.state)
+        if cqf < live:
+            shrink_val += (live - cqf) * unit_cost
+        else:
+            over_val += (cqf - live) * unit_cost
+        await emit_event(
+            session, company_id=company_id, entity_id=l["item_id"], entity_type="item",
+            event_type="item.quantity.adjusted",
+            data={"new_qty": cqf, "reason": "audit", "source_list_id": entity_id, "prior_qty": live},
+            actor_id=user.id, location_id=None, source="audit", idempotency_key=str(uuid.uuid4()),
+            metadata_={"audit_id": entity_id},
+        )
+        l["prior_qty"] = live
+        l["adjusted"] = True
+        adjusted += 1
+    await auto_je.create_for_audit_adjustment(
+        session, company_id=company_id, user_id=user.id, list_id=entity_id,
+        shrinkage_value=shrink_val, overage_value=over_val, cycle=cycle,
+    )
+    await _emit_list(session, company_id, entity_id, "list.closed",
+                     {"result": "stock_adjusted", "line_items": lines, "adjust_count": cycle + 1}, user)
+    await session.commit()
+    return {"adjusted": adjusted, "skipped": skipped,
+            "shrinkage_value": round(shrink_val, 2), "overage_value": round(over_val, 2)}
+
+
+@lists_router.post("/{entity_id}/undo-adjust")
+async def undo_audit_adjust(
+    entity_id: str, company_id=Depends(get_current_company_id),
+    _: None = Depends(require_manager), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Reverse the last stock adjustment (manager/owner): restore each item's prior quantity and void
+    the audit JE. Reopens the audit (closed -> finalized) so it can be re-counted or re-adjusted."""
+    row = await _get_audit(session, company_id, entity_id)
+    if row.state.get("status") != CLOSED or row.state.get("result") != "stock_adjusted":
+        raise HTTPException(status_code=409, detail="This audit has no adjustment to undo")
+    cycle = int(row.state.get("adjust_count") or 1) - 1
+    lines = [dict(l) for l in (row.state.get("line_items") or [])]
+    for l in lines:
+        if l.get("adjusted") and l.get("prior_qty") is not None:
+            await emit_event(
+                session, company_id=company_id, entity_id=l["item_id"], entity_type="item",
+                event_type="item.quantity.adjusted",
+                data={"new_qty": float(l["prior_qty"]), "reason": "audit_undo", "source_list_id": entity_id},
+                actor_id=user.id, location_id=None, source="audit", idempotency_key=str(uuid.uuid4()),
+                metadata_={"audit_id": entity_id},
+            )
+            l.pop("adjusted", None)
+            l.pop("prior_qty", None)
+    await auto_je.void_for_audit_adjustment(session, company_id=company_id, user_id=user.id,
+                                            list_id=entity_id, cycle=cycle)
+    await _emit_list(session, company_id, entity_id, "list.reopened", {"line_items": lines}, user)
+    await session.commit()
+    return {"ok": True}
+
+
+class ListChangeTypeBody(BaseModel):
+    list_type: str
+
+
+@lists_router.post("/{entity_id}/change-type")
+async def change_list_type(
+    entity_id: str, payload: ListChangeTypeBody,
+    company_id: str = Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Change a list's type while it is a draft OR issued (finalized). The change is just another
+    event in history, so everything the list did under its old type stays recorded; terminal/
+    financial actions are gated by status, so re-typing can't undo or fabricate past work. Type
+    fields persist (nothing is zeroed). Switching a FINALIZED list to audit re-freezes the on-hand
+    baseline that the audit's own finalize would have captured, so variance/Adjust stay correct.
+    Closed/void lists are terminal — duplicate instead."""
+    row = await _get_list(session, company_id, entity_id)
+    state = row.state
+    new_type = payload.list_type
+    if new_type not in LIST_TYPES:
+        raise HTTPException(status_code=422, detail=f"Unknown list type: {new_type}")
+    status = state.get("status")
+    if status not in (DRAFT, FINALIZED):
+        raise HTTPException(status_code=409,
+                            detail="A list's type can only be changed while it is a draft or issued")
+    fields: dict = {"list_type": new_type}
+    if new_type == "audit" and status == FINALIZED:
+        lines = [dict(l) for l in (state.get("line_items") or [])]
+        for l in lines:
+            item = await session.get(Projection, {"company_id": company_id, "entity_id": l.get("item_id")})
+            l["on_hand"] = (float(item.state.get("quantity") or 0)
+                            if (item and item.entity_type == "item") else l.get("on_hand", 0.0))
+        fields["line_items"] = lines
+    await _set_list_fields(session, company_id, entity_id, user, fields)
+    await session.commit()
+    return {"ok": True, "list_type": new_type}
+
+
+@lists_router.post("/{entity_id}/send")
+async def send_list(
+    entity_id: str, payload: DocSendBody = DocSendBody(),
+    company_id: str = Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Record a finalized list as sent (sets the `sent_at` milestone; status stays finalized) and,
+    if a recipient is given, fire the relay email — the same Send / Mark-as-sent mechanism documents
+    use. `sent_via="manual"` (no recipient) is the Mark-as-sent path."""
+    row = await _get_list(session, company_id, entity_id)
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Issue the list before sending it")
+    now = datetime.now(UTC).isoformat()
+    await _set_list_fields(session, company_id, entity_id, user,
+                           {"sent_at": now, "sent_via": payload.sent_via or "email",
+                            "sent_to": payload.sent_to})
+    await session.commit()
+    if payload.sent_to:
+        ref = row.state.get("ref_id") or entity_id.split(":")[-1]
+        company_row = await session.get(Company, company_id)
+        sender = company_row.name if company_row else "Your supplier"
+        contact = row.state.get("customer_name") or "there"
+        total = row.state.get("total", 0)
+        cur = row.state.get("currency", "USD")
+        subject = f"Quotation #{ref} from {sender}"
+        html = (f"<p>Hi {contact},</p><p>Please find your <strong>Quotation #{ref}</strong> from "
+                f"<strong>{sender}</strong>.</p><p>Amount: <strong>{cur} {total}</strong></p>")
+        text = f"Hi {contact},\n\nPlease find your Quotation #{ref} from {sender}.\nAmount: {cur} {total}\n"
+        from celerp.services.email import send_email
+        asyncio.create_task(send_email(payload.sent_to, subject, html, body_text=text,
+                                       cc=payload.cc or "", bcc=payload.bcc or ""))
+    return {"ok": True}
+
+
+@lists_router.post("/{entity_id}/unmark-sent")
+async def unmark_list_sent(
+    entity_id: str, company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user), session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Clear the sent milestone (the list stays finalized)."""
+    row = await _get_list(session, company_id, entity_id)
+    await _set_list_fields(session, company_id, entity_id, user,
+                           {"sent_at": None, "sent_via": None, "sent_to": None})
+    await session.commit()
+    return {"ok": True}
+
+
+class ListMoveBody(BaseModel):
+    to_location_id: str
+
+
+@lists_router.post("/{entity_id}/move")
+async def move_transfer(
+    entity_id: str, payload: ListMoveBody,
+    company_id=Depends(get_current_company_id), user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """Transfer action: relocate every item on a finalized transfer to one location, by emitting the
+    inventory `item.transferred` event per line (stock is owned by inventory; docs only emits the
+    event). Repeatable — the transfer stays finalized so it can be moved again."""
+    row = await _get_list(session, company_id, entity_id)
+    if (row.state.get("list_type") or "") != "transfer":
+        raise HTTPException(status_code=409, detail="Only transfers can move stock")
+    if row.state.get("status") != FINALIZED:
+        raise HTTPException(status_code=409, detail="Issue the transfer before moving its items")
+    if not payload.to_location_id:
+        raise HTTPException(status_code=422, detail="A destination location is required")
+    moved = 0
+    for l in (row.state.get("line_items") or []):
+        item_id = l.get("item_id") or l.get("entity_id")
+        if not item_id:
+            continue
+        await emit_event(
+            session, company_id=company_id, entity_id=item_id, entity_type="item",
+            event_type="item.transferred", data={"to_location_id": str(payload.to_location_id)},
+            actor_id=user.id, location_id=payload.to_location_id, source="transfer",
+            idempotency_key=str(uuid.uuid4()), metadata_={"transfer_id": entity_id},
+        )
+        moved += 1
+    await _set_list_fields(session, company_id, entity_id, user,
+                           {"moved_to_location_id": payload.to_location_id,
+                            "moved_at": datetime.now(UTC).isoformat()})
+    await session.commit()
+    return {"moved": moved, "to_location_id": payload.to_location_id}

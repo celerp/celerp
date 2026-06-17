@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ _PREFIX_BY_DOC_TYPE = {
     "consignment_in": "CI",
     "subscription_invoice": "SUBI",
     "subscription_po": "SUBP",
+    "production_order": "PRD",
+    "audit": "AUD",
 }
 
 # Default pattern for all new companies

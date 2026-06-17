@@ -9,9 +9,22 @@ Website: [www.celerp.com](https://www.celerp.com)
 Celerp is simple to use, flexible, customizable, and designed to transition your business into the AI age with no technical knowledge needed to setup your whole office. We want to put businesses back in charge of their data.
 
 [![Tests](https://github.com/celerp/celerp/actions/workflows/ci.yml/badge.svg)](https://github.com/celerp/celerp/actions)
-[![License](https://img.shields.io/badge/license-BSL--1.1-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-BUSL--1.1-blue)](LICENSE)
 
-![Celerp Inventory](docs/screenshot-inventory.png)
+![Celerp manufacturing cost worksheet](docs/press-kit/screenshots/manufacturing-worksheet.png)
+
+## Screenshots
+
+Real double-entry accounting, multi-location inventory, manufacturing, and a built-in REST API - one self-hosted app.
+
+| | |
+|---|---|
+| ![Double-entry trial balance that ties out to zero](docs/press-kit/screenshots/trial-balance.png)<br>**Trial balance** - ties out to zero | ![Balance sheet generated from the event-sourced ledger](docs/press-kit/screenshots/balance-sheet.png)<br>**Balance sheet** - live from the ledger |
+| ![General ledger with account drill-down](docs/press-kit/screenshots/general-ledger.png)<br>**General ledger** - full drill-down | ![Multi-location inventory with barcode scanning and valuation](docs/press-kit/screenshots/inventory.png)<br>**Inventory** - multi-location, barcode, valuation |
+| ![Production planning by status, priority, and due date](docs/press-kit/screenshots/production-planning.png)<br>**Production planning** - work orders, priorities, due dates | ![Built-in REST API for integrations](docs/press-kit/screenshots/rest-api.png)<br>**REST API** - integrate anything |
+| ![Dashboard with revenue trend, receivables aging, and inventory mix](docs/press-kit/screenshots/dashboard.png)<br>**Dashboard** - revenue trend, AR aging, inventory mix | |
+
+More in the [press kit](docs/press-kit/).
 
 ---
 
@@ -119,13 +132,14 @@ Issues and PRs welcome. The module system makes it straightforward to add new bu
 
 **Free to download. Free to self-host. Free to build on.**
 
-The core engine is Licensed under [Business Source License 1.1] -
-self-hosting permitted, contributions welcome. Every release automatically
-converts to Apache 2.0 after 4 years.
+Celerp is open-core:
 
-Default modules are [MIT licensed] -
-do whatever you want.
+- **Source-available core engine** under the [Business Source License 1.1](LICENSE) -
+  self-hosting permitted, contributions welcome.
+- **An MIT-licensed module ecosystem** - the default business modules are MIT, so you can
+  fork them, build your own modules, and ship them however you like. See [LICENSING.md](LICENSING.md).
+- **A proprietary application + cloud layer** (official UI, document/PDF output, and the cloud/AI
+  services) that powers the hosted experience.
 
-The UI layer is [source-available, all rights reserved].
-
-One restriction: don't resell Celerp itself as a competing product.
+See [LICENSING.md](LICENSING.md) for the full map and [TRADEMARK.md](TRADEMARK.md) for use of the Celerp
+name. One restriction: don't resell Celerp itself as a competing product.

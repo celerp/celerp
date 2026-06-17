@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs
+# SPDX-License-Identifier: BUSL-1.1
 """Add compound index on projections(company_id, entity_type).
 
 Without this index every doc/inventory/contact list query does a full

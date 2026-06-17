@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Shared image and file helpers for connectors.
 
 Used by WooCommerce and Shopify connectors to push/pull product images

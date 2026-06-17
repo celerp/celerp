@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -847,13 +847,20 @@ class ContactMergeBody(BaseModel):
     source_contact_ids: list[str]
 
 
-@router.post("/contacts/merge")
-async def merge_contacts(
-    payload: ContactMergeBody,
-    company_id: str = Depends(get_current_company_id),
-    user=Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+async def merge_contacts_service(
+    session: AsyncSession,
+    company_id: str,
+    actor_id,
+    target_contact_id: str,
+    source_contact_ids: list[str],
 ) -> dict:
+    """Merge source contacts into the target: union people/addresses/tags onto the winner, tombstone the
+    sources (deleted + merged_into), and re-point every doc/deal referencing a source to the winner.
+    Emits events only (the caller commits), so it is replay-safe and reusable by both the merge route
+    and the self-contact migration - one merge implementation (DRY)."""
+    from types import SimpleNamespace
+    payload = SimpleNamespace(target_contact_id=target_contact_id, source_contact_ids=source_contact_ids)
+    user = SimpleNamespace(id=actor_id)
     # 1. Validate inputs
     if not payload.source_contact_ids:
         raise HTTPException(status_code=422, detail="source_contact_ids must not be empty.")
@@ -1039,13 +1046,28 @@ async def merge_contacts(
     # 11. Notes: NOT re-parented. Contact detail page queries merged_from IDs.
     # No events emitted for notes.
 
-    await session.commit()
     return {
         "merged_into": payload.target_contact_id,
         "sources_merged": len(source_rows),
         "docs_updated": docs_updated,
         "warnings": warnings,
     }
+
+
+@router.post("/contacts/merge")
+async def merge_contacts(
+    payload: ContactMergeBody,
+    company_id: str = Depends(get_current_company_id),
+    user=Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    result = await merge_contacts_service(
+        session, company_id, actor_id=user.id,
+        target_contact_id=payload.target_contact_id,
+        source_contact_ids=payload.source_contact_ids,
+    )
+    await session.commit()
+    return result
 
 
 def setup_api_routes(app) -> None:

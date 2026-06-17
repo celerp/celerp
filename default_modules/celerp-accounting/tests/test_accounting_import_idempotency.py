@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ async def test_accounting_import_batch_idempotency(client, session):
         auth_hash="x",
         is_active=True,
     ))
+    # Persist the parent rows before the FK-dependent user_companies row — the
+    # unit-of-work doesn't reliably order the User insert ahead of UserCompany.
+    await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
 

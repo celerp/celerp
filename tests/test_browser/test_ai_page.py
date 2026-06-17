@@ -168,10 +168,23 @@ class TestChatView:
 
     @pytest.fixture(autouse=True)
     def _set_session_token(self):
-        """Temporarily set a fake session token so chat view renders."""
+        """Temporarily set a fake session token + quota so the chat view renders.
+
+        The /ai page gate asks the API's quota-status endpoint, which normally
+        fetches from the cloud relay (unreachable in tests). The API server runs
+        in-process, so patch get_quota_status at its call site to report an
+        active cloud subscription.
+        """
+        from unittest.mock import AsyncMock, patch
         from celerp.gateway.state import set_session_token
         set_session_token("test-session-token-for-browser-tests")
-        yield
+        fake_status = {
+            "allowed": True, "used": 0, "limit": 100,
+            "topup_credits": 0, "resets_at": None, "tier": "pro",
+        }
+        with patch("celerp_ai.routes.get_quota_status",
+                   new=AsyncMock(return_value=fake_status)):
+            yield
         set_session_token("")
 
     def test_chat_view_loads(self, page, ui_server):

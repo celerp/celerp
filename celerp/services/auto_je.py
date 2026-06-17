@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 """Auto journal entry creation for document lifecycle events.
 
@@ -17,6 +17,14 @@ from celerp.models.projections import Projection
 from celerp.services.je_keys import je_idempotency_key
 from celerp.services.money import round_money, to_decimal, to_stored_float
 from sqlalchemy import select as _select
+
+# Canonical goods-inventory account. Every goods movement - purchase/receive, bill, manufacturing,
+# COGS relief, audit adjustment, landed-cost capitalisation - posts here so the asset account and its
+# COGS relief reconcile against the SAME account. 1130 is the parent rollup; 1130-P is the postable
+# leaf where goods actually live (receive/bill/mfg all debit it). The previous COGS-side "1300" was a
+# placeholder that is not in the chart of accounts, so COGS credits were stranded and 1130-P was never
+# relieved on sale.
+_INVENTORY_ACCT = "1130-P"
 
 
 def _to_base(amount: float, rate: _Dec, base_cur: str) -> float:
@@ -218,10 +226,10 @@ async def create_for_po_received(
 ) -> None:
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     debit_account = {
-        "inventory": "1130-P",
+        "inventory": _INVENTORY_ACCT,
         "expense": "6950",
         "asset": "1210",
-    }.get(purchase_kind, "1130-P")
+    }.get(purchase_kind, _INVENTORY_ACCT)
 
     rate = _Dec(str((doc or {}).get("conversion_rate") or 1))
     base_total = _to_base(float(total), rate, base_currency)
@@ -244,6 +252,82 @@ async def create_for_po_received(
             {"account": "2110", "debit": 0.0, "credit": base_total},
         ],
         metadata_={"trigger": "doc.received", "doc_id": po_id, "purchase_kind": purchase_kind},
+    )
+
+
+# Landed-cost clearing accounts: capitalisable import charges park here at bill posting and
+# capitalise into inventory on receipt (P3). Recoverable import VAT goes to 1150 instead (not a cost).
+_LANDED_CLEARING_ACCT: dict[str, str] = {
+    "freight": "1130-FRT",
+    "insurance": "1130-INS",
+    "duty": "1130-DTY",
+    "import_vat": "1130-IVT",
+}
+
+
+async def landed_account_for_line(session, company_id, li: dict) -> str | None:
+    """Return the clearing/receivable account for a landed-cost bill line, or None if not one.
+
+    A line is a landed-cost component if it carries landed_cost_kind, or references a
+    freight-typed item. Recoverable import VAT routes to 1150 (input VAT receivable, not capitalised);
+    every other capitalisable kind routes to its clearing account.
+    """
+    kind = li.get("landed_cost_kind")
+    recoverable = li.get("recoverable")
+    if not kind:
+        item_id = li.get("item_id") or li.get("entity_id")
+        if not item_id:
+            return None
+        proj = await session.get(Projection, {"company_id": company_id, "entity_id": str(item_id)})
+        if not proj or (proj.state.get("inventory_type") or "stocked") != "freight":
+            return None
+        kind = proj.state.get("landed_cost_kind") or "freight"
+        if recoverable is None:
+            recoverable = proj.state.get("recoverable")
+    if kind not in _LANDED_CLEARING_ACCT:
+        return None
+    if kind == "import_vat":
+        # Fall back to the company default when recoverability is unspecified (worldwide: a company in a
+        # recoverable-VAT jurisdiction sets import_vat_recoverable_default=True).
+        if recoverable is None:
+            from celerp.models.company import Company
+            company = await session.get(Company, company_id)
+            recoverable = bool((company.settings or {}).get("import_vat_recoverable_default")) if company else False
+        if recoverable:
+            return "1150"
+    return _LANDED_CLEARING_ACCT[kind]
+
+
+async def create_for_landed_capitalisation(
+    session, *, company_id, user_id, doc_id: str, landed_by_kind: dict[str, float], receive_suffix: str,
+    receive_date: str | None = None,
+) -> None:
+    """Capitalise received landed cost from the clearing accounts into goods inventory on receipt:
+    Dr 1130-P (total) / Cr each kind's clearing account. Balances by construction.
+
+    The bill posting (create_for_bill_conversion) parks freight/insurance/duty/non-recoverable-VAT in
+    the clearing accounts; this draws the received portion down into 1130-P so that COGS, which relieves
+    the item's full cost_total (base + landed) from 1130-P, reconciles against the same account.
+    """
+    total = round(sum(float(v or 0) for v in landed_by_kind.values()), 2)
+    if total <= 0:
+        return
+    entries: list[dict] = [{"account": _INVENTORY_ACCT, "debit": total, "credit": 0.0}]
+    for kind, amt in landed_by_kind.items():
+        amt = round(float(amt or 0), 2)
+        if amt:
+            entries.append({"account": _LANDED_CLEARING_ACCT[kind], "debit": 0.0, "credit": amt})
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=f"je:auto:{doc_id}:landed-cap:{receive_suffix}",
+        idem_create=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "c"),
+        idem_posted=je_idempotency_key(doc_id, f"landed.cap:{receive_suffix}", "p"),
+        memo=f"Auto JE for {doc_id} landed-cost capitalisation",
+        ts=receive_date,
+        entries=entries,
+        metadata_={"trigger": "doc.landed_capitalised", "doc_id": doc_id},
     )
 
 
@@ -279,22 +363,33 @@ async def create_for_bill_conversion(
             ))
             if line_total <= 0:
                 continue
-            tax_rate = to_decimal(li.get("tax_rate", 0) or 0)
-            line_tax_d = round_money(to_decimal(line_total) * tax_rate / 100, currency)
-            tax_total_d += line_tax_d
             # receive_as overrides SKU-based account selection for bills.
             receive_as = (li.get("receive_as") or "").strip().lower()
+            landed_acct = await landed_account_for_line(session, company_id, li)
             if li.get("account_code"):
                 account = li["account_code"]
             elif receive_as == "expense":
                 account = "6950"
             elif receive_as == "asset":
                 account = "1210"
+            elif landed_acct:
+                # Landed-cost charge (freight/insurance/duty/import_vat): clearing or 1150.
+                account = landed_acct
             else:
-                account = "1130-P" if li.get("sku") else "6950"
+                account = _INVENTORY_ACCT if li.get("sku") else "6950"
             debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
+        # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
+        # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets. Using the
+        # wrong source left the bill JE unbalanced (inventory debited net, AP credited gross, no VAT debit).
+        tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
         if tax_total_d > 0:
             debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
+
+    # Doc-level shipping on a bill is inbound freight: debit the freight clearing account so the JE
+    # balances (this closes the legacy gap where shipping inflated the AP credit with no debit).
+    shipping_d = round_money(doc.get("shipping", 0) or 0, currency)
+    if shipping_d > 0:
+        debit_entries.append({"account": "1130-FRT", "debit": _to_base(to_stored_float(shipping_d), rate, base_currency), "credit": 0.0})
 
     base_total = _to_base(total, rate, base_currency)
     if not debit_entries:
@@ -396,9 +491,6 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 ))
                 if line_total <= 0:
                     continue
-                tax_rate = to_decimal(li.get("tax_rate", 0) or 0)
-                line_tax_d = round_money(to_decimal(line_total) * tax_rate / 100, currency)
-                tax_total_d += line_tax_d
                 receive_as = (li.get("receive_as") or "").strip().lower()
                 if li.get("account_code"):
                     account = li["account_code"]
@@ -407,8 +499,10 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 elif receive_as == "asset":
                     account = "1210"
                 else:
-                    account = "1130-P" if li.get("sku") else "6950"
+                    account = _INVENTORY_ACCT if li.get("sku") else "6950"
                 debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
+            # Input VAT from the doc's effective tax (see create_for_bill_conversion) — keeps the JE balanced.
+            tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
             if tax_total_d > 0:
                 debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
         base_total = _to_base(total, rate, base_currency)
@@ -432,7 +526,7 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
 
 
 async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, total_cogs: float, cycle: int = 0) -> None:
-    """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1300).
+    """Create COGS JE when a doc is fulfilled: Debit COGS (5100) / Credit Inventory (1130-P).
 
     cycle must be incremented each time a doc is re-fulfilled (e.g. use doc revert_count so that
     fulfill → revert → re-fulfill produces distinct JE idempotency keys and entity IDs).
@@ -453,7 +547,7 @@ async def create_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str,
         memo=f"Auto JE for {doc_id} fulfilled (COGS)",
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
-            {"account": "1300", "debit": 0.0, "credit": float(total_cogs)},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
         ],
         metadata_={"trigger": "doc.fulfilled", "doc_id": doc_id},
     )
@@ -484,7 +578,7 @@ async def void_for_doc_fulfilled(session, *, company_id, user_id, doc_id: str, c
 
 
 async def create_for_return_received(session, *, company_id, user_id, cn_id: str, total_cogs: float, je_suffix: str) -> None:
-    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1300) / Credit COGS (5100).
+    """Reversing COGS JE when goods are returned via credit note: Debit Inventory (1130-P) / Credit COGS (5100).
 
     je_suffix must be unique per receive-return call (e.g. first item_id) to avoid idempotency key collisions
     when receive-return is called multiple times on the same CN.
@@ -500,7 +594,7 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
         idem_posted=je_idempotency_key(cn_id, f"return:{je_suffix}", "p"),
         memo=f"Auto JE for {cn_id} return received (COGS reversal)",
         entries=[
-            {"account": "1300", "debit": float(total_cogs), "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": float(total_cogs), "credit": 0.0},
             {"account": "5100", "debit": 0.0, "credit": float(total_cogs)},
         ],
         metadata_={"trigger": "doc.return_received", "cn_id": cn_id},
@@ -508,7 +602,7 @@ async def create_for_return_received(session, *, company_id, user_id, cn_id: str
 
 
 async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, total_cogs: float, unique_suffix: str) -> None:
-    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1300).
+    """Reverse the COGS reversal JE when a receive-return is undone: Debit COGS (5100) / Credit Inventory (1130-P).
 
     unique_suffix must be unique per call (e.g. a UUID) so repeated undo attempts each get their own JE.
     """
@@ -524,7 +618,7 @@ async def create_for_return_undone(session, *, company_id, user_id, cn_id: str, 
         memo=f"Auto JE for {cn_id} return undone (COGS re-reversal)",
         entries=[
             {"account": "5100", "debit": float(total_cogs), "credit": 0.0},
-            {"account": "1300", "debit": 0.0, "credit": float(total_cogs)},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(total_cogs)},
         ],
         metadata_={"trigger": "doc.return_undone", "cn_id": cn_id},
     )
@@ -548,10 +642,10 @@ async def create_for_receive_undone(
         return
     purchase_kind = str((doc or {}).get("purchase_kind") or "inventory").strip().lower()
     credit_account = {
-        "inventory": "1130-P",
+        "inventory": _INVENTORY_ACCT,
         "expense": "6950",
         "asset": "1210",
-    }.get(purchase_kind, "1130-P")
+    }.get(purchase_kind, _INVENTORY_ACCT)
     await _emit_auto_posted_je(
         session,
         company_id=company_id,
@@ -579,14 +673,74 @@ async def create_for_mfg_completed(session, *, company_id, user_id, order_id: st
         idem_posted=je_idempotency_key(order_id, "mfg.completed", "p"),
         memo=f"Auto JE for {order_id} completion",
         entries=[
-            {"account": "1130-P", "debit": output_cost, "credit": 0.0},
+            {"account": _INVENTORY_ACCT, "debit": output_cost, "credit": 0.0},
             {"account": "5100", "debit": float(waste_cost), "credit": 0.0},
-            {"account": "1130-P", "debit": 0.0, "credit": float(input_cost)},
+            {"account": _INVENTORY_ACCT, "debit": 0.0, "credit": float(input_cost)},
         ],
         metadata_={"trigger": "mfg.order.completed", "order_id": order_id},
     )
 
 
+# Inventory-audit stock adjustment accounts (O1 default - overridable later via settings):
+#   shrinkage (count < system): Dr 5100 Cost of Goods Sold / Cr 1130-P Inventory
+#   overage   (count > system): Dr 1130-P Inventory          / Cr 4300 Other Income
+_AUDIT_SHRINKAGE_ACCT = "5100"
+_AUDIT_OVERAGE_ACCT = "4300"
+_AUDIT_INVENTORY_ACCT = _INVENTORY_ACCT
+
+
+def _audit_je_id(list_id: str, cycle: int) -> str:
+    return f"je:auto:{list_id}:audit:{cycle}"
+
+
+async def create_for_audit_adjustment(
+    session, *, company_id, user_id, list_id: str, shrinkage_value: float, overage_value: float, cycle: int = 0,
+) -> None:
+    """Post the balanced inventory write-down/up JE for an audit's stock adjustment.
+
+    shrinkage_value = total value lost (count below system); overage_value = total value gained.
+    Cycle-aware so a re-adjust after an undo posts a fresh JE rather than colliding on idempotency.
+    """
+    entries: list[dict] = []
+    if shrinkage_value > 1e-9:
+        entries.append({"account": _AUDIT_SHRINKAGE_ACCT, "debit": round(float(shrinkage_value), 2), "credit": 0.0})
+        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": 0.0, "credit": round(float(shrinkage_value), 2)})
+    if overage_value > 1e-9:
+        entries.append({"account": _AUDIT_INVENTORY_ACCT, "debit": round(float(overage_value), 2), "credit": 0.0})
+        entries.append({"account": _AUDIT_OVERAGE_ACCT, "debit": 0.0, "credit": round(float(overage_value), 2)})
+    if not entries:
+        return  # nothing to post (no value change)
+    await _emit_auto_posted_je(
+        session,
+        company_id=company_id,
+        user_id=user_id,
+        je_id=_audit_je_id(list_id, cycle),
+        idem_create=je_idempotency_key(list_id, f"audit.adjusted:{cycle}", "c"),
+        idem_posted=je_idempotency_key(list_id, f"audit.adjusted:{cycle}", "p"),
+        memo=f"Inventory audit adjustment {list_id}",
+        entries=entries,
+        metadata_={"trigger": "audit.adjusted", "list_id": list_id},
+    )
+
+
+async def void_for_audit_adjustment(session, *, company_id, user_id, list_id: str, cycle: int = 0) -> None:
+    """Void the audit-adjustment JE (undo). No-op if it was never posted (zero-value adjustment)."""
+    je_id = _audit_je_id(list_id, cycle)
+    row = await session.get(Projection, {"company_id": company_id, "entity_id": je_id})
+    if row is not None and row.state.get("status") == "posted":
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=je_id,
+            entity_type="journal_entry",
+            event_type="acc.journal_entry.voided",
+            data={"reason": f"Reversed: audit {list_id} stock adjustment undone"},
+            actor_id=user_id,
+            location_id=None,
+            source="auto_je",
+            idempotency_key=je_idempotency_key(list_id, f"audit.undo:{cycle}", "void"),
+            metadata_={"trigger": "audit.undo", "list_id": list_id},
+        )
 
 
 async def upsert_opening_inventory_je(
@@ -649,7 +803,10 @@ async def upsert_opening_inventory_je(
         )
     ).scalars().all()
 
-    inv_codes = {"1130", "1130-P", "1130-OB"}
+    # Every 1130* account is inventory asset value: goods (1130-P), opening balance (1130-OB), and the
+    # landed-cost clearing sub-accounts (1130-FRT/INS/DTY/IVT). catalog cost_total now includes
+    # capitalised landed cost, so the JE-backed sum must cover the clearing accounts too or the landed
+    # amount would show up as a spurious opening-balance gap.
     ob_je_id = f"je:auto:opening-inventory:{company_id}"
     je_backed = _Dec("0")
     ob_proj = None
@@ -661,7 +818,7 @@ async def upsert_opening_inventory_je(
         if s.get("status") != "posted":
             continue
         for entry in s.get("entries", []):
-            if entry.get("account") in inv_codes:
+            if str(entry.get("account") or "").startswith("1130"):
                 je_backed += _Dec(str(entry.get("debit") or 0))
                 je_backed -= _Dec(str(entry.get("credit") or 0))
 
@@ -724,8 +881,9 @@ async def upsert_opening_inventory_je(
 
 
 def _category_inventory_account(category: str) -> str:
-    """Placeholder: all categories map to 1300 until category-level CoA mapping is built."""
-    return "1300"
+    """All categories map to the canonical goods-inventory account until category-level CoA mapping
+    is built. (Was a 1300 placeholder that is not in the chart of accounts.)"""
+    return _INVENTORY_ACCT
 
 
 async def create_for_item_transform(

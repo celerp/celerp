@@ -676,7 +676,7 @@ class TestMainModuleLoading:
 
     def test_config_toml_missing_modules_key_returns_empty(self):
         """Config with no modules section yields empty set."""
-        fake_cfg = {"database": {"url": "sqlite+aiosqlite:///./dev.db"}}
+        fake_cfg = {"database": {"url": "postgresql+asyncpg://celerp:celerp@localhost:5432/celerp"}}
         with (
             patch.dict("os.environ", {"ENABLED_MODULES": ""}),
             patch("celerp.config.read_config", return_value=fake_cfg),

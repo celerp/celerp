@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 # Re-export from owning module (celerp-connectors).
 # This file is kept for backward compat with Alembic env.py import.
 try:

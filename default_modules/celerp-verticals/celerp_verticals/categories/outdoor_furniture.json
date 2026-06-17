@@ -62,11 +62,8 @@
     {
       "key": "assembly",
       "label": "Assembly Required",
-      "type": "select",
-      "options": [
-        "Yes",
-        "No"
-      ],
+      "type": "boolean",
+      "options": [],
       "visible_to_roles": []
     },
     {

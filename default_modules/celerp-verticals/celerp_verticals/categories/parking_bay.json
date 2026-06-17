@@ -76,5 +76,6 @@
     }
   ],
   "default_sell_by": "piece",
+  "default_inventory_type": "service",
   "default_purchase_unit": "piece"
 }

@@ -11,7 +11,7 @@ only to maintain the revision chain for existing installs that had these
 tables in the kernel schema before the module split.
 """
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 from __future__ import annotations
 

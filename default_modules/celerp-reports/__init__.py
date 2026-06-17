@@ -1,12 +1,12 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 PLUGIN_MANIFEST = {
     "name": "celerp-reports",
     "version": "1.0.0",
     "display_name": "Reports",
     "description": "Financial and operational reports.",
-    "license": "BSL-1.1",
+    "license": "MIT",
     "author": "Celerp",
     "depends_on": ["celerp-accounting", "celerp-docs", "celerp-inventory"],
     "api_routes": "celerp_reports.api_setup",

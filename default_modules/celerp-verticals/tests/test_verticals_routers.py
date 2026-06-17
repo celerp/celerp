@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Tests for celerp-verticals: /companies/verticals/* and /companies/me/apply-* endpoints."""
 
 from __future__ import annotations
@@ -41,11 +41,13 @@ async def test_apply_preset_schemas_stored(client):
     r = await client.get("/companies/me/category-schemas", headers=_h(tok))
     assert r.status_code == 200, r.text
     schemas = r.json()
-    assert "Diamond" in schemas
-    assert "Ruby" in schemas
-    assert "Sapphire" in schemas
-    assert "Emerald" in schemas
-    assert "Jewelry" in schemas
+    # Schemas are keyed by the stable category slug (matches an item's `category`
+    # value and the demo rows), not the display_name.
+    assert "diamond" in schemas
+    assert "ruby" in schemas
+    assert "sapphire" in schemas
+    assert "emerald" in schemas
+    assert "jewelry" in schemas
 
 
 @pytest.mark.asyncio
@@ -62,7 +64,7 @@ async def test_apply_preset_idempotent(client):
     r = await client.get("/companies/me/category-schemas", headers=_h(tok))
     schemas = r.json()
     # Diamond fields should not be duplicated
-    diamond_keys = [f["key"] for f in schemas["Diamond"]]
+    diamond_keys = [f["key"] for f in schemas["diamond"]]
     assert len(diamond_keys) == len(set(diamond_keys))
 
 
@@ -85,7 +87,7 @@ async def test_apply_preset_diamond_fields(client):
     await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=_h(tok))
     r = await client.get("/companies/me/category-schemas", headers=_h(tok))
     schemas = r.json()
-    diamond_keys = {f["key"] for f in schemas["Diamond"]}
+    diamond_keys = {f["key"] for f in schemas["diamond"]}
     # Core grading fields must be present
     assert "grade" in diamond_keys
     assert "cut" in diamond_keys
@@ -99,6 +101,6 @@ async def test_apply_preset_jewelry_metal_options(client):
     await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"}, headers=_h(tok))
     r = await client.get("/companies/me/category-schemas", headers=_h(tok))
     schemas = r.json()
-    jewelry_fields = {f["key"]: f for f in schemas["Jewelry"]}
+    jewelry_fields = {f["key"]: f for f in schemas["jewelry"]}
     assert "metal" in jewelry_fields
     assert "Gold 18K" in jewelry_fields["metal"]["options"]

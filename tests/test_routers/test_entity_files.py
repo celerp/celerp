@@ -317,3 +317,31 @@ async def test_doc_file_download_resolves_data_dir(client):
         "GET /docs/{{entity_id}}/files/{{file_id}} route may be missing or broken."
     )
     assert r.content == fake_img
+# ── Item image auto-tagging ─────────────────────────────────────────────────────
+
+_SMALL_PNG = (b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06'
+              b'\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00'
+              b'\x01\r\n-\xdb\x00\x00\x00\x00IEND\xaeB`\x82')
+
+
+@pytest.mark.asyncio
+async def test_item_image_upload_auto_tags_product_images(client):
+    """An image attached to an inventory item is auto-tagged product_images (the area implies the type);
+    a non-image is left untagged."""
+    h = await _headers(client)
+    item_id = (await client.post(
+        "/items", json={"sku": "IMG1", "name": "Img", "quantity": 1, "sell_by": "piece"}, headers=h
+    )).json()["id"]
+
+    r = await client.post(f"/items/{item_id}/files",
+                          files={"file": ("photo.png", _SMALL_PNG, "image/png")}, headers=h)
+    assert r.status_code == 200, r.text
+    files = (await client.get(f"/items/{item_id}", headers=h)).json().get("files", [])
+    img = next(f for f in files if f.get("filename") == "photo.png")
+    assert img.get("document_tag") == "product_images"
+
+    await client.post(f"/items/{item_id}/files",
+                      files={"file": ("spec.pdf", _SMALL_PDF, "application/pdf")}, headers=h)
+    files2 = (await client.get(f"/items/{item_id}", headers=h)).json().get("files", [])
+    pdf = next(f for f in files2 if f.get("filename") == "spec.pdf")
+    assert not pdf.get("document_tag")

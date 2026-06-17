@@ -165,20 +165,57 @@ def _collect_contact_files(contact: dict, docs: list[dict]) -> list[dict]:
     return result
 
 
+def _collect_company_files(self_contact: dict, items: list[dict], docs: list[dict]) -> list[dict]:
+    """Aggregate a read-only company-wide files view: the company's own documents (self-contact files),
+    every inventory item's images, and every document's attachments. Each row keeps the right linked
+    ref/url + download/action overrides so it still points back at its owning entity (reuses the same
+    override shape as _collect_contact_files - DRY)."""
+    seen: set[str] = set()
+    out: list[dict] = []
+
+    def _add(f: dict, ref: str, url: str, base: str) -> None:
+        fid = f.get("id", "")
+        if not fid or fid in seen:
+            return
+        seen.add(fid)
+        row = {**f, "linked_ref": ref, "linked_url": url, "_no_delete": True}
+        if base:
+            row["_download_url"] = f"{base}/{fid}/download"
+            row["_action_base_url"] = base
+        out.append(row)
+
+    for f in (self_contact.get("files") or []):
+        _add(f, "Company", "/finance/company-details", "")
+    for it in items:
+        iid = it.get("id") or it.get("entity_id") or ""
+        ref = it.get("sku") or it.get("name") or "Item"
+        for f in (it.get("files") or []):
+            _add(f, f"Item: {ref}", f"/inventory/{iid}" if iid else "", f"/items/{iid}/files" if iid else "")
+    for d in docs:
+        did = d.get("id") or d.get("entity_id") or ""
+        ref = d.get("ref_id") or d.get("doc_number") or "Doc"
+        for f in (d.get("files") or []):
+            _add(f, f"Doc: {ref}", f"/docs/{did}" if did else "", f"/docs/{did}/files" if did else "")
+    return out
+
+
 def _files_section(contact: dict, contact_id: str, docs: list[dict] | None = None, **kwargs) -> FT:
     """Wrapper - merges contact-own files with related doc files, then delegates to shared component."""
     merged = _collect_contact_files(contact, docs or [])
     return _shared_files_section("contact", contact_id, merged, **kwargs)
 
 
-def _contact_info_card(c: dict, *, oob: bool = False) -> FT:
-    """Left-column contact info: click-to-edit fields."""
+def _contact_info_card(c: dict, *, oob: bool = False, hide_fields: tuple = ()) -> FT:
+    """Left-column contact info: click-to-edit fields. hide_fields drops rows that would be redundant in
+    a given context (e.g. the Company Details page hides Currency - it's in the Settings card - and the
+    Billing/Shipping text fields, which the dedicated two-column address book already covers)."""
     cid = c.get("entity_id") or c.get("id") or ""
     fields = [
         ("name", "Name"), ("company_name", "Company"), ("email", "Email"), ("phone", "Phone"),
         ("website", "Website"), ("billing_address", "Billing Address"), ("shipping_address", "Shipping Address"),
         ("tax_id", "Tax ID"), ("currency", "Currency"),
     ]
+    fields = [(k, lbl) for k, lbl in fields if k not in hide_fields]
     attrs = {"hx_swap_oob": "outerHTML:#contact-info-card"} if oob else {}
     return Div(
         H3(t("page.contact_info"), cls="section-title"),
@@ -204,11 +241,11 @@ def _settings_card(c: dict) -> FT:
 
 def _financial_summary(docs: list[dict], contact_id: str = "", fiscal_year_start: str = "01-01") -> FT:
     """Compute and render financial summary cards from contact docs."""
+    from ui.routes.reports import _fy_start
     today = date.today()
-    fy_month, fy_day = (int(x) for x in fiscal_year_start.split("-"))
-    fy_start = date(today.year, fy_month, fy_day)
-    if fy_start > today:
-        fy_start = date(today.year - 1, fy_month, fy_day)
+    # Reuse the canonical parser: it falls back to Jan 1 on a malformed
+    # fiscal_year_start (e.g. "01" with no day) instead of crashing the page.
+    fy_start = _fy_start(fiscal_year_start, today)
     fy_start_str = fy_start.isoformat()
 
     invoices = [d for d in docs if d.get("doc_type") == "invoice"]
@@ -280,6 +317,7 @@ def _compose_address_str(addr: dict) -> str:
 def _address_card(cid: str, addr: dict) -> FT:
     """Render a single address card with edit/delete/make-primary actions."""
     addr_id = addr.get("address_id", "")
+    _dom = f"addr-{addr_id.replace(':', '-')}"  # address ids contain ':' which is invalid in a CSS id selector
     addr_type = addr.get("address_type", "billing")
     is_default = bool(addr.get("is_default"))
     lines = [P(addr.get("line1", ""))] if addr.get("line1") else []
@@ -309,11 +347,14 @@ def _address_card(cid: str, addr: dict) -> FT:
         *lines,
         Div(
             primary_btn,
-            Button("✏", hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#addr-{addr_id}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title="Edit"),
-            Button("×", hx_delete=f"/contacts/{cid}/addresses/{addr_id}", hx_target="#addresses-section", hx_swap="outerHTML", hx_confirm="Remove this address?", cls="btn btn--xs btn--danger", title="Remove"),
+            Button("✏", hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#{_dom}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title="Edit"),
+            # The primary address can't be deleted - it keeps the contact (incl. the company) with a
+            # billing address at all times; make another address primary first to remove this one.
+            (Button("×", hx_delete=f"/contacts/{cid}/addresses/{addr_id}", hx_target="#addresses-section", hx_swap="outerHTML", hx_confirm="Remove this address?", cls="btn btn--xs btn--danger", title="Remove")
+             if not is_default else None),
             cls="addr-actions",
         ),
-        cls="address-card", id=f"addr-{addr_id}",
+        cls="address-card", id=_dom,
     )
 
 
@@ -385,29 +426,35 @@ def _people_section(contact: dict) -> FT:
     )
 
 
-def _tab_bar(cid: str, active: str = "documents") -> FT:
-    """HTMX-driven tab bar for Documents / Notes / Activity."""
-    tabs = [("documents", "Documents"), ("notes", "Notes"), ("activity", "Activity")]
+def _tab_bar(cid: str, active: str = "documents", lead_tabs: list | None = None) -> FT:
+    """HTMX-driven tab bar for Documents / Notes / Activity. lead_tabs prepends extra (key, label, href)
+    tabs (e.g. the company's Files tab, which loads a different route than /contacts/{cid}/tab/{key})."""
+    tabs = list(lead_tabs or []) + [("documents", "Documents", None), ("notes", "Notes", None), ("activity", "Activity", None)]
     return Div(
         *[A(
             label,
-            hx_get=f"/contacts/{cid}/tab/{key}",
+            hx_get=(href or f"/contacts/{cid}/tab/{key}"),
             hx_target="#tab-content",
             hx_swap="innerHTML",
             cls="tab active" if key == active else "tab",
             id=f"tab-{key}",
             # JS: set active class on click
             onclick="document.querySelectorAll('.tab-bar .tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');",
-        ) for key, label in tabs],
+        ) for key, label, href in tabs],
         cls="tab-bar",
     )
 
 
-def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: str = "") -> FT:
-    """Documents tab content: table of related docs + file upload zone."""
+def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: str = "", show_files: bool = True) -> FT:
+    """Documents tab content: table of related docs (+ the file upload zone unless show_files=False).
+    The Company Details page passes show_files=False because company files have their own page."""
     # Related documents table
     if not docs:
-        docs_section = P(t("label.no_documents_yet"), cls="empty-state-msg")
+        docs_section = P(
+            "Invoices, quotes, receipts, bills and credit notes involving this contact appear here "
+            "automatically as you create them. None yet.",
+            cls="empty-state-msg",
+        )
     else:
         sorted_docs = sorted(docs, key=lambda d: d.get("issue_date") or d.get("created_at") or "", reverse=True)
         rows = []
@@ -428,8 +475,8 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
             cls="data-table",
         )
 
-    # Files / upload section
-    if contact is not None and contact_id:
+    # Files / upload section (suppressed on the Company Details page - files live on Company Files)
+    if show_files and contact is not None and contact_id:
         files_content = _files_section(contact, contact_id, docs)
     else:
         files_content = ""
@@ -715,6 +762,100 @@ def _clean_external_ref(ref: str | None) -> str | None:
     return ref
 
 
+def build_contact_detail(contact: dict, docs: list, vocab: list, company: dict, request: Request, *,
+                         contact_id: str = "", show_financials: bool = True, show_delete: bool = True,
+                         show_contact_addresses: bool = True, extra_sections: list | None = None,
+                         back: tuple | None = None, nav_active: str | None = None,
+                         title: str | None = None) -> FT:
+    """Shared assembly for the contact detail page. The Company Details page reuses this verbatim with
+    show_financials=False / show_delete=False / show_contact_addresses=False (the company is its own
+    customer+vendor self-contact, and it has no financial-summary-against-itself) - one page layout, no
+    fork. The only differences are the conditional sections gated by the flags."""
+    contact_name = contact.get("name", "Contact")
+    contact_type = contact.get("contact_type", "")
+    if back is not None:
+        back_label, back_href = back
+        nav_active_key = nav_active or back_label.lower()
+    elif contact_type == "vendor":
+        back_label, back_href, nav_active_key = "Vendors", "/contacts/vendors", "vendors"
+    else:
+        back_label, back_href, nav_active_key = "Customers", "/contacts/customers", "customers"
+    if nav_active:
+        nav_active_key = nav_active
+    cid = contact.get("entity_id") or contact.get("id") or contact_id
+    is_deleted = bool(contact.get("deleted"))
+    fiscal_year_start = company.get("fiscal_year_start") or "01-01"
+    page_title = title or contact_name
+
+    autofocus_script = (
+        Script("document.querySelector('.cell--clickable')?.click();")
+        if contact_name in ("New Customer", "New Vendor", "New Both", "New Contact") else ""
+    )
+
+    delete_btn = "" if (is_deleted or not show_delete) else Script(f"""
+(function(){{
+  var btn = document.getElementById('contact-delete-btn');
+  if (!btn) return;
+  btn.addEventListener('click', function(){{
+    if (!confirm('Delete this contact? This cannot be undone if the contact has no associated documents.')) return;
+    fetch('/crm/contacts/bulk/delete', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{contact_ids: ['{cid}']}})
+    }}).then(function(r){{ return r.json(); }}).then(function(d){{
+      if (d.deleted !== undefined) {{
+        sessionStorage.removeItem('celerp_contact_selection');
+        window.location.href = '{back_href}';
+      }} else {{
+        alert(d.detail || 'Delete failed.');
+      }}
+    }}).catch(function(err){{ alert('Delete failed: ' + err.message); }});
+  }});
+}})();
+""")
+
+    action_bar = Div(
+        Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
+               type="button", style="margin-left:auto;") if (show_delete and not is_deleted) else
+        (Span(t("label.deleted"), cls="status-badge status-badge--void") if is_deleted else ""),
+        cls="action-bar",
+        style="display:flex; align-items:center; padding: 0.5rem 0;",
+    )
+
+    return base_shell(
+        breadcrumbs([("Dashboard", "/dashboard"), (back_label, back_href), (page_title, None)]),
+        page_header(page_title),
+        autofocus_script,
+        action_bar,
+        delete_btn,
+        *([_financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start)] if show_financials else []),
+        Div(
+            Div(
+                _contact_info_card(contact),
+                _people_section(contact),
+                cls="detail-col-left",
+            ),
+            Div(
+                _settings_card(contact),
+                _contact_tags_section(contact, vocab),
+                cls="detail-col-right",
+            ),
+            cls="detail-layout",
+        ),
+        *([_addresses_section(contact)] if show_contact_addresses else []),
+        *(extra_sections or []),
+        _tab_bar(cid),
+        Div(
+            _documents_tab(docs, contact, cid),
+            id="tab-content",
+        ),
+        title=f"{page_title} - Celerp",
+        nav_active=nav_active_key,
+        extra_head=_phone_head_items(),
+        request=request,
+    )
+
+
 def setup_routes(app):
 
     # ── /contacts/customers ───────────────────────────────────────────────
@@ -981,101 +1122,149 @@ def setup_routes(app):
         except Exception:
             docs = []
         try:
-            ledger_resp = await api.list_ledger(token, {"entity_id": contact_id, "limit": 10})
-            ledger = ledger_resp.get("items", []) if isinstance(ledger_resp, dict) else []
-        except Exception:
-            ledger = []
-        try:
             vocab = await api.get_contact_tags_vocabulary(token)
         except Exception:
             vocab = []
-
         try:
             company = await api.get_company(token)
         except Exception:
             company = {}
-        fiscal_year_start = company.get("fiscal_year_start") or "01-01"
 
-        contact_name = contact.get("name", "Contact")
-        contact_type = contact.get("contact_type", "")
-        if contact_type in ("vendor",):
-            back_href = "/contacts/vendors"
-            back_label = "Vendors"
-            nav_active_key = "vendors"
-        else:
-            back_href = "/contacts/customers"
-            back_label = "Customers"
-            nav_active_key = "customers"
+        return build_contact_detail(contact, docs, vocab, company, request, contact_id=contact_id)
 
-        autofocus_script = (
-            Script("document.querySelector('.cell--clickable')?.click();")
-            if contact_name in ("New Customer", "New Vendor", "New Both", "New Contact") else ""
-        )
+    # ── Company Details (Finance) ─────────────────────────────────────────
+    # The company is its own customer+vendor self-contact, so this page is the same contact-detail
+    # layout reused verbatim, minus the financial-summary cards (no financials against yourself) and
+    # the delete affordance. Identity edits here flow to every customer/vendor context at once.
 
-        cid = contact.get("entity_id") or contact.get("id") or contact_id
-        is_deleted = bool(contact.get("deleted"))
+    async def _resolve_self_contact_id(token: str) -> str | None:
+        """The company's own contact id: the cached settings value, else the contact flagged is_self."""
+        try:
+            company = await api.get_company(token)
+            sid = (company.get("settings") or {}).get("self_contact_id")
+            if sid:
+                return sid
+        except Exception:
+            pass
+        try:
+            items = (await api.list_contacts(token, {"limit": 999})).get("items", [])
+            for c in items:
+                if c.get("is_self"):
+                    return c.get("id") or c.get("entity_id")
+        except Exception:
+            pass
+        return None
 
-        delete_btn = "" if is_deleted else Script(f"""
-(function(){{
-  var btn = document.getElementById('contact-delete-btn');
-  if (!btn) return;
-  btn.addEventListener('click', function(){{
-    if (!confirm('Delete this contact? This cannot be undone if the contact has no associated documents.')) return;
-    fetch('/crm/contacts/bulk/delete', {{
-      method: 'POST',
-      headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify({{contact_ids: ['{cid}']}})
-    }}).then(function(r){{ return r.json(); }}).then(function(d){{
-      if (d.deleted !== undefined) {{
-        sessionStorage.removeItem('celerp_contact_selection');
-        window.location.href = '{back_href}';
-      }} else {{
-        alert(d.detail || 'Delete failed.');
-      }}
-    }}).catch(function(err){{ alert('Delete failed: ' + err.message); }});
-  }});
-}})();
-""")
-
-        action_bar = Div(
-            Button(t("btn.delete_contact"), id="contact-delete-btn", cls="btn btn--danger",
-                   type="button", style="margin-left:auto;") if not is_deleted else
-            Span(t("label.deleted"), cls="status-badge status-badge--void"),
-            cls="action-bar",
-            style="display:flex; align-items:center; padding: 0.5rem 0;",
-        )
-
+    @app.get("/finance/company-details")
+    async def company_details(request: Request):
+        from ui.routes.settings import _check_role
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        if (r := _check_role(request, "admin")):
+            return r
+        sid = await _resolve_self_contact_id(token)
+        if not sid:
+            return base_shell(
+                page_header("🏢 Company Details"),
+                empty_state_cta("Your company's own contact record has not been initialised yet."),
+                title="Company Details - Celerp", nav_active="company-details", request=request,
+            )
+        try:
+            contact = await api.get_contact(token, sid)
+        except Exception:
+            contact = {}
+        try:
+            company = await api.get_company(token)
+        except Exception:
+            company = {}
+        # Organized like a customer/vendor page: Contact Info card (the company's identity - name, email,
+        # phone, tax id) on the left, a Settings card (currency/timezone/fiscal) on the right, then the
+        # billing/shipping address book, then tabs. Files is the FIRST tab (the company's whole file
+        # library, with a quick-upload dropzone); Documents/Notes/Activity follow. No tags / financial cards.
+        from ui.routes.settings import _company_settings_card
+        from ui.i18n import get_lang
         return base_shell(
-            breadcrumbs([("Dashboard", "/dashboard"), (back_label, back_href), (contact_name, None)]),
-            page_header(contact_name),
-            autofocus_script,
-            action_bar,
-            delete_btn,
-            _financial_summary(docs, contact_id=cid, fiscal_year_start=fiscal_year_start),
+            breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", None)]),
+            page_header("🏢 Company Details"),
             Div(
-                Div(
-                    _contact_info_card(contact),
-                    _people_section(contact),
-                    cls="detail-col-left",
-                ),
-                Div(
-                    _settings_card(contact),
-                    _contact_tags_section(contact, vocab),
-                    cls="detail-col-right",
-                ),
+                Div(_contact_info_card(contact, hide_fields=("currency", "billing_address", "shipping_address")),
+                    cls="detail-col-left"),
+                Div(_company_settings_card(company, get_lang(request)), cls="detail-col-right"),
                 cls="detail-layout",
             ),
             _addresses_section(contact),
-            _tab_bar(cid),
-            Div(
-                _documents_tab(docs, contact, cid),
-                id="tab-content",
-            ),
-            title=f"{contact_name} - Celerp",
-            nav_active=nav_active_key,
-            extra_head=_phone_head_items(),
-            request=request,
+            _tab_bar(sid, active="company-files",
+                     lead_tabs=[("company-files", "Files", "/finance/company-files/_section")]),
+            Div(await _company_files_section(token), id="tab-content"),
+            title="Company Details - Celerp", nav_active="company-details",
+            extra_head=_phone_head_items(), request=request,
         )
+
+    async def _company_files_section(token: str, **section_kwargs) -> FT:
+        """Aggregate + render the read-only company-wide files section (company docs + item images +
+        doc attachments). Shared by the page and its sort/pagination _section route."""
+        sid = await _resolve_self_contact_id(token)
+        self_contact: dict = {}
+        if sid:
+            try:
+                self_contact = await api.get_contact(token, sid) or {}
+            except Exception:
+                self_contact = {}
+        try:
+            items = (await api.list_items(token, {"limit": 9999})).get("items", [])
+        except Exception:
+            items = []
+        try:
+            docs = (await api.list_docs(token, {"limit": 9999})).get("items", [])
+        except Exception:
+            docs = []
+        files = _collect_company_files(self_contact, items, docs)
+        # can_upload=True: the dropzone POSTs to base_url (/finance/company-files), which routes the file
+        # onto the self-contact so it shows here AND in the company's customer/vendor entries. Item and
+        # doc rows stay read-only via their per-row _no_delete override.
+        return _shared_files_section(
+            "company", "all", files, can_tag=False, can_describe=False, can_set_hero=False,
+            can_upload=True, hide_product_images=True, show_linked=True, base_url="/finance/company-files",
+            title="Company files", **section_kwargs,
+        )
+
+    # Company files live as the first tab on the Company Details page (loaded via the _section route
+    # below + the POST upload route), so there is no standalone page.
+
+    @app.post("/finance/company-files")
+    async def company_files_upload(request: Request):
+        """Dropzone upload from the Company Files page: store the file on the self-contact so it appears
+        both here and in the company's customer/vendor entries. Returns the refreshed aggregated section."""
+        from ui.routes.settings import _check_role
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if (r := _check_role(request, "admin")):
+            return r
+        sid = await _resolve_self_contact_id(token)
+        form = await request.form()
+        file = form.get("file")
+        if file is not None and hasattr(file, "read") and sid:
+            content = await file.read()
+            filename = getattr(file, "filename", "upload")
+            content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
+            try:
+                await api.upload_contact_file(token, sid, content, filename, content_type,
+                                              str(form.get("description", "")).strip(),
+                                              str(form.get("document_tag", "")).strip())
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+        return await _company_files_section(token)
+
+    @app.get("/finance/company-files/_section")
+    async def company_files_section(request: Request, page: int = 1, sort_dir: str = "desc",
+                                    tag_filter: str = "", date_from: str = "", date_to: str = "", search: str = ""):
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        return await _company_files_section(token, page=page, sort_dir=sort_dir, tag_filter=tag_filter,
+                                            date_from=date_from, date_to=date_to, search=search)
 
     # ── Tab routes ────────────────────────────────────────────────────────
 
@@ -1094,7 +1283,8 @@ def setup_routes(app):
         except Exception:
             contact = {}
         cid = contact.get("entity_id") or contact.get("id") or contact_id
-        return _documents_tab(docs, contact, cid)
+        # The company self-contact has its own Files tab, so its Documents tab is docs-only (no dup files).
+        return _documents_tab(docs, contact, cid, show_files=not contact.get("is_self"))
 
     @app.get("/contacts/{contact_id}/tab/notes")
     async def contact_tab_notes(request: Request, contact_id: str):
@@ -1292,7 +1482,7 @@ def setup_routes(app):
                 hx_swap="outerHTML",
                 hx_trigger="submit",
             ),
-            cls="inline-form", id=f"addr-{address_id}",
+            cls="inline-form", id=f"addr-{address_id.replace(':', '-')}",
         )
 
     @app.patch("/contacts/{contact_id}/addresses/{address_id}")
@@ -1317,6 +1507,15 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            contact = await api.get_contact(token, contact_id)
+        except APIError:
+            contact = {}
+        # Never delete the primary address - the contact (incl. the company self-contact) must always keep
+        # a primary billing address. The UI hides the delete button on it; this guards the route too.
+        target = next((a for a in (contact.get("addresses") or []) if str(a.get("address_id", "")) == address_id), None)
+        if target is not None and target.get("is_default"):
+            return P("Make another address primary before removing this one.", cls="cell-error")
         try:
             await api.remove_contact_address(token, contact_id, address_id)
             contact = await api.get_contact(token, contact_id)

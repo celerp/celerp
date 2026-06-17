@@ -2272,22 +2272,11 @@ class TestSettingsPolish:
                 r = await ui_client.get(url, cookies=_authed())
                 assert b"cell--clickable" in r.content, f"No clickable cells on tab={tab} (url={url})"
 
-    @pytest.mark.asyncio
-    async def test_settings_cells_have_title_attribute(self, ui_client):
-        """cell--clickable cells must have title='Click to edit' for tooltip."""
-        with (
-            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
-            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
-            patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": len(_USERS)})),
-            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
-            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert b"Click to edit" in r.content
+    def test_settings_cells_have_title_attribute(self):
+        """The editable company cells must carry title='Click to edit' (now on the company settings card)."""
+        from ui.routes.settings import _company_settings_card
+        from fasthtml.common import to_xml
+        assert "Click to edit" in to_xml(_company_settings_card({"name": "Co", "settings": {}}))
 
 
 class TestColumnManager:
@@ -2905,19 +2894,32 @@ class TestManufacturingPage:
 
     @pytest.mark.asyncio
     async def test_manufacturing_list_renders(self, ui_client):
-        orders = [{"entity_id": "mfg:abc123", "order_type": "assembly", "status": "draft", "created_at": "2026-01-01", "inputs": []}]
-        with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": orders, "total": len(orders)})):
+        rows = [{"item_id": "item:r", "sku": "RING", "name": "Ring", "to_make": 2.0, "demand": 2.0,
+                 "on_hand": 0.0, "in_progress": 0.0, "due": None, "doc_count": 1, "unit": "piece",
+                 "est_unit_cost": 100.0, "est_cost": 200.0, "est_hours": 4.0,
+                 "docs": [{"doc_id": "doc:i1", "doc_number": "INV-1", "doc_type": "invoice",
+                           "contact_name": "Acme", "due": None, "quantity": 2.0,
+                           "shortfall": 2.0, "coverage": "short"}]}]
+        with (
+            patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": rows, "total": 1})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"settings": {"currency": "USD"}})),
+        ):
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert r.status_code == 200
-        assert b"Manufacturing" in r.content
-        assert b"mfg-table" in r.content
+        assert b"Demand Planning" in r.content
+        # Flat demand line: product, document, and a Needed coverage badge.
+        assert b"mfg-table" in r.content and b"RING" in r.content
+        assert b"INV-1" in r.content and b"Needed" in r.content
 
     @pytest.mark.asyncio
     async def test_manufacturing_list_empty(self, ui_client):
-        with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": [], "total": 0})):
+        with (
+            patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert r.status_code == 200
-        assert b"No" in r.content  # empty state present in any form
+        assert b"Nothing to make" in r.content  # empty state
 
     @pytest.mark.asyncio
     async def test_manufacturing_unauthed_redirects(self, ui_client):
@@ -2925,64 +2927,21 @@ class TestManufacturingPage:
         assert r.status_code == 302
         assert "/login" in r.headers["location"]
 
-    @pytest.mark.asyncio
-    async def test_manufacturing_detail_renders(self, ui_client):
-        order = {
-            "entity_id": "mfg:abc123",
-            "order_type": "assembly",
-            "status": "draft",
-            "description": "Test order",
-            "inputs": [{"item_id": "item:x1", "quantity": 5}],
-            "expected_outputs": [{"sku": "OUT-1", "name": "Widget", "quantity": 10}],
-            "steps_completed": [],
-        }
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
-        assert b"Start Order" in r.content
+    # The opaque per-run detail page was removed (product-centric overhaul): a run now lives on
+    # its product's Manufacturing tab (production block) + the In Production queue.
 
     @pytest.mark.asyncio
     async def test_manufacturing_sidebar_link_present(self, ui_client):
-        with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": [], "total": 0})):
+        with (
+            patch("ui.api_client.manufacturing_to_make", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={})),
+        ):
             r = await ui_client.get("/manufacturing", cookies=_authed())
         assert b"/manufacturing" in r.content
 
-    @pytest.mark.asyncio
-    async def test_manufacturing_detail_shows_bom(self, ui_client):
-        order = {
-            "entity_id": "mfg:abc123",
-            "status": "in_progress",
-            "inputs": [{"item_id": "item:x1", "quantity": 3}],
-            "expected_outputs": [{"sku": "OUT-1", "name": "Widget", "quantity": 2}],
-            "steps_completed": [],
-        }
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert b"Inputs (BOM)" in r.content
-        assert b"Expected Outputs" in r.content
-
-    @pytest.mark.asyncio
-    async def test_manufacturing_start_htmx(self, ui_client):
-        order = {"entity_id": "mfg:abc123", "status": "in_progress", "inputs": [], "expected_outputs": [], "steps_completed": []}
-        with (
-            patch("ui.api_client.start_mfg_order", new=AsyncMock(return_value={"event_id": "ev1"})),
-            patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)),
-        ):
-            r = await ui_client.post("/manufacturing/mfg:abc123/start", cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
-
-    @pytest.mark.asyncio
-    async def test_manufacturing_cancel_htmx(self, ui_client):
-        order = {"entity_id": "mfg:abc123", "status": "cancelled", "inputs": [], "expected_outputs": [], "steps_completed": []}
-        with (
-            patch("ui.api_client.cancel_mfg_order", new=AsyncMock(return_value={"event_id": "ev1"})),
-            patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)),
-        ):
-            r = await ui_client.post("/manufacturing/mfg:abc123/cancel", cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
+    # Detail-page BOM/start/cancel tests removed with the opaque detail page; run status actions
+    # are now driven from the product Manufacturing tab (production-block run_action route) and
+    # covered by the manufacturing API + browser tests.
 
 
 # ── T5: CSV import/export ────────────────────────────────────────────────────
@@ -3420,12 +3379,13 @@ class TestSprint4DocActions:
         assert "/docs?type=invoice" in r.headers.get("HX-Redirect", "")
 
     @pytest.mark.asyncio
-    async def test_doc_detail_draft_shows_unit_column(self, ui_client):
-        """Draft doc line item table includes Unit column header."""
+    async def test_doc_detail_draft_invoice_unit_merged_into_qty(self, ui_client):
+        """Draft invoice merges the unit into the qty cell (read-only label), so the
+        unit is still rendered but there is no standalone Unit column header."""
         with patch("ui.api_client.get_doc", new=AsyncMock(return_value=_BLANK_DOC)):
             r = await ui_client.get("/docs/doc:INV-2026-0001", cookies=_authed())
         html = r.text
-        assert ">Unit<" in html or "Unit</th>" in html
+        assert 'data-name="unit"' in html
 
     @pytest.mark.asyncio
     async def test_no_popups_in_doc_detail(self, ui_client):
@@ -3523,53 +3483,9 @@ class TestSprint4Polish:
         assert b"INV-2026-0001" in r.content
 
 
-class TestSprint4BOMs:
-    """T5: BOM management UI."""
-
-    @pytest.mark.asyncio
-    async def test_bom_list_page_renders(self, ui_client):
-        """GET /manufacturing/boms renders BOM list."""
-        boms = [{"bom_id": "bom:1", "name": "Ring BOM", "output_item_id": "item:x", "output_qty": 1, "components": [{"sku": "A"}]}]
-        with patch("ui.api_client.list_boms", new=AsyncMock(return_value={"items": boms, "total": len(boms)})):
-            r = await ui_client.get("/manufacturing/boms", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Ring BOM" in r.content
-
-    @pytest.mark.asyncio
-    async def test_bom_list_empty_state(self, ui_client):
-        """Empty BOM list shows empty state message."""
-        with patch("ui.api_client.list_boms", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/manufacturing/boms", cookies=_authed())
-        assert r.status_code == 200
-        assert b"No BOMs" in r.content or b"New BOM" in r.content
-
-    @pytest.mark.asyncio
-    async def test_bom_detail_shows_components(self, ui_client):
-        """GET /manufacturing/boms/{id} renders component rows."""
-        bom = {
-            "bom_id": "bom:1", "name": "Ring BOM",
-            "output_item_id": "item:ring", "output_qty": 1.0,
-            "components": [{"sku": "GLD-18K", "qty": 5.0, "unit": "grams"}],
-        }
-        with patch("ui.api_client.get_bom", new=AsyncMock(return_value=bom)):
-            r = await ui_client.get("/manufacturing/boms/bom:1", cookies=_authed())
-        assert r.status_code == 200
-        assert b"GLD-18K" in r.content
-        assert b"Add Component" in r.content
-
-    @pytest.mark.asyncio
-    async def test_bom_new_form_renders(self, ui_client):
-        """GET /manufacturing/boms/new renders creation form."""
-        r = await ui_client.get("/manufacturing/boms/new", cookies=_authed())
-        assert r.status_code == 200
-        assert b"BOM Name" in r.content or b"name" in r.content.lower()
-
-    @pytest.mark.asyncio
-    async def test_manufacturing_page_shows_boms_link(self, ui_client):
-        """Manufacturing list page has a link to BOMs section."""
-        with patch("ui.api_client.list_mfg_orders", new=AsyncMock(return_value={"items": [], "total": 0})):
-            r = await ui_client.get("/manufacturing", cookies=_authed())
-        assert b"boms" in r.content.lower() or b"Bill" in r.content
+# Removed: TestSprint4BOMs — the standalone BOM entity + its UI were purged when recipes
+# moved onto the inventory item (manufacturing module revision). No replacement tests here;
+# recipe coverage lives in default_modules/celerp-manufacturing/tests and the browser suite.
 
 
 # ===========================================================================
@@ -3629,23 +3545,6 @@ _DEAL = {
     "contact_name": "Alice",
     "expected_close": "2026-06-01",
     "status": "open",
-}
-
-
-_MFG_ORDER_WITH_STEPS = {
-    "entity_id": "mfg:abc123",
-    "order_type": "assembly",
-    "status": "in_progress",
-    "description": "Test assembly",
-    "inputs": [
-        {"item_id": "item:x1", "quantity": 5, "consumed_qty": 0},
-    ],
-    "expected_outputs": [{"sku": "OUT-1", "name": "Widget", "quantity": 2}],
-    "steps_completed": [],
-    "steps": [
-        {"step_id": "step1", "name": "Cut", "status": "pending"},
-        {"step_id": "step2", "name": "Polish", "status": "pending"},
-    ],
 }
 
 
@@ -3811,7 +3710,9 @@ class TestSprint5ItemActions:
             patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
             r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "300", "wholesale_price": "200", "cost_price": "100"}, cookies=_authed())
-        assert r.status_code == 204
+        # Autosave: 200 + OOB saved status (no 204/redirect).
+        assert r.status_code == 200
+        assert b"pricing-save-status" in r.content
 
     @pytest.mark.asyncio
     async def test_status_item_route(self, ui_client):
@@ -4170,15 +4071,18 @@ class TestItemActionRouteCompleteness:
     # ── price ────────────────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_price_redirects_to_item(self, ui_client):
+    async def test_price_autosaves_without_reload(self, ui_client):
+        """Prices autosave: a transient saved status (OOB), no full-page reload."""
         with (
             patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[{"name": "Retail"}, {"name": "Wholesale"}, {"name": "Cost"}])),
             patch("ui.api_client.get_item", new=AsyncMock(return_value={**_ITEM, "quantity": 5.0})),
             patch("ui.api_client.set_item_price", new=AsyncMock(return_value={"event_id": "e1"})),
             patch("ui.api_client.patch_item", new=AsyncMock(return_value={"event_id": "e1"})),
         ):
-            r = await ui_client.post("/api/items/gc:123/price", data={"cost_price": "10", "wholesale_price": "20", "retail_price": "30"}, cookies=_authed())
-        assert r.headers.get("HX-Redirect") == "/inventory/gc:123"
+            r = await ui_client.post("/api/items/gc:123/price", data={"retail_price": "30"}, cookies=_authed())
+        assert r.status_code == 200
+        assert "HX-Redirect" not in r.headers
+        assert b"pricing-save-status" in r.content and b"Saved" in r.content
 
     @pytest.mark.asyncio
     async def test_price_passes_only_provided_fields(self, ui_client):
@@ -4985,20 +4889,6 @@ class TestAttachmentRoutes:
             )
         assert r.status_code == 204
 
-    def test_attachment_upload_url_in_item_detail_html(self):
-        """_attachments_panel renders fetch POST targeting /api/items/{id}/attachments
-        and hx-delete targeting /api/items/{id}/attachments/{att_id}."""
-        from ui.routes.inventory import _attachments_panel
-        from fasthtml.common import to_xml
-        item_with_attachments = {**_ITEM, "attachments": [
-            {"id": "att:1", "filename": "photo.jpg", "url": "/static/attachments/c/photo.jpg", "type": "image"},
-        ]}
-        html = to_xml(_attachments_panel("gc:ROW-001", item_with_attachments))
-        assert "/api/items/gc:ROW-001/attachments" in html, \
-            "attachment upload fetch must POST to /api/items/{id}/attachments"
-        assert 'hx-delete="/api/items/gc:ROW-001/attachments/att:1"' in html, \
-            "attachment delete button must target DELETE /api/items/{id}/attachments/{att_id}"
-
 
 class TestInventoryBulkActions:
     """List-level bulk action routes: status, transfer, delete."""
@@ -5750,81 +5640,8 @@ class TestSprint5PaymentRefund:
         assert b"10,000" in r.content
 
 
-class TestSprint5MfgSteps:
-    """T8: Manufacturing step-by-step progression."""
-
-    @pytest.mark.asyncio
-    async def test_mfg_detail_shows_steps(self, ui_client):
-        """Manufacturing detail shows steps checklist."""
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=_MFG_ORDER_WITH_STEPS)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Steps" in r.content
-        assert b"Cut" in r.content
-        assert b"Polish" in r.content
-
-    @pytest.mark.asyncio
-    async def test_mfg_steps_have_complete_button(self, ui_client):
-        """In-progress order steps show Complete Step button."""
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=_MFG_ORDER_WITH_STEPS)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert b"Complete Step" in r.content
-
-    @pytest.mark.asyncio
-    async def test_mfg_inputs_have_consume_button(self, ui_client):
-        """In-progress order inputs show Consume button."""
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=_MFG_ORDER_WITH_STEPS)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert b"Consume" in r.content
-
-    @pytest.mark.asyncio
-    async def test_complete_step_route(self, ui_client):
-        """POST /manufacturing/{id}/step calls api."""
-        completed = {**_MFG_ORDER_WITH_STEPS, "steps": [
-            {"step_id": "step1", "name": "Cut", "status": "completed"},
-            {"step_id": "step2", "name": "Polish", "status": "pending"},
-        ]}
-        with (
-            patch("ui.api_client.complete_mfg_step", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=completed)),
-        ):
-            r = await ui_client.post("/manufacturing/mfg:abc123/step", data={"step_id": "step1", "notes": "done"}, cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
-
-    @pytest.mark.asyncio
-    async def test_consume_input_route(self, ui_client):
-        """POST /manufacturing/{id}/consume calls api."""
-        consumed = {**_MFG_ORDER_WITH_STEPS, "inputs": [
-            {"item_id": "item:x1", "quantity": 5, "consumed_qty": 5},
-        ]}
-        with (
-            patch("ui.api_client.consume_mfg_input", new=AsyncMock(return_value={})),
-            patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=consumed)),
-        ):
-            r = await ui_client.post("/manufacturing/mfg:abc123/consume", data={"item_id": "item:x1", "quantity": "5"}, cookies=_authed())
-        assert r.status_code == 200
-        assert b"mfg-detail" in r.content
-
-    @pytest.mark.asyncio
-    async def test_draft_order_no_step_buttons(self, ui_client):
-        """Draft order does not show step completion buttons."""
-        draft = {**_MFG_ORDER_WITH_STEPS, "status": "draft"}
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=draft)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert b"Complete Step" not in r.content
-
-    @pytest.mark.asyncio
-    async def test_completed_step_shows_checkmark(self, ui_client):
-        """Completed steps show checkmark."""
-        order = {**_MFG_ORDER_WITH_STEPS, "steps": [
-            {"step_id": "step1", "name": "Cut", "status": "completed"},
-            {"step_id": "step2", "name": "Polish", "status": "pending"},
-        ]}
-        with patch("ui.api_client.get_mfg_order", new=AsyncMock(return_value=order)):
-            r = await ui_client.get("/manufacturing/mfg:abc123", cookies=_authed())
-        assert "✓".encode() in r.content
-
+# Removed TestSprint5MfgSteps: the opaque run detail page + consume/step UI were removed in
+# the product-centric overhaul (run execution moves to the product Manufacturing tab in P3).
 
 class TestSprint5NoPopups:
     """Cross-cutting: no popups/modals anywhere."""
@@ -7091,12 +6908,12 @@ class TestNikolaiFixedBugs:
     # ── Currency display ──────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_company_tab_shows_currency_code(self, ui_client):
-        """Currency column must show the currency code (e.g. THB) on the settings page."""
-        with self._stack({"currency": "THB"}):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert r.status_code == 200
-        assert b"THB" in r.content
+    def test_company_tab_shows_currency_code(self):
+        """Currency must show the currency code (e.g. THB) on the company settings card."""
+        from ui.routes.settings import _company_settings_card
+        from fasthtml.common import to_xml
+        html = to_xml(_company_settings_card({"settings": {"currency": "THB"}}))
+        assert "THB" in html
 
     @pytest.mark.asyncio
     async def test_company_tab_currency_edit_shows_select(self, ui_client):
@@ -7126,13 +6943,12 @@ class TestNikolaiFixedBugs:
     # ── Fiscal year display ───────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_company_tab_shows_fiscal_year_human_label(self, ui_client):
-        """fiscal_year_start must render as human month name, not raw code."""
-        with self._stack({"fiscal_year_start": "01-01"}):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert r.status_code == 200
-        # Raw "01-01" alone is meaningless — should show a month name
-        assert b"January" in r.content
+    def test_company_tab_shows_fiscal_year_human_label(self):
+        """fiscal_year_start must render as a human month name on the company settings card."""
+        from ui.routes.settings import _company_settings_card
+        from fasthtml.common import to_xml
+        html = to_xml(_company_settings_card({"settings": {"fiscal_year_start": "01-01"}}))
+        assert "January" in html
 
     @pytest.mark.asyncio
     async def test_company_tab_fiscal_year_edit_shows_select(self, ui_client):
@@ -7161,12 +6977,12 @@ class TestNikolaiFixedBugs:
     # ── Timezone display ──────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_company_tab_shows_timezone(self, ui_client):
-        """Timezone must be rendered on company settings tab (not blank)."""
-        with self._stack({"timezone": "Asia/Bangkok"}):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Asia/Bangkok" in r.content
+    def test_company_tab_shows_timezone(self):
+        """Timezone must render on the company settings card (not blank)."""
+        from ui.routes.settings import _company_settings_card
+        from fasthtml.common import to_xml
+        html = to_xml(_company_settings_card({"settings": {"timezone": "Asia/Bangkok"}}))
+        assert "Asia/Bangkok" in html
 
     @pytest.mark.asyncio
     async def test_company_tab_timezone_edit_shows_combobox(self, ui_client):
@@ -8281,6 +8097,281 @@ class TestModuleSlotInjection:
 # Payment terms auto-populate + due_date calculation tests
 # ---------------------------------------------------------------------------
 
+class TestListColumnPolicy:
+    """`counting` is the locked finalized/closed audit stage (static rows + editable Counted). A DRAFT
+    audit is editable like any other list (counting False) but still shows the On-hand/Counted columns."""
+
+    def test_draft_audit_is_editable_but_shows_columns(self):
+        from ui.routes.documents import _list_column_policy
+        pol = _list_column_policy("list", "audit", "draft")
+        assert pol["audit"] is True
+        assert pol["counting"] is False          # draft -> editable rows, not the locked manifest
+        assert pol["show_onhand"] is True         # columns show in every audit state
+        assert pol["show_counted"] is True
+        assert pol["counted_editable"] is False
+
+    def test_finalized_audit_is_counting_stage(self):
+        from ui.routes.documents import _list_column_policy
+        pol = _list_column_policy("list", "audit", "finalized")
+        assert pol["counting"] is True            # locked manifest -> static rows
+        assert pol["show_onhand"] is True
+        assert pol["show_counted"] is True
+        assert pol["counted_editable"] is True
+
+    def test_closed_audit_is_counting_read_only(self):
+        from ui.routes.documents import _list_column_policy
+        pol = _list_column_policy("list", "audit", "closed")
+        assert pol["counting"] is True
+        assert pol["show_onhand"] is True
+        assert pol["show_counted"] is True
+        assert pol["counted_editable"] is False   # results view, not editable
+
+    def test_quotation_is_never_audit(self):
+        from ui.routes.documents import _list_column_policy
+        pol = _list_column_policy("list", "quotation", "finalized")
+        assert pol["audit"] is False
+        assert pol["counting"] is False
+        assert pol["show_onhand"] is False
+        assert pol["show_counted"] is False
+
+
+class TestAuditHighlightScoping:
+    """The scanned/adjusted row highlight only renders on the audit type. The audited_at/adjusted flags
+    persist in the data through a type switch, but carry no meaning (no row action) on other types."""
+
+    def _list(self, list_type: str) -> dict:
+        return {
+            "entity_id": "list:1", "list_type": list_type, "status": "finalized",
+            "receiver_type": "location", "receiver": "Main", "currency": "USD",
+            "discount": 0, "tax": 0, "subtotal": 0, "total": 0,
+            "line_items": [{
+                "entity_id": "li:1", "item_id": "item:1", "sku": "A1", "name": "Widget",
+                "description": "Widget", "quantity": 5, "audited_at": "2026-06-17T00:00:00Z",
+            }],
+        }
+
+    @pytest.mark.asyncio
+    async def test_audit_renders_scanned_highlight(self, ui_client):
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._list("audit"))):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        assert "data-row--audited" in r.text
+
+    @pytest.mark.asyncio
+    async def test_non_audit_drops_scanned_highlight(self, ui_client):
+        # Same audited_at in the data, but a quotation must not paint the highlight.
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._list("quotation"))):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        assert "data-row--audited" not in r.text
+
+
+class TestAuditColumnAlignment:
+    """A draft audit is editable, but audits have no Unit column. Editable invoice rows otherwise emit
+    a col-unit cell with no matching header, which on an audit would leak the unit label and shove
+    On-hand/Counted out of alignment. Every body row must match the header column set exactly."""
+
+    _AUDIT = {
+        "entity_id": "list:1", "doc_type": "list", "list_type": "audit", "status": "draft",
+        "receiver_type": "location", "receiver": "Main", "currency": "USD",
+        "discount": 0, "tax": 0, "subtotal": 0, "total": 0,
+        "line_items": [
+            {"entity_id": "li:1", "item_id": "item:1", "sku": "A1", "name": "Plain",
+             "description": "Plain", "quantity": 5},
+            {"entity_id": "li:2", "item_id": "item:2", "sku": "A2", "name": "Gem",
+             "description": "Gem", "quantity": 3, "unit": "carat"},
+        ],
+    }
+
+    @pytest.mark.asyncio
+    async def test_draft_audit_rows_align_with_header_and_drop_unit(self, ui_client):
+        import re
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)):
+            r = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert r.status_code == 200
+        headers = re.findall(r'<th[^>]*class="[^"]*?(col-[\w-]+)', r.text)
+        body = re.search(r'id="line-body"(.*?)</tbody>', r.text, re.S).group(1)
+        rows = re.findall(r"<tr.*?</tr>", body, re.S)
+        assert rows, "expected rendered audit rows"
+        for row in rows:
+            tds = re.findall(r'<td[^>]*class="[^"]*?(col-[\w-]+)', row)
+            assert tds == headers              # every row aligns cell-for-cell with the header
+        assert "col-unit\"" not in body         # no stray Unit column on an audit
+        assert "carat" not in body              # unit label never leaks into the manifest
+
+    @pytest.mark.asyncio
+    async def test_draft_audit_shows_add_item_but_counting_hides_it(self, ui_client):
+        # A draft audit is editable, so it keeps the Add item affordance; a finalized (counting) audit
+        # locks the manifest and hides it.
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value=self._AUDIT)):
+            draft = await ui_client.get("/lists/list:1", cookies=_authed())
+        with patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._AUDIT, "status": "finalized"})):
+            counting = await ui_client.get("/lists/list:1", cookies=_authed())
+        assert draft.status_code == 200 and counting.status_code == 200
+        # Match the button's onclick (the celerpAddLine() helper is always defined in the page script).
+        assert 'onclick="celerpAddLine()"' in draft.text
+        assert 'onclick="celerpAddLine()"' not in counting.text
+
+
+class TestCompanyDetailsPage:
+    """The Finance > Company Details page is organized like a customer/vendor page: a Contact Info card
+    (the company's identity, incl. its email) + a Settings card (currency/timezone/fiscal), the
+    billing/shipping address book, and the Documents/Notes/Activity tabs - minus the financial cards,
+    tags, and the file-upload zone (files have their own page). Admin+ only."""
+
+    _COMPANY = {"settings": {"self_contact_id": "contact:self"}, "fiscal_year_start": "01-01",
+                "name": "My Co", "currency": "USD"}
+    _SELF = {"id": "contact:self", "entity_id": "contact:self", "name": "My Co",
+             "contact_type": "both", "is_self": True, "email": "me@myco.test",
+             "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]}
+
+    def _patches(self):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        for name, val in (
+            ("get_company", self._COMPANY), ("get_contact", self._SELF),
+            ("list_contacts", {"items": [self._SELF]}), ("list_contact_docs", {"items": []}),
+            ("list_items", {"items": []}), ("list_docs", {"items": []}),
+        ):
+            stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
+        return stack
+
+    @pytest.mark.asyncio
+    async def test_renders_info_settings_addresses_tabs(self, ui_client):
+        with self._patches():
+            r = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"))
+        assert r.status_code == 200, r.text
+        assert "Total Invoiced" not in r.text                     # no financial cards
+        assert "Company Details" in r.text
+        assert "me@myco.test" in r.text                           # email shows (Contact Info card)
+        assert "/settings/company/currency/edit" in r.text        # Settings card (regional)
+        assert "Billing" in r.text and "Shipping" in r.text       # two-column address book
+        assert "tab-company-files" in r.text and "tab-documents" in r.text   # Files first, then Documents/Notes/Activity
+        assert "file-drop-zone" in r.text                         # Files tab carries the quick-upload dropzone
+
+    @pytest.mark.asyncio
+    async def test_admin_allowed_below_admin_redirected(self, ui_client):
+        with self._patches():
+            ok = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"), follow_redirects=False)
+            low = await ui_client.get("/finance/company-details", cookies=_authed(role="operator"), follow_redirects=False)
+        assert ok.status_code == 200
+        assert low.status_code == 302 and low.headers.get("location", "").endswith("/dashboard")
+
+
+class TestFilesExcelFunnels:
+    """The shared files table carries Excel-style column funnels (a Tag funnel + data-row rows). Product
+    images are hidden by default ONLY when hide_product_images=True (the Company Files view) - never on
+    an item's own page, where the product images are the whole point."""
+
+    _FILES = [
+        {"id": "f1", "filename": "registration.pdf", "size": 10, "document_tag": "registrations", "uploaded_at": "2026-06-18"},
+        {"id": "f2", "filename": "hero.jpg", "size": 20, "document_tag": "product_images", "uploaded_at": "2026-06-18"},
+    ]
+
+    def test_funnel_present_but_no_default_exclude_by_default(self):
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("item", "item:1", self._FILES, can_tag=True))
+        assert "colfilter" in html and "data-row" in html and "data-filter-value" in html
+        # Product images are NOT hidden on a normal (e.g. item) files table (no funnel default-exclude
+        # attribute - the bare string also appears inside COLUMN_FILTER_JS, so match the attribute form).
+        assert 'data-filter-exclude="' not in html
+
+    def test_product_images_hidden_only_when_requested(self):
+        from ui.components.files import _files_section
+        from fasthtml.common import to_xml
+        html = to_xml(_files_section("company", "all", self._FILES, can_tag=True, hide_product_images=True))
+        assert 'data-filter-exclude="' in html
+
+    @pytest.mark.asyncio
+    async def test_item_file_description_route_accepts_post(self, ui_client):
+        """The files component saves descriptions with POST; the item UI route must accept POST (was
+        PATCH -> 405, which blocked describing a product image)."""
+        with (
+            patch("ui.api_client.describe_item_file", new=AsyncMock(return_value={})),
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"id": "item:1", "files": []})),
+        ):
+            r = await ui_client.post("/items/item:1/files/f1/description",
+                                     data={"description": "front view"}, cookies=_authed())
+        assert r.status_code == 200, r.text  # not 405
+
+
+class TestCompanyAllFilesView:
+    """The unified Finance > All Files view aggregates company documents, item images and doc
+    attachments into one read-only table, each row linking back to its owning entity."""
+
+    @pytest.mark.asyncio
+    async def test_aggregates_company_item_and_doc_files(self, ui_client):
+        from contextlib import ExitStack
+        company = {"settings": {"self_contact_id": "contact:self"}}
+        self_contact = {"id": "contact:self", "name": "My Co", "is_self": True,
+                        "files": [{"id": "cf1", "filename": "reg.pdf", "document_tag": "registrations", "uploaded_at": "2026-06-18"}]}
+        items = {"items": [{"id": "item:1", "sku": "SKU-1",
+                            "files": [{"id": "if1", "filename": "hero.jpg", "document_tag": "product_images", "uploaded_at": "2026-06-18"}]}]}
+        docs = {"items": [{"id": "doc:1", "ref_id": "INV-001",
+                           "files": [{"id": "df1", "filename": "scan.pdf", "document_tag": "receipts", "uploaded_at": "2026-06-18"}]}]}
+        with ExitStack() as stack:
+            for name, val in (("get_company", company), ("get_contact", self_contact),
+                              ("list_items", items), ("list_docs", docs),
+                              ("list_contacts", {"items": [self_contact]})):
+                stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
+            r = await ui_client.get("/finance/company-files/_section", cookies=_authed(role="admin"))
+        assert r.status_code == 200, r.text
+        # All three sources present, each linking back to its owning entity.
+        assert "reg.pdf" in r.text and "Company" in r.text
+        assert "hero.jpg" in r.text and "/inventory/item:1" in r.text and "SKU-1" in r.text
+        assert "scan.pdf" in r.text and "/docs/doc:1" in r.text and "INV-001" in r.text
+        # Product images are hidden by default via the Tag funnel (attribute form, not the JS ref).
+        assert 'data-filter-exclude="' in r.text
+
+
+class TestCompanyLetterhead:
+    """Document letterhead reads identity (name/phone/tax_id/email + billing address) from the company's
+    self-contact - the Contact Info card / address book is the edit point - falling back to settings."""
+
+    @pytest.mark.asyncio
+    async def test_identity_from_self_contact(self):
+        from ui.routes.documents import _company_letterhead
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Workspace", "settings": {"self_contact_id": "contact:self"}})),
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test", "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]})),
+        ):
+            lh = await _company_letterhead("tok")
+        assert lh["company_name"] == "Real Co Ltd"          # from the self-contact, not the workspace name
+        assert lh["company_address"] == "1 Main St, Town"   # composed from the self-contact billing addr
+        assert lh["company_tax_id"] == "TAX9"
+        assert lh["company_phone"] == "555"
+        assert lh["company_email"] == "x@co.test"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_settings_address_when_no_contact_addr(self):
+        from ui.routes.documents import _company_letterhead
+        with (
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Legacy Co", "address": "Old Addr", "settings": {}})),
+            patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": []})),
+        ):
+            lh = await _company_letterhead("tok")
+        assert lh["company_name"] == "Legacy Co"
+        assert lh["company_address"] == "Old Addr"
+
+
+class TestCompanySettingsCardMoved:
+    """The company regional settings moved out of the settings General tab onto the Company Details
+    settings card: currency/timezone/fiscal are editable there, and language is omitted (header switcher)."""
+
+    def test_regional_fields_in_card_not_in_settings_tab(self):
+        from ui.routes.settings import _company_tab, _company_settings_card
+        from fasthtml.common import to_xml as _to_xml
+        company = {"name": "Co", "settings": {}}
+        settings_html = _to_xml(_company_tab(company))
+        card_html = _to_xml(_company_settings_card(company))
+        for key in ("currency", "timezone", "fiscal_year_start"):
+            assert f"/settings/company/{key}/edit" not in settings_html, f"{key} should not be in the settings tab"
+            assert f"/settings/company/{key}/edit" in card_html, f"{key} should be in the settings card"
+        # Language is set from the header switcher, so it is not duplicated on the card.
+        assert "/settings/company/language" not in card_html
+
+
 class TestCalculateDueDate:
     """Unit tests for _calculate_due_date pure function."""
 
@@ -8903,15 +8994,15 @@ class TestListFieldPatch:
     }
 
     @pytest.mark.asyncio
-    async def test_patch_list_type_returns_display_cell(self, ui_client):
-        with (
-            patch("ui.api_client.patch_list", new=AsyncMock(return_value={"event_id": "e1"})),
-            patch("ui.api_client.get_list", new=AsyncMock(return_value={**self._LST, "list_type": "transfer"})),
-        ):
+    async def test_patch_list_type_rerenders_page(self, ui_client):
+        # Changing list type restructures the column set, so the handler re-renders the page
+        # (HX-Redirect to the same list) rather than swapping a single display cell. It routes
+        # through change_list_type (allowed while issued), not the draft-only patch.
+        with patch("ui.api_client.change_list_type", new=AsyncMock(return_value={"ok": True, "list_type": "transfer"})):
             r = await ui_client.patch("/lists/list:1/field/list_type",
                                       data={"value": "transfer"}, cookies=_authed())
-        assert r.status_code == 200, r.text
-        assert "transfer" in r.text.lower()
+        assert r.status_code == 204, r.text
+        assert r.headers.get("HX-Redirect") == "/lists/list:1"
 
     @pytest.mark.asyncio
     async def test_patch_receiver_type_returns_display_cell(self, ui_client):

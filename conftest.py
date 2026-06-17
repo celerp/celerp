@@ -7,12 +7,113 @@ import os
 
 # Must be set before celerp.config is imported (JWT guard fires at module load).
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+
+# ── Postgres for the whole test suite ──────────────────────────────────────────
+# Both production targets (the server and the Electron embedded-postgres build)
+# run Postgres, so the tests run on Postgres too. A pre-set DATABASE_URL (e.g. a
+# CI services container) is honored; otherwise we start a throwaway Postgres via
+# testcontainers (Docker), tuned for throwaway speed (fsync/synchronous_commit/
+# full_page_writes off — safe because the data is discarded). Each pytest-xdist
+# worker gets its own database. MUST run before celerp.db / test_helpers import.
+_PG_CONTAINER = None
+
+
+def _tune_pg_server(url: str) -> None:
+    """Turn off durability guards on a preset (CI) Postgres — mirrors the testcontainers
+    tuning. The test DB is throwaway, so fsync / synchronous_commit / full_page_writes off is
+    safe and removes the per-commit disk syncs that dominate a commit-heavy suite on CI's stock
+    Postgres service. Server-wide (covers every xdist worker DB) and applied via pg_reload_conf
+    (all three GUCs are reloadable — no restart). Best-effort: a no-op if the role lacks the
+    superuser needed for ALTER SYSTEM, which only costs speed, never correctness."""
+    from urllib.parse import urlsplit
+    import psycopg2
+
+    parts = urlsplit(url.replace("+asyncpg", ""))
+    try:
+        conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                                password=parts.password, dbname=parts.path.lstrip("/") or "postgres")
+        conn.autocommit = True
+        try:
+            with conn.cursor() as cur:
+                cur.execute("ALTER SYSTEM SET fsync = off")
+                cur.execute("ALTER SYSTEM SET synchronous_commit = off")
+                cur.execute("ALTER SYSTEM SET full_page_writes = off")
+                cur.execute("SELECT pg_reload_conf()")
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _provision_test_database() -> None:
+    url = os.environ.get("DATABASE_URL", "")
+    if url.startswith("postgresql"):
+        _tune_pg_server(url)
+        worker = os.environ.get("PYTEST_XDIST_WORKER")
+        if worker:
+            url = _create_worker_db(url, worker)
+    else:
+        from testcontainers.postgres import PostgresContainer
+        global _PG_CONTAINER
+        # Throwaway DB → turn off durability guards for speed (data is discarded).
+        _PG_CONTAINER = PostgresContainer("postgres:16-alpine").with_command(
+            "-c fsync=off -c synchronous_commit=off -c full_page_writes=off")
+        _PG_CONTAINER.start()
+        host = _PG_CONTAINER.get_container_host_ip()
+        port = _PG_CONTAINER.get_exposed_port(5432)
+        url = (f"postgresql+asyncpg://{_PG_CONTAINER.username}:{_PG_CONTAINER.password}"
+               f"@{host}:{port}/{_PG_CONTAINER.dbname}")
+    os.environ["DATABASE_URL"] = url
+    if url.startswith("postgresql"):
+        # Make the app's own engine (celerp.db.engine) use NullPool too: a pooled
+        # asyncpg connection is bound to the event loop that created it, but
+        # pytest-asyncio gives each test a fresh loop — so a pooled connection
+        # reused/closed in a later test's loop raises "attached to a different
+        # loop" / "Event loop is closed". NullPool opens+closes a connection per
+        # use within the current loop, sidestepping it entirely.
+        os.environ["CELERP_TEST_NULLPOOL"] = "1"
+
+
+def _create_worker_db(url: str, worker: str) -> str:
+    """CREATE DATABASE <base>_<worker> on the shared server; return its asyncpg URL."""
+    import re
+    from urllib.parse import urlsplit, urlunsplit
+    import psycopg2
+
+    parts = urlsplit(url.replace("+asyncpg", ""))
+    base_db = parts.path.lstrip("/") or "postgres"
+    worker_db = f"{base_db}_{re.sub(r'[^a-zA-Z0-9]', '', worker)}"
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                            password=parts.password, dbname=base_db)
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (worker_db,))
+            if not cur.fetchone():
+                cur.execute(f'CREATE DATABASE "{worker_db}"')
+    finally:
+        conn.close()
+    return urlunsplit(parts._replace(path=f"/{worker_db}")).replace(
+        "postgresql://", "postgresql+asyncpg://")
+
+
+_provision_test_database()
 
 import pytest
 import pytest_asyncio
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
+
+
+def pytest_unconfigure(config):
+    """Stop the throwaway Postgres container at the end of the session."""
+    global _PG_CONTAINER
+    if _PG_CONTAINER is not None:
+        try:
+            _PG_CONTAINER.stop()
+        finally:
+            _PG_CONTAINER = None
 
 from celerp.db import get_session
 from celerp.main import app
@@ -171,10 +272,13 @@ _SLOT_CONTRIBUTIONS = [
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_sold", "href": "/inventory?status=sold", "label": "Sold Inventory", "order": 31, "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "inventory_archived", "href": "/inventory?status=archived", "label": "Archived Inventory", "order": 32, "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Inventory", "key": "scanning", "href": "/scanning", "label": "Scanning", "order": 33, "_module": "celerp-inventory"}},
+    {"slot": "nav", "contrib": {"group": "Inventory", "key": "audits", "href": "/audits", "label": "Audits", "order": 34, "_module": "celerp-inventory"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "order": 50, "settings_href": "/settings/accounting", "_module": "celerp-accounting"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "order": 52, "_module": "celerp-accounting"}},
     {"slot": "nav", "contrib": {"group": "Finance", "key": "reports", "href": "/reports", "label": "Reports", "order": 53, "_module": "celerp-reports"}},
-    {"slot": "nav", "contrib": {"group": "Inventory", "key": "manufacturing", "href": "/manufacturing", "label": "Manufacturing", "order": 40, "_module": "celerp-manufacturing"}},
+    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "manufacturing", "href": "/manufacturing", "label": "Demand Planning", "order": 35, "settings_href": "/settings/manufacturing", "_module": "celerp-manufacturing"}},
+    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "work_in_progress", "href": "/manufacturing/production", "label": "Work In Progress", "order": 36, "_module": "celerp-manufacturing"}},
+    {"slot": "nav", "contrib": {"group": "Manufacturing", "key": "production_orders", "href": "/docs?type=production_order", "label": "Stock Orders", "order": 37, "_module": "celerp-manufacturing"}},
     # --- projection_handler slots ---
     {
         "slot": "projection_handler",
@@ -231,11 +335,12 @@ _SLOT_CONTRIBUTIONS = [
             "_module": "celerp-manufacturing",
         },
     },
+    # The retired bom.* prefix is intentionally not registered — historical bom.* events fall
+    # through to the projection engine's default merge handler on replay.
     {
-        "slot": "projection_handler",
+        "slot": "doc_finalize_hook",
         "contrib": {
-            "prefix": "bom.",
-            "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
+            "handler": "celerp_manufacturing.routes:auto_create_work_orders_on_finalize",
             "_module": "celerp-manufacturing",
         },
     },
@@ -264,7 +369,7 @@ def _ensure_slots() -> None:
         slot = entry["slot"]
         contrib = entry["contrib"]
         registered = get(slot)
-        dedup_key = contrib.get("prefix") or contrib.get("href")
+        dedup_key = contrib.get("prefix") or contrib.get("href") or contrib.get("handler")
         existing_keys = {c.get("prefix") or c.get("href") for c in registered}
         if dedup_key not in existing_keys:
             register(slot, contrib)
@@ -275,8 +380,8 @@ def _reset_hot_path_caches():
     """Bust the in-process nonce and drain caches before each test.
 
     These module-level caches are correct at runtime (single process, explicit
-    bust on mutation).  In tests, each test gets a fresh SQLite schema so the
-    cache must be cleared to avoid leaking state between tests.
+    bust on mutation).  In tests, each test rolls back its database changes, so
+    the cache must be cleared to avoid leaking state between tests.
     """
     from celerp.services.session_tracker import _nonce_cache_bust_all
     from celerp.services.runtime_state import _drain_cache_bust
@@ -285,6 +390,23 @@ def _reset_hot_path_caches():
     yield
     _nonce_cache_bust_all()
     _drain_cache_bust()
+
+
+@pytest.fixture(autouse=True)
+def _reset_gateway_state():
+    """Restore the gateway-state module globals around each test.
+
+    relay_subscribe_url() reads `_instance_id` (set by the gateway client on
+    connect) which OVERRIDES settings.gateway_instance_id. A test that connects
+    the client leaks `_instance_id` into later tests in other modules — e.g. the
+    AI subscribe-URL tests, which patch settings.gateway_instance_id and would
+    otherwise see the leaked global instead. Snapshot + restore both globals.
+    """
+    from celerp.gateway import state as _gw
+    _iid, _tok = _gw.get_instance_id(), _gw.get_session_token()
+    yield
+    _gw.set_instance_id(_iid)
+    _gw.set_session_token(_tok)
 
 
 @pytest.fixture(autouse=True)
@@ -318,32 +440,66 @@ def _mock_get_modules_default():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_loaded_modules(request):
+    """Clear the loader's in-process registry around each unit test. A test (or
+    a test module's import) that calls load_all() populates
+    celerp.modules.loader._loaded; without this it leaks into later tests in the
+    same worker (e.g. a module shows running=True), which surfaces under xdist's
+    test distribution.
+
+    Browser tests are exempt: their server runs in-process and legitimately owns
+    a populated _loaded (module-gated UI like the credit-note "Receive Returns"
+    button reads loaded_modules()), so wiping it would hide that UI."""
+    if request.node.get_closest_marker("browser"):
+        yield
+        return
+    from celerp.modules.loader import _loaded
+    _loaded.clear()
+    yield
+    _loaded.clear()
+
+
 from celerp.models.base import Base
 
 # Session-scoped engine: created once, shared across all tests to avoid OOM from
 # 1000+ engine create/dispose cycles when test_ui.py + test_routers/ run together.
 @pytest_asyncio.fixture(scope="session")
 async def _db_engine():
-    engine = create_async_engine(DATABASE_URL)
+    # NullPool: a fresh asyncpg connection per use, so the session-scoped engine
+    # can be driven from each test's own (function-scoped) event loop without
+    # cross-loop "another operation in progress" errors.
+    from sqlalchemy.pool import NullPool
+    # lock_timeout: if a test ever poisons a connection and leaves a lock, the
+    # per-test TRUNCATE fails fast instead of hanging for the whole pytest timeout.
+    engine = create_async_engine(
+        DATABASE_URL, poolclass=NullPool,
+        connect_args={"server_settings": {"lock_timeout": "10000"}})
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
     await engine.dispose()
 
 
 @pytest_asyncio.fixture
 async def session(_db_engine) -> AsyncSession:
-    """Per-test session. Schema is reset (drop_all/create_all) between tests to
-    ensure full isolation while reusing the same engine connection pool."""
-    async with _db_engine.begin() as conn:
-        await conn.run_sync(Base.metadata.drop_all)
-        await conn.run_sync(Base.metadata.create_all)
-
-    factory = sessionmaker(_db_engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as sess:
+    """Per-test isolation by transaction rollback — nothing commits to disk. The
+    test runs inside an outer transaction; the app's session.commit() calls become
+    SAVEPOINT releases (join_transaction_mode='create_savepoint'); the outer
+    transaction is rolled back at teardown."""
+    conn = await _db_engine.connect()
+    trans = await conn.begin()
+    factory = async_sessionmaker(
+        bind=conn, class_=AsyncSession, expire_on_commit=False,
+        join_transaction_mode="create_savepoint")
+    sess = factory()
+    try:
         yield sess
+    finally:
+        await sess.close()
+        if trans.is_active:
+            await trans.rollback()
+        await conn.close()
 
 
 @pytest_asyncio.fixture

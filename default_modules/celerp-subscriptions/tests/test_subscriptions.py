@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Tests for celerp-subscriptions module rebuild.
 
 Subscription templates are docs with doc_type "subscription_invoice" or "subscription_po".

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 from __future__ import annotations
 
@@ -69,6 +69,20 @@ class ItemTransferred(BaseModel):
 
 class ItemQuantityAdjusted(BaseModel):
     new_qty: float
+    # Optional provenance for audit-driven adjustments (Q6): why and from which audit list, plus the
+    # pre-adjustment quantity so the audit's "Adjust stock" action can be undone.
+    reason: str | None = None
+    source_list_id: str | None = None
+    prior_qty: float | None = None
+
+
+class ItemLandedCostApplied(BaseModel):
+    # Absolute per-unit landed cost for one (source bill, kind); overwrite-safe so re-running the
+    # allocation with changed freight self-corrects. unit_amount=0 clears the contribution.
+    source_bill_id: str
+    kind: str                       # freight | insurance | duty | import_vat
+    unit_amount: float
+    currency_rate: float | None = None   # bill conversion rate used (reproducibility)
 
 
 class ItemFulfilled(BaseModel):
@@ -122,6 +136,91 @@ class ItemConsumed(BaseModel):
 
 class ItemProduced(BaseModel):
     quantity_produced: float
+
+
+# --- Manufacturing recipe (materials + labor + overhead) attached to an item ---
+# The recipe is the single source of truth for how a manufactured item is built.
+# Interpretation (cost roll-up, expansion) lives in celerp-manufacturing; the schema
+# is shared here and the projection stores it verbatim (full-replace).
+
+class ComponentSpec(BaseModel):
+    item_id: str                       # entity_id of the input inventory item
+    sku: str | None = None             # denormalized for display; resolved server-side
+    quantity: float                    # qty of this component per recipe batch (output_qty)
+    unit: str | None = None
+
+
+class LaborLine(BaseModel):
+    operation: str
+    kind: str = "hourly"               # "hourly" (hours × rate) | "fixed" (flat amount)
+    hours: float = 0
+    rate: float = 0                    # per-line rate (no company default)
+    amount: float = 0                  # flat cost, used when kind == "fixed"
+    source: str = "manual"             # "manual" | "auto:<rule>" (future auto-labor module)
+
+
+class OverheadLine(BaseModel):
+    description: str
+    amount: float = 0
+
+
+class RecipeSpec(BaseModel):
+    output_qty: float = 1              # units one batch of this recipe yields
+    components: list[ComponentSpec] = Field(default_factory=list)
+    labor: list[LaborLine] = Field(default_factory=list)
+    overhead: list[OverheadLine] = Field(default_factory=list)
+    # Derived, written server-side by the cost roll-up — never trusted from the client:
+    unit_cost: float | None = None
+    materials_cost: float | None = None
+    labor_cost: float | None = None
+    overhead_cost: float | None = None
+
+
+class ItemRecipeSet(BaseModel):
+    recipe: RecipeSpec
+
+
+# --- Production workflow (ordered build steps) attached to an item ---
+# Independent of the costing recipe: this is the shop-floor instruction sequence,
+# stored verbatim by the inventory projection (full-replace) and rendered on the
+# Manufacturing tab + printable worksheet. Time is canonical in MINUTES; time_unit
+# is a cosmetic display hint only, so all logic reads a single field.
+
+_WORKFLOW_TIME_UNITS = ("min", "hr", "day")
+_WORKFLOW_UNIT_MINUTES = {"min": 1.0, "hr": 60.0, "day": 1440.0}
+
+
+def workflow_step_minutes(time_value, time_unit: str) -> float:
+    """Canonical elapsed minutes for a workflow step — the single conversion point.
+
+    time_value is the number as the user typed it, in time_unit; the result is the
+    one value every calculation (active-time totals, scheduling) reads.
+    """
+    try:
+        value = float(time_value or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    return value * _WORKFLOW_UNIT_MINUTES.get(time_unit, 1.0)
+
+
+class WorkflowStep(BaseModel):
+    id: str = ""                       # stable uuid; the server assigns one if blank
+    station: str = ""                  # work center / location (links to a WorkCenter name)
+    instructions: str = ""             # free-text detail for the worker (multi-line)
+    time_value: float = 0              # elapsed time as typed, in time_unit
+    time_unit: str = "min"             # min | hr | day
+    ref_file_id: str | None = None     # optional reference image/doc (an item file id)
+    # Derived, written server-side from (time_value, time_unit) — never trusted from the client.
+    # CANONICAL: every calculation reads time_minutes, never the typed value/unit.
+    time_minutes: float | None = None
+
+
+class WorkflowSpec(BaseModel):
+    steps: list[WorkflowStep] = Field(default_factory=list)
+
+
+class ItemWorkflowSet(BaseModel):
+    workflow: WorkflowSpec
 
 
 class ItemReserved(BaseModel):
@@ -491,29 +590,38 @@ class MfgOrderCancelled(BaseModel):
     reason: str | None = None
 
 
-class MfgStepCompleted(BaseModel):
-    step_id: str
-    notes: str | None = None
+class MfgOrderOnHold(BaseModel):
+    reason: str | None = None
 
 
-# -----------------
-# BOM
-# -----------------
-
-class BOMCreated(BaseModel):
-    name: str
-    output_item_id: str | None = None
-    output_qty: float = 1.0
-    components: list[dict[str, Any]] = Field(default_factory=list)
+class MfgOrderResumed(BaseModel):
+    resumed_by: str | None = None
 
 
-class BOMUpdated(BaseModel):
-    model_config = {"extra": "allow"}
+class MfgOrderIssued(BaseModel):
+    # Components issued from stock into a run (decrements the components). Partial issues allowed.
+    items: list[dict[str, Any]] = Field(default_factory=list)
+    issued_by: str | None = None
 
 
-class BOMDeleted(BaseModel):
-    pass
+class MfgOrderReceived(BaseModel):
+    # Finished goods received from a run. quantity restocks the output (per allow_splitting);
+    # lot_item_id is set when a non-splittable output created a new lot under the product.
+    quantity: float
+    lot_item_id: str | None = None
+    received_by: str | None = None
 
+
+class MfgOrderScheduled(BaseModel):
+    # Scheduling fields for a run (Phase A). All optional; only provided keys are applied.
+    due_date: str | None = None
+    planned_start: str | None = None
+    priority: str | None = None
+
+
+# The standalone BOM entity was retired (recipes live on the inventory item). Its bom.* event
+# schemas are gone too: nothing emits them, and historical bom.* events replay through the
+# projection engine's default merge handler, which does not validate against EVENT_SCHEMA_MAP.
 
 # -----------------
 # Scanning
@@ -698,26 +806,29 @@ class ListPatched(BaseModel):
     model_config = {"extra": "allow"}
 
 
-class ListSent(BaseModel):
-    sent_via: str | None = None
-    sent_to: str | None = None
+class ListFinalized(BaseModel):
+    """draft -> finalized. Carries status, finalize milestone(s), and (audit) the frozen snapshot."""
+    model_config = {"extra": "allow"}
 
 
-class ListAccepted(BaseModel):
-    notes: str | None = None
+class ListReverted(BaseModel):
+    """finalized -> draft (go back before a terminal action)."""
+    model_config = {"extra": "allow"}
 
 
-class ListCompleted(BaseModel):
-    notes: str | None = None
+class ListClosed(BaseModel):
+    """finalized -> closed. `result` is the terminal outcome; terminal-specific fields ride along."""
+    result: str
+    model_config = {"extra": "allow"}
+
+
+class ListReopened(BaseModel):
+    """closed -> finalized (undo a terminal action)."""
+    model_config = {"extra": "allow"}
 
 
 class ListVoided(BaseModel):
     reason: str | None = None
-
-
-class ListConverted(BaseModel):
-    target_doc_id: str
-    target_doc_type: str
 
 
 # ── Entity File schemas (shared by contacts, docs) ───────────────────────────
@@ -769,6 +880,7 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.status.set": ItemStatusSet,
     "item.transferred": ItemTransferred,
     "item.quantity.adjusted": ItemQuantityAdjusted,
+    "item.landed_cost.applied": ItemLandedCostApplied,
     "item.fulfilled": ItemFulfilled,
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
@@ -779,6 +891,8 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.patched": ItemPatched,
     "item.consumed": ItemConsumed,
     "item.produced": ItemProduced,
+    "item.recipe.set": ItemRecipeSet,
+    "item.workflow.set": ItemWorkflowSet,
     "item.reserved": ItemReserved,
     "item.unreserved": ItemUnreserved,
     "item.file.attached": EntityFileAttached,
@@ -854,12 +968,11 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "mfg.order.started": MfgOrderStarted,
     "mfg.order.completed": MfgOrderCompleted,
     "mfg.order.cancelled": MfgOrderCancelled,
-    "mfg.step.completed": MfgStepCompleted,
-
-    # BOM
-    "bom.created": BOMCreated,
-    "bom.updated": BOMUpdated,
-    "bom.deleted": BOMDeleted,
+    "mfg.order.on_hold": MfgOrderOnHold,
+    "mfg.order.resumed": MfgOrderResumed,
+    "mfg.order.issued": MfgOrderIssued,
+    "mfg.order.received": MfgOrderReceived,
+    "mfg.order.scheduled": MfgOrderScheduled,
 
     # Scanning
     "scan.barcode": ScanBarcode,
@@ -896,11 +1009,11 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "list.created": ListCreated,
     "list.updated": ListUpdated,
     "list.patched": ListPatched,
-    "list.sent": ListSent,
-    "list.accepted": ListAccepted,
-    "list.completed": ListCompleted,
+    "list.finalized": ListFinalized,
+    "list.reverted": ListReverted,
+    "list.closed": ListClosed,
+    "list.reopened": ListReopened,
     "list.voided": ListVoided,
-    "list.converted": ListConverted,
 
     # Subscriptions
     "sub.created": SubCreated,

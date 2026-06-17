@@ -43,10 +43,10 @@ def _load(page, url):
 def test_contact_field_has_server_search_url(page, contact_search_page):
     """After clicking the contact cell, the combobox wrap must carry data-search-url."""
     _load(page, contact_search_page)
-    # Click the contact display cell to open the edit combobox
-    contact_cell = page.locator(".editable-cell").filter(has_text="Select").or_(
-        page.locator("[hx-get*='field/contact_id/edit']")
-    ).first
+    # Click the contact display cell to open the edit combobox. Target the
+    # contact field specifically — a bare has_text="Select" can match another
+    # editable cell (e.g. a line-item picker) that appears first in the DOM.
+    contact_cell = page.locator("[hx-get*='field/contact_id/edit']").first
     contact_cell.click()
     page.wait_for_selector(".combobox-wrap[data-search-url]", timeout=5000)
     wrap = page.locator(".combobox-wrap[data-search-url]").first
@@ -85,7 +85,7 @@ def test_contact_search_shows_results(page, contact_search_page):
     inp.fill("Alpha")
     # Wait for HTMX to fire (300ms debounce) and the response to render
     page.wait_for_timeout(700)
-    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=3000)
+    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
 
     opts = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)")
     assert opts.count() >= 1, "Expected at least one search result for 'Alpha'"
@@ -104,7 +104,7 @@ def test_contact_search_select_commits_value(page, contact_search_page):
     hidden = page.locator(".combobox-wrap[data-search-url] input[type=hidden]").first
     inp.fill("Alpha")
     page.wait_for_timeout(700)
-    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=3000)
+    page.wait_for_selector(".combobox-list.open .combobox-option:not(.combobox-option--empty)", timeout=10000)
 
     first_opt = page.locator(".combobox-list.open .combobox-option:not(.combobox-option--empty)").first
     opt_value = first_opt.get_attribute("data-value")

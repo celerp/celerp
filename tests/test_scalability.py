@@ -15,6 +15,7 @@ Coverage:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -34,6 +35,34 @@ def _future(seconds: int = 3600) -> datetime:
 
 def _past(seconds: int = 1) -> datetime:
     return datetime.now(timezone.utc) - timedelta(seconds=seconds)
+
+
+@contextlib.contextmanager
+def _pg_schema_engine():
+    """Sync Postgres engine pinned to a fresh, isolated schema. Migrations run via
+    sync alembic Operations, so they exercise the real Postgres DDL."""
+    import os
+    import uuid as _uuid
+
+    from sqlalchemy import create_engine, text
+
+    base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+    schema = f"scaltest_{_uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+
+    engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
+    try:
+        yield engine
+    finally:
+        engine.dispose()
+        admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+        with admin.connect() as c:
+            c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+        admin.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -359,9 +388,9 @@ class TestJtiCleanupLoop:
         """run_jti_cleanup_loop deletes expired rows and keeps non-expired ones.
 
         The cleanup loop uses SessionLocal() which points to celerp.db.engine -
-        a different in-memory SQLite than the test session fixture.  We verify
-        correctness by seeding rows into the test session, then running cleanup
-        via a context manager that patches SessionLocal to yield the test session.
+        a different connection than the rollback-isolated test session fixture.
+        We verify correctness by seeding rows into the test session, then running
+        cleanup via a context manager that patches SessionLocal to yield it.
         """
         from celerp.services.session_tracker import clear
         from celerp.models.auth import SessionRegistry
@@ -424,37 +453,37 @@ class TestJtiCleanupLoop:
 class TestMigrationSessionRegistry:
     """Verify migration p1q2r3s4t5u6 creates required tables."""
 
-    def test_migration_creates_session_registry_table(self, tmp_path):
+    def test_migration_creates_session_registry_table(self):
         """p1q2r3s4t5u6 upgrade creates session_registry and user_auth_state."""
-        from sqlalchemy import create_engine, inspect, text
-
-        db_path = tmp_path / "mig_step1.db"
-        engine = create_engine(f"sqlite:///{db_path}")
-
-        # Create prerequisite tables
-        with engine.begin() as conn:
-            conn.execute(text("CREATE TABLE users (id TEXT PRIMARY KEY)"))
-
-        # Run migration
-        from celerp.migrations.versions.p1q2r3s4t5u6_add_session_registry_and_user_auth_state import upgrade
+        from sqlalchemy import inspect, text
         from alembic.runtime.migration import MigrationContext
-        with engine.begin() as conn:
-            ctx = MigrationContext.configure(conn)
-            upgrade.__globals__["op"] = __import__("alembic.operations", fromlist=["Operations"]).Operations(ctx)
-            upgrade()
+        from alembic.operations import Operations
+        from celerp.migrations.versions.p1q2r3s4t5u6_add_session_registry_and_user_auth_state import upgrade
 
-        inspector = inspect(engine)
-        tables = inspector.get_table_names()
-        assert "session_registry" in tables, "session_registry table must be created"
-        assert "user_auth_state" in tables, "user_auth_state table must be created"
+        with _pg_schema_engine() as engine:
+            # Create prerequisite tables. user_id is a Uuid FK → users.id, so on
+            # Postgres the referenced column must be UUID (SQLite ignored this).
+            with engine.begin() as conn:
+                conn.execute(text("CREATE TABLE users (id UUID PRIMARY KEY)"))
 
-        # Verify session_registry columns
-        sr_cols = {c["name"] for c in inspector.get_columns("session_registry")}
-        assert {"jti", "user_id", "expiry", "created_at"} <= sr_cols
+            # Run migration against real Postgres DDL
+            with engine.begin() as conn:
+                ctx = MigrationContext.configure(conn)
+                upgrade.__globals__["op"] = Operations(ctx)
+                upgrade()
 
-        # Verify user_auth_state columns
-        uas_cols = {c["name"] for c in inspector.get_columns("user_auth_state")}
-        assert {"user_id", "nonce", "evicted_by_ip", "updated_at"} <= uas_cols
+            inspector = inspect(engine)
+            tables = inspector.get_table_names()
+            assert "session_registry" in tables, "session_registry table must be created"
+            assert "user_auth_state" in tables, "user_auth_state table must be created"
+
+            # Verify session_registry columns
+            sr_cols = {c["name"] for c in inspector.get_columns("session_registry")}
+            assert {"jti", "user_id", "expiry", "created_at"} <= sr_cols
+
+            # Verify user_auth_state columns
+            uas_cols = {c["name"] for c in inspector.get_columns("user_auth_state")}
+            assert {"user_id", "nonce", "evicted_by_ip", "updated_at"} <= uas_cols
 
 
 # ---------------------------------------------------------------------------
@@ -464,33 +493,30 @@ class TestMigrationSessionRegistry:
 class TestMigrationSystemRuntimeState:
     """Verify migration q2r3s4t5u6v7 creates system_runtime_state."""
 
-    def test_migration_creates_system_runtime_state_table(self, tmp_path):
+    def test_migration_creates_system_runtime_state_table(self):
         """q2r3s4t5u6v7 upgrade creates system_runtime_state with seed row."""
-        from sqlalchemy import create_engine, inspect, text
-
-        db_path = tmp_path / "mig_step2.db"
-        engine = create_engine(f"sqlite:///{db_path}")
-
-        # Run migration
-        from celerp.migrations.versions.q2r3s4t5u6v7_add_system_runtime_state import upgrade
+        from sqlalchemy import inspect, text
         from alembic.runtime.migration import MigrationContext
         from alembic.operations import Operations
-        with engine.begin() as conn:
-            ctx = MigrationContext.configure(conn)
-            upgrade.__globals__["op"] = Operations(ctx)
-            upgrade()
+        from celerp.migrations.versions.q2r3s4t5u6v7_add_system_runtime_state import upgrade
 
-        inspector = inspect(engine)
-        assert "system_runtime_state" in inspector.get_table_names()
+        with _pg_schema_engine() as engine:
+            with engine.begin() as conn:
+                ctx = MigrationContext.configure(conn)
+                upgrade.__globals__["op"] = Operations(ctx)
+                upgrade()
 
-        srs_cols = {c["name"] for c in inspector.get_columns("system_runtime_state")}
-        assert {"id", "value", "updated_at"} <= srs_cols
+            inspector = inspect(engine)
+            assert "system_runtime_state" in inspector.get_table_names()
 
-        # Seed row must exist
-        with engine.connect() as conn:
-            rows = conn.execute(text("SELECT id FROM system_runtime_state")).fetchall()
-        assert len(rows) == 1, "Migration must seed exactly one row (id=1)"
-        assert rows[0][0] == 1
+            srs_cols = {c["name"] for c in inspector.get_columns("system_runtime_state")}
+            assert {"id", "value", "updated_at"} <= srs_cols
+
+            # Seed row must exist
+            with engine.connect() as conn:
+                rows = conn.execute(text("SELECT id FROM system_runtime_state")).fetchall()
+            assert len(rows) == 1, "Migration must seed exactly one row (id=1)"
+            assert rows[0][0] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -751,6 +777,8 @@ class TestHotPathQueryCount:
         from celerp.models.auth import UserAuthState
         import uuid as _u
         uid = _u.UUID(user_id)
+        from test_helpers import ensure_user
+        await ensure_user(session, uid)
         session.add(UserAuthState(user_id=uid, nonce="test-nonce-abc"))
         await session.commit()
 
@@ -818,6 +846,8 @@ class TestHotPathQueryCount:
 
         user_id = str(_u.uuid4())
         uid = _u.UUID(user_id)
+        from test_helpers import ensure_user
+        await ensure_user(session, uid)
         session.add(UserAuthState(user_id=uid, nonce="old-nonce"))
         await session.commit()
 

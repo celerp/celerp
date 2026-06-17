@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Tests for celerp-labels module: CRUD, custom dims, PDF generation, barcode/QR, positions."""
 from __future__ import annotations
 
@@ -31,6 +31,22 @@ async def _headers(client: AsyncClient, suffix: str = "") -> dict:
 
 
 # ── Template CRUD ─────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_default_templates_seeded_on_first_read(client: AsyncClient):
+    """A brand-new company gets the preset templates on the very first GET — not only
+    after visiting the labels settings page (the print-dropdown bug)."""
+    headers = await _headers(client)
+    r = await client.get("/api/labels/templates", headers=headers)
+    assert r.status_code == 200, r.text
+    items = r.json()["items"]
+    assert len(items) >= 6, items
+    names = {t["name"] for t in items}
+    assert "Small Tag (40x30)" in names and "Shelf Label (100x50)" in names
+    # Idempotent: a second read does not re-seed duplicates.
+    again = (await client.get("/api/labels/templates", headers=headers)).json()["items"]
+    assert len(again) == len(items)
+
 
 @pytest.mark.asyncio
 async def test_template_create_and_list(client: AsyncClient):
@@ -473,7 +489,6 @@ class TestLabelPrintJsFlow:
 
 # ── Bug-fix regression tests ──────────────────────────────────────────────────
 
-@pytest.mark.anyio
 async def test_qr_field_resolves_barcode_key(client: AsyncClient):
     """QR/barcode fields in HTML print sheet must resolve item barcode/sku, not key 'qr'."""
     from celerp_labels.ui_routes import _printable_label_sheet
@@ -508,7 +523,6 @@ def test_make_barcode_image_module_height_param():
     )
 
 
-@pytest.mark.anyio
 async def test_barcode_height_saved_and_retrieved(client: AsyncClient):
     """barcode_height set in template field must survive PUT and be returned on GET."""
     headers = await _headers(client)

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 
 import pytest
@@ -13,42 +14,57 @@ import sqlalchemy as sa
 
 
 # ---------------------------------------------------------------------------
-# Minimal sync engine for migration testing (alembic op.get_bind() is sync)
+# Minimal sync Postgres schema for migration testing (alembic op.get_bind() is
+# sync). Runs against Postgres so the migration's real jsonb_set path is tested.
 # ---------------------------------------------------------------------------
 
 @pytest.fixture()
-def sync_db(tmp_path):
-    """Create a fresh SQLite DB with only the projections table."""
+def sync_db():
+    """Fresh, isolated Postgres schema with just the projections table."""
     from sqlalchemy import create_engine, text
-    db_path = tmp_path / "migration_test.db"
-    engine = create_engine(f"sqlite:///{db_path}")
+
+    base_url = os.environ["DATABASE_URL"].replace("+asyncpg", "+psycopg2")
+    schema = f"migtest_{uuid.uuid4().hex[:8]}"
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'CREATE SCHEMA "{schema}"'))
+    admin.dispose()
+
+    engine = create_engine(base_url, connect_args={"options": f"-csearch_path={schema}"})
     with engine.begin() as conn:
         conn.execute(text("""
             CREATE TABLE projections (
                 entity_id TEXT NOT NULL,
                 company_id TEXT NOT NULL,
                 entity_type TEXT NOT NULL,
-                state TEXT NOT NULL,
+                state JSONB NOT NULL,
                 version INTEGER NOT NULL DEFAULT 1,
                 location_id TEXT,
-                updated_at TEXT NOT NULL DEFAULT '2026-01-01',
-                is_available INTEGER,
-                is_on_memo INTEGER,
-                is_on_marketplace INTEGER,
-                is_in_production INTEGER,
-                is_expired INTEGER,
-                expires_at TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT '2026-01-01',
+                is_available BOOLEAN,
+                is_on_memo BOOLEAN,
+                is_on_marketplace BOOLEAN,
+                is_in_production BOOLEAN,
+                is_expired BOOLEAN,
+                expires_at TIMESTAMPTZ,
                 consignment_flag TEXT,
                 PRIMARY KEY (company_id, entity_id)
             )
         """))
-    return engine
+    yield engine
+    engine.dispose()
+
+    admin = create_engine(base_url, isolation_level="AUTOCOMMIT")
+    with admin.connect() as c:
+        c.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+    admin.dispose()
 
 
 def _insert_item(conn, company_id: str, entity_id: str, state: dict) -> None:
     conn.execute(sa.text("""
         INSERT INTO projections (entity_id, company_id, entity_type, state)
-        VALUES (:entity_id, :company_id, 'item', :state)
+        VALUES (:entity_id, :company_id, 'item', CAST(:state AS jsonb))
     """), {"entity_id": entity_id, "company_id": company_id, "state": json.dumps(state)})
 
 
@@ -58,7 +74,8 @@ def _get_state(conn, company_id: str, entity_id: str) -> dict:
         WHERE company_id = :company_id AND entity_id = :entity_id
     """), {"company_id": company_id, "entity_id": entity_id}).fetchone()
     assert row is not None
-    return json.loads(row[0])
+    # psycopg2 returns JSONB as a dict; tolerate a str just in case.
+    return row[0] if isinstance(row[0], dict) else json.loads(row[0])
 
 
 def test_promotes_cost_price(sync_db):

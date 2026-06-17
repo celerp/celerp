@@ -1,12 +1,12 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 from __future__ import annotations
 
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from celerp.models.base import Base
@@ -20,6 +20,10 @@ class LedgerEntry(Base):
         Index("idx_ledger_company_ts", "company_id", "ts"),
         Index("idx_ledger_entity_type", "entity_type"),
         Index("idx_ledger_ts", "ts"),
+        # Idempotency is per-company: different companies legitimately reuse the
+        # same key (e.g. doc numbers reset per company), so this must NOT be a
+        # global unique — otherwise the second company to emit collides.
+        UniqueConstraint("company_id", "idempotency_key", name="uq_ledger_company_idempotency"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -31,6 +35,6 @@ class LedgerEntry(Base):
     actor_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), ForeignKey("users.id"), nullable=True)
     location_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), ForeignKey("locations.id"), nullable=True)
     source: Mapped[str] = mapped_column(String(128), nullable=False)
-    idempotency_key: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     metadata_: Mapped[dict | None] = mapped_column("metadata", sa.JSON, nullable=True)
     ts: Mapped[object] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

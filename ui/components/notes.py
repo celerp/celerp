@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Noah Severs. All rights reserved.
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Shared notes tab component.
 
 Used by both contacts (entity_type="contact") and documents/lists
@@ -84,6 +86,9 @@ def notes_tab(
         hx_target=refresh_target,
         hx_swap="innerHTML",
         cls="section-card",
+        # .section-card has no inner padding, so pad the form itself - otherwise the textarea and the
+        # Add Note button sit flush against the card edges.
+        style="padding:0.75rem",
     )
 
     if not notes:

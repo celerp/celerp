@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 from enum import StrEnum
 
@@ -19,6 +19,8 @@ class EventType(StrEnum):
     ITEM_MERGED = "item.merged"
     ITEM_CONSUMED = "item.consumed"
     ITEM_PRODUCED = "item.produced"
+    ITEM_RECIPE_SET = "item.recipe.set"
+    ITEM_WORKFLOW_SET = "item.workflow.set"
     ITEM_RESERVED = "item.reserved"
     ITEM_UNRESERVED = "item.unreserved"
     ITEM_FILE_ATTACHED = "item.file.attached"
@@ -82,7 +84,11 @@ class EventType(StrEnum):
     MFG_ORDER_STARTED = "mfg.order.started"
     MFG_ORDER_COMPLETED = "mfg.order.completed"
     MFG_ORDER_CANCELLED = "mfg.order.cancelled"
-    MFG_STEP_COMPLETED = "mfg.step.completed"
+    MFG_ORDER_ON_HOLD = "mfg.order.on_hold"
+    MFG_ORDER_RESUMED = "mfg.order.resumed"
+    MFG_ORDER_ISSUED = "mfg.order.issued"
+    MFG_ORDER_RECEIVED = "mfg.order.received"
+    MFG_ORDER_SCHEDULED = "mfg.order.scheduled"
 
     # Scanning
     SCAN_BARCODE = "scan.barcode"

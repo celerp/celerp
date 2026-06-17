@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """API route registration for celerp-reports module."""
 
 from celerp_reports.routes import router as reports_router

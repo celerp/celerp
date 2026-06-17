@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from copy import deepcopy
 
@@ -115,6 +115,32 @@ def _migrate_sell_by(state: dict) -> dict:
     return state
 
 
+def _recompute_cost(current: dict) -> None:
+    """Derive the effective cost_total = cost_base + landed cost.
+
+    cost_base is the goods' purchase/manual cost (what the user edits). Landed cost is stored as
+    per-unit contributions keyed by "<source_bill_id>::<kind>"; the total landed = Σ unit × quantity,
+    so landed scales as quantity is received. cost_total stays authoritative for valuation/COGS.
+
+    Idempotent. Bootstraps cost_base from a legacy cost_total when the split is absent, so existing
+    items (cost_total only, no landed) are unaffected: cost_total == cost_base.
+    """
+    contribs = current.get("landed_contributions") or {}
+    if current.get("cost_base") is None:
+        if current.get("cost_total") is not None:
+            current["cost_base"] = float(current["cost_total"])
+        elif not contribs:
+            return  # item has no cost set at all
+        else:
+            current["cost_base"] = 0.0
+    base = float(current.get("cost_base") or 0)
+    qty = float(current.get("quantity") or 0)
+    landed_unit = sum(float(v or 0) for v in contribs.values())
+    current["cost_landed"] = round(landed_unit * qty, 2)
+    current["cost_total"] = round(base + current["cost_landed"], 2)
+    current.pop("cost_price", None)  # always derived from cost_total at read time (_flatten_item)
+
+
 def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
     current = deepcopy(state)
     if event_type in {"item.created", "item.snapshot"}:
@@ -127,6 +153,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current.setdefault("purchase_conversion_factor", 1)
         current = _migrate_sell_by(current)
         current = _sync_expiry_from_attributes(current)
+        _recompute_cost(current)
     elif event_type == "item.updated":
         for field, change in data["fields_changed"].items():
             if field == "pieces":
@@ -139,27 +166,34 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
                     attrs["pieces"] = new_val
                 current["attributes"] = attrs
                 current.pop("pieces", None)
-            elif field == "cost_price":
-                # cost_total is the canonical primitive; writing cost_price must derive
-                # and overwrite cost_total (unit × qty) so _flatten_item's back-calculation
-                # doesn't silently revert this edit on the next read.
-                new_unit = change.get("new")
-                if new_unit is not None:
-                    qty = float(current.get("quantity") or 0)
-                    current["cost_total"] = round(float(new_unit) * qty, 2)
-                    current.pop("cost_price", None)
-                else:
+            elif field in ("cost_price", "cost_total"):
+                # A manual cost edit sets the BASE cost; landed cost is then re-added on top by
+                # _recompute_cost. cost_price is a unit value (× qty -> base); cost_total is the base
+                # directly. Clearing either removes the base.
+                new_val = change.get("new")
+                if new_val is None:
+                    current.pop("cost_base", None)
                     current.pop("cost_price", None)
                     current.pop("cost_total", None)
+                    current.pop("cost_landed", None)
+                elif field == "cost_price":
+                    qty = float(current.get("quantity") or 0)
+                    current["cost_base"] = round(float(new_val) * qty, 2)
+                    current.pop("cost_price", None)
+                else:  # cost_total
+                    current["cost_base"] = round(float(new_val), 2)
             else:
                 current[field] = change.get("new")
         current = _sync_expiry_from_attributes(current)
+        _recompute_cost(current)
     elif event_type == "item.pricing.set":
         pt = data["price_type"]
         price = data["new_price"]
         if pt == "cost_total":
-            current["cost_total"] = price
-            current.pop("cost_price", None)  # cost_price is now derived
+            # cost_total pricing sets the base; landed is re-added by _recompute_cost.
+            current["cost_base"] = price
+            current.pop("cost_price", None)
+            _recompute_cost(current)
         elif pt == "cost_price":
             current["cost_price"] = price   # legacy path - do NOT pop cost_total here
         else:
@@ -173,6 +207,19 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
             current["updated_at"] = data["updated_at"]
     elif event_type == "item.quantity.adjusted":
         current["quantity"] = data["new_qty"]
+        _recompute_cost(current)  # landed cost is per-unit, so it scales with quantity
+    elif event_type == "item.landed_cost.applied":
+        # Absolute per-unit landed contribution for one (source bill, kind); overwrite-safe so
+        # re-running allocation with changed freight self-corrects. amount=0 clears the contribution.
+        contribs = dict(current.get("landed_contributions") or {})
+        key = f"{data['source_bill_id']}::{data['kind']}"
+        amount = float(data.get("unit_amount") or 0)
+        if amount:
+            contribs[key] = amount
+        else:
+            contribs.pop(key, None)
+        current["landed_contributions"] = contribs
+        _recompute_cost(current)
     elif event_type in {"item.expired", "item.disposed"}:  # item.disposed is legacy; maps to archived
         current["is_expired"] = event_type == "item.expired"
         current["status"] = "expired" if event_type == "item.expired" else "archived"
@@ -194,6 +241,15 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current["quantity"] = max(0.0, float(current.get("quantity", 0)) - float(data["quantity_consumed"]))
     elif event_type == "item.produced":
         current["quantity"] = float(current.get("quantity", 0)) + float(data["quantity_produced"])
+    elif event_type == "item.recipe.set":
+        # Dumb full-replace: inventory stores the recipe verbatim; all interpretation
+        # (validation, cost roll-up) lives in celerp-manufacturing.
+        current["recipe"] = data["recipe"]
+    elif event_type == "item.workflow.set":
+        # Dumb full-replace: inventory stores the production workflow verbatim;
+        # interpretation (worksheet, future scheduling) lives downstream. Mirrors
+        # item.recipe.set (module boundary: data here, meaning elsewhere).
+        current["workflow"] = data["workflow"]
     elif event_type == "item.reserved":
         current["reserved_quantity"] = float(current.get("reserved_quantity", 0)) + float(data["quantity"])
     elif event_type == "item.unreserved":
@@ -217,6 +273,7 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         current.update(data)
         current = _migrate_sell_by(current)
         current = _sync_expiry_from_attributes(current)
+        _recompute_cost(current)
     elif event_type == "item.file.attached":
         _maybe_migrate_attachments(current)
         current.setdefault("files", [])

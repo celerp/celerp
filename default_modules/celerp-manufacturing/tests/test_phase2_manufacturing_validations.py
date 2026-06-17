@@ -1,13 +1,16 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
-
+# SPDX-License-Identifier: MIT
+"""Validation guards on the production-run execution endpoints (issue / receive / complete)."""
 from __future__ import annotations
+
+import uuid
 
 import pytest
 
 
-async def _register(client, email: str = "admin@mfg.test") -> str:
-    r = await client.post("/auth/register", json={"company_name": "Mfg Co", "email": email, "name": "Admin", "password": "pw"})
+async def _register(client) -> str:
+    addr = f"admin-{uuid.uuid4().hex[:8]}@mfgval.test"
+    r = await client.post("/auth/register", json={"company_name": "Mfg Co", "email": addr, "name": "Admin", "password": "pw"})
     assert r.status_code == 200
     return r.json()["access_token"]
 
@@ -16,76 +19,60 @@ def _h(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-@pytest.mark.asyncio
-async def test_manufacturing_validation_guards(client):
-    token = await _register(client)
+async def _ring(client, token, *, ring_qty=0):
+    gold = (await client.post("/items", headers=_h(token),
+                              json={"sku": f"G-{uuid.uuid4().hex[:6]}", "name": "Gold", "quantity": 100,
+                                    "sell_by": "gram", "cost_total": 8000})).json()["id"]
+    ring = (await client.post("/items", headers=_h(token),
+                              json={"sku": f"R-{uuid.uuid4().hex[:6]}", "name": "Ring", "quantity": ring_qty,
+                                    "sell_by": "piece"})).json()["id"]
+    await client.put(f"/manufacturing/items/{ring}/recipe", headers=_h(token),
+                     json={"output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": []})
+    return gold, ring
 
-    # no inputs guard
+
+@pytest.mark.asyncio
+async def test_create_order_requires_inputs(client):
+    token = await _register(client)
     r = await client.post("/manufacturing", headers=_h(token), json={"description": "No inputs", "inputs": []})
     assert r.status_code == 409
 
-    # create valid order
-    item = await client.post("/items", headers=_h(token), json={"sku": "RAW", "name": "Raw", "quantity": 5, "sell_by": "piece"})
-    item_id = item.json()["id"]
-    order = await client.post("/manufacturing", headers=_h(token), json={"description": "Build", "inputs": [{"item_id": item_id, "quantity": 3}], "expected_outputs": [{"sku": "FG", "name": "FG", "quantity": 1}]})
-    assert order.status_code == 200
-    order_id = order.json()["id"]
 
-    # consume missing item
-    r = await client.post(f"/manufacturing/{order_id}/consume", headers=_h(token), json={"item_id": "item:missing", "quantity": 1})
-    assert r.status_code == 404
-
-    # consume more than available
-    r = await client.post(f"/manufacturing/{order_id}/consume", headers=_h(token), json={"item_id": item_id, "quantity": 999})
-    assert r.status_code == 409
-
-    # complete without consume all required
-    r = await client.post(f"/manufacturing/{order_id}/complete", headers=_h(token), json={})
-    assert r.status_code == 409
-
-    # happy consume + complete then double-complete/cancel guards
-    assert (await client.post(f"/manufacturing/{order_id}/consume", headers=_h(token), json={"item_id": item_id, "quantity": 3})).status_code == 200
-    assert (await client.post(f"/manufacturing/{order_id}/complete", headers=_h(token), json={"waste_quantity": 0.5, "waste_unit": "kg"})).status_code == 200
-
-    r = await client.post(f"/manufacturing/{order_id}/complete", headers=_h(token), json={})
-    assert r.status_code == 409
-    r = await client.post(f"/manufacturing/{order_id}/cancel", headers=_h(token), json={"reason": "late"})
-    assert r.status_code == 409
+@pytest.mark.asyncio
+async def test_receive_rejects_nonpositive_quantity(client):
+    token = await _register(client)
+    _gold, ring = await _ring(client, token)
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 2})).json()["id"]
+    r = await client.post(f"/manufacturing/{run}/receive", headers=_h(token), json={"quantity": 0})
+    assert r.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_manufacturing_complete_cross_entity_outputs_and_je(client):
-    token = await _register(client, email="admin2@mfg.test")
-    item = await client.post("/items", headers=_h(token), json={"sku": "RAW-2", "name": "Raw2", "quantity": 10, "sell_by": "piece"})
-    item_id = item.json()["id"]
-
-    order = await client.post(
-        "/manufacturing",
-        headers=_h(token),
-        json={
-            "description": "Assemble",
-            "estimated_cost": 100,
-            "inputs": [{"item_id": item_id, "quantity": 4}],
-            "expected_outputs": [{"sku": "FG-2", "name": "FG2", "quantity": 2, "category": "fg"}],
-        },
-    )
-    order_id = order.json()["id"]
-
-    await client.post(f"/manufacturing/{order_id}/start", headers=_h(token))
-    await client.post(f"/manufacturing/{order_id}/consume", headers=_h(token), json={"item_id": item_id, "quantity": 4})
-    done = await client.post(f"/manufacturing/{order_id}/complete", headers=_h(token), json={"waste_quantity": 1})
+async def test_complete_with_waste_posts_balanced_je(client):
+    token = await _register(client)
+    _gold, ring = await _ring(client, token)
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token), json={"quantity": 2})).json()["id"]
+    # Finish with scrap: 1 unit wasted out of 10 issued -> a slice of input cost hits the waste account.
+    done = await client.post(f"/manufacturing/{run}/complete", headers=_h(token),
+                             json={"waste_quantity": 1, "waste_unit": "gram"})
     assert done.status_code == 200
 
-    items = (await client.get("/items", headers=_h(token))).json()["items"]
-    assert any(i.get("sku") == "FG-2" and i.get("quantity") == 2 for i in items)
-
     ledger = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
-    je = next(e for e in ledger if order_id in (e["data"].get("memo") or ""))
+    je = next(e for e in ledger if run in (e["data"].get("memo") or ""))
     entries = je["data"]["entries"]
     accounts = [x["account"] for x in entries]
-    assert accounts.count("1130-P") == 2  # debit FG + credit raw inventory
-    assert "5100" in accounts
-
+    assert accounts.count("1130-P") == 2 and "5100" in accounts
+    assert any(x["account"] == "5100" and float(x.get("debit", 0) or 0) > 0 for x in entries)  # waste posted
     debit = sum(float(x.get("debit", 0) or 0) for x in entries)
     credit = sum(float(x.get("credit", 0) or 0) for x in entries)
     assert abs(debit - credit) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_double_complete_guard(client):
+    token = await _register(client)
+    _gold, ring = await _ring(client, token)
+    run = (await client.post(f"/manufacturing/items/{ring}/build", headers=_h(token),
+                             json={"quantity": 1, "complete": True})).json()["id"]
+    r = await client.post(f"/manufacturing/{run}/complete", headers=_h(token), json={})
+    assert r.status_code == 409

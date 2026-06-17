@@ -125,7 +125,8 @@ def test_create_credit_note_from_invoice(page: Page, ui_server: str, api):
     cn_id = cn_r.json()["id"]
 
     page.goto(f"{ui_server}/docs/{cn_id}", wait_until="domcontentloaded")
-    page.screenshot(path="/mnt/storage/agent_storage/celerp/screenshots/cn-flow/05-cn-detail-from-invoice.png", full_page=True)
+    # Debug screenshot disabled — hardcoded /mnt/storage path is not portable.
+    # page.screenshot(path="/mnt/storage/agent_storage/celerp/screenshots/cn-flow/05-cn-detail-from-invoice.png", full_page=True)
 
     # Page must load without error
     assert f"/docs/{cn_id}" in page.url
@@ -144,7 +145,8 @@ def test_receive_return_button_visible_on_finalized_cn(page: Page, ui_server: st
     cn_id = _create_finalized_cn(api, inv_id, sku="CN06-G", amount=200.0)
 
     page.goto(f"{ui_server}/docs/{cn_id}", wait_until="domcontentloaded")
-    page.screenshot(path="/mnt/storage/agent_storage/celerp/screenshots/cn-flow/06-cn-receive-return-btn.png", full_page=True)
+    # Debug screenshot disabled — hardcoded /mnt/storage path is not portable.
+    # page.screenshot(path="/mnt/storage/agent_storage/celerp/screenshots/cn-flow/06-cn-receive-return-btn.png", full_page=True)
 
     btn = page.locator("button", has_text="Receive Return")
     expect(btn).to_be_visible()
@@ -164,7 +166,8 @@ def test_receive_return_badge_after_submission(page: Page, ui_server: str, api):
     assert rr.status_code == 200, f"receive-return failed: {rr.text}"
 
     page.goto(f"{ui_server}/docs/{cn_id}", wait_until="domcontentloaded")
-    page.screenshot(path="/mnt/storage/agent_storage/celerp/screenshots/cn-flow/07-cn-after-receive-return.png", full_page=True)
+    # Debug screenshot disabled — hardcoded /mnt/storage path is not portable.
+    # page.screenshot(path="/mnt/storage/agent_storage/celerp/screenshots/cn-flow/07-cn-after-receive-return.png", full_page=True)
 
     # After receive-return, the Revert Return Stock button appears (GDR undo)
     # and the original Receive Return button is gone

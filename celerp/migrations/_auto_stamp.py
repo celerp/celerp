@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Schema-aware alembic stamp repair.
 
 The dev startup path runs `Base.metadata.create_all()` on every boot

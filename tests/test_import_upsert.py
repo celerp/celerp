@@ -33,6 +33,8 @@ async def _setup(session) -> tuple[uuid.UUID, uuid.UUID, str]:
         email=f"admin-{user_id.hex[:8]}@test.co", name="Admin",
         auth_hash="x", is_active=True,
     ))
+    # Flush parents before the membership row so Postgres' FK checks pass.
+    await session.flush()
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
     token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
@@ -223,6 +225,7 @@ async def test_same_idempotency_key_allowed_for_different_companies(client, sess
     ]:
         session.add(Company(id=cid, name=name, slug=f"co-{cid.hex[:8]}"))
         session.add(User(id=uid, email=f"admin-{uid.hex[:8]}@xco.test", name="Admin", auth_hash="x", is_active=True))
+        await session.flush()  # parents before membership for Postgres FK checks
         session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await session.commit()
 

@@ -75,13 +75,24 @@ async def list_templates(
     company_id: uuid.UUID = Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
-    rows = (
-        await session.execute(
-            select(LabelTemplate)
-            .where(LabelTemplate.company_id == company_id)
-            .order_by(LabelTemplate.created_at)
-        )
-    ).scalars().all()
+    async def _query():
+        return (
+            await session.execute(
+                select(LabelTemplate)
+                .where(LabelTemplate.company_id == company_id)
+                .order_by(LabelTemplate.created_at)
+            )
+        ).scalars().all()
+
+    rows = await _query()
+    if not rows:
+        # Seed the default presets on first read so every consumer (inventory/doc print
+        # dropdowns, the labels page) sees them immediately — not only after visiting Settings.
+        from .presets import PRESET_TEMPLATES
+        for preset in PRESET_TEMPLATES:
+            session.add(LabelTemplate(id=uuid.uuid4(), company_id=company_id, **TemplateCreate(**preset).model_dump()))
+        await session.commit()
+        rows = await _query()
     items = [item.as_dict() for item in rows]
     return {"items": items, "total": len(items)}
 

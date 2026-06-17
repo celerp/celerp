@@ -12,7 +12,6 @@ import os
 import uuid as _uuid
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import pytest
 
@@ -105,78 +104,8 @@ async def test_location_patch_not_found(client):
     assert r.status_code == 404
 
 
-# ── BOM CRUD ──────────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_bom_full_crud(client):
-    headers = await _register(client, "bom_crud")
-
-    # Empty list
-    r = await client.get("/companies/me/boms", headers=headers)
-    assert r.status_code == 200
-    assert r.json()["total"] == 0
-
-    # Create
-    bom_payload = {
-        "bom_id": "bom-001",
-        "name": "Gold Ring BOM",
-        "output_item": "ring-gold",
-        "inputs": [{"item_id": "gold-bar", "qty": 5}],
-        "outputs": [{"item_id": "ring-gold", "qty": 1}],
-        "is_active": True,
-    }
-    r = await client.post("/companies/me/boms", json=bom_payload, headers=headers)
-    assert r.status_code == 200
-    assert r.json()["bom_id"] == "bom-001"
-
-    # Get by id
-    r = await client.get("/companies/me/boms/bom-001", headers=headers)
-    assert r.status_code == 200
-    assert r.json()["name"] == "Gold Ring BOM"
-
-    # Patch
-    r = await client.patch(
-        "/companies/me/boms/bom-001",
-        json={"name": "Gold Ring BOM v2"},
-        headers=headers,
-    )
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-    # Delete (soft)
-    r = await client.delete("/companies/me/boms/bom-001", headers=headers)
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-
-@pytest.mark.asyncio
-async def test_bom_duplicate_409(client):
-    headers = await _register(client, "bom_409")
-    payload = {"bom_id": "bom-dup", "name": "Dup BOM", "inputs": [], "outputs": []}
-    await client.post("/companies/me/boms", json=payload, headers=headers)
-    r = await client.post("/companies/me/boms", json=payload, headers=headers)
-    assert r.status_code == 409
-
-
-@pytest.mark.asyncio
-async def test_bom_get_not_found(client):
-    headers = await _register(client, "bom_get_404")
-    r = await client.get("/companies/me/boms/nonexistent", headers=headers)
-    assert r.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_bom_patch_not_found(client):
-    headers = await _register(client, "bom_patch_404")
-    r = await client.patch("/companies/me/boms/nonexistent", json={"name": "x"}, headers=headers)
-    assert r.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_bom_delete_not_found(client):
-    headers = await _register(client, "bom_del_404")
-    r = await client.delete("/companies/me/boms/nonexistent", headers=headers)
-    assert r.status_code == 404
+# The /companies/me/boms CRUD API was retired (recipes live on the inventory item); its removal
+# is covered by test_bom_removed.py.
 
 
 # ── Taxes batch import ────────────────────────────────────────────────────────

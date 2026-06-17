@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 from __future__ import annotations
 
@@ -34,6 +34,24 @@ class Location(Base):
     type: Mapped[str] = mapped_column(String(64), nullable=False)
     address: Mapped[dict | None] = mapped_column(sa.JSON, nullable=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+
+
+class WorkCenter(Base):
+    """An operational manufacturing station (Bench, Polishing, Oven) - master data like Location.
+
+    Optionally carries a WIP location, an hourly labor rate and a capacity (capacity is reserved for
+    later scheduling work). Runs may reference a work centre via work_center_id.
+    """
+    __tablename__ = "work_centers"
+    __table_args__ = (UniqueConstraint("company_id", "name", name="uq_work_center_company_name"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(sa.Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("companies.id"), nullable=False)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    wip_location_id: Mapped[uuid.UUID | None] = mapped_column(sa.Uuid(as_uuid=True), nullable=True)
+    labor_rate: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
+    capacity: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
 
 

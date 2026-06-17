@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """labels: DB persistence, custom dims, barcode/QR field types
 
 Revision ID: j4k5l6m7n8o9

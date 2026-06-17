@@ -26,7 +26,7 @@ def bulk_item_ids(api):
 
 def test_inventory_list_has_checkboxes(page, ui_server, bulk_item_ids):
     """BULK sanity: Inventory list renders with row checkboxes and select-all."""
-    page.goto(f"{ui_server}/inventory", wait_until="networkidle")
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body
     # Row checkboxes (cls="row-select") are rendered server-side
@@ -37,7 +37,7 @@ def test_inventory_list_has_checkboxes(page, ui_server, bulk_item_ids):
 
 def test_bulk_select_all(page, ui_server, bulk_item_ids):
     """BULK-01: Click #select-all-rows → all row checkboxes checked → bulk toolbar activates."""
-    page.goto(f"{ui_server}/inventory", wait_until="networkidle")
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
 
     select_all = page.locator("#select-all-rows")
     assert select_all.count() > 0, "No select-all checkbox found (#select-all-rows)"
@@ -58,7 +58,7 @@ def test_bulk_select_all(page, ui_server, bulk_item_ids):
 
 def test_bulk_transfer_modal(page, ui_server, bulk_item_ids):
     """BULK-03: Select rows → bulk toolbar activates → action dropdown present."""
-    page.goto(f"{ui_server}/inventory", wait_until="networkidle")
+    page.goto(f"{ui_server}/inventory", wait_until="domcontentloaded")
 
     checkboxes = page.locator("input.row-select")
     assert checkboxes.count() >= 2, f"Expected >=2 row checkboxes, got {checkboxes.count()}"
@@ -73,10 +73,10 @@ def test_bulk_transfer_modal(page, ui_server, bulk_item_ids):
     assert "Internal Server Error" not in body
     assert "Traceback" not in body
 
-    # Action dropdown is present with Transfer, Delete options
+    # Action dropdown is present with the inventory bulk actions
     action_select = page.locator("#bulk-action-select")
     assert action_select.count() > 0, "No action select dropdown in bulk toolbar"
-    # "Transfer" is an option
     options_text = page.locator("#bulk-action-select option").all_inner_texts()
     assert "Transfer" in options_text, f"Transfer option not found. Got: {options_text}"
-    assert "Delete" in options_text, f"Delete option not found. Got: {options_text}"
+    # Inventory items are archived/disposed rather than hard-deleted.
+    assert "Archive / Dispose" in options_text, f"Archive/Dispose option not found. Got: {options_text}"

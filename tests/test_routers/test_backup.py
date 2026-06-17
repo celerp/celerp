@@ -19,32 +19,18 @@ import os
 import secrets
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.config import settings
 import celerp.gateway.state as gw_state
 from celerp.db import get_session
 from celerp.main import app
-from celerp.models.base import Base
 
-_DB_URL = "sqlite+aiosqlite:///:memory:"
-
-
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    engine = create_async_engine(_DB_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as sess:
-        yield sess
-    await engine.dispose()
+# `session` (Postgres, rollback-isolated) comes from the root conftest.
 
 
 @pytest_asyncio.fixture
@@ -262,8 +248,23 @@ async def test_restore_failure(auth_client, monkeypatch):
 # ── Router registration (regression: ImportError must not silence registration) ─
 
 def test_backup_routes_are_registered():
-    """Regression: /backup/* routes must be present on the app."""
-    registered = {route.path for route in app.routes}
+    """Regression: the backup router must be registered on the app (ImportError must not silence it).
+
+    `celerp/main.py` puts default_modules/celerp-backup on sys.path at import time and calls
+    `celerp_backup.setup.setup_api_routes(app)` directly (backup is "core-folded": wired at app
+    construction, not via the module loader — see celerp.modules.loader._CORE_FOLDED). So importing
+    `celerp.main.app` exercises the real registration path.
+
+    Enumerate registered paths via the OpenAPI schema — FastAPI's own route walker — NOT by crawling
+    `app.routes`. Starlette >= 1.3 represents `include_router(...)` as a single opaque
+    `_IncludedRouter` object in `app.routes` whose sub-routes a structural crawl cannot reach (it
+    sees only top-level `Route`s/`Mount`s). CI installs that newer Starlette (`pyproject` pins only
+    `fastapi>=0.115`), so crawling the route table reported an almost-empty set there, while the
+    locally-pinned Starlette 1.0.0 — which inlines routes as `Route` — passed. `app.openapi()`
+    resolves every registered path regardless of Starlette's internal representation."""
+    from celerp.main import app as _app
+
+    registered = set(_app.openapi().get("paths", {}).keys())
     assert "/backup/trigger" in registered
     assert "/backup/list" in registered
     assert "/backup/restore/{backup_id}" in registered

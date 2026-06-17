@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """UI route coverage for celerp-subscriptions (ui/routes/subscriptions.py)."""
 from __future__ import annotations
 

@@ -11,31 +11,17 @@ import uuid
 from unittest.mock import AsyncMock, patch
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from celerp.db import get_session
 from celerp.main import app
-from celerp.models.base import Base
 import celerp.gateway.state as gw_state
 
-_DB_URL = "sqlite+aiosqlite:///:memory:"
-
-
-@pytest_asyncio.fixture
-async def session() -> AsyncSession:
-    engine = create_async_engine(_DB_URL)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    factory = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-    async with factory() as sess:
-        yield sess
-    await engine.dispose()
+# `session` (Postgres, rollback-isolated) comes from the root conftest.
 
 
 @pytest_asyncio.fixture
@@ -188,8 +174,9 @@ async def test_stream_endpoint_exists(auth_client):
     Functional SSE tests are in test_sse.py (unit level).
     """
     c, headers = auth_client
-    # Verify the route is registered by checking a non-streaming endpoint still works
-    # (The SSE test is covered in test_sse.py at the unit level)
-    from celerp.main import app as _app
-    route_paths = [r.path for r in _app.routes if hasattr(r, "path")]
+    # Verify the SSE route on its OWNING router (the source of truth). Asserting against the
+    # process-global celerp.main.app is fragile under xdist: a worker's test ordering + the suite's
+    # sys.modules surgery can leave the shared app's route table in a different state than at import.
+    from celerp.routers.notifications import router as notif_router
+    route_paths = [r.path for r in notif_router.routes]
     assert "/notifications/stream" in route_paths

@@ -3,11 +3,12 @@
 """celerp-manufacturing — Manufacturing orders and BOM module for Celerp.
 
 Provides:
-- Bill of Materials (BOM) management
-- Manufacturing order lifecycle (create → start → consume → complete/cancel)
-- Projection handler for mfg.* and bom.* event prefixes
-- Sidebar nav, settings tab, bulk/item action slots
-- Auto journal entry on order completion
+- Manufacturing recipes attached to inventory items (cost roll-up, where-used)
+- Production run lifecycle (planned -> in_progress -> on_hold -> completed/cancelled),
+  with issue (components out) / receive (finished goods in) and one-tap build
+- Projection handler for the mfg.* event prefix
+- Sidebar nav (the Manufacturing group)
+- Auto journal entry on run completion
 """
 
 PLUGIN_MANIFEST = {
@@ -26,24 +27,54 @@ PLUGIN_MANIFEST = {
 
     # ── Extension slots ───────────────────────────────────────────────────────
     "slots": {
-        "nav": {
-            "group": "Inventory",
-            "icon": "🏭",
-            "label": "Manufacturing",
-            "label_key": "nav.manufacturing",
-            "href": "/manufacturing",
-            "order": 40,
-            "min_role": "operator",
-        },
+        # Ordered 35-37 so the group sorts immediately after the Inventory group (orders 30-34)
+        # and before Contacts (order 40). Work Centers is configured in Manufacturing Settings.
+        # Demand Planning (what to make) -> Work In Progress (work orders on the floor) -> Stock Orders
+        # (create internal build-for-stock demand): the natural left-to-right production flow.
+        "nav": [
+            {
+                "group": "Manufacturing",
+                "key": "manufacturing",
+                "icon": "📊",
+                "label": "Demand Planning",
+                "href": "/manufacturing",
+                "order": 35,
+                "min_role": "operator",
+                # Gear-link on the group header -> Manufacturing settings.
+                "settings_href": "/settings/manufacturing",
+            },
+            {
+                "group": "Manufacturing",
+                "key": "work_in_progress",
+                "icon": "🏭",
+                "label": "Work In Progress",
+                "href": "/manufacturing/production",
+                "order": 36,
+                "min_role": "operator",
+            },
+            {
+                "group": "Manufacturing",
+                "key": "production_orders",
+                "icon": "📋",
+                "label": "Stock Orders",
+                "href": "/docs?type=production_order",
+                "order": 37,
+                "min_role": "operator",
+            },
+        ],
         "projection_handler": [
             {
                 "prefix": "mfg.",
                 "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
             },
-            {
-                "prefix": "bom.",
-                "handler": "celerp_manufacturing.projection_handler:apply_manufacturing_event",
-            },
+            # Historical bom.* events (the BOM entity was retired; recipes live on the item) are
+            # not routed here anymore — they fall through to the engine's default merge handler on
+            # replay, so projections still rebuild cleanly without a dead branch to maintain.
+        ],
+        # Auto-create work orders when an order is finalized (gated by the company setting
+        # auto_create_work_orders; off by default, on for make-on-order verticals like restaurants).
+        "doc_finalize_hook": [
+            {"handler": "celerp_manufacturing.routes:auto_create_work_orders_on_finalize"},
         ],
     },
 

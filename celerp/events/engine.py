@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 from __future__ import annotations
 
@@ -59,23 +59,32 @@ async def emit_event(session, **kwargs) -> LedgerEntry:
     await _check_period_lock(session, kwargs.get("company_id"), kwargs.get("data", {}))
 
     entry = LedgerEntry(**kwargs)
-    session.add(entry)
 
     try:
-        await session.flush()
+        # Insert inside a SAVEPOINT so a duplicate-idempotency collision only
+        # rolls back this insert — NOT the caller's whole transaction. (A bare
+        # session.rollback() here would silently undo everything the caller
+        # already emitted, e.g. the doc.finalized event before its auto-JE.)
+        async with session.begin_nested():
+            session.add(entry)
+            await session.flush()
     except IntegrityError:
-        await session.rollback()
-        row = (await session.execute(text("SELECT id FROM ledger WHERE idempotency_key=:k"), {"k": kwargs["idempotency_key"]})).first()
+        # Idempotency is per-company, so dedup within this company only.
+        row = (
+            await session.execute(
+                text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
+                {"cid": str(kwargs["company_id"]), "k": kwargs["idempotency_key"]},
+            )
+        ).first()
         if row is None:
             raise
         return await session.get(LedgerEntry, row[0])
 
     await ProjectionEngine.apply_event(session, entry)
 
-    # Postgres-only notification (skipped for SQLite tests).
+    # Notify listeners (LISTEN/NOTIFY) that an event landed.
     try:
-        if session.bind and session.bind.dialect.name == "postgresql":
-            await session.execute(text("SELECT pg_notify('events', :payload)"), {"payload": str(entry.id)})
+        await session.execute(text("SELECT pg_notify('events', :payload)"), {"payload": str(entry.id)})
     except Exception:
         # Deterministic: do not fail event emission due to notification issues.
         pass

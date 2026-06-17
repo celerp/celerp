@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Data Universal Limited
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: LicenseRef-Proprietary
 """Phone number input component using intl-tel-input.
 
 Single source of truth for phone editing across the app:

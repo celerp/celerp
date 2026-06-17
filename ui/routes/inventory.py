@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import io
+import json
 import logging
 import re
 from urllib.parse import urlencode
@@ -20,9 +21,11 @@ import ui.api_client as api
 from ui.api_client import APIError, _flatten_item_attrs
 from ui.components.files import _files_section as _shared_files_section
 from ui.components.shell import base_shell, page_header
-from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, INACTIVE_ITEM_STATUSES
+from ui.components.table import data_table, search_bar, pagination, EMPTY, breadcrumbs, status_cards, empty_state_cta, add_new_option, searchable_select, currency_symbol, INACTIVE_ITEM_STATUSES, SERVER_FILTER_JS, filter_th, sortable_th, table_pager, COLUMN_FILTER_JS, ENHANCED_TABLE_JS, date_range_filter
 from ui.config import get_token as _token, get_role as _get_role, API_BASE as _api_base
 from celerp.services.auth import ROLE_LEVELS as _ROLE_LEVELS
+from celerp.events.schemas import _WORKFLOW_TIME_UNITS
+from ui.routes.documents import _ICON_PRINT as _ICON_PRINT_SVG
 from ui.i18n import t, get_lang
 from celerp.services.units import is_weight_unit, is_pieces_unit
 
@@ -163,6 +166,11 @@ function bulkSplitMotherQtyChanged(input) {
     var mw = form.querySelector('.mother-weight-display');
     if (mw) mw.textContent = motherQty.toFixed(weightDecimals);
   }
+  // For piece-unit items qty IS pieces — keep mother-pieces-display in sync.
+  if (form.dataset.sellByType === 'pieces') {
+    var mp = form.querySelector('.mother-pieces-display');
+    if (mp) mp.textContent = String(Math.round(motherQty));
+  }
   _updateSplitTotals(form);
 }
 function bulkSplitChildQtyChanged(input) {
@@ -184,7 +192,7 @@ function bulkSplitChildQtyChanged(input) {
   }
   input.value = childQty.toFixed(decimals);
   // For piece-unit items qty and pieces are the same — keep them in sync.
-  if (form.dataset.sellBy === 'piece') {
+  if (form.dataset.sellByType === 'pieces') {
     var piecesInput = form.querySelector('[name="child_pieces"]');
     if (piecesInput) { piecesInput.value = Math.round(childQty); }
     var childPiecesDisplay = form.querySelector('.child-pieces-display');
@@ -359,6 +367,9 @@ def _parse_params(request: Request) -> dict:
         "status": q.get("status", ""),
         "category": q.get("category", ""),
         "inventory_type": q.get("inventory_type", ""),
+        "location_id": q.get("location_id", ""),  # column-filter funnel (csv of location ids)
+        # Category-attribute column funnels: every ?attr.<key>=csv pair, keyed by <key>.
+        "attr_filters": {k[len("attr."):]: v for k, v in q.items() if k.startswith("attr.") and v},
         "sort": q.get("sort", ""),
         "dir": q.get("dir", "desc"),
         "per_page": max(1, per_page),
@@ -368,9 +379,12 @@ def _parse_params(request: Request) -> dict:
 
 def _base_state(p: dict, include_page: bool = False) -> dict:
     state = {}
-    for k in ("q", "skus", "status", "category", "inventory_type", "sort", "dir"):
+    for k in ("q", "skus", "status", "category", "inventory_type", "location_id", "sort", "dir"):
         if p.get(k):
             state[k] = p[k]
+    for akey, aval in (p.get("attr_filters") or {}).items():
+        if aval:
+            state[f"attr.{akey}"] = aval
     if p.get("per_page") and p["per_page"] != _DEFAULT_PER_PAGE:
         state["per_page"] = str(p["per_page"])
     if p.get("cols"):
@@ -378,6 +392,34 @@ def _base_state(p: dict, include_page: bool = False) -> dict:
     if include_page and p.get("page", 1) > 1:
         state["page"] = str(p["page"])
     return state
+
+
+def _inventory_column_filters(eff_schema: list[dict], global_schema: list[dict], locations: list[dict],
+                              attribute_facets: dict, p: dict) -> dict | None:
+    """Server-backed column funnels for the inventory table: Location plus every category-specific
+    attribute that has distinct values. Each funnel reloads with ?param=csv (full-dataset filter)."""
+    global_keys = {f["key"] for f in global_schema}
+    attr_filters = p.get("attr_filters") or {}
+    filters: dict = {}
+    loc_opts = [(loc.get("id") or loc.get("location_id"), loc.get("name"))
+                for loc in locations if (loc.get("id") or loc.get("location_id"))]
+    if loc_opts:
+        filters["location_name"] = {
+            "param": "location_id", "options": loc_opts,
+            "selected": [s for s in (p.get("location_id") or "").split(",") if s],
+        }
+    for f in eff_schema:
+        key = f["key"]
+        if key in global_keys:
+            continue  # base fields keep their existing filters (status cards, category/type tabs)
+        vals = attribute_facets.get(key)
+        if not vals:
+            continue
+        filters[key] = {
+            "param": f"attr.{key}", "options": [(v, v) for v in vals],
+            "selected": [s for s in (attr_filters.get(key) or "").split(",") if s],
+        }
+    return filters or None
 
 
 async def _inventory_content(
@@ -410,6 +452,11 @@ async def _inventory_content(
             params["category"] = p["category"]
         if p.get("inventory_type"):
             params["inventory_type"] = p["inventory_type"]
+        if p.get("location_id"):
+            params["location_id"] = p["location_id"]
+        for akey, aval in (p.get("attr_filters") or {}).items():
+            if aval:
+                params[f"attr.{akey}"] = aval
         if p["sort"]:
             params["sort"] = p["sort"]
             params["dir"] = p["dir"]
@@ -418,6 +465,7 @@ async def _inventory_content(
             api.get_units(token),
         )
         items = items_resp.get("items", [])
+        attribute_facets = items_resp.get("attribute_facets", {})
         unit_names: list[str] = [u["name"] for u in units_resp if u.get("name")]
         units_map: dict[str, dict] = {u["name"]: u for u in units_resp if u.get("name")}
         try:
@@ -425,7 +473,7 @@ async def _inventory_content(
         except Exception:
             category_label_map = {}
     except APIError:
-        valuation, items, unit_names, units_map, category_label_map = {}, [], [], {}, {}
+        valuation, items, unit_names, units_map, category_label_map, attribute_facets = {}, [], [], {}, {}, {}
 
     currency = company.get("currency")
     vertical = company.get("settings", {}).get("vertical", "") if isinstance(company.get("settings"), dict) else ""
@@ -450,7 +498,7 @@ async def _inventory_content(
     total_items = valuation.get("item_count", 0)
 
     return Div(
-        _category_tabs(category_counts, p, total_scoped=total_scoped),
+        _category_tabs(category_counts, p, total_scoped=total_scoped, label_map=category_label_map),
         _inventory_type_tabs(p),
         _valuation_bar(valuation, currency, lang, status=p.get("status", "")),
         _inventory_status_cards(count_by_status, p.get("status", ""), vertical, p, lang=lang),
@@ -473,8 +521,10 @@ async def _inventory_content(
             auto_hide_empty=False,
             cell_renderers=_inventory_cell_renderers(eff_schema, unit_names, units_map, category_label_map, currency=currency),
             hidden_fields=set(_PAIRED_TABLE.values()),
+            column_filters=_inventory_column_filters(eff_schema, schema, locations, attribute_facets, p),
         ) if items else _inventory_empty_state(p),
         pagination(p["page"], valuation.get("item_count", 0), p["per_page"], "/inventory", extra_params),
+        Script(SERVER_FILTER_JS),
         Div(id="modal-container"),
         id="inventory-content",
     )
@@ -935,6 +985,13 @@ def setup_routes(app):
 
         location_map: dict[str, str] = {l["name"]: l["id"] for l in existing_locs}
 
+        # Company currency for unit-price (rate) derivation; fetched once for the whole import.
+        try:
+            _imp_co = await api.get_company(token)
+            _imp_currency = (_imp_co.get("currency") or "").strip() or "USD"
+        except Exception:
+            _imp_currency = "USD"
+
         # Determine default location (used when location_name is blank/absent)
         default_location_id: str | None = None
         if len(existing_locs) == 1:
@@ -1093,8 +1150,11 @@ def setup_routes(app):
                         # cost_total is the primitive; store directly (no back-calculation)
                         data["cost_total"] = total_val
                         continue
-                    # qty=0 or missing: treat as 1 (total = unit price for a single item)
-                    data[unit_key] = round(total_val / (qty or 1), 10)
+                    # Derive the unit price (a rate) at the fewest decimals that reconcile the entered
+                    # total to the cent - same helper as the interactive "set from total" edit (DRY).
+                    # qty=0 or missing: treat as 1 (total = unit price for a single item).
+                    from celerp.services.money import unit_price_from_total, to_stored_float
+                    data[unit_key] = to_stored_float(unit_price_from_total(total_val, qty or 1, _imp_currency))
                 elif col_key.endswith("_price") and _flt(col_key) is not None:
                     data[col_key] = _flt(col_key)
             if _price_errors:
@@ -1198,9 +1258,21 @@ def setup_routes(app):
             return Response("", status_code=500)
         return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{item_id}"})
 
-    # /inventory/new: redirect for any bookmarked links
+    # /inventory/new: ?type=component creates a blank component item and opens it
+    # (target of the "+ Add new component" picker option); otherwise redirect to the list.
     @app.get("/inventory/new")
     async def inventory_new_redirect(request: Request):
+        if request.query_params.get("type") == "component":
+            token = _token(request)
+            if not token:
+                return RedirectResponse("/login", status_code=302)
+            try:
+                result = await api.create_item(token, {"name": "New Component", "quantity": 0,
+                                                       "sell_by": "piece", "inventory_type": "component"})
+                item_id = result.get("id", result.get("entity_id", ""))
+                return RedirectResponse(f"/inventory/{item_id}", status_code=302)
+            except APIError as e:
+                logger.warning("Create component item failed: %s", e.detail)
         return RedirectResponse("/inventory", status_code=302)
 
     @app.get("/inventory/{entity_id}")
@@ -1263,6 +1335,8 @@ def setup_routes(app):
             page_header(
                 item.get("name") or item.get("sku") or entity_id,
                 Div(
+                    A(NotStr(_ICON_PRINT_SVG), href=f"/inventory/{entity_id}/worksheet/print", target="_blank",
+                      cls="btn btn--ghost btn--icon", title="Print production worksheet"),
                     _print_label_dropdown(entity_id),
                     A(t("inv.back_to_inventory"), href="/inventory", cls="btn btn--secondary"),
                     cls="header-actions",
@@ -1311,6 +1385,340 @@ function celerpPrintLabel(entityId, templateId) {
             for tpl in templates
         ]
         return Div(*items, Script(print_js))
+
+    async def _recipe_section_response(token: str, entity_id: str, show_all: bool = False,
+                                       flash_msg: str | None = None, flash_kind: str = "success"):
+        """Fetch item + item list + currency and render the Manufacturing section."""
+        item, company = await asyncio.gather(api.get_item(token, entity_id), api.get_company(token))
+        items = (await api.list_items(token, {"limit": 1000})).get("items", [])
+        return _recipe_section(entity_id, item, items, currency_symbol(company.get("currency") or ""),
+                               show_all=show_all, flash_msg=flash_msg, flash_kind=flash_kind)
+
+    def _recipe_saved_status(msg: str = "Saved ✓", kind: str = "saved"):
+        return Div(msg, id="recipe-save-status", cls=f"recipe-save-status hint {kind}", hx_swap_oob="true")
+
+    @app.get("/api/items/{entity_id}/recipe-section")
+    async def recipe_section(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        # The self-refresh (recipeSaved) includes #recipe-form, so the picker scope survives.
+        show_all = str(request.query_params.get("show_all_components", "")) in ("on", "true", "1")
+        try:
+            return await _recipe_section_response(token, entity_id, show_all=show_all)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+
+    async def _production_block_response(token: str, entity_id: str, flash_msg: str | None = None,
+                                         flash_kind: str = "success"):
+        item, company, hub = await asyncio.gather(
+            api.get_item(token, entity_id), api.get_company(token),
+            api.manufacturing_item_hub(token, entity_id),
+        )
+        cur = currency_symbol(company.get("currency") or (company.get("settings") or {}).get("currency") or "")
+        return _production_block(entity_id, item, hub, cur, flash_msg=flash_msg, flash_kind=flash_kind)
+
+    @app.get("/api/items/{entity_id}/production-block")
+    async def production_block(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            return await _production_block_response(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="production-block")
+
+    _RUN_ACTIONS = {
+        "start": api.start_mfg_order, "complete": lambda tok, rid: api.complete_mfg_order(tok, rid),
+        "hold": lambda tok, rid: api.hold_mfg_order(tok, rid), "resume": api.resume_mfg_order,
+        "cancel": lambda tok, rid: api.cancel_mfg_order(tok, rid),
+    }
+
+    @app.post("/api/items/{entity_id}/runs/{run_id}/act")
+    async def run_action(request: Request, entity_id: str, run_id: str):
+        """Advance a work order via its Action dropdown (action in the form body); refresh the block."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        fn = _RUN_ACTIONS.get(str(form.get("action") or ""))
+        if fn is None:
+            return await _production_block_response(token, entity_id)
+        try:
+            await fn(token, run_id)
+            return await _production_block_response(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return await _production_block_response(token, entity_id, flash_msg=e.detail, flash_kind="error")
+
+    @app.post("/api/items/{entity_id}/recipe-section")
+    async def recipe_section_edit(request: Request, entity_id: str):
+        """Structural recipe change (add/remove/clear row): persist immediately, re-render."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        show_all = str(form.get("show_all_components", "")) in ("on", "true", "1")
+        action = request.query_params.get("action", "")
+        try:
+            index = int(request.query_params.get("index", "-1"))
+        except ValueError:
+            index = -1
+        try:
+            item = await api.get_item(token, entity_id)
+            recipe = item.get("recipe") or {"output_qty": 1, "components": [], "labor": [], "overhead": []}
+            changed = True
+            if action == "add_component":
+                new_id = str(form.get("comp_new", "")).strip()
+                if new_id.startswith("__scope__"):
+                    # In-dropdown scope toggle for this picker: no data change, just re-render.
+                    show_all = new_id == "__scope__all"
+                    changed = False
+                else:
+                    changed = bool(new_id) and new_id not in {c.get("item_id") for c in recipe["components"]}
+                    if changed:
+                        recipe["components"].append({"item_id": new_id, "quantity": 1})
+            elif action == "add_labor":
+                # The whole line is filled in the add-row, so commit all fields at once.
+                new_op = str(form.get("labor_new_op", "")).strip()
+                changed = bool(new_op)
+                if changed:
+                    kind = str(form.get("labor_new_kind") or "hourly")
+                    # Fixed uses the flat amount; rate-based lines derive cost from hours x rate,
+                    # so amount is 0 (the add-row's Total there is just a read-only preview).
+                    amount = _num_field(form.get("labor_new_amount")) if kind == "fixed" else 0.0
+                    recipe["labor"].append({
+                        "operation": new_op, "kind": kind,
+                        "hours": _num_field(form.get("labor_new_hours")),
+                        "rate": _num_field(form.get("labor_new_rate")),
+                        "amount": amount,
+                    })
+            elif action == "add_overhead":
+                new_desc = str(form.get("oh_new_desc", "")).strip()
+                changed = bool(new_desc)
+                if changed:
+                    recipe["overhead"].append({"description": new_desc, "amount": _num_field(form.get("oh_new_amount"))})
+            elif action == "remove_component" and 0 <= index < len(recipe.get("components", [])):
+                recipe["components"].pop(index)
+            elif action == "remove_labor" and 0 <= index < len(recipe.get("labor", [])):
+                recipe["labor"].pop(index)
+            elif action == "remove_overhead" and 0 <= index < len(recipe.get("overhead", [])):
+                recipe["overhead"].pop(index)
+            elif action == "clear":
+                recipe = {"output_qty": 1, "components": [], "labor": [], "overhead": []}
+            else:  # "noop" (Show-all toggle) or an out-of-range index: render only
+                changed = False
+            if changed:
+                await api.set_item_recipe(token, entity_id, _recipe_api_payload(recipe))
+            return await _recipe_section_response(token, entity_id, show_all=show_all)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            try:
+                return await _recipe_section_response(token, entity_id, show_all=show_all,
+                                                      flash_msg=e.detail, flash_kind="error")
+            except APIError:
+                return Div(P(e.detail, cls="cell-error"), id="recipe-section")
+
+    @app.post("/api/items/{entity_id}/recipe-autosave")
+    async def recipe_autosave(request: Request, entity_id: str):
+        """Persist the output quantity on change, then fire recipeSaved to re-render the section."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        form = await request.form()
+        try:
+            output_qty = float(str(form.get("output_qty", "1")) or 1)
+        except ValueError:
+            return _recipe_saved_status("Not saved: output quantity must be a number.", "error")
+        try:
+            item = await api.get_item(token, entity_id)
+            recipe = item.get("recipe") or {"output_qty": 1, "components": [], "labor": [], "overhead": []}
+            recipe["output_qty"] = output_qty
+            await api.set_item_recipe(token, entity_id, _recipe_api_payload(recipe))
+            # Body is ignored (the output_qty input swaps nothing); the trigger re-renders the section.
+            return "", HttpHeader("HX-Trigger", "recipeSaved")
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return _recipe_saved_status(f"Not saved: {e.detail}", "error")
+
+    @app.get("/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/edit")
+    async def recipe_cell_edit(request: Request, entity_id: str, section: str, idx: int, field: str):
+        """Edit mode for one recipe value: the system-standard editable cell."""
+        from ui.components.table import editable_cell
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        cell_type = _RECIPE_CELLS.get(section, {}).get(field)
+        if cell_type is None:
+            return P("Unknown recipe field", cls="cell-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(e.detail, cls="cell-error")
+        rows_ = (item.get("recipe") or {}).get(section, [])
+        value = rows_[idx].get(field, "") if 0 <= idx < len(rows_) else ""
+        return editable_cell(
+            entity_id=entity_id, field=f"recipe__{section}__{idx}__{field}", value=value,
+            cell_type=cell_type,
+            options=list(_LABOR_KIND_LABELS) if field == "kind" else None,
+            restore_url=f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/display",
+            label_map=_LABOR_KIND_LABELS if field == "kind" else None,
+        )
+
+    @app.get("/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/display")
+    async def recipe_cell_display(request: Request, entity_id: str, section: str, idx: int, field: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if _RECIPE_CELLS.get(section, {}).get(field) is None:
+            return P("Unknown recipe field", cls="cell-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(e.detail, cls="cell-error")
+        rows_ = (item.get("recipe") or {}).get(section, [])
+        value = rows_[idx].get(field, "") if 0 <= idx < len(rows_) else ""
+        return _recipe_cell(entity_id, section, idx, field, value)
+
+    # ── Production workflow (ordered build steps) ────────────────────────────
+    async def _workflow_section_response(token: str, entity_id: str):
+        item = await api.get_item(token, entity_id)
+        return _workflow_section(entity_id, item)
+
+    @app.get("/api/items/{entity_id}/workflow-section")
+    async def workflow_section(request: Request, entity_id: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            return await _workflow_section_response(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="workflow-section")
+
+    @app.post("/api/items/{entity_id}/workflow-section")
+    async def workflow_section_edit(request: Request, entity_id: str):
+        """Structural workflow change (add / remove / reorder / set or upload a step reference)."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        action = request.query_params.get("action", "")
+        form = await request.form()
+        try:
+            index = int(request.query_params.get("index", "-1"))
+        except ValueError:
+            index = -1
+        try:
+            item = await api.get_item(token, entity_id)
+            steps = list((item.get("workflow") or {}).get("steps") or [])
+            if action == "add":
+                steps.append({"station": "", "instructions": "",
+                              "time_value": 0, "time_unit": "min", "wait": False})
+            elif action == "remove" and 0 <= index < len(steps):
+                steps.pop(index)
+            elif action == "reorder":
+                order = [s for s in str(form.get("order", "")).split(",") if s]
+                by_id = {s.get("id"): s for s in steps}
+                seen = set(order)
+                steps = [by_id[i] for i in order if i in by_id] + [s for s in steps if s.get("id") not in seen]
+            elif action == "clear_ref" and 0 <= index < len(steps):
+                steps[index]["ref_file_id"] = None
+            elif action == "upload_ref" and 0 <= index < len(steps):
+                up = form.get("file")
+                if up is not None:
+                    meta = await api.upload_item_file(token, entity_id, up)
+                    steps[index]["ref_file_id"] = meta.get("file_id") or meta.get("id")
+            await api.set_item_workflow(token, entity_id, {"steps": steps})
+            return await _workflow_section_response(token, entity_id)
+        except APIError as e:
+            if e.status == 401:
+                return P(t("error.unauthorized"), cls="cell-error")
+            return Div(P(e.detail, cls="cell-error"), id="workflow-section")
+
+    @app.get("/api/items/{entity_id}/workflow-cell/{idx}/{field}/edit")
+    async def workflow_cell_edit(request: Request, entity_id: str, idx: int, field: str):
+        from ui.components.table import editable_cell
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        cell_type = _WORKFLOW_CELLS.get(field)
+        if cell_type is None:
+            return P("Unknown workflow field", cls="cell-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(e.detail, cls="cell-error")
+        steps = (item.get("workflow") or {}).get("steps") or []
+        value = steps[idx].get(field, "") if 0 <= idx < len(steps) else ""
+        options = list(_WORKFLOW_TIME_UNITS) if field == "time_unit" else None
+        allow_custom = False
+        if field == "station":
+            # Dropdown of the company's work centers, with an add-new option (GDR §2i searchable).
+            try:
+                centers = (await api.list_work_centers(token)).get("items", [])
+            except APIError:
+                centers = []
+            options = [c.get("name") for c in centers if c.get("name")] + [
+                ("__new__:/settings/manufacturing#work-centers", "+ Add new work center")]
+            allow_custom = True
+        return editable_cell(
+            entity_id=entity_id, field=f"workflow__{idx}__{field}", value=value, cell_type=cell_type,
+            options=options, allow_custom=allow_custom,
+            restore_url=f"/api/items/{entity_id}/workflow-cell/{idx}/{field}/display",
+        )
+
+    @app.get("/api/items/{entity_id}/workflow-cell/{idx}/{field}/display")
+    async def workflow_cell_display(request: Request, entity_id: str, idx: int, field: str):
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if _WORKFLOW_CELLS.get(field) is None:
+            return P("Unknown workflow field", cls="cell-error")
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(e.detail, cls="cell-error")
+        steps = (item.get("workflow") or {}).get("steps") or []
+        value = steps[idx].get(field, "") if 0 <= idx < len(steps) else ""
+        return _workflow_cell(entity_id, idx, field, value)
+
+    @app.get("/inventory/{entity_id}/worksheet/print")
+    async def worksheet_print(request: Request, entity_id: str):
+        """Standalone printable production worksheet (auto window.print(); user saves as PDF)."""
+        from datetime import datetime, timezone
+
+        from fasthtml.common import to_xml
+        from starlette.responses import HTMLResponse
+        token = _token(request)
+        if not token:
+            return RedirectResponse("/login", status_code=302)
+        try:
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return HTMLResponse(to_xml(_worksheet_print_view(entity_id, item, today)))
+
+    @app.post("/api/items/{entity_id}/gallery-hero/{file_id}")
+    async def gallery_set_hero(request: Request, entity_id: str, file_id: str):
+        """Set a file as the hero image by clicking its gallery thumbnail; re-render the gallery."""
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            await api.set_item_file_hero(token, entity_id, file_id)
+            item = await api.get_item(token, entity_id)
+        except APIError as e:
+            return P(str(e.detail), cls="cell-error")
+        return _workflow_gallery(entity_id, item)
 
     @app.get("/api/items/{entity_id}/field/{field}/edit")
     async def field_edit_cell(request: Request, entity_id: str, field: str):
@@ -1365,6 +1773,8 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        elif field == "inventory_type":
+            label_map = _INVENTORY_TYPE_LABELS
         # location_name: render a select cell with locations + "Add new" as last option
         if field == "location_name":
             loc_names = [loc.get("name", "") for loc in locations if loc.get("name")]
@@ -1425,6 +1835,8 @@ function celerpPrintLabel(entityId, templateId) {
                 label_map = await api.get_category_display_names(token)
             except Exception:
                 label_map = None
+        elif field == "inventory_type":
+            label_map = _INVENTORY_TYPE_LABELS
         # Virtual total fields store no value in item state; derive from primitives
         virtual_fields = {f["key"]: f for f in schema if f.get("virtual")}
         if field in virtual_fields:
@@ -1460,6 +1872,96 @@ function celerpPrintLabel(entityId, templateId) {
             return P(t("error.unauthorized"), cls="cell-error")
         form = await request.form()
         value: str | float | bool = str(form.get("value", ""))
+
+        # Workflow cells (field = workflow__{idx}__{name}): patch one value on the persisted
+        # workflow and swap ONLY that cell back. No section reload — the running total is
+        # recomputed client-side (WORKFLOW_JS) so editing a unit never reloads the page.
+        if field.startswith("workflow__"):
+            from ui.components.table import editable_cell
+            try:
+                _, idx_s, fname = field.split("__", 2)
+                idx = int(idx_s)
+            except ValueError:
+                return P("Bad workflow field", cls="cell-error")
+            restore_url = f"/api/items/{entity_id}/workflow-cell/{idx}/{fname}/display"
+            cell_type = _WORKFLOW_CELLS.get(fname)
+            if cell_type is None:
+                return P("Unknown workflow field", cls="cell-error")
+            if cell_type == "number":
+                try:
+                    value = float(str(value) or 0)
+                except (ValueError, TypeError):
+                    edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
+                                            cell_type="number", restore_url=restore_url)
+                    edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                    return edit_td
+            try:
+                item = await api.get_item(token, entity_id)
+                steps = list((item.get("workflow") or {}).get("steps") or [])
+                if not (0 <= idx < len(steps)):
+                    return P("Step no longer exists. Reload the tab.", cls="cell-error")
+                steps[idx][fname] = value
+                await api.set_item_workflow(token, entity_id, {"steps": steps})
+                item = await api.get_item(token, entity_id)
+                fresh = (item.get("workflow") or {}).get("steps") or []
+                new_val = fresh[idx].get(fname, "") if 0 <= idx < len(fresh) else ""
+                return _workflow_cell(entity_id, idx, fname, new_val)
+            except APIError as e:
+                if e.status == 401:
+                    return P(t("error.unauthorized"), cls="cell-error")
+                edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
+                                        cell_type=_WORKFLOW_CELLS.get(fname, "text"), restore_url=restore_url,
+                                        options=list(_WORKFLOW_TIME_UNITS) if fname == "time_unit" else None)
+                edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                edit_td.attrs["title"] = f"Not saved: {e.detail}"
+                return edit_td
+
+        # Recipe cells (field = recipe__{section}__{idx}__{name}): patch one value on the
+        # persisted recipe, then return the display cell + cost card refresh (out-of-band).
+        if field.startswith("recipe__"):
+            from ui.components.table import editable_cell
+            try:
+                _, section, idx_s, fname = field.split("__", 3)
+                idx = int(idx_s)
+            except ValueError:
+                return P("Bad recipe field", cls="cell-error")
+            cell_type = _RECIPE_CELLS.get(section, {}).get(fname)
+            if cell_type is None:
+                return P("Unknown recipe field", cls="cell-error")
+            restore_url = f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{fname}/display"
+            if cell_type == "number":
+                try:
+                    value = float(str(value) or 0)
+                except (ValueError, TypeError):
+                    edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
+                                            cell_type="number", restore_url=restore_url)
+                    edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                    return edit_td
+            try:
+                item = await api.get_item(token, entity_id)
+                recipe = item.get("recipe") or {}
+                rows_ = recipe.get(section) or []
+                if not (0 <= idx < len(rows_)):
+                    return P("Row no longer exists. Reload the tab.", cls="cell-error")
+                rows_[idx][fname] = value
+                await api.set_item_recipe(token, entity_id, _recipe_api_payload(recipe))
+                item = await api.get_item(token, entity_id)
+                fresh = (item.get("recipe") or {}).get(section, [])
+                new_val = fresh[idx].get(fname, "") if 0 <= idx < len(fresh) else ""
+                # A <td> swap cannot carry OOB siblings (table fragment parsing mangles them);
+                # fire recipeSaved instead, which the cost card + status listen for.
+                return _recipe_cell(entity_id, section, idx, fname, new_val), HttpHeader("HX-Trigger", "recipeSaved")
+            except APIError as e:
+                if e.status == 401:
+                    return P(t("error.unauthorized"), cls="cell-error")
+                # Keep the user in the editor with the system-standard error styling.
+                edit_td = editable_cell(entity_id=entity_id, field=field, value=str(form.get("value", "")),
+                                        cell_type=cell_type, restore_url=restore_url,
+                                        options=list(_LABOR_KIND_LABELS) if fname == "kind" else None,
+                                        label_map=_LABOR_KIND_LABELS if fname == "kind" else None)
+                edit_td.attrs["class"] = (edit_td.attrs.get("class", "") + " cell--error").strip()
+                edit_td.attrs["title"] = f"Not saved: {e.detail}"
+                return edit_td
 
         # Convert bool fields from string to proper bool
         if field == "allow_splitting":
@@ -1509,7 +2011,16 @@ function celerpPrintLabel(entityId, templateId) {
                     qty = float(old_item.get("quantity") or 0)
                     if qty == 0:
                         return P(t("error.cannot_divide_by_zero_qty", "Cannot compute unit price: quantity is zero"), cls="cell-error")
-                    unit_price = float(value) / qty
+                    # Derive the unit price (a rate) at the fewest decimals that make rate*qty
+                    # reconcile to the entered total - so the typed total is honoured exactly and the
+                    # stored rate stays clean. Same helper as CSV import (DRY) -> both pages agree.
+                    try:
+                        _co = await api.get_company(token)
+                        _cur = (_co.get("currency") or "").strip() or "USD"
+                    except Exception:
+                        _cur = "USD"
+                    from celerp.services.money import unit_price_from_total, to_stored_float
+                    unit_price = to_stored_float(unit_price_from_total(value, qty, _cur))
                     old_unit_price = old_item.get(unit_price_field)
                     await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
                 safe_id = entity_id.replace(":", "-")
@@ -1753,10 +2264,12 @@ function celerpPrintLabel(entityId, templateId) {
                 return price_td, total_td
             return price_td
         from ui.components.table import display_cell
-        try:
-            label_map = await api.get_category_display_names(token) if field == "category" else None
-        except Exception:
-            label_map = None
+        label_map = _INVENTORY_TYPE_LABELS if field == "inventory_type" else None
+        if field == "category":
+            try:
+                label_map = await api.get_category_display_names(token)
+            except Exception:
+                label_map = None
         return display_cell(entity_id=entity_id, field=field, value=item.get(field, ""),
                             cell_type=cell_type, options=options,
                             editable=f_def.get("editable", True) if f_def else True,
@@ -2027,6 +2540,18 @@ function celerpPrintLabel(entityId, templateId) {
         )
         return HTMLResponse(to_xml(content), headers={"HX-Trigger": "celerpSelectionClear"})
 
+    def _bulk_toast_error(msg: str) -> Response:
+        """Surface a bulk-action error as the standard lower-right toast (no inline swap), so
+        validation failures like a weight-unit mismatch read as a clear popup."""
+        from starlette.responses import HTMLResponse
+        return HTMLResponse(
+            "", status_code=200,
+            headers={
+                "HX-Reswap": "none",
+                "HX-Trigger": json.dumps({"celerpToast": {"message": str(msg), "type": "error"}}),
+            },
+        )
+
     @app.post("/api/items/bulk/status")
     async def bulk_item_status(request: Request):
         token = _token(request)
@@ -2145,7 +2670,8 @@ function celerpPrintLabel(entityId, templateId) {
                 resolved_attributes=resolved_attrs or None,
             )
         except APIError as e:
-            return Div(P(str(e.detail), cls="flash flash--error"), id="bulk-action-result")
+            # Surface merge failures (e.g. a weight-unit mismatch) as the standard lower-right toast.
+            return _bulk_toast_error(e.detail)
         # Find the target item's SKU for the post-merge filter
         target_item = next((it for it in items if it.get("entity_id") == target_sku_from or it.get("id") == target_sku_from), None)
         target_sku = target_item.get("sku", "") if target_item else ""
@@ -2226,11 +2752,27 @@ function celerpPrintLabel(entityId, templateId) {
         sell_by_display = _unit_display_name(sell_by_label)
         weight_display = _unit_display_name(weight_unit_label)
 
-        # Weight column: show when sell_by is weight (qty IS weight) or item has weight.
-        # Pieces column: only show when item has pieces AND sell_by is NOT pieces
-        #   (when sell_by IS pieces, QTY = pieces - showing both is redundant).
-        show_weight = preview.get("has_weight", False) or sell_by_type == "weight"
-        show_pieces = preview.get("has_pieces", False) and sell_by_type != "pieces"
+        # QTY is always shown. Weight/pieces columns follow one symmetric rule:
+        #   - weight-type sell_by: qty IS weight, so the weight column is a
+        #     read-only mirror of QTY - only worth showing alongside an editable
+        #     pieces column. Without pieces, QTY alone carries the information.
+        #   - pieces-type sell_by: qty IS pieces - the pieces mirror shows only
+        #     alongside an editable weight column.
+        #   - other sell_by: weight/pieces show when the item has them (editable).
+        has_weight = preview.get("has_weight", False)
+        has_pieces = preview.get("has_pieces", False)
+        parent_pieces_val = preview.get("parent_pieces")
+        if sell_by_type == "weight":
+            show_weight = has_pieces
+            show_pieces = has_pieces
+        elif sell_by_type == "pieces":
+            show_weight = has_weight
+            show_pieces = has_weight
+            if parent_pieces_val is None:
+                parent_pieces_val = int(round(float(preview["parent_qty"])))
+        else:
+            show_weight = has_weight
+            show_pieces = has_pieces
 
         weight_col_header = f"Weight ({weight_display})" if weight_display else "Weight"
         headers = [Th(""), Th("SKU", cls="sp-th"), Th(f"QTY {sell_by_display}", cls="sp-th")]
@@ -2280,7 +2822,7 @@ function celerpPrintLabel(entityId, templateId) {
                 # When sell_by IS pieces, qty = pieces so child pieces is derived from QTY (static).
                 child_pieces_editable = is_child and pieces_name and sell_by_type != "pieces"
                 if child_pieces_editable:
-                    pieces_max = str(int(preview.get("parent_pieces", 1)) - 1)
+                    pieces_max = str(int(parent_pieces_val or 1) - 1)
                     cells.append(_editable_td(pieces_name, p, oninput=_child_pieces_oninput, onblur=_child_pieces_onblur, max=pieces_max))
                 elif is_child:
                     cells.append(Td(Span(p, cls="child-pieces-display sp-static-val"), cls="sp-td"))
@@ -2297,7 +2839,7 @@ function celerpPrintLabel(entityId, templateId) {
                      cls="form-input form-input--xs sp-input mother-qty-input",
                      onchange="bulkSplitMotherQtyChanged(this)"), cls="sp-td"),
             preview.get("parent_weight"),
-            preview.get("parent_pieces"),
+            parent_pieces_val,
             weight_name=None,
             pieces_name=None,
             is_child=False,
@@ -2332,7 +2874,7 @@ function celerpPrintLabel(entityId, templateId) {
         if show_weight:
             form_data["data_parent_weight"] = str(preview["parent_weight"])
         if show_pieces:
-            form_data["data_parent_pieces"] = str(int(preview["parent_pieces"]))
+            form_data["data_parent_pieces"] = str(int(parent_pieces_val))
 
         # Totals footer: mother qty (initial) + child qty (0) for QTY column;
         # weight/pieces use parent totals since child starts at 0.
@@ -2348,7 +2890,7 @@ function celerpPrintLabel(entityId, templateId) {
             ))
         if show_pieces:
             tfoot_cells.append(Td(
-                str(int(preview.get("parent_pieces") or 0)),
+                str(int(parent_pieces_val or 0)),
                 cls="sp-td sp-total-val sp-total-pieces",
             ))
 
@@ -2841,6 +3383,7 @@ function celerpPrintLabel(entityId, templateId) {
             # Fetch item once to get qty (needed for cost_price → cost_total conversion)
             item_for_price = await api.get_item(token, entity_id)
             item_qty = float(item_for_price.get("quantity") or 0)
+            cost_changed = False
             for pl in price_lists:
                 pl_name = pl.get("name", "")
                 conventional_key = f"{pl_name.lower()}_price"
@@ -2856,11 +3399,24 @@ function celerpPrintLabel(entityId, templateId) {
                     if conventional_key == "cost_price" and item_qty > 0:
                         old_cost_total = item_for_price.get("cost_total")
                         await api.patch_item(token, entity_id, {"cost_total": {"old": old_cost_total, "new": round(price * item_qty, 10)}})
+                        cost_changed = True
                     else:
                         await api.set_item_price(token, entity_id, pl_name, price)
+                        if conventional_key == "cost_price":
+                            cost_changed = True
+            # A cost change ripples into every recipe that uses this item — recost them now so
+            # the Manufacturing tab and margins stay current without any manual step.
+            if cost_changed:
+                try:
+                    await api.recost_dependents(token, entity_id)
+                except APIError:
+                    pass  # best-effort propagation; the cost itself is already saved
         except APIError as e:
-            return Div(Span(str(e.detail), cls="flash flash--error"), id="item-action-error")
-        return Response("", status_code=204, headers={"HX-Redirect": f"/inventory/{entity_id}"})
+            # OOB so the message lands in the save-status (inputs use hx_swap="none").
+            return Div(f"Not saved: {e.detail}", id="pricing-save-status",
+                       cls="recipe-save-status hint error", hx_swap_oob="true")
+        # Autosave: a transient saved indicator, no page reload (consistent with the rest of the UI).
+        return Div("Saved ✓", id="pricing-save-status", cls="recipe-save-status hint saved", hx_swap_oob="true")
 
     @app.post("/api/items/{entity_id}/status")
     async def item_status(request: Request, entity_id: str):
@@ -3275,7 +3831,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.post("/items/{entity_id}/files/{file_id}/tag")
     async def item_tag_file(request: Request, entity_id: str, file_id: str):
@@ -3289,9 +3845,9 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
-    @app.patch("/items/{entity_id}/files/{file_id}/description")
+    @app.post("/items/{entity_id}/files/{file_id}/description")
     async def item_describe_file(request: Request, entity_id: str, file_id: str):
         token = _token(request)
         if not token:
@@ -3303,7 +3859,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.post("/items/{entity_id}/files/{file_id}/hero")
     async def item_set_file_hero(request: Request, entity_id: str, file_id: str):
@@ -3315,7 +3871,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.delete("/items/{entity_id}/files/{file_id}")
     async def item_delete_file(request: Request, entity_id: str, file_id: str):
@@ -3327,7 +3883,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.get("/items/{entity_id}/files/_section")
     async def item_files_section_partial(request: Request, entity_id: str):
@@ -3338,7 +3894,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.get("/items/{entity_id}/files/{file_id}/download")
     async def item_download_file(request: Request, entity_id: str, file_id: str):
@@ -3765,9 +4321,11 @@ def _inventory_empty_state(p: dict) -> FT:
     return empty_state_cta("No items in inventory.", "Import from CSV", "/inventory/import")
 
 
-def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = None) -> FT:
+def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = None,
+                   label_map: dict | None = None) -> FT:
     if not category_counts and not total_scoped:
         return ""
+    label_map = label_map or {}
 
     # Strip skus/q: clicking a category tab is a catalog navigation action and should
     # clear any transient item-specific filters (post-split/merge result views etc.)
@@ -3790,7 +4348,8 @@ def _category_tabs(category_counts: dict, p: dict, total_scoped: int | None = No
     total = total_scoped if total_scoped is not None else sum(category_counts.values())
     tabs = [_tab(f"All ({total})", "", not p.get("category"))]
     for cat, count in sorted(category_counts.items()):
-        tabs.append(_tab(f"{cat} ({count})", cat, p.get("category") == cat))
+        # cat is the schema key (a slug); show its human display label, keep the slug as the filter value.
+        tabs.append(_tab(f"{label_map.get(cat, cat)} ({count})", cat, p.get("category") == cat))
     return Div(*tabs, cls="category-tabs", id="category-tabs")
 
 
@@ -3844,15 +4403,22 @@ def _status_tabs(p: dict, vertical: str = "") -> FT:
     return Div(*tabs, cls="category-tabs status-tabs", id="status-tabs")
 
 
+# Human labels for the inventory_type slugs. "Inventory" is spelled out on stocked/non-stocked
+# so they aren't confused with the Component type (added with the manufacturing module).
+_INVENTORY_TYPE_LABELS: dict[str, str] = {
+    "stocked": "Stocked Inventory",
+    "component": "Component",
+    "service": "Service",
+    "non_stocked": "Non-Stocked Inventory",
+    "freight": "Freight",
+}
+
+
 def _inventory_type_tabs(p: dict) -> FT:
-    """Filter tabs for inventory_type (all / stocked / service / non_stocked)."""
+    """Filter tabs for inventory_type (all / stocked / component / service / non_stocked)."""
     active = p.get("inventory_type", "")
-    _TABS = [
-        ("", "All Types"),
-        ("stocked", "Stocked"),
-        ("service", "Services"),
-        ("non_stocked", "Non-Stocked"),
-    ]
+    _TABS = [("", "All Types")] + [(k, _INVENTORY_TYPE_LABELS[k])
+                                   for k in ("stocked", "component", "service", "non_stocked", "freight")]
     base = {k: v for k, v in _base_state(p).items() if k != "inventory_type"}
 
     def _tab(it: str, label: str) -> FT:
@@ -4407,116 +4973,8 @@ def _column_manager(schema: list[dict], p: dict, active_cat: str = "", visible_c
 
 
 
-def _attachments_panel(entity_id: str, item: dict) -> FT:
-    """Attachments panel with unified drag-drop + click-to-browse upload zone."""
-    attachments: list[dict] = item.get("attachments") or []
-    images = [a for a in attachments if a.get("type") == "image"]
-    docs = [a for a in attachments if a.get("type") != "image"]
-
-    def _img_card(a: dict) -> FT:
-        return Div(
-            A(Img(src=a["url"], cls="attachment-thumb", alt=a.get("filename", ""), loading="lazy"), href=a["url"], target="_blank"),
-            Div(
-                Span(a.get("filename", "image"), cls="attachment-name"),
-                Button(t("btn.u00d7"),
-                    cls="btn btn--icon btn--danger",
-                    hx_delete=f"/api/items/{entity_id}/attachments/{a['id']}",
-                    hx_confirm="Remove this image?",
-                    hx_target="#attachments-panel",
-                    hx_swap="outerHTML",
-                ),
-                cls="attachment-meta",
-            ),
-            cls="attachment-card attachment-card--image",
-        )
-
-    def _doc_card(a: dict) -> FT:
-        label = a.get("label") or a.get("filename", "document")
-        return Div(
-            A(
-                Span(t("doc.u0001f4c4"), cls="attachment-doc-icon"),
-                Span(label, cls="attachment-name"),
-                href=a["url"],
-                target="_blank",
-                cls="attachment-doc-link",
-            ),
-            Button(t("btn.u00d7"),
-                cls="btn btn--icon btn--danger",
-                hx_delete=f"/api/items/{entity_id}/attachments/{a['id']}",
-                hx_confirm="Remove this document?",
-                hx_target="#attachments-panel",
-                hx_swap="outerHTML",
-            ),
-            cls="attachment-card attachment-card--doc",
-        )
-
-    drop_js = f"""
-(function(){{
-  var zone = document.getElementById('attachment-drop-zone');
-  var input = document.getElementById('att-input-{entity_id}');
-  if (!zone || !input) return;
-  function uploadFile(file) {{
-    var fd = new FormData();
-    fd.append('file', file);
-    var statusEl = zone.querySelector('.file-drop-text');
-    if (statusEl) statusEl.textContent = 'Uploading...';
-    fetch('/api/items/{entity_id}/attachments', {{
-      method: 'POST',
-      body: fd,
-    }}).then(function(resp) {{
-      if (!resp.ok) throw new Error('Upload failed');
-      return resp.text();
-    }}).then(function(html) {{
-      var panel = document.getElementById('attachments-panel');
-      if (panel) {{ panel.outerHTML = html; htmx.process(document.getElementById('attachments-panel')); }}
-    }}).catch(function(err) {{
-      alert('Upload failed: ' + err.message);
-      if (statusEl) statusEl.textContent = 'Drop files here or click to browse';
-    }});
-  }}
-  zone.addEventListener('click', function(e) {{
-    if (e.target.tagName === 'BUTTON' || e.target.closest('button')) return;
-    input.click();
-  }});
-  input.addEventListener('change', function() {{
-    if (input.files.length) uploadFile(input.files[0]);
-    input.value = '';
-  }});
-  zone.addEventListener('dragover', function(e) {{ e.preventDefault(); zone.classList.add('file-drop-zone--active'); }});
-  zone.addEventListener('dragleave', function() {{ zone.classList.remove('file-drop-zone--active'); }});
-  zone.addEventListener('drop', function(e) {{
-    e.preventDefault();
-    zone.classList.remove('file-drop-zone--active');
-    if (e.dataTransfer.files.length) uploadFile(e.dataTransfer.files[0]);
-  }});
-}})();
-"""
-
-    upload_zone = Div(
-        Div(
-            Div(t("inv.u0001f4c1"), cls="file-drop-icon"),
-            Div(t("label.drop_files_here_or_click_to_browse"), cls="file-drop-text"),
-            Div(t("inv.images_pdfs_and_documents_up_to_10mb"), cls="file-drop-hint"),
-            Input(type="file", name="file", id=f"att-input-{entity_id}",
-                  accept="image/*,application/pdf,.doc,.docx,.txt",
-                  style="display:none"),
-            cls="file-drop-zone", id="attachment-drop-zone",
-        ),
-    )
-
-    return Div(
-        H3(t("page.attachments"), cls="section-title"),
-        Div(*[_img_card(a) for a in images], cls="attachment-images") if images else "",
-        Div(*[_doc_card(a) for a in docs], cls="attachment-docs") if docs else "",
-        upload_zone,
-        Script(drop_js),
-        cls="detail-card",
-        id="attachments-panel",
-    )
-
-
 _UNIVERSAL_FIELD_OPTIONS: dict[str, list[str]] = {
-    "inventory_type": ["stocked", "non_stocked", "service"],
+    "inventory_type": ["stocked", "component", "non_stocked", "service", "freight"],
 }
 
 
@@ -4603,8 +5061,23 @@ def _print_label_dropdown(entity_id: str) -> FT:
     )
 
 
-def _item_files_section(entity_id: str, item: dict) -> FT:
-    """Render the shared files section for an item, with hero toggle enabled."""
+def _item_files_preview(request: Request) -> bool:
+    """Whether the item files table should show inline thumbnails.
+
+    Thumbnails show on the Details tab (the default); they stay hidden on the
+    Manufacturing tab, whose gallery already shows images large. HTMX file
+    mutations echo the originating tab back via the HX-Current-URL header, so the
+    re-rendered section keeps thumbnails on Details and omits them on Manufacturing.
+    """
+    return "tab=manufacturing" not in request.headers.get("HX-Current-URL", "")
+
+
+def _item_files_section(entity_id: str, item: dict, *, title: str = "Production documents & images", show_preview: bool = False) -> FT:
+    """Render the shared files section for an item, with hero toggle enabled.
+
+    Titled "Production documents & images" everywhere it appears (Details +
+    Manufacturing tabs) so the heading stays consistent across every HTMX refresh
+    (all the file mutation routes funnel through here) and describes what it is."""
     files = item.get("files") or []
     if not files and item.get("attachments"):
         # Display-side adapter: convert old attachment format for display until
@@ -4634,7 +5107,845 @@ def _item_files_section(entity_id: str, item: dict) -> FT:
                 "uploaded_at": None,
                 "is_hero": is_hero,
             })
-    return _shared_files_section("item", entity_id, files, can_set_hero=True, show_linked=False)
+    # On the Manufacturing tab this lives in a narrow column with no inline preview (the gallery
+    # shows images large above), so callers default show_preview=False; the Details tab passes
+    # show_preview=True to put thumbnails back next to filenames. No hero column either way (set
+    # the hero by clicking a gallery thumbnail); compact filters keep the bar on one row.
+    return _shared_files_section("item", entity_id, files, can_set_hero=False, show_linked=False,
+                                 title=title, show_preview=show_preview, compact=True)
+
+
+def _recipe_money(v, currency: str | None) -> str:
+    """Format a derived cost; '--' (not blank) for unset, per GDR §2k."""
+    if v in (None, ""):
+        return EMPTY
+    return f"{currency or ''}{float(v):,.2f}"
+
+
+# Editable fields per recipe section, with their system-standard cell types.
+_RECIPE_CELLS: dict[str, dict[str, str]] = {
+    "components": {"quantity": "number"},
+    "labor": {"operation": "text", "kind": "select", "hours": "number", "rate": "number", "amount": "number"},
+    "overhead": {"description": "text", "amount": "number"},
+}
+# Hourly and Daily are both rate-based (qty x rate); Fixed is a flat total. Order = dropdown order.
+_LABOR_KIND_LABELS = {"hourly": "Hourly", "daily": "Daily", "fixed": "Fixed"}
+# Kinds whose cost is quantity x rate (vs a flat fixed total).
+_LABOR_RATE_KINDS = frozenset({"hourly", "daily"})
+
+
+def _num_field(v) -> float:
+    """Parse a numeric add-row field; blank/invalid -> 0.0 (deterministic, no guessing)."""
+    try:
+        return float(str(v).strip() or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _recipe_api_payload(recipe: dict) -> dict:
+    """The persisted recipe, shaped for the manufacturing API (derived costs recomputed there)."""
+    def _num(v):
+        try:
+            return float(v or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    return {
+        "output_qty": _num(recipe.get("output_qty")) or 1.0,
+        "components": [
+            {"item_id": c.get("item_id"), "sku": c.get("sku"), "quantity": _num(c.get("quantity")), "unit": c.get("unit")}
+            for c in recipe.get("components", []) if c.get("item_id")
+        ],
+        "labor": [
+            {"operation": l.get("operation", ""), "kind": l.get("kind") or "hourly", "hours": _num(l.get("hours")),
+             "rate": _num(l.get("rate")), "amount": _num(l.get("amount")), "source": l.get("source") or "manual"}
+            for l in recipe.get("labor", [])
+        ],
+        "overhead": [
+            {"description": o.get("description", ""), "amount": _num(o.get("amount"))}
+            for o in recipe.get("overhead", [])
+        ],
+    }
+
+
+def _recipe_cell(entity_id: str, section: str, idx: int, field: str, value) -> FT:
+    """A recipe value as the system-standard dblclick-to-edit cell (same as item/doc tables)."""
+    from ui.components.table import display_cell
+    return display_cell(
+        entity_id=entity_id,
+        field=f"recipe__{section}__{idx}__{field}",
+        value=value,
+        cell_type=_RECIPE_CELLS[section][field],
+        edit_url=f"/api/items/{entity_id}/recipe-cell/{section}/{idx}/{field}/edit",
+        label_map=_LABOR_KIND_LABELS if field == "kind" else None,
+    )
+
+
+def _recipe_cost_card(entity_id: str, item: dict, currency: str | None) -> FT:
+    """The Cost Summary card: live materials / labor / overhead / unit-cost totals.
+
+    The card always reflects the current recipe (the whole section re-renders on every save),
+    and the rolled unit cost is applied to the item's cost price automatically, so there are
+    no Recalculate / Apply buttons to press.
+    """
+    recipe = item.get("recipe") or {}
+    has_recipe = bool(recipe.get("components"))
+
+    def _row(label, key, total=False):
+        return Tr(Td(label, cls="detail-label detail-label--total" if total else "detail-label"),
+                  Td(_recipe_money(recipe.get(key), currency), cls="recipe-amount cell--total" if total else "recipe-amount"))
+
+    hint = ("Rolled up from current component costs and applied to this item's cost price automatically."
+            if has_recipe else
+            "The standard cost will appear here as you add components below.")
+    children = [
+        H3("Cost summary", cls="section-title"),
+        Table(Tbody(_row("Materials", "materials_cost"), _row("Labor", "labor_cost"),
+                    _row("Overhead", "overhead_cost"), _row("Unit cost", "unit_cost", total=True)), cls="detail-table"),
+        P(hint, cls="hint"),
+    ]
+    return Div(*children, id="recipe-cost-card", cls="detail-card recipe-cost-summary")
+
+
+def _item_image_files(item: dict) -> list[dict]:
+    """The item's image files, hero first, then product/360 tags, then the rest.
+
+    Shared by the Manufacturing-tab gallery and the printable worksheet so both
+    show the same images in the same order (DRY)."""
+    images = [f for f in (item.get("files") or []) if (f.get("mime") or "").startswith("image/")]
+
+    def _rank(f: dict):
+        if f.get("is_hero"):
+            return 0
+        return 1 if (f.get("document_tag") or "") in ("product_images", "view_360") else 2
+
+    return sorted(images, key=_rank)
+
+
+def _workflow_gallery(entity_id: str, item: dict) -> FT:
+    """Product image gallery for the Manufacturing tab: a large hero image plus a
+    thumbnail strip, sized for shop-floor reference. Renders above the Cost summary.
+
+    Images obey GDR §2l (one dimension fixed: width 100%, height auto, contained),
+    and come from the item's uploaded files (managed in Production documents below).
+    """
+    images = _item_image_files(item)
+    if not images:
+        return Div(
+            H3("Product images", cls="section-title"),
+            P("No product images yet. Add them in Production documents below.", cls="hint"),
+            cls="detail-card wf-gallery wf-gallery--empty",
+            id="wf-gallery",
+        )
+
+    def _src(f: dict) -> str:
+        return f"/items/{entity_id}/files/{f['id']}/download"
+
+    hero = images[0]
+    # Clicking a thumbnail makes that image the hero (the large one) — it does not open a new tab.
+    thumbs = (
+        Div(*[
+            Button(Img(src=_src(f), alt=f.get("filename", ""), cls="wf-thumb-img", loading="lazy"),
+                   type="button", title="Set as main image",
+                   hx_post=f"/api/items/{entity_id}/gallery-hero/{f['id']}",
+                   hx_target="#wf-gallery", hx_swap="outerHTML",
+                   cls="wf-thumb" + (" wf-thumb--active" if f is hero else ""))
+            for f in images
+        ], cls="wf-thumbs")
+        if len(images) > 1 else ""
+    )
+    return Div(
+        H3("Product images", cls="section-title"),
+        Img(src=_src(hero), alt=hero.get("filename", ""), cls="wf-hero-img", loading="lazy"),
+        thumbs,
+        P("Click a thumbnail to make it the main image.", cls="hint") if len(images) > 1 else "",
+        cls="detail-card wf-gallery",
+        id="wf-gallery",
+    )
+
+
+# Editable workflow-step fields and their system-standard cell types (double-click to edit).
+# `station` is a select linked to the company's work centers (with an add-new option);
+# `instructions` is a multi-line text box.
+_WORKFLOW_CELLS: dict[str, str] = {
+    "station": "select", "instructions": "textarea",
+    "time_value": "number", "time_unit": "select",
+}
+
+
+def _fmt_minutes(mins) -> str:
+    """Human elapsed time from canonical minutes: '90 min' -> '1 h 30 min', exact days/hours kept."""
+    m = int(round(float(mins or 0)))
+    if m <= 0:
+        return "0 min"
+    if m % 1440 == 0:
+        return f"{m // 1440} d"
+    if m % 60 == 0:
+        return f"{m // 60} h"
+    if m >= 60:
+        h, mm = divmod(m, 60)
+        return f"{h} h {mm} min"
+    return f"{m} min"
+
+
+def _workflow_cell(entity_id: str, idx: int, field: str, value) -> FT:
+    """One double-click-to-edit workflow cell (mirrors _recipe_cell: same display_cell engine,
+    so editing behaves identically to the rest of the system)."""
+    from ui.components.table import display_cell
+    return display_cell(
+        entity_id=entity_id,
+        field=f"workflow__{idx}__{field}",
+        value=value,
+        cell_type=_WORKFLOW_CELLS[field],
+        options=list(_WORKFLOW_TIME_UNITS) if field == "time_unit" else None,
+        edit_url=f"/api/items/{entity_id}/workflow-cell/{idx}/{field}/edit",
+    )
+
+
+WORKFLOW_JS = """
+(function(){
+ function init(){
+  var sec=document.getElementById('workflow-section');
+  if(!sec||sec._wfInit) return; sec._wfInit=true;
+  var base=sec.getAttribute('data-base');
+  // outerHTML swaps do not re-run inline scripts, so re-init the fresh section after a reload.
+  function reload(html){ sec.outerHTML=html; var ns=document.getElementById('workflow-section'); if(ns&&window.htmx) htmx.process(ns); init(); }
+  // Running total, recomputed client-side after each single-cell edit so editing a value or unit
+  // never triggers a section reload.
+  function fmtMin(m){ m=Math.round(m); if(m<=0)return '0 min'; if(m%1440===0)return (m/1440)+' d'; if(m%60===0)return (m/60)+' h'; if(m>=60){var h=Math.floor(m/60),mm=m%60;return h+' h '+mm+' min';} return m+' min'; }
+  function recalc(){
+    var total=0;
+    sec.querySelectorAll('tr.wf-row').forEach(function(r){
+      var tv=r.querySelector('[data-col$="__time_value"]'), tu=r.querySelector('[data-col$="__time_unit"]');
+      if(!tv) return;
+      var v=parseFloat((tv.textContent||'').replace(/[^0-9.\\-]/g,'')); if(isNaN(v)) v=0;
+      var u=(tu?tu.textContent.trim():'min'), f=u==='day'?1440:(u==='hr'?60:1);
+      total+=v*f;
+    });
+    var el=sec.querySelector('.wf-summary'); if(el) el.textContent='Total time '+fmtMin(total);
+  }
+  sec.addEventListener('htmx:afterSettle', recalc);
+  var dragId=null;
+  sec.querySelectorAll('.wf-drag').forEach(function(h){
+    h.addEventListener('dragstart',function(e){ var tr=h.closest('tr'); dragId=tr.getAttribute('data-step-id'); tr.classList.add('wf-dragging'); e.dataTransfer.effectAllowed='move'; e.dataTransfer.setData('text/plain',dragId); });
+    h.addEventListener('dragend',function(){ var tr=h.closest('tr'); if(tr) tr.classList.remove('wf-dragging'); });
+  });
+  sec.querySelectorAll('tr.wf-row').forEach(function(tr){
+    tr.addEventListener('dragover',function(e){ if(dragId){ e.preventDefault(); tr.classList.add('wf-drag-over'); } });
+    tr.addEventListener('dragleave',function(){ tr.classList.remove('wf-drag-over'); });
+    tr.addEventListener('drop',function(e){
+      tr.classList.remove('wf-drag-over');
+      if(e.dataTransfer.files&&e.dataTransfer.files.length) return;  // file drops handled by the ref cell
+      if(!dragId) return; e.preventDefault();
+      var rows=Array.prototype.slice.call(sec.querySelectorAll('tr.wf-row'));
+      var ids=rows.map(function(r){return r.getAttribute('data-step-id');});
+      var from=ids.indexOf(dragId), to=ids.indexOf(tr.getAttribute('data-step-id'));
+      if(from<0||to<0||from===to){ dragId=null; return; }
+      ids.splice(to,0,ids.splice(from,1)[0]); dragId=null;
+      var fd=new FormData(); fd.append('order',ids.join(','));
+      fetch(base+'?action=reorder',{method:'POST',headers:{'HX-Request':'true'},body:fd}).then(function(r){return r.text();}).then(reload);
+    });
+  });
+  sec.querySelectorAll('.wf-ref-drop').forEach(function(cell){
+    cell.addEventListener('dragover',function(e){ if(e.dataTransfer.types&&Array.prototype.indexOf.call(e.dataTransfer.types,'Files')>=0){ e.preventDefault(); cell.classList.add('wf-ref-active'); } });
+    cell.addEventListener('dragleave',function(){ cell.classList.remove('wf-ref-active'); });
+    cell.addEventListener('drop',function(e){
+      if(!(e.dataTransfer.files&&e.dataTransfer.files.length)) return;
+      e.preventDefault(); e.stopPropagation(); cell.classList.remove('wf-ref-active');
+      var idx=cell.getAttribute('data-idx');
+      var fd=new FormData(); fd.append('file',e.dataTransfer.files[0]);
+      fetch(base+'?action=upload_ref&index='+idx,{method:'POST',headers:{'HX-Request':'true'},body:fd}).then(function(r){return r.text();}).then(reload);
+    });
+  });
+ }
+ init();
+})();
+"""
+
+
+def _workflow_section(entity_id: str, item: dict) -> FT:
+    """The Production workflow: an ordered, drag-to-reorder list of build steps. Cells are the
+    system-standard double-click-to-edit cells; the elapsed Time is canonical minutes (a number
+    plus a unit select), Instructions is a multi-line text box, and a reference image can be
+    dropped onto a step's Reference cell.
+    """
+    steps = list((item.get("workflow") or {}).get("steps") or [])
+    files_by_id = {f.get("id"): f for f in (item.get("files") or [])}
+    base = f"/api/items/{entity_id}/workflow-section"
+    _struct = {"hx_post": base, "hx_target": "#workflow-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
+
+    total = sum(float(s.get("time_minutes") or 0) for s in steps)
+    summary = f"Total time {_fmt_minutes(total)}"
+
+    def _ref_cell(idx: int, step: dict) -> FT:
+        ref = files_by_id.get(step.get("ref_file_id")) if step.get("ref_file_id") else None
+        if ref:
+            src = f"/items/{entity_id}/files/{ref['id']}/download"
+            inner = [
+                A(Img(src=src, alt=ref.get("filename", ""), cls="wf-ref-img", loading="lazy"),
+                  href=src, target="_blank", title=ref.get("filename", "")),
+                Button("×", type="button", title="Remove reference", cls="btn btn--xs btn--ghost",
+                       hx_post=f"{base}?action=clear_ref&index={idx}", **{k: v for k, v in _struct.items() if k != "hx_post"}),
+            ]
+        else:
+            inner = [Span("Drop image", cls="wf-ref-hint")]
+        return Td(*inner, cls="wf-ref-drop", **{"data-idx": str(idx)})
+
+    def _row(idx: int, step: dict) -> FT:
+        # Cell order must match the filter/sort column indices below (0-based, drag handle is 0).
+        return Tr(
+            Td(Span("⠿", cls="wf-drag", draggable="true", title="Drag to reorder"), cls="wf-col-drag"),
+            _workflow_cell(entity_id, idx, "station", step.get("station")),
+            _workflow_cell(entity_id, idx, "instructions", step.get("instructions")),
+            _workflow_cell(entity_id, idx, "time_value", step.get("time_value")),
+            _workflow_cell(entity_id, idx, "time_unit", step.get("time_unit") or "min"),
+            _ref_cell(idx, step),
+            Td(Button("×", type="button", title="Remove step", cls="btn btn--xs btn--ghost",
+                      hx_post=f"{base}?action=remove&index={idx}", **{k: v for k, v in _struct.items() if k != "hx_post"}),
+               cls="cell--actions"),
+            cls="wf-row data-row", **{"data-step-id": step.get("id") or f"idx-{idx}"},
+        )
+
+    # Columns: 0 drag, 1 Station, 2 Instructions, 3 Time, 4 Unit, 5 Reference, 6 remove.
+    # Station/Instructions/Unit are Excel-filterable + sortable; Time sorts. Filtering/sorting
+    # is a client-side view (COLUMN_FILTER_JS/ENHANCED_TABLE_JS) over the manual drag order.
+    head = Tr(
+        Th("", cls="wf-col-drag"),
+        filter_th("Station", 1, sortable=True),
+        filter_th("Instructions", 2, sortable=True),
+        sortable_th("Time", 3, right=True),
+        filter_th("Unit", 4, sortable=True, center=True),
+        Th("Reference"), Th("", cls="cell--actions"),
+    )
+    body = [_row(i, s) for i, s in enumerate(steps)]
+    table = Table(Thead(head), Tbody(*body), cls="data-table js-table wf-table") if steps else ""
+    empty = P("No steps yet. Add the build steps a worker follows; drag the handle to reorder.",
+              cls="hint") if not steps else ""
+
+    return Div(
+        Div(
+            H3("Production workflow", cls="section-title"),
+            Span(summary, cls="wf-summary") if steps else "",
+            cls="recipe-section-head",
+        ),
+        P("The ordered steps to build this item, by work center. Double-click a cell to edit; drag a "
+          "row to reorder; sort or filter any column; drop an image on Reference to illustrate a step.",
+          cls="hint"),
+        table,
+        empty,
+        Button("+ Add step", type="button", cls="btn btn--sm btn--secondary",
+               hx_post=f"{base}?action=add", **{k: v for k, v in _struct.items() if k != "hx_post"}),
+        Script(COLUMN_FILTER_JS), Script(ENHANCED_TABLE_JS), Script(WORKFLOW_JS),
+        id="workflow-section",
+        cls="detail-card recipe-block",
+        **{"data-base": base},
+    )
+
+
+_WORKSHEET_PRINT_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Arial, sans-serif; font-size: 10pt; color: #111; background: #fff; padding: 16mm; }
+.ws-header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #111; padding-bottom: 4mm; margin-bottom: 6mm; }
+.ws-title { font-size: 17pt; font-weight: 700; }
+.ws-sub { color: #555; font-size: 9pt; margin-top: 1mm; }
+.ws-meta { text-align: right; font-size: 9pt; color: #333; }
+.ws-meta strong { font-size: 11pt; }
+.ws-section { margin-top: 6mm; page-break-inside: avoid; }
+.ws-section h2 { font-size: 11pt; border-bottom: 1px solid #999; padding-bottom: 1mm; margin-bottom: 2mm; }
+table.ws-tbl { width: 100%; border-collapse: collapse; font-size: 9pt; }
+.ws-tbl th, .ws-tbl td { border: 1px solid #ccc; padding: 1.6mm 2.6mm; text-align: left; vertical-align: top; }
+.ws-tbl th { background: #f2f2f2; }
+.ws-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ws-pre { white-space: pre-wrap; }
+.ws-images { display: flex; flex-wrap: wrap; gap: 4mm; }
+.ws-images img { height: 38mm; width: auto; max-width: 62mm; object-fit: contain; border: 1px solid #ddd; }
+.ws-step-img { height: 16mm; width: auto; border: 1px solid #ddd; }
+.ws-muted { color: #777; }
+.ws-foot { margin-top: 8mm; border-top: 1px solid #ccc; padding-top: 2mm; font-size: 8pt; color: #777; display: flex; justify-content: space-between; }
+@page { size: A4 portrait; margin: 0; }
+@media print { body { padding: 14mm; } }
+"""
+
+
+def _worksheet_unit_label(unit: str) -> str:
+    return {"min": "min", "hr": "hr", "day": "day"}.get(unit, unit or "min")
+
+
+def _worksheet_print_view(entity_id: str, item: dict, today: str) -> FT:
+    """Standalone printable production worksheet: product info + images + materials + workflow.
+    Costs never appear here — this is a shop-floor build sheet, not a costing document. Mirrors
+    the document print view (auto window.print(); the browser saves it as one PDF)."""
+    recipe = item.get("recipe") or {}
+    EM = EMPTY
+
+    # ── Product images ──
+    images = _item_image_files(item)
+    img_section = (
+        Div(
+            H2("Product images"),
+            Div(*[Img(src=f"/items/{entity_id}/files/{f['id']}/download", alt=f.get("filename", ""))
+                  for f in images[:6]], cls="ws-images"),
+            cls="ws-section",
+        ) if images else ""
+    )
+
+    # ── Materials to gather (no costs) ──
+    comps = recipe.get("components", []) or []
+    materials = (
+        Div(
+            H2("Materials"),
+            Table(
+                Thead(Tr(Th("Component"), Th("Qty", cls="ws-num"), Th("Unit"))),
+                Tbody(*[Tr(
+                    Td(f"{c.get('sku') or ''} {('- ' + c['name']) if c.get('name') else ''}".strip(" -") or EM),
+                    Td(f"{float(c.get('quantity') or 0):g}", cls="ws-num"),
+                    Td(c.get("unit") or EM),
+                ) for c in comps]),
+                cls="ws-tbl",
+            ),
+            cls="ws-section",
+        ) if comps else ""
+    )
+
+    # ── Workflow steps ──
+    steps = (item.get("workflow") or {}).get("steps") or []
+    files_by_id = {f.get("id"): f for f in (item.get("files") or [])}
+
+    def _time_cell(s: dict) -> FT:
+        txt = f"{float(s.get('time_value') or 0):g} {_worksheet_unit_label(s.get('time_unit') or 'min')}"
+        return Td(txt, cls="ws-num")
+
+    def _step_ref(s: dict) -> FT:
+        f = files_by_id.get(s.get("ref_file_id")) if s.get("ref_file_id") else None
+        if f:
+            return Td(Img(src=f"/items/{entity_id}/files/{f['id']}/download", alt="", cls="ws-step-img"))
+        return Td(EM, cls="ws-muted")
+
+    workflow = (
+        Div(
+            H2("Production workflow"),
+            Table(
+                Thead(Tr(Th("#", cls="ws-num"), Th("Station"), Th("Instructions"),
+                         Th("Time", cls="ws-num"), Th("Ref"))),
+                Tbody(*[Tr(
+                    Td(str(i + 1), cls="ws-num"),
+                    Td(s.get("station") or EM),
+                    Td(s.get("instructions") or EM, cls="ws-pre"),
+                    _time_cell(s),
+                    _step_ref(s),
+                ) for i, s in enumerate(steps)]),
+                cls="ws-tbl",
+            ),
+            cls="ws-section",
+        ) if steps else ""
+    )
+
+    sku = item.get("sku") or ""
+    name = item.get("name") or sku or entity_id
+    return Html(
+        Head(
+            Meta(charset="utf-8"),
+            Meta(name="viewport", content="width=device-width, initial-scale=1"),
+            Title(f"Worksheet - {name}"),
+            Style(_WORKSHEET_PRINT_CSS),
+        ),
+        Body(
+            Div(
+                Div(
+                    Div(name, cls="ws-title"),
+                    Div(f"SKU {sku}" + (f"  ·  {item.get('category')}" if item.get("category") else ""), cls="ws-sub"),
+                    cls="ws-headl",
+                ),
+                Div(
+                    Div("Production Worksheet"),
+                    Div(f"Output {float(recipe.get('output_qty') or 1):g} / batch"),
+                    Div(today, cls="ws-muted"),
+                    cls="ws-meta",
+                ),
+                cls="ws-header",
+            ),
+            img_section,
+            materials,
+            workflow,
+            Div(Span(f"{sku} - {name}"), Span("Powered by celerp.com"), cls="ws-foot"),
+            Script("window.onload = function() { window.print(); }"),
+        ),
+    )
+
+
+def _recipe_section(entity_id: str, item: dict, items: list[dict], currency: str | None,
+                    show_all: bool = False, flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+    """The Manufacturing tab: Materials / Labor / Overhead tables + Cost Summary.
+
+    The persisted recipe is the single source of truth: every change saves immediately.
+    Values use the system-standard double-click-to-edit cells (same as item and document
+    tables) so the page behaves like the rest of celerp. All editing is on-page via HTMX.
+    """
+    recipe = item.get("recipe") or {}
+    components = recipe.get("components", [])
+    labor_rows = recipe.get("labor", [])
+    overhead_rows = recipe.get("overhead", [])
+
+    # list_items flattens the projection id onto "id" (see _flatten_item); exclude the
+    # item being edited so it can't be a component of itself.
+    item_opts = []
+    component_ids: set[str] = set()
+    by_id: dict[str, dict] = {}
+    for it in items:
+        iid = it.get("id") or it.get("entity_id") or ""
+        if not iid:
+            continue
+        by_id[iid] = it
+        if iid != entity_id:
+            item_opts.append((iid, f"{it.get('sku', '')} - {it.get('name', '')}".strip(" -")))
+            if (it.get("inventory_type") or "stocked") == "component":
+                component_ids.add(iid)
+
+    sec = f"/api/items/{entity_id}/recipe-section"
+    # hx_disabled_elt disables the clicked button while its request is in flight (no double-submits).
+    _htmx = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML", "hx_disabled_elt": "this"}
+
+    # The add-picker searches COMPONENTS only by default. Scope is controlled inside the
+    # dropdown itself (the common footer-action pattern): a pinned "Search all items…"
+    # option widens this picker only, and the last option creates a brand-new component.
+    selected_ids = {c.get("item_id") for c in components}
+    base_opts = [o for o in item_opts if o[0] not in selected_ids and (show_all or o[0] in component_ids)]
+    scope_opt = ("__scope__components", "Show components only…") if show_all else ("__scope__all", "Search all items…")
+    comp_opts = base_opts + [scope_opt, ("__new__:/inventory/new?type=component", "+ Add new component")]
+
+    def _comp_row(i, c):
+        cid = c.get("item_id", "")
+        it = by_id.get(cid)
+        orphan = it is None
+        label = f"{c.get('sku') or cid} - {it.get('name', '')}".strip(" -") if it else f"{c.get('sku') or cid} (unavailable)"
+        return Tr(
+            Td(A(label, href=f"/inventory/{cid}", cls="table-link") if not orphan else Span(label)),
+            _recipe_cell(entity_id, "components", i, "quantity", c.get("quantity")),
+            Td(c.get("unit") or EMPTY, cls="comp-unit-cell"),
+            # Unit cost + extended cost are read-only: they come from the component's catalog cost.
+            Td(_recipe_money(c.get("unit_cost"), currency), cls="recipe-amount"),
+            Td(_recipe_money(c.get("line_cost"), currency), cls="recipe-amount"),
+            Td(Button("×", type="button", title="Remove component", cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_component&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row recipe-row--orphan" if orphan else "data-row",
+        )
+
+    def _labor_row(i, l):
+        # Qty + Rate apply to rate-based kinds (Hourly/Daily); the Total then shows qty x rate
+        # (read-only). Fixed has no qty/rate, so its Total cell is the editable flat amount.
+        # The Total column therefore always shows a value — never a hidden "--".
+        kind = l.get("kind") or "hourly"
+        rate_based = kind in _LABOR_RATE_KINDS
+        _na = lambda: Td(EMPTY, cls="recipe-cell--na", title="Not used for this labor type")
+        if rate_based:
+            qty_cell = _recipe_cell(entity_id, "labor", i, "hours", l.get("hours"))
+            rate_cell = _recipe_cell(entity_id, "labor", i, "rate", l.get("rate"))
+            line_total = _num_field(l.get("hours")) * _num_field(l.get("rate"))
+            total_cell = Td(_recipe_money(line_total, currency), cls="recipe-amount")
+        else:
+            qty_cell, rate_cell = _na(), _na()
+            total_cell = _recipe_cell(entity_id, "labor", i, "amount", l.get("amount"))
+        return Tr(
+            _recipe_cell(entity_id, "labor", i, "operation", l.get("operation")),
+            _recipe_cell(entity_id, "labor", i, "kind", kind),
+            qty_cell, rate_cell, total_cell,
+            Td(Button("×", type="button", title="Remove operation", cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_labor&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row",
+        )
+
+    def _oh_row(i, o):
+        return Tr(
+            _recipe_cell(entity_id, "overhead", i, "description", o.get("description")),
+            _recipe_cell(entity_id, "overhead", i, "amount", o.get("amount")),
+            Td(Button("×", type="button", title="Remove cost", cls="btn btn--xs btn--ghost",
+                      hx_post=f"{sec}?action=remove_overhead&index={i}", **_htmx), cls="cell--actions"),
+            cls="data-row",
+        )
+
+    cur_label = f" ({currency})" if currency else ""
+
+    # Permanent "add" row at the bottom of each table: committing on first input creates a real,
+    # persisted row (then a fresh add-row appears). No orphan blank rows to lose on navigation.
+    _add = {"hx_include": "#recipe-form", "hx_target": "#recipe-section", "hx_swap": "outerHTML",
+            "hx_disabled_elt": "this"}
+    # Enter anywhere in an add-row commits the whole line (clicks that row's + Add button).
+    _add_enter = ("if(event.key==='Enter'){event.preventDefault();"
+                  "this.closest('tr').querySelector('button.recipe-add-btn').click();}")
+
+    # Materials: selecting a SKU adds the line in one action (the docs item-picker pattern);
+    # quantity defaults to 1 and is edited in place. The scope toggle lives in the dropdown.
+    comp_add_row = Tr(
+        Td(searchable_select("comp_new", comp_opts, value="", placeholder="Search to add a component…",
+                             hx_post=f"{sec}?action=add_component", hx_trigger="change",
+                             hx_include="#recipe-form", hx_target="#recipe-section", hx_swap="outerHTML")),
+        Td("", cls="cell--number"), Td(""), Td("", cls="recipe-amount"), Td("", cls="recipe-amount"),
+        Td("", cls="cell--actions"),
+        cls="recipe-add-row",
+    )
+    # Labor / Overhead: free-form lines — fill the whole row, then + Add commits it in one step.
+    # Rate-based kinds (Hourly/Daily) use Qty+Rate and the Total shows Qty x Rate live (read-only);
+    # Fixed uses the flat editable Total. Self-contained inline JS so it survives re-renders.
+    # Live Total preview as Qty/Rate are typed (only while Total is the computed/read-only field).
+    _live_total = ("var r=this.closest('tr'),"
+                   "q=parseFloat(r.querySelector('[name=labor_new_hours]').value)||0,"
+                   "rt=parseFloat(r.querySelector('[name=labor_new_rate]').value)||0,"
+                   "t=r.querySelector('[name=labor_new_amount]');"
+                   "if(t.readOnly){t.value=(q&&rt)?(q*rt).toFixed(2):'';}")
+    # Switching Type flips which fields apply AND clears the now-inapplicable ones so no stale
+    # greyed values linger (Qty/Rate for Fixed; the flat Total for rate-based).
+    _kind_toggle = ("var r=this.closest('tr'),fx=this.value==='fixed',"
+                    "q=r.querySelector('[name=labor_new_hours]'),"
+                    "rt=r.querySelector('[name=labor_new_rate]'),"
+                    "t=r.querySelector('[name=labor_new_amount]');"
+                    "q.disabled=fx;rt.disabled=fx;t.readOnly=!fx;"
+                    "if(fx){q.value='';rt.value='';t.value='';}"
+                    "else{var a=(parseFloat(q.value)||0)*(parseFloat(rt.value)||0);t.value=a?a.toFixed(2):'';}")
+    # Clicking + Add with the required text field empty flashes it red instead of failing silently.
+    _add_validate = ("var q=this.closest('tr').querySelector('.recipe-req');"
+                     "if(q&&!q.value.trim()){q.classList.add('field-flash-error');q.focus();"
+                     "setTimeout(function(){q.classList.remove('field-flash-error');},1500);"
+                     "event.stopImmediatePropagation();event.preventDefault();return false;}")
+    labor_add_row = Tr(
+        Td(Input(type="text", name="labor_new_op", value="", placeholder="Add an operation…", cls="recipe-req", onkeydown=_add_enter)),
+        Td(Select(*[Option(lbl, value=val, selected=(val == "hourly")) for val, lbl in _LABOR_KIND_LABELS.items()],
+                  name="labor_new_kind", cls="labor-kind", onchange=_kind_toggle)),
+        Td(Input(type="number", name="labor_new_hours", value="", placeholder="0", step="any", min="0", cls="cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
+        Td(Input(type="number", name="labor_new_rate", value="", placeholder="0", step="any", min="0", cls="cell--number", oninput=_live_total, onkeydown=_add_enter), cls="cell--number"),
+        # Total: read-only computed preview for rate-based (default Hourly), editable only for Fixed.
+        Td(Input(type="number", name="labor_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", readonly=True, onkeydown=_add_enter), cls="cell--number"),
+        Td(Button("Save", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
+                  hx_post=f"{sec}?action=add_labor", onclick=_add_validate, **_add), cls="cell--actions"),
+        cls="recipe-add-row",
+    )
+    oh_add_row = Tr(
+        Td(Input(type="text", name="oh_new_desc", value="", placeholder="Add a cost…", cls="recipe-req", onkeydown=_add_enter)),
+        Td(Input(type="number", name="oh_new_amount", value="", placeholder="0", step="any", min="0", cls="cell--number", onkeydown=_add_enter), cls="cell--number"),
+        Td(Button("Save", type="button", cls="btn btn--xs btn--secondary recipe-add-btn",
+                  hx_post=f"{sec}?action=add_overhead", onclick=_add_validate, **_add), cls="cell--actions"),
+        cls="recipe-add-row",
+    )
+    materials = Table(
+        Thead(Tr(Th("Component SKU"), Th("Quantity", cls="cell--number"), Th("Unit"),
+                 Th(f"Unit cost{cur_label}", cls="cell--number"), Th(f"Cost{cur_label}", cls="cell--number"),
+                 Th("", cls="cell--actions"))),
+        Tbody(*[_comp_row(i, c) for i, c in enumerate(components)], comp_add_row),
+        cls="data-table",
+    )
+    labor = Table(
+        Thead(Tr(Th("Operation"), Th("Type"), Th("Qty", cls="cell--number"),
+                 Th(f"Rate{cur_label}", cls="cell--number"), Th(f"Total{cur_label}", cls="cell--number"),
+                 Th("", cls="cell--actions"))),
+        Tbody(*[_labor_row(i, l) for i, l in enumerate(labor_rows)], labor_add_row),
+        cls="data-table",
+    )
+    overhead = Table(
+        Thead(Tr(Th("Description"), Th(f"Amount{cur_label}", cls="cell--number"), Th("", cls="cell--actions"))),
+        Tbody(*[_oh_row(i, o) for i, o in enumerate(overhead_rows)], oh_add_row),
+        cls="data-table",
+    )
+
+    def _section_head(title: str, total_key: str) -> FT:
+        """Section title with its running total on the right (GDR §4: currency right-aligned)."""
+        return Div(
+            H3(title, cls="section-title"),
+            Span(_recipe_money(recipe.get(total_key), currency), cls="recipe-section-total"),
+            cls="recipe-section-head",
+        )
+
+    has_recipe = bool((item.get("recipe") or {}).get("components"))
+
+    # Mark-to-market is automatic: changing a component's cost recosts every item that uses it
+    # (see the inventory pricing endpoint + manufacturing set_item_recipe), so there is no
+    # manual "re-cost dependents" control here.
+    # Right column, top to bottom: product images, then the drop-files area directly under them.
+    # The Cost summary sits under the recipe (left column), right-aligned like a totals block.
+    right_col = [
+        _workflow_gallery(entity_id, item),
+        _item_files_section(entity_id, item),
+    ]
+
+    has_rows = bool(components or labor_rows or overhead_rows)
+    flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
+
+    # No Save button: every change persists automatically. Clear keeps an inline confirm.
+    clear_action = ""
+    if has_rows:
+        clear_action = Div(
+            Button("Clear recipe", type="button", cls="btn btn--ghost btn--danger",
+                   onclick="this.style.display='none';this.nextElementSibling.style.display='inline-flex';"),
+            Span(
+                Span("Clear all rows?", cls="confirm-label"),
+                Button("Yes, clear", type="button", cls="btn btn--danger btn--xs",
+                       hx_post=f"{sec}?action=clear", **_htmx),
+                Button("Cancel", type="button", cls="btn btn--ghost btn--xs",
+                       onclick="var w=this.closest('.clear-confirm');w.style.display='none';w.previousElementSibling.style.display='';"),
+                cls="clear-confirm", style="display:none;",
+            ),
+            cls="clear-recipe-wrap",
+        )
+
+    # Per-picker scope state rides in the form so it survives re-renders.
+    scope_state = Input(type="hidden", name="show_all_components", value="on") if show_all else ""
+
+    # Auto-save for the one standalone form field (output qty); rows save per-cell.
+    _save = {"hx_post": f"/api/items/{entity_id}/recipe-autosave", "hx_trigger": "change",
+             "hx_include": "#recipe-form", "hx_swap": "none"}
+
+    return Div(
+        Form(
+            flash_el,
+            scope_state,
+            Div("All changes save automatically. Double-click a value to edit it.",
+                id="recipe-save-status", cls="recipe-save-status hint"),
+            Div(
+                Label("Output quantity per batch", For="output_qty"),
+                Input(type="number", id="output_qty", name="output_qty",
+                      value=f"{recipe.get('output_qty', 1) or 1:g}", min="0.001", step="any", cls="cell--number", **_save),
+                P("Unit cost = total recipe cost ÷ this quantity.", cls="hint"),
+                cls="detail-card recipe-block",
+            ),
+            Div(_section_head("Materials", "materials_cost"), materials, cls="detail-card recipe-block"),
+            Div(_section_head("Labor", "labor_cost"), labor, cls="detail-card recipe-block"),
+            Div(_section_head("Overhead", "overhead_cost"), overhead, cls="detail-card recipe-block"),
+            # Cost summary as a right-aligned totals block under the recipe (like a document's totals).
+            Div(_recipe_cost_card(entity_id, item, currency), cls="recipe-totals-wrap"),
+            clear_action,
+            id="recipe-form",
+        ),
+        Div(*right_col, cls="recipe-right"),
+        id="recipe-section",
+        cls="recipe-grid",
+        # Any per-cell or output-qty save fires "recipeSaved"; the whole section re-renders so
+        # the per-row costs, the per-section totals and the cost summary all stay consistent.
+        hx_get=f"/api/items/{entity_id}/recipe-section",
+        hx_trigger="recipeSaved from:body",
+        hx_include="#recipe-form",
+        hx_swap="outerHTML",
+    )
+
+
+def _production_block(entity_id: str, item: dict, hub: dict, cur: str,
+                      flash_msg: str | None = None, flash_kind: str = "success") -> FT:
+    """The product Manufacturing-tab production hub: open demand for this product (with coverage) +
+    its work orders. Both tables are client-sortable and Excel-filterable with from/to due-date
+    filters, and paginate when long. Completed/cancelled work orders are hidden by default via the
+    Status filter (re-check them in its funnel to show them) - no separate toggle."""
+    from ui.routes.manufacturing import _status_badge as _coverage_badge
+    demand = hub.get("demand", []) or []
+    runs = hub.get("runs", []) or []
+    flash_el = Div(flash_msg, cls=f"flash flash--{flash_kind}", role="status") if flash_msg else ""
+
+    def _doc_url(d: dict) -> str:
+        did = str(d.get("doc_id", ""))
+        return f"/lists/{did}" if did.startswith("list:") else f"/docs/{did}"
+
+    demand_rows = [
+        Tr(
+            Td(A(d.get("doc_number") or d.get("doc_id"), href=_doc_url(d), cls="table-link")),
+            Td((d.get("doc_type") or "").replace("_", " ").title()),
+            Td(d.get("contact_name") or EMPTY),
+            Td(f"{float(d.get('quantity', 0)):g}", cls="cell--number"),
+            Td(d.get("due") or EMPTY, cls="cell--center"),
+            Td(_coverage_badge(d["coverage"]) if d.get("coverage") else EMPTY, cls="cell--center"),
+            cls="data-row",
+        )
+        for d in demand
+    ]
+    demand_tbl = Div(
+        date_range_filter("wo-demand-table", 4, "Due date") if demand_rows else "",
+        Table(
+            Thead(Tr(
+                sortable_th("Document", 0), filter_th("Type", 1, sortable=True),
+                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3, right=True),
+                sortable_th("Due", 4, center=True), filter_th("Coverage", 5, sortable=True, center=True),
+            )),
+            Tbody(*demand_rows) if demand_rows else Tbody(Tr(Td("No open demand.", colspan="6", cls="empty-row"))),
+            cls="data-table js-table", id="wo-demand-table", **{"data-page-size": "25"},
+        ),
+        table_pager("wo-demand-table"),
+    )
+
+    # Work orders are shown in a table that surfaces the order each one fulfils. The status is a
+    # badge (with a tooltip); the lifecycle action is a concise per-row Action dropdown. Transitions
+    # have side effects (Complete issues components, receives output and posts a JE).
+    def _wo_status_badge(status: str) -> FT:
+        from ui.routes.manufacturing import RUN_STATUS_HELP
+        s = (status or "planned").lower()
+        help_txt = RUN_STATUS_HELP.get(s, "")
+        return Span(s.replace("_", " ").title(), cls=f"badge badge--{s.replace('_', '-')}",
+                    **({"title": help_txt} if help_txt else {}))
+
+    def _wo_action_select(rid: str, status: str) -> FT:
+        opts = [Option("Action…", value="", disabled=True, selected=True)]
+        if status == "planned":
+            opts.append(Option("Start", value="start"))
+        if status == "in_progress":
+            opts += [Option("Complete", value="complete"), Option("Put on hold", value="hold")]
+        if status == "on_hold":
+            opts.append(Option("Resume", value="resume"))
+        if status not in ("completed", "cancelled"):
+            opts.append(Option("Cancel", value="cancel"))
+        if len(opts) == 1:  # closed run - no further actions
+            return Span(EMPTY)
+        return Select(*opts, name="action", cls="wo-action-select", hx_trigger="change",
+                      hx_post=f"/api/items/{entity_id}/runs/{rid}/act",
+                      hx_target="#production-block", hx_swap="outerHTML", hx_disabled_elt="this")
+
+    def _wo_source_cell(run: dict) -> FT:
+        src_id, src_no = run.get("source_doc_id"), run.get("source_doc_number")
+        if src_id and src_no:
+            href = f"/lists/{src_id}" if str(src_id).startswith("list:") else f"/docs/{src_id}"
+            return A(src_no, href=href, cls="table-link")
+        return Span("To stock", cls="hint")  # no linked order = made to stock
+
+    def _wo_row(run: dict) -> FT:
+        rid, status = run.get("id"), run.get("status", "planned")
+        qty = float((run.get("expected_outputs") or [{}])[0].get("quantity", 0))
+        return Tr(
+            Td("WO-" + str(rid).split(":")[-1][:8], cls="wo-ref"),
+            Td(_wo_source_cell(run)),
+            Td(run.get("source_contact_name") or EMPTY),
+            Td(f"{qty:g}", cls="cell--number"),
+            Td(run.get("source_due") or (run.get("created_at") or "")[:10] or EMPTY, cls="cell--center"),
+            Td(_wo_status_badge(status)),
+            Td(_wo_action_select(rid, status), cls="cell--actions"),
+            cls="data-row" + (" data-row--inactive" if status == "cancelled" else ""),
+        )
+
+    runs_view = (Div(
+        date_range_filter("wo-orders-table", 4, "Due date"),
+        Table(
+            Thead(Tr(
+                sortable_th("Work order", 0), filter_th("Source order", 1, sortable=True),
+                filter_th("Customer", 2, sortable=True), sortable_th("Qty", 3, right=True),
+                sortable_th("Due", 4, center=True),
+                filter_th("Status", 5, sortable=True, default_exclude=["Completed", "Cancelled"]),
+                Th("", cls="cell--actions"),
+            )),
+            Tbody(*[_wo_row(r) for r in runs]),
+            cls="data-table js-table", id="wo-orders-table", **{"data-page-size": "25"},
+        ),
+        table_pager("wo-orders-table"),
+    ) if runs else P("No work orders to show. Create them from an order or on the Demand Planning page.", cls="hint"))
+
+    return Div(
+        flash_el,
+        Div(H3("Open demand", cls="section-title"),
+            P("Orders that have this item on order, with how well current supply covers each.", cls="hint"),
+            demand_tbl, cls="detail-card recipe-block"),
+        Div(
+            H3("Work orders", cls="section-title"),
+            P("Production tasks for this item, each shown with the order it fulfils. Completed and "
+              "cancelled work orders are hidden by default - re-check them in the Status filter to "
+              "show them. Advance one with its Action menu.", cls="hint"),
+            runs_view, cls="detail-card recipe-block"),
+        Script(COLUMN_FILTER_JS),
+        Script(ENHANCED_TABLE_JS),
+        # Re-seed the Status default-exclude (hide Completed/Cancelled) on every (re)render — runs
+        # on the initial lazy load and after each Action-dropdown swap.
+        Script("window.celerpRefreshFilters&&window.celerpRefreshFilters(document.getElementById('production-block'));"),
+        id="production-block",
+    )
 
 
 def _item_detail_tabs(
@@ -4648,8 +5959,8 @@ def _item_detail_tabs(
     price_lists: list[dict] | None = None,
     cell_renderers: dict | None = None,
 ) -> FT:
-    """GemCloud-style tabbed item detail: Details | Pricing | Activity."""
-    tabs = [("details", "Details"), ("pricing", "Pricing"), ("activity", "Activity")]
+    """Tabbed item detail: Details | Pricing | Manufacturing | Activity."""
+    tabs = [("details", "Details"), ("pricing", "Pricing"), ("manufacturing", "Manufacturing"), ("activity", "Activity")]
     tab_bar = Div(
         *[
             A(
@@ -4663,15 +5974,33 @@ def _item_detail_tabs(
     )
     if active_tab == "pricing":
         if price_lists:
-            panel = Div(
-                _pricing_form(entity_id, item, price_lists, currency),
-                cls="detail-grid detail-grid--single",
-            )
+            # _pricing_form owns its own Cost / Sell-prices grid; no single-column wrapper.
+            panel = _pricing_form(entity_id, item, price_lists, currency)
         else:
             panel = Div(
                 _detail_table(entity_id, item, pricing_fields, title="Pricing", currency=currency),
                 cls="detail-grid detail-grid--single",
             )
+    elif active_tab == "manufacturing":
+        # Lazy-loaded sections. recipe-section holds the recipe (left) plus the image gallery,
+        # drop-files area, and cost summary (right column). The workflow renders full-width below
+        # the cost summary, then the production hub (demand + runs).
+        panel = Div(
+            Div(
+                P("Loading…", cls="hint"),
+                hx_get=f"/api/items/{entity_id}/recipe-section",
+                hx_trigger="load", hx_swap="outerHTML", id="recipe-section",
+            ),
+            Div(
+                P("Loading…", cls="hint"),
+                hx_get=f"/api/items/{entity_id}/workflow-section",
+                hx_trigger="load", hx_swap="outerHTML", id="workflow-section",
+            ),
+            Div(
+                hx_get=f"/api/items/{entity_id}/production-block",
+                hx_trigger="load", hx_swap="outerHTML", id="production-block",
+            ),
+        )
     elif active_tab == "activity":
         panel = Div(
             _ledger_table(ledger),
@@ -4689,92 +6018,125 @@ def _item_detail_tabs(
             ) if right else Div(id="item-attributes-section"),
             cls="detail-grid",
         )
+    # Files + item operations belong with the item's core details — keep them off the
+    # Pricing / Manufacturing / Activity tabs so each tab shows only its own concern.
+    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item)) if active_tab == "details" else ()
     return Div(
         tab_bar,
         panel,
-        _item_files_section(entity_id, item),
-        _advanced_panel(entity_id, item),
+        *extras,
     )
 
 
 def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency: str | None) -> FT:
-    """Render dynamic pricing form: unit price + linked total (back-calculates unit price from total)."""
+    """Pricing tab: Cost on the left, Sell prices on the right. Every field saves automatically.
+
+    Each input autosaves on change (no Save button), consistent with the rest of the system.
+    For a manufactured item the cost is rolled from the recipe and shown read-only here — it is
+    edited on the Manufacturing tab — so the single source of truth stays the recipe.
+    """
     from ui.routes.documents import resolve_price as _resolve_price
     qty = float(item.get("quantity") or 0)
     sell_by = str(item.get("sell_by") or "unit")
     has_qty = qty > 0
-
     cur_sym = currency or ""
-    rows = []
-    for pl in price_lists:
-        pl_name = pl.get("name", "")
+    has_recipe = bool((item.get("recipe") or {}).get("components"))
+
+    from celerp.services.money import currency_dp as _currency_dp, rate_dp as _rate_dp
+    cdp, rdp = _currency_dp(currency or "USD"), _rate_dp(currency or "USD")
+
+    def _num(v: float) -> str:
+        """Plain numeric string for an input: the unit price at its full saved rate
+        precision, trailing zeros trimmed (15.285, not 15.28 and not 15.2850)."""
+        s = f"{v:.{rdp}f}"
+        return s.rstrip("0").rstrip(".") if "." in s else s
+
+    unit_hdr = f"Unit ({cur_sym} / {sell_by})" if cur_sym else f"Unit / {sell_by}"
+    total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else "Total (no stock)"
+
+    def _cur(v):
+        return Div(Span(cur_sym, cls="input-prefix") if cur_sym else "", v, cls="input-with-prefix")
+
+    def _row(pl_name: str, editable: bool) -> FT:
         conventional_key = f"{pl_name.lower()}_price"
         price_val = _resolve_price(item, pl_name)
-        unit_val = f"{price_val:.2f}" if price_val else ""
+        unit_val = _num(price_val) if price_val else ""
         total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
-        # JS IDs scoped per price list
-        unit_id = f"unit_{conventional_key}"
-        total_id = f"total_{conventional_key}"
-        cur_prefix = Span(cur_sym, cls="input-prefix") if cur_sym else ""
-        rows.append(Tr(
-            Td(pl_name, cls="detail-label"),
-            Td(
-                Div(
-                    cur_prefix,
-                    Input(
-                        type="number", name=conventional_key, id=unit_id,
-                        value=unit_val, step="0.01", min="0", placeholder="—",
-                        cls="form-input",
-                        oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
-                    ),
-                    cls="input-with-prefix",
-                )
-            ),
-            Td(
-                Div(
-                    cur_prefix,
-                    Input(
-                        type="number", id=total_id,
-                        value=total_val, step="0.01", min="0", placeholder="—",
-                        cls="form-input",
-                        disabled=not has_qty,
-                        oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
-                    ),
-                    cls="input-with-prefix",
-                )
-            ),
-        ))
+        if not editable:
+            # Recipe-managed cost: read-only display (edited on the Manufacturing tab).
+            return Tr(
+                Td(pl_name, cls="detail-label"),
+                Td(_cur(Span(unit_val or EMPTY, cls="form-input form-input--readonly"))),
+                Td(_cur(Span(total_val or EMPTY, cls="form-input form-input--readonly")) if has_qty else Span(EMPTY)),
+            )
+        unit_id, total_id = f"unit_{conventional_key}", f"total_{conventional_key}"
+        # Enter commits by blurring (which fires `change` → the autosave below), matching the
+        # rest of the system where Enter always commits an inline edit.
+        enter_commits = "if(event.key==='Enter'){event.preventDefault();this.blur();}"
+        # Autosave on change (blur/Enter); the linked total mirrors the unit live via oninput.
+        _save = {"hx_post": f"/api/items/{entity_id}/price", "hx_trigger": "change",
+                 "hx_include": "this", "hx_swap": "none"}
+        unit_input = Input(type="number", name=conventional_key, id=unit_id, value=unit_val,
+                           step="any", min="0", placeholder="--", cls="form-input",
+                           oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
+                           onkeydown=enter_commits, **_save)
+        total_input = Input(type="number", id=total_id, value=total_val, step="0.01", min="0",
+                            placeholder="--", cls="form-input", disabled=not has_qty,
+                            oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty},{cdp},{rdp})",
+                            onkeydown=enter_commits,
+                            # Editing the total back-fills the unit, then re-fires its autosave.
+                            onchange=f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))")
+        return Tr(Td(pl_name, cls="detail-label"), Td(_cur(unit_input)), Td(_cur(total_input)))
 
-    unit_hdr = f"Unit price ({cur_sym} / {sell_by})" if cur_sym else f"Unit price / {sell_by}"
-    total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else f"Total (no stock)"
+    def _card(title: str, lists: list[dict], editable: bool, note: str | None = None) -> FT:
+        return Div(
+            H3(title, cls="section-title"),
+            Table(Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
+                  Tbody(*[_row(pl.get("name", ""), editable) for pl in lists]),
+                  cls="detail-table"),
+            P(note, cls="hint") if note else "",
+            cls="detail-card",
+        )
+
+    is_cost = lambda pl: pl.get("name", "").lower() == "cost"
+    cost_lists = [pl for pl in price_lists if is_cost(pl)]
+    sell_lists = [pl for pl in price_lists if not is_cost(pl)]
+
+    cards = []
+    if cost_lists:
+        note = "Rolled up from the recipe and kept in sync automatically. Edit it on the Manufacturing tab." if has_recipe else None
+        cards.append(_card("Cost", cost_lists, editable=not has_recipe, note=note))
+    if sell_lists:
+        cards.append(_card("Sell prices", sell_lists, editable=True))
 
     return Div(
-        H3(t("page.pricing"), cls="section-title"),
         Script("""
+function roundTo(x, d) { var f = Math.pow(10, d); return Math.round((x + Number.EPSILON) * f) / f; }
 function syncPricingTotal(unitId, totalId, qty) {
   var u = parseFloat(document.getElementById(unitId).value);
   var tEl = document.getElementById(totalId);
-  tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(2);
+  if (tEl) tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(2);
 }
-function syncPricingUnit(unitId, totalId, qty) {
+function syncPricingUnit(unitId, totalId, qty, cdp, rdp) {
   if (!qty) return;
   var total = parseFloat(document.getElementById(totalId).value);
   var uEl = document.getElementById(unitId);
-  uEl.value = isNaN(total) ? '' : (total / qty).toFixed(2);
+  if (isNaN(total)) { uEl.value = ''; return; }
+  // Fewest decimals (cdp..rdp) where unit*qty still rounds to the entered total - mirrors the
+  // server's unit_price_from_total so the saved unit price actually matches the total entered.
+  var target = roundTo(total, cdp), out = null;
+  for (var d = cdp; d <= rdp; d++) {
+    var cand = roundTo(total / qty, d);
+    if (roundTo(cand * qty, cdp) === target) { out = cand.toFixed(d); break; }
+  }
+  if (out === null) out = (total / qty).toFixed(rdp);
+  if (out.indexOf('.') >= 0) { out = out.replace(/0+$/, ''); if (out.charAt(out.length - 1) === '.') out = out.slice(0, -1); }
+  uEl.value = out;
 }
 """),
-        Form(
-            Table(
-                Thead(Tr(Th(t("th.price_list")), Th(unit_hdr), Th(total_hdr))),
-                Tbody(*rows),
-                cls="detail-table",
-            ),
-            Button(t("btn.save_prices"), type="submit", cls="btn btn--primary mt-sm"),
-            hx_post=f"/api/items/{entity_id}/price",
-            hx_swap="none",
-            hx_on__after_request="window.location.reload()",
-        ),
-        cls="detail-card",
+        Div("Prices save automatically.", id="pricing-save-status", cls="recipe-save-status hint"),
+        Div(*cards, cls="pricing-grid"),
+        cls="pricing-tab",
     )
 
 
@@ -4795,6 +6157,7 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "
                 options=f.get("options"),
                 editable=f.get("editable", True),
                 currency=currency,
+                label_map=_INVENTORY_TYPE_LABELS if key == "inventory_type" else None,
             )
         return Tr(
             Td(f.get("label", key), (Span("?", cls="field-tooltip", title=t(f["tooltip_key"])) if f.get("tooltip_key") else ""), cls="detail-label"),
@@ -5210,25 +6573,25 @@ def _advanced_panel(entity_id: str, item: dict) -> FT:
         split_card = Div(
             Form(
                 Strong(t("inv.u2702_split"), cls="action-card-title"),
-                # ── Manual split rows ──
-                Div(
-                    Div(
-                        Input(type="number", name="split_qty",
-                              placeholder=f"{sell_by_label} to split off",
-                              title=_qty_title,
-                              step="any", min="0.001",
-                              cls="form-input form-input--sm split-qty-main", required=True),
-                        *_comp_inputs,
-                        cls="split-qty-row",
-                    ),
-                    id="split-qty-rows",
-                ),
+                # ── Manual split: [+] [input(s)] [Go] on one line ──
                 Div(
                     Button("+", type="button", cls="btn btn--secondary btn--xs split-add-btn",
-                           onclick="addSplitRow(this)"),
+                           onclick="addSplitRow(this)", title="Add another split"),
+                    Div(
+                        Div(
+                            Input(type="number", name="split_qty",
+                                  placeholder=f"{sell_by_label} to split off",
+                                  title=_qty_title,
+                                  step="any", min="0.001",
+                                  cls="form-input form-input--sm split-qty-main", required=True),
+                            *_comp_inputs,
+                            cls="split-qty-row",
+                        ),
+                        id="split-qty-rows",
+                    ),
                     Button(t("btn.go"), type="submit", cls="btn btn--primary btn--xs",
                            onclick="(function(btn){btn.disabled=true;btn.style.opacity='0.5';btn.form.requestSubmit();})(this);return false;"),
-                    cls="action-card-row", style="margin-top:4px",
+                    cls="action-card-row split-line",
                 ),
                 # ── Divider + Batch Split heading ──
                 Hr(cls="action-card-divider"),

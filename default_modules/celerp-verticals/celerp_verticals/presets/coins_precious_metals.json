@@ -1,7 +1,7 @@
 {
   "name": "coins_precious_metals",
   "display_name": "Coins & Precious Metals",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "gold_bullion",
     "silver_bullion",
@@ -13,15 +13,12 @@
   ],
   "modules": [
     "celerp-inventory",
-    "celerp-warehousing",
     "celerp-labels",
     "celerp-docs",
     "celerp-contacts",
     "celerp-accounting",
     "celerp-reports",
     "celerp-dashboard",
-    "celerp-backup",
-    "celerp-verticals",
-    "celerp-ai"
+    "celerp-verticals"
   ]
 }

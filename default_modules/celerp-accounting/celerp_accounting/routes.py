@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -33,6 +33,10 @@ THAI_CHART_OF_ACCOUNTS: list[dict] = [
     {"code": "1130", "name": "Inventory", "account_type": "asset", "parent_code": "1100"},
     {"code": "1130-P", "name": "Inventory - Purchased", "account_type": "asset", "parent_code": "1130"},
     {"code": "1130-OB", "name": "Inventory - Opening Balance", "account_type": "asset", "parent_code": "1130"},
+    {"code": "1130-FRT", "name": "Inventory - Freight Clearing", "account_type": "asset", "parent_code": "1130"},
+    {"code": "1130-INS", "name": "Inventory - Insurance Clearing", "account_type": "asset", "parent_code": "1130"},
+    {"code": "1130-DTY", "name": "Inventory - Import Duty Clearing", "account_type": "asset", "parent_code": "1130"},
+    {"code": "1130-IVT", "name": "Inventory - Non-Recoverable Import VAT Clearing", "account_type": "asset", "parent_code": "1130"},
     {"code": "1140", "name": "Prepaid Expenses", "account_type": "asset", "parent_code": "1100"},
     {"code": "1150", "name": "VAT Receivable (Input VAT)", "account_type": "asset", "parent_code": "1100"},
     {"code": "1200", "name": "Non-Current Assets", "account_type": "asset", "parent_code": "1000"},
@@ -340,7 +344,10 @@ async def batch_import_accounting(
 
     keys = [r.idempotency_key for r in body.records]
     existing_keys = set((await session.execute(
-        _select(LedgerEntry.idempotency_key).where(LedgerEntry.idempotency_key.in_(keys))
+        _select(LedgerEntry.idempotency_key).where(
+            LedgerEntry.company_id == company_id,
+            LedgerEntry.idempotency_key.in_(keys),
+        )
     )).scalars().all())
 
     create_entity_ids = [r.entity_id for r in body.records if r.event_type == "acc.journal_entry.created"]

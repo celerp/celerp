@@ -223,6 +223,7 @@ async def auth(session, _setup_ids):
     uid = _setup_ids["user_id"]
     session.add(Company(id=cid, name="TestCo", slug="testco", settings={"currency": "USD"}))
     session.add(User(id=uid, email="admin@test.co", name="Admin", auth_hash="x", is_active=True))
+    await session.flush()  # parents before membership for Postgres FK checks
     session.add(UserCompany(id=uuid.uuid4(), user_id=uid, company_id=cid, role="admin", is_active=True))
     await session.commit()
     token, _ = create_access_token(subject=str(uid), company_id=str(cid), role="admin")
@@ -1160,3 +1161,169 @@ async def test_revert_lines_deduplicates_duplicate_ids(client, auth, _setup_ids)
 
     item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
     assert item["status"] == "available"
+
+
+# ---------------------------------------------------------------------------
+# Stock guard on fulfill-lines (Phase 1: prohibit over-commit)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_rejects_stock_shortage(client, auth):
+    """Invoicing more than the parcel's stock must reject the whole fulfill (409)."""
+    item_id = await _create_item(client, auth, "SHORTAGE-A", 1)
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "SHORTAGE-A", "entity_id": item_id, "quantity": 999, "unit_price": 1.0}],
+    )
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 409, r.text
+    assert "stock" in r.json()["detail"].lower()
+    # Nothing was fulfilled — the item stays available.
+    item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item["status"] == "available"
+
+
+@pytest.mark.asyncio
+async def test_fulfill_lines_rejects_partial_when_splitting_off(client, auth):
+    """A partial draw of a non-splittable item must reject (409) — can't split."""
+    item_id = await _create_item(client, auth, "NOSPLIT-A", 10)
+    pr = await client.patch(f"/items/{item_id}", headers=auth["headers"],
+                            json={"fields_changed": {"allow_splitting": {"old": True, "new": False}}})
+    assert pr.status_code == 200, pr.text
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "NOSPLIT-A", "entity_id": item_id, "quantity": 3, "unit_price": 1.0}],
+    )
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 409, r.text
+    assert "splitting" in r.json()["detail"].lower()
+    item = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert item["status"] == "available"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: auto-split a splittable parcel on partial fulfillment
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_fulfill_split_partial_generic(client, auth):
+    """Partial fulfill of a splittable liter parcel splits off a child; the mother
+    keeps the remainder under its original SKU and the doc line points at the child."""
+    item_id = await _create_item(client, auth, "SPLIT-L", 10, sell_by="liter")
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "SPLIT-L", "entity_id": item_id, "quantity": 3, "unit_price": 1.0}],
+    )
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+
+    mother = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert mother["status"] == "available"
+    assert float(mother["quantity"]) == 7
+
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    li = doc["line_items"][0]
+    assert li["sku"] == "SPLIT-L.1"
+    child_eid = li.get("entity_id") or li.get("item_id")
+    assert child_eid and child_eid != item_id
+    child = (await client.get(f"/items/{child_eid}", headers=auth["headers"])).json()
+    assert float(child["quantity"]) == 3
+    assert child["status"] != "available"  # the child was fulfilled
+
+
+@pytest.mark.asyncio
+async def test_fulfill_split_piece_item_with_pieces(client, auth):
+    """A piece-sold parcel splits when the line carries pieces == qty."""
+    item_id = await _create_item(client, auth, "SPLIT-P2", 10, sell_by="piece")
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "SPLIT-P2", "entity_id": item_id, "quantity": 3, "pieces": 3, "unit_price": 1.0}],
+    )
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+    mother = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert float(mother["quantity"]) == 7
+
+
+@pytest.mark.asyncio
+async def test_fulfill_split_piece_item_derives_pieces(client, auth):
+    """A piece-sold parcel splits on a partial draw even without pieces on the line:
+    the quantity IS the pieces, so the child pieces are derived from qty."""
+    item_id = await _create_item(client, auth, "SPLIT-P3", 10, sell_by="piece")
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "SPLIT-P3", "entity_id": item_id, "quantity": 3, "unit_price": 1.0}],
+    )
+    r = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                          json={"line_entity_ids": [item_id]})
+    assert r.status_code == 200, r.text
+    mother = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert mother["status"] == "available"
+    assert float(mother["quantity"]) == 7  # the 3-piece child was split off
+
+
+@pytest.mark.asyncio
+async def test_fulfill_split_secondary_overshoot_floors_mother(client, auth):
+    """Partial draw: the child's secondary measure is uncapped (may exceed the parcel)
+    and the mother floors at 0. sell_by=piece, mother 5pcs/15ct -> child 3pcs/20ct,
+    mother 2pcs/0ct."""
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": "SPLIT-SEC", "name": "SPLIT-SEC", "quantity": 5, "sell_by": "piece",
+        "weight": 15, "weight_unit": "carat",
+    })
+    assert r.status_code == 200, r.text
+    item_id = r.json()["id"]
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "SPLIT-SEC", "entity_id": item_id, "quantity": 3, "weight": 20, "unit_price": 1.0}],
+    )
+    fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id]})
+    assert fr.status_code == 200, fr.text
+    mother = (await client.get(f"/items/{item_id}", headers=auth["headers"])).json()
+    assert float(mother["quantity"]) == 2            # 5 - 3
+    assert float(mother.get("weight") or 0) == 0     # max(0, 15 - 20)
+    doc = (await client.get(f"/docs/{doc_id}", headers=auth["headers"])).json()
+    li = doc["line_items"][0]
+    child = (await client.get(f"/items/{li.get('entity_id') or li.get('item_id')}", headers=auth["headers"])).json()
+    assert float(child["quantity"]) == 3
+    assert float(child["weight"]) == 20              # uncapped
+
+
+@pytest.mark.asyncio
+async def test_fulfill_whole_draw_secondary_must_equal(client, auth):
+    """A whole-quantity draw must take all the secondary measure — a reduced weight is rejected."""
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": "SPLIT-WHOLE", "name": "SPLIT-WHOLE", "quantity": 4, "sell_by": "piece",
+        "weight": 12, "weight_unit": "carat",
+    })
+    item_id = r.json()["id"]
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "SPLIT-WHOLE", "entity_id": item_id, "quantity": 4, "weight": 10, "unit_price": 1.0}],
+    )
+    fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id]})
+    assert fr.status_code == 409, fr.text
+    assert "whole" in fr.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_fulfill_whole_draw_secondary_equal_ok(client, auth):
+    """A whole-quantity draw with the matching secondary measure fulfills the parcel."""
+    r = await client.post("/items", headers=auth["headers"], json={
+        "sku": "SPLIT-WHOLE-OK", "name": "SPLIT-WHOLE-OK", "quantity": 4, "sell_by": "piece",
+        "weight": 12, "weight_unit": "carat",
+    })
+    item_id = r.json()["id"]
+    doc_id = await _create_and_finalize_invoice(
+        client, auth,
+        [{"sku": "SPLIT-WHOLE-OK", "entity_id": item_id, "quantity": 4, "weight": 12, "unit_price": 1.0}],
+    )
+    fr = await client.post(f"/docs/{doc_id}/fulfill-lines", headers=auth["headers"],
+                           json={"line_entity_ids": [item_id]})
+    assert fr.status_code == 200, fr.text

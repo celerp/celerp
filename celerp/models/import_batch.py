@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 # ImportBatch model — owned by celerp-inventory module.
 # Canonical definition here; imported by celerp-inventory module package.
 

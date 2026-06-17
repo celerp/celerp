@@ -47,7 +47,7 @@
     {
       "key": "expiry_date",
       "label": "Expiry Date",
-      "type": "text",
+      "type": "date",
       "options": [],
       "visible_to_roles": []
     }

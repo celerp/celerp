@@ -58,7 +58,7 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
         Div(price, Span("/mo"), cls="cloud-plan-card__price"),
         Div(desc, cls="cloud-plan-card__desc"),
         Ul(*[Li(b) for b in bullets]),
-        A(t("settings.subscribe", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
+        A(t("cloud.start_trial", lang), href=subscribe_url, target="_blank", cls="btn btn--primary btn--sm"),
         cls=card_cls,
     )
 
@@ -78,7 +78,7 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
             ),
             cls="cloud-hero",
         ),
-        # Feature cards
+        # Feature cards - three platform features on top...
         Div(
             _feature_card(
                 "🔗", t("cloud.feature_url_title", lang),
@@ -91,19 +91,32 @@ def _value_prop_page(iid: str, lang: str = "en") -> FT:
                 lang=lang,
             ),
             _feature_card(
-                "🔄", t("cloud.feature_connector_title", lang),
-                t("cloud.feature_connector_desc", lang),
-                lang=lang,
-            ),
-            _feature_card(
                 "🤖", t("cloud.feature_ai_title", lang),
                 t("cloud.feature_ai_desc", lang),
                 lang=lang,
             ),
             cls="cloud-features",
         ),
-        # Plans
-        H3(t("page.plans", lang), style="margin-bottom:0;"),
+        # ...and the two sync features paired below
+        Div(
+            _feature_card(
+                "🛒", t("cloud.feature_website_title", lang),
+                t("cloud.feature_website_desc", lang),
+                lang=lang,
+            ),
+            _feature_card(
+                "📊", t("cloud.feature_accounting_title", lang),
+                t("cloud.feature_accounting_desc", lang),
+                lang=lang,
+            ),
+            cls="cloud-features cloud-features--pair",
+        ),
+        # Plans - the centred trial banner introduces them; no left-aligned heading needed
+        Div(
+            Div(t("cloud.trial_head", lang), cls="cloud-trial-banner__head"),
+            Div(t("cloud.trial_sub", lang), cls="cloud-trial-banner__sub"),
+            cls="cloud-trial-banner",
+        ),
         Div(
             _plan_card(
                 t("cloud.plan_cloud_name", lang), "USD $29",

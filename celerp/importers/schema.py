@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """
 Celerp Import Format (CIF) - canonical intermediate format for all data imports.
 
@@ -56,7 +56,7 @@ class CIFRecord(BaseModel):
     data: dict[str, Any]
 
     # Provenance
-    source: str = Field(..., description="Import source identifier, e.g. 'import:gemcloud'")
+    source: str = Field(..., description="Import source identifier, e.g. 'import:old_system'")
     source_id: str | None = Field(None, description="Original ID in the source system")
     idempotency_key: str = Field(..., description="Globally unique key - re-running import is safe")
 
@@ -177,7 +177,7 @@ class CIFImportBundle(BaseModel):
 class CIFImportManifest(BaseModel):
     """Top-level wrapper written to my_company_cif.json."""
     cif_version: str = CIF_VERSION
-    source: str                               # e.g. "mycompany_gemcloud_2026"
+    source: str                               # e.g. "mycompany_2026"
     exported_at: datetime
     bundle: CIFImportBundle
     stats: dict[str, Any] = Field(default_factory=dict)

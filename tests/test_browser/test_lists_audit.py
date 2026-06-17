@@ -94,13 +94,27 @@ def test_status_cards_present(page: Page, ui_server: str, api):
 
 # ── LA-04: New List button ────────────────────────────────────────────────────
 
-def test_new_list_button_redirects_to_detail(page: Page, ui_server: str, api):
-    """LA-04: Clicking New List creates a draft and redirects to /lists/{id}."""
-    page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
-    new_btn = page.locator("button:has-text('New List')")
-    expect(new_btn).to_be_visible()
-    new_btn.click()
-    page.wait_for_url("**/lists/**", timeout=5000)
+def test_new_list_empty_state_shows_two_buttons(page: Page, ui_server: str, api):
+    """LA-04a: When the Lists table is empty, there are two 'New List' controls —
+    the toolbar button and the empty-state CTA (both legitimate). Force the empty
+    render with a no-match search so this is deterministic regardless of session."""
+    page.goto(f"{ui_server}/lists?q=zzz-no-such-list-zzz", wait_until="domcontentloaded")
+    expect(page.locator("#list-table .empty-state-cta-btn")).to_be_visible()
+    assert page.locator("button:has-text('New List')").count() == 2, \
+        "Empty Lists page should show the toolbar + empty-state 'New List' buttons"
+
+
+def test_new_list_button_creates_and_redirects(page: Page, ui_server: str, api):
+    """LA-04b: With a list present, only the toolbar 'New List' button shows;
+    clicking it creates a draft and redirects to the detail page."""
+    _create_list(api)  # ensure the (drafts) view is populated -> single button
+    # preset=all so the default date filter doesn't hide the just-created (dateless) draft
+    page.goto(f"{ui_server}/lists?view=drafts&preset=all", wait_until="domcontentloaded")
+    new_btns = page.locator("button:has-text('New List')")
+    assert new_btns.count() == 1, \
+        f"Populated Lists page should show 1 'New List' button, got {new_btns.count()}"
+    new_btns.first.click()
+    page.wait_for_url(lambda url: "/lists/" in url, timeout=10000)
     assert "/lists/" in page.url, f"Expected redirect to /lists/{{id}}, got {page.url}"
     _no_crash(page, "post-new-list")
 
@@ -233,10 +247,11 @@ def test_type_tab_filters_table(page: Page, ui_server: str, api):
 def test_void_action(page: Page, ui_server: str, api):
     """LA-13: Voiding a sent list shows void status."""
     eid = _create_list(api)
-    # Send the list first so void button appears (only shows for non-draft, non-void)
-    send_r = api.post(f"/lists/{eid}/action/send", json={})
-    if send_r.status_code not in {200, 201, 204}:
-        pytest.skip(f"Could not send list to test void: {send_r.text}")
+    # Send the list first so void button appears (only shows for non-draft, non-void).
+    # The send endpoint is /lists/{id}/send (api_client.send_list); /action/send is a
+    # UI-only route and 404s against the API server.
+    send_r = api.post(f"/lists/{eid}/send", json={})
+    assert send_r.status_code in {200, 201, 204}, f"Could not send list: {send_r.text}"
     page.goto(f"{ui_server}/lists/{eid}", wait_until="domcontentloaded")
     _no_crash(page, "pre-void")
     # Click the Void <details> to expand it
@@ -274,10 +289,11 @@ def test_list_table_columns(page: Page, ui_server: str, api):
     """LA-15: Table headers include all expected columns."""
     eid = _create_list(api, "quotation")
     send_r = api.post(f"/lists/{eid}/send", json={})
+    # preset=all so the default date filter doesn't hide the (dateless) list
     if send_r.status_code not in {200, 201, 204}:
-        page.goto(f"{ui_server}/lists?view=drafts", wait_until="domcontentloaded")
+        page.goto(f"{ui_server}/lists?view=drafts&preset=all", wait_until="domcontentloaded")
     else:
-        page.goto(f"{ui_server}/lists", wait_until="domcontentloaded")
+        page.goto(f"{ui_server}/lists?preset=all", wait_until="domcontentloaded")
     _no_crash(page, "table-columns")
     table = page.locator("#list-table")
     expect(table).to_be_visible()

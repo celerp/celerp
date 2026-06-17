@@ -20,7 +20,6 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 import uuid
 
@@ -34,6 +33,22 @@ from test_helpers import make_test_token
 
 def _authed() -> dict:
     return {"celerp_token": make_test_token()}
+
+
+def _extract_function(html: str, name: str) -> str:
+    """Return a JS function's full body by brace-matching (robust to length/formatting changes)."""
+    start = html.find(f"function {name}")
+    assert start >= 0, f"{name} not found in rendered JS"
+    brace = html.find("{", start)
+    depth = 0
+    for i in range(brace, len(html)):
+        if html[i] == "{":
+            depth += 1
+        elif html[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return html[start:i + 1]
+    return html[start:]
 
 
 _DRAFT_DOC = {
@@ -115,11 +130,7 @@ class TestCelerpLineTotalInputFunction:
     @pytest.mark.asyncio
     async def test_function_updates_unit_price_not_quantity(self, draft_html):
         """celerpLineTotalInput must set unit_price.value, never quantity.value."""
-        # Find the function body
-        start = draft_html.find("function celerpLineTotalInput")
-        assert start >= 0, "celerpLineTotalInput not found in rendered JS"
-        # Take enough characters to cover the full function
-        func_body = draft_html[start: start + 600]
+        func_body = _extract_function(draft_html, "celerpLineTotalInput")
         assert "unitPriceEl.value" in func_body, (
             "celerpLineTotalInput must update unit_price"
         )
@@ -135,23 +146,21 @@ class TestCelerpLineTotalInputFunction:
     @pytest.mark.asyncio
     async def test_function_calls_celerpUpdateTotals_on_factor_zero(self, draft_html):
         """When qty=0 or 100% discount (factor==0), celerpUpdateTotals must still run."""
-        start = draft_html.find("function celerpLineTotalInput")
-        assert start >= 0
-        func_body = draft_html[start: start + 600]
-        # factor === 0 branch must still call celerpUpdateTotals() before returning
+        func_body = _extract_function(draft_html, "celerpLineTotalInput")
+        # factor === 0 branch must still call celerpUpdateTotals() before the unit-price write.
         assert "celerpUpdateTotals" in func_body[: func_body.find("if (unitPriceEl)")]
 
     @pytest.mark.asyncio
-    async def test_function_does_not_call_celerpUpdateTotals_recursively(self, draft_html):
-        """celerpLineTotalInput calls celerpUpdateTotals() once at the end — not inside loops."""
-        start = draft_html.find("function celerpLineTotalInput")
-        end = draft_html.find("\nfunction ", start + 1)
-        func_body = draft_html[start:end] if end > start else draft_html[start: start + 600]
-        # celerpUpdateTotals appears exactly twice: once in factor=0 branch, once at end
-        count = func_body.count("celerpUpdateTotals()")
-        assert count == 2, (
-            f"Expected celerpUpdateTotals() called twice in celerpLineTotalInput (factor=0 + normal), got {count}"
-        )
+    async def test_function_does_not_call_celerpUpdateTotals_in_a_loop(self, draft_html):
+        """celerpLineTotalInput calls celerpUpdateTotals() only at terminal points (one per code
+        path: cleared field, factor=0, normal) - never inside a loop, so it can't recompute-storm."""
+        func_body = _extract_function(draft_html, "celerpLineTotalInput")
+        assert "celerpUpdateTotals()" in func_body, "must recompute document totals"
+        # The real invariant: no loop construct wraps the recompute call.
+        for loop_kw in ("for (", "while (", ".forEach", "for(", "while("):
+            assert loop_kw not in func_body, (
+                f"celerpLineTotalInput must contain no loop ({loop_kw!r}) around celerpUpdateTotals"
+            )
 
 
 # ── 3. JS: _celerpCollectLines reads DOM line_total value ─────────────────────

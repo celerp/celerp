@@ -620,14 +620,14 @@ class TestMultiTenantTokenThreading:
 
     @pytest.mark.asyncio
     async def test_manufacturing_passes_token(self, ui_client):
-        """Manufacturing page must pass the request's auth token."""
+        """The Demand Planning page must pass the request's auth token."""
         calls = []
         async def _capture(token):
             calls.append(token)
             return {"items": [], "total": 0}
         with (
-            patch("ui.api_client.list_mfg_orders", new=_capture),
-            patch("ui.api_client.list_boms", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.manufacturing_to_make", new=_capture),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY_USD)),
         ):
             await ui_client.get("/manufacturing", cookies={"celerp_token": "mfg-token"})
         assert "mfg-token" in calls

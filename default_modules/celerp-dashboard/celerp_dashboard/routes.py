@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -71,6 +71,22 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
     revenue_mtd = sum(float(d.state.get("total", 0) or 0) for d in revenue_docs if _doc_month(d) == month_prefix)
     revenue_ytd = sum(float(d.state.get("total", 0) or 0) for d in revenue_docs if _doc_month(d).startswith(year_prefix))
 
+    # Revenue trend: invoiced revenue per month for the last 6 months (oldest -> current),
+    # for the dashboard line chart. Months with no invoices show as 0 so the axis stays continuous.
+    def _month_minus(n: int) -> str:
+        y, m = int(year_prefix), int(month_prefix[5:7]) - n
+        while m <= 0:
+            m += 12
+            y -= 1
+        return f"{y:04d}-{m:02d}"
+
+    trend_months = [_month_minus(n) for n in range(5, -1, -1)]
+    rev_by_month: dict[str, float] = {}
+    for d in revenue_docs:
+        mk = _doc_month(d)
+        rev_by_month[mk] = rev_by_month.get(mk, 0.0) + float(d.state.get("total", 0) or 0)
+    revenue_trend = [{"month": mk, "total": round(rev_by_month.get(mk, 0.0), 2)} for mk in trend_months]
+
     return {
         "inventory": {
             "total_items": active_item_count_inv,
@@ -85,6 +101,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
         "sales": {
             "revenue_mtd": revenue_mtd,
             "revenue_ytd": revenue_ytd,
+            "revenue_trend": revenue_trend,
             "invoices_outstanding": sum(1 for d in ar_docs if float(d.state.get("amount_outstanding", 0) or 0) > 0),
             "ar_outstanding": ar_outstanding,
             "ar_overdue": sum(float(d.state.get("amount_outstanding", 0) or 0) for d in ar_docs if d.state.get("due_date") and d.state.get("due_date") < now and float(d.state.get("amount_outstanding", 0) or 0) > 0),
@@ -95,7 +112,7 @@ async def get_kpis(company_id=Depends(get_current_company_id), role: str = Depen
             "ap_outstanding": ap_outstanding,
         },
         "manufacturing": {
-            "orders_in_progress": sum(1 for o in mfg if o.state.get("status") == "started"),
+            "orders_in_progress": sum(1 for o in mfg if o.state.get("status") == "in_progress"),
             "orders_completed_mtd": sum(1 for o in mfg if o.state.get("status") == "completed"),
             "orders_overdue": sum(1 for o in mfg if o.state.get("due_date") and o.state.get("due_date") < now and o.state.get("status") != "completed"),
         },

@@ -671,6 +671,59 @@ async def test_merge_preserves_allow_splitting_false(client):
 
 
 @pytest.mark.asyncio
+async def test_list_items_location_filter(client):
+    """GET /items?location_id= returns only items at that location."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    loc_a = (await client.post("/companies/me/locations", headers=h, json={"name": "Loc A", "type": "warehouse"})).json()["id"]
+    loc_b = (await client.post("/companies/me/locations", headers=h, json={"name": "Loc B", "type": "warehouse"})).json()["id"]
+    await client.post("/items", headers=h, json={"sku": "LOC-A1", "name": "A1", "quantity": 1, "sell_by": "piece", "location_id": loc_a})
+    await client.post("/items", headers=h, json={"sku": "LOC-B1", "name": "B1", "quantity": 1, "sell_by": "piece", "location_id": loc_b})
+    items = (await client.get(f"/items?location_id={loc_a}", headers=h)).json()["items"]
+    skus = {i["sku"] for i in items}
+    assert "LOC-A1" in skus and "LOC-B1" not in skus
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_different_sell_units(client):
+    """Merging sums quantities, so items measured in different units (e.g. gram vs carat) must be
+    rejected - otherwise 5 g + 3 ct would silently become 8 of nothing."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    a = (await client.post("/items", json={"sku": "WU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"sku": "WU-B", "name": "Gold B", "quantity": 3, "sell_by": "carat"}, headers=h)).json()["id"]
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    assert r.status_code == 422
+    assert "unit" in r.json()["detail"].lower()
+    assert "gram" in r.json()["detail"] and "carat" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_merge_rejects_different_net_weight_units(client):
+    """Merging sums net weight too, so a differing weight_unit must also be rejected."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    a = (await client.post("/items", json={"sku": "NWU-A", "name": "A", "quantity": 1, "sell_by": "piece",
+                                           "weight": 2, "weight_unit": "gram"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"sku": "NWU-B", "name": "B", "quantity": 1, "sell_by": "piece",
+                                           "weight": 3, "weight_unit": "carat"}, headers=h)).json()["id"]
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    assert r.status_code == 422
+    assert "weight unit" in r.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_merge_allows_same_weight_unit(client):
+    """Same sell unit (and weight unit) still merges fine."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    a = (await client.post("/items", json={"sku": "SU-A", "name": "Gold A", "quantity": 5, "sell_by": "gram"}, headers=h)).json()["id"]
+    b = (await client.post("/items", json={"sku": "SU-B", "name": "Gold B", "quantity": 3, "sell_by": "gram"}, headers=h)).json()["id"]
+    r = await client.post("/items/merge", json={"source_entity_ids": [a, b], "target_sku_from": a}, headers=h)
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_split_children_inherit_allow_splitting_from_parent(client):
     """Split children must inherit allow_splitting from the parent item.
     Child items without this key in state suffer the same UI/backend mismatch as the original bug.
@@ -2210,4 +2263,57 @@ async def test_cost_price_edit_after_cost_total_edit(client):
     )
     assert float(item2["cost_total"]) == pytest.approx(150.0), (
         f"cost_total should be 150.0 (15 × 10), got {item2['cost_total']}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_recipe_backed_cost_reads_at_standard_not_lot_total(client):
+    """A manufactured item's cost reads at its recipe's standard unit cost.
+
+    Regression: _flatten_item derives cost_price from a stored cost_total on every read.
+    For a recipe-backed item, a lingering lot cost_total (e.g. from a divergent manual cost
+    or a build that stamped actual input cost) must NOT override the recipe's rolled standard
+    — recipe.unit_cost is the single source of truth for a manufactured item's cost.
+    """
+    import time as _t
+    _ts = str(int(_t.time() * 1000))[-6:]
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # Baseline cost valuation before our items (register seeds demo items) — assert the delta.
+    base_cost = float((await client.get("/items/valuation", headers=h)).json()["cost_total"])
+
+    gold = (await client.post("/items", json={
+        "sku": f"GOLD-{_ts}", "name": "Gold", "quantity": 1.0, "sell_by": "piece", "cost_total": 80.0,
+    }, headers=h)).json()["id"]
+    ring = (await client.post("/items", json={
+        "sku": f"RING-{_ts}", "name": "Ring", "quantity": 2.0, "sell_by": "piece",
+    }, headers=h)).json()["id"]
+
+    # Recipe: 5 gold per ring → rolled standard unit cost 400.
+    r = await client.put(f"/manufacturing/items/{ring}/recipe", json={
+        "output_qty": 1, "components": [{"item_id": gold, "quantity": 5}], "labor": [], "overhead": [],
+    }, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["recipe"]["unit_cost"] == 400.0
+
+    # Now stamp a DIVERGENT lot cost_total (1000 → would imply unit 500). The standard must win.
+    r2 = await client.post(f"/items/{ring}/price", json={"price_type": "cost_total", "new_price": 1000.0}, headers=h)
+    assert r2.status_code == 200, r2.text
+
+    item = (await client.get(f"/items/{ring}", headers=h)).json()
+    assert float(item["cost_price"]) == pytest.approx(400.0), (
+        f"cost_price must read at recipe standard 400.0, got {item['cost_price']} "
+        f"(lot cost_total leaked through?)"
+    )
+    assert float(item["cost_total"]) == pytest.approx(800.0), (
+        f"cost_total must be derived from standard (400 × 2), got {item['cost_total']}"
+    )
+
+    # Valuation aggregates at the same standard: our items add gold 80 + ring standard 800 = 880
+    # (never gold 80 + ring lot 1000 = 1080).
+    val = (await client.get("/items/valuation", headers=h)).json()
+    assert float(val["cost_total"]) - base_cost == pytest.approx(880.0), (
+        f"valuation Cost must value the ring at standard (gold 80 + ring 800), "
+        f"got delta {float(val['cost_total']) - base_cost}"
     )

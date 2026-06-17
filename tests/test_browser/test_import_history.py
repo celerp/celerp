@@ -35,6 +35,7 @@ def completed_batch_id(api, import_location):
                 "event_type": "item.created",
                 "data": {
                     "sku": "IMP-HIST-A",
+                    "sell_by": "piece",
                     "name": "Hist Item A",
                     "quantity": 3,
                     "location_name": "Default",
@@ -48,6 +49,7 @@ def completed_batch_id(api, import_location):
                 "event_type": "item.created",
                 "data": {
                     "sku": "IMP-HIST-B",
+                    "sell_by": "piece",
                     "name": "Hist Item B",
                     "quantity": 2,
                     "location_name": "Default",
@@ -101,6 +103,7 @@ def test_import_history_undo_endpoint(api, import_location):
             "event_type": "item.created",
             "data": {
                 "sku": f"IMP-UNDO-EP-{key[-6:]}",
+                "sell_by": "piece",
                 "name": "Undo Endpoint Test",
                 "quantity": 1,
                 "location_name": "Default",
@@ -131,6 +134,7 @@ def test_import_history_undo_removes_items(api, import_location):
             "event_type": "item.created",
             "data": {
                 "sku": f"IMP-UNDO-RM-{key[-6:]}",
+                "sell_by": "piece",
                 "name": "Undo Remove Test",
                 "quantity": 1,
                 "location_name": "Default",
@@ -190,7 +194,7 @@ def test_import_history_via_browser_upload(page, ui_server, import_location):
     ).first
     if upload_btn.count() > 0:
         upload_btn.click()
-        page.wait_for_load_state("networkidle", timeout=10000)
+        page.wait_for_load_state("load", timeout=10000)
 
     body = page.locator("body").inner_text()
     assert "Internal Server Error" not in body, "Import preview step crashed"
@@ -202,7 +206,7 @@ def test_import_history_via_browser_upload(page, ui_server, import_location):
     ).first
     if confirm_btn.count() > 0:
         confirm_btn.click()
-        page.wait_for_load_state("networkidle", timeout=10000)
+        page.wait_for_load_state("load", timeout=10000)
         body = page.locator("body").inner_text()
         assert "Internal Server Error" not in body, "Import confirm step crashed"
 

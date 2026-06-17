@@ -147,34 +147,36 @@ async def test_demo_reseed_full_wizard_flow(client):
 
 
 @pytest.mark.asyncio
-async def test_create_company_seeds_self_contacts(client):
-    """POST /companies seeds customer + vendor self-contacts for the new company."""
+async def test_create_company_seeds_self_contact(client):
+    """POST /companies seeds ONE self-contact typed `both` (the company is its own customer AND vendor),
+    and that single record shows up in both the customer and vendor lists."""
     # Register first (to get a user with name + email)
     r = await client.post(
         "/auth/register",
         json={"company_name": "ContactSeedCo", "email": "owner@seedtest.com", "name": "Seed Owner", "password": "pw"},
     )
     assert r.status_code == 200
-    orig_token = r.json()["access_token"]
-    orig_headers = {"Authorization": f"Bearer {orig_token}"}
+    orig_headers = {"Authorization": f"Bearer {r.json()['access_token']}"}
 
     # Create a second company for the same user
     r2 = await client.post("/companies", json={"name": "ContactSeedCo2"}, headers=orig_headers)
     assert r2.status_code == 200, r2.text
-    new_token = r2.json()["access_token"]
-    new_headers = {"Authorization": f"Bearer {new_token}"}
+    new_headers = {"Authorization": f"Bearer {r2.json()['access_token']}"}
 
-    # New company should have customer + vendor contacts seeded
-    contacts_r = await client.get("/crm/contacts", headers=new_headers)
-    assert contacts_r.status_code == 200
-    contacts = contacts_r.json()["items"]
-    types = {c["contact_type"] for c in contacts}
-    assert "customer" in types, f"Expected customer contact seeded, got types={types}"
-    assert "vendor" in types, f"Expected vendor contact seeded, got types={types}"
+    # Exactly one self-contact, typed `both`, carrying the owner email.
+    contacts = (await client.get("/crm/contacts", headers=new_headers)).json()["items"]
+    selfs = [c for c in contacts if c.get("is_self")]
+    assert len(selfs) == 1, f"Expected exactly one self-contact, got {selfs}"
+    assert selfs[0]["contact_type"] == "both"
+    assert selfs[0].get("email") == "owner@seedtest.com"
 
-    # Contacts should carry the owner's email and name
-    emails = {c.get("email") for c in contacts}
-    assert "owner@seedtest.com" in emails, f"Owner email missing from seeded contacts: {emails}"
+    # The single record appears under BOTH the customer and vendor filters.
+    cust = (await client.get("/crm/contacts?contact_type=customer", headers=new_headers)).json()["items"]
+    vend = (await client.get("/crm/contacts?contact_type=vendor", headers=new_headers)).json()["items"]
+    assert any(c.get("is_self") for c in cust), "self-contact missing from customer list"
+    assert any(c.get("is_self") for c in vend), "self-contact missing from vendor list"
+    self_id = selfs[0]["id"]
+    assert {c["id"] for c in cust if c.get("is_self")} == {self_id} == {c["id"] for c in vend if c.get("is_self")}
 
 
 @pytest.mark.asyncio

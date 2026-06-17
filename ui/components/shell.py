@@ -223,6 +223,8 @@ function initCombobox(wrap) {
     var lower = q.toLowerCase();
     var visible = 0;
     currentOpts().forEach(function(opt) {
+      // Pinned options (actions like "+ Add new" / scope toggles) always stay visible.
+      if (opt.classList.contains('combobox-option--pinned')) { opt.style.display = ''; return; }
       // Search data-search if present (includes UTC offset aliases), else textContent
       var haystack = (opt.dataset.search || opt.textContent).toLowerCase();
       var match = haystack.includes(lower);
@@ -995,6 +997,15 @@ _SIDEBAR_JS = """
   var btn = document.querySelector('.sidebar-toggle');
   var sb = document.querySelector('.sidebar');
   if (btn && sb) btn.addEventListener('click', function() { sb.classList.toggle('sidebar--open'); });
+  /* Bring the active nav item into view when its group sits below the fold on a short viewport.
+     Adjusts only the sidebar's own scroll (never the window), and only when off-screen. */
+  var activeLink = sb && sb.querySelector('.nav-link--active');
+  if (sb && activeLink) {
+    var lr = activeLink.getBoundingClientRect(), sr = sb.getBoundingClientRect();
+    if (lr.top < sr.top || lr.bottom > sr.bottom) {
+      sb.scrollTop += (lr.top - sr.top) - (sr.height - lr.height) / 2;
+    }
+  }
 })();
 """
 
@@ -1147,9 +1158,18 @@ def _sidebar(active: str, lang: str = "en", role: str = "owner", request=None) -
     else:
         empty_state = []
 
-    settings_link = [
+    # Company Details sits just above Global Config / Web Access in the footer. It is not module nav (the
+    # company is the tenant, not a Finance feature), so it lives with the kernel bottom links rather than
+    # in a module group. (Company files are a tab inside it, not a separate entry.) Admin+ only.
+    settings_link = []
+    if user_level >= ROLE_LEVELS["admin"]:
+        settings_link.append(
+            A(t("nav.company_details", lang), href="/finance/company-details",
+              cls=f"nav-link {'nav-link--active' if active == 'company-details' else ''}"),
+        )
+    settings_link.append(
         A(t("nav.settings", lang), href="/settings/general", cls=f"nav-link {'nav-link--active' if active == 'settings' else ''}"),
-    ]
+    )
     if user_level >= ROLE_LEVELS["manager"]:
         settings_link.append(
             A(t("msg._web_access"), href="/settings/cloud", cls=f"nav-link {'nav-link--active' if active == 'web-access' else ''}"),

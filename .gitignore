@@ -100,6 +100,9 @@ premium-modules/sales-funnel/celerp-sales-funnel/
 # Premium modules (separate licensing)
 premium-modules/
 screenshots/
+# ...except the curated, tracked press-kit images (the website/README read these).
+!docs/press-kit/screenshots/
+!docs/press-kit/screenshots/**
 logo.png
 -e 
 # Internal plan docs (L-087)

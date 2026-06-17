@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """API route registration for celerp-accounting module."""
 
 from celerp_accounting.routes import router as accounting_router

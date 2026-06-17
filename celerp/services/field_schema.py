@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Kernel service: effective item field schema resolution.
 
 Extracted from routers/companies.py so celerp-inventory module can import
@@ -31,7 +31,7 @@ _BASE_FIELDS: list[dict] = [
     {"key": "pieces",            "label": "Pieces",            "type": "number", "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.06,"show_in_table": True,  "tooltip_key": "field.tooltip.pieces"},
     {"key": "gross_weight",      "label": "Gross Weight",      "type": "number", "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.25,"show_in_table": False, "tooltip_key": "field.tooltip.gross_weight"},
     {"key": "gross_weight_unit", "label": "Gross Weight Unit", "type": "text",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 3.3, "show_in_table": False, "tooltip_key": "field.tooltip.gross_weight_unit"},
-    {"key": "inventory_type",    "label": "Inventory Type",    "type": "select", "editable": True,  "required": False, "options": ["stocked", "non_stocked", "service"],         "visible_to_roles": [],               "position": 4.2, "show_in_table": False, "tooltip_key": "field.tooltip.inventory_type"},
+    {"key": "inventory_type",    "label": "Inventory Type",    "type": "select", "editable": True,  "required": False, "options": ["stocked", "component", "non_stocked", "service", "freight"], "visible_to_roles": [],               "position": 4.2, "show_in_table": False, "tooltip_key": "field.tooltip.inventory_type"},
     {"key": "allow_splitting",   "label": "Allow Splitting",   "type": "bool",   "editable": True,  "required": False, "options": [],                                            "visible_to_roles": [],               "position": 4.5, "show_in_table": False, "tooltip_key": "field.tooltip.allow_splitting"},
     {"key": "location_name",     "label": "Location",          "type": "text",   "editable": False, "required": False, "options": [],                                            "visible_to_roles": [],               "position": 5,  "show_in_table": True,  "tooltip_key": "field.tooltip.location_name"},
     # Price columns are injected dynamically at position 6+ by _inject_price_columns()
@@ -70,7 +70,7 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
         price_cols.append({
             "key": key,
             "label": name,
-            "type": "money",
+            "type": "rate",  # a unit price is a rate (may carry > currency precision); total stays money
             "editable": True,
             "required": False,
             "options": [],

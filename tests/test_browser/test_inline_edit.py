@@ -45,7 +45,7 @@ def test_inline_edit_item_name(page, ui_server, item_id):
         page.wait_for_selector("input", timeout=3000)
         page.locator("input").first.fill("Edit Test Item Renamed")
         page.keyboard.press("Enter")
-        page.wait_for_load_state("networkidle", timeout=5000)
+        page.wait_for_load_state("load", timeout=5000)
     except Exception:
         pass  # Edit form may not appear for all cell types
 
@@ -71,7 +71,7 @@ def test_inline_edit_item_category(page, ui_server, item_id):
         if inp.count() > 0:
             inp.fill("Browser Test Category")
             page.keyboard.press("Enter")
-            page.wait_for_load_state("networkidle", timeout=5000)
+            page.wait_for_load_state("load", timeout=5000)
     except Exception:
         pass  # Some cells use select dropdowns; non-fatal if input form doesn't appear
 
@@ -95,7 +95,7 @@ def test_inline_edit_contact_name(page, ui_server, contact_id):
         page.wait_for_selector("input", timeout=2000)
         page.locator("input").first.fill("Edited Contact Name")
         page.keyboard.press("Enter")
-        page.wait_for_load_state("networkidle", timeout=5000)
+        page.wait_for_load_state("load", timeout=5000)
     except Exception:
         pass
     body = page.locator("body").inner_text()
@@ -136,11 +136,14 @@ def test_inline_edit_doc_status(page, ui_server, api):
 
 def test_inline_edit_subscription(page, ui_server, api):
     """EDIT-05: Subscription detail loads — no crash."""
-    r = api.post("/subscriptions", json={
-        "name": f"Edit Test Sub {uuid.uuid4().hex[:6]}",
-        "doc_type": "invoice",
+    # Subscriptions are documents: created via POST /docs with a subscription doc_type.
+    r = api.post("/docs", json={
+        "doc_type": "subscription_invoice",
         "frequency": "monthly",
         "start_date": "2026-01-01",
+        "status": "active",
+        "next_run_date": "2026-02-01",
+        "line_items": [{"description": "Service", "quantity": 1, "unit_price": 100.0, "line_total": 100.0}],
     })
     assert r.status_code in {200, 201}, f"Could not create subscription: {r.text}"
     sub_id = r.json()["id"]

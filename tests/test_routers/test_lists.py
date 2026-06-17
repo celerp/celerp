@@ -173,7 +173,7 @@ class TestListCRUD:
     async def test_patch_non_draft_rejected(self, client):
         token = await _register(client)
         eid = await _create_list(client, token)
-        await client.post(f"/lists/{eid}/send", headers=_h(token), json={})
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
 
         r = await client.patch(f"/lists/{eid}", headers=_h(token), json={
             "fields_changed": {"notes": {"old": None, "new": "x"}},
@@ -216,54 +216,51 @@ class TestListCRUD:
 class TestListLifecycle:
 
     @pytest.mark.asyncio
-    async def test_full_lifecycle_draft_to_completed(self, client):
+    async def test_full_lifecycle_draft_finalize_close(self, client):
         token = await _register(client)
-        eid = await _create_list(client, token)
+        eid = await _create_list(client, token)  # default list_type = quotation
 
-        # send
-        r = await client.post(f"/lists/{eid}/send", headers=_h(token), json={
-            "sent_via": "email", "sent_to": "buyer@example.com",
-        })
+        # Issue (draft -> finalized). Issue does NOT auto-send a quotation; sent_at is set later.
+        r = await client.post(f"/lists/{eid}/finalize", headers=_h(token))
         assert r.status_code == 200
-        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["status"] == "sent"
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["status"] == "finalized" and detail.get("finalized_at") and not detail.get("sent_at")
 
-        # accept
-        r = await client.post(f"/lists/{eid}/accept", headers=_h(token))
+        # Mark as sent sets the milestone; status stays finalized; unmark clears it.
+        assert (await client.post(f"/lists/{eid}/send", headers=_h(token), json={"sent_via": "manual"})).status_code == 200
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["status"] == "finalized" and detail.get("sent_at")
+        assert (await client.post(f"/lists/{eid}/unmark-sent", headers=_h(token))).status_code == 200
+        assert not (await client.get(f"/lists/{eid}", headers=_h(token))).json().get("sent_at")
+
+        # convert (finalized -> closed, result=converted)
+        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "invoice"})
         assert r.status_code == 200
-        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["status"] == "accepted"
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["status"] == "closed" and detail["result"] == "converted"
 
-        # complete
-        r = await client.post(f"/lists/{eid}/complete", headers=_h(token))
+    @pytest.mark.asyncio
+    async def test_finalize_only_from_draft(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token)
+        assert (await client.post(f"/lists/{eid}/finalize", headers=_h(token))).status_code == 200
+        # finalize again -> 409 (already finalized)
+        assert (await client.post(f"/lists/{eid}/finalize", headers=_h(token))).status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_revert_finalized_to_draft(self, client):
+        token = await _register(client)
+        eid = await _create_list(client, token)
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        r = await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})
         assert r.status_code == 200
-        assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["status"] == "completed"
+        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
+        assert detail["status"] == "draft" and "sent_at" not in detail
+        # revert from draft -> 409 (nothing to revert)
+        assert (await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})).status_code == 409
 
     @pytest.mark.asyncio
-    async def test_send_only_from_draft(self, client):
-        token = await _register(client)
-        eid = await _create_list(client, token)
-        await client.post(f"/lists/{eid}/send", headers=_h(token), json={})
-        # try to send again
-        r = await client.post(f"/lists/{eid}/send", headers=_h(token), json={})
-        assert r.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_accept_only_from_sent(self, client):
-        token = await _register(client)
-        eid = await _create_list(client, token)
-        # accept from draft - should fail
-        r = await client.post(f"/lists/{eid}/accept", headers=_h(token))
-        assert r.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_complete_only_from_accepted(self, client):
-        token = await _register(client)
-        eid = await _create_list(client, token)
-        # complete from draft - should fail
-        r = await client.post(f"/lists/{eid}/complete", headers=_h(token))
-        assert r.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_void_from_any_status(self, client):
+    async def test_void_from_draft_and_finalized_not_closed(self, client):
         token = await _register(client)
 
         # void draft
@@ -271,14 +268,18 @@ class TestListLifecycle:
         r = await client.post(f"/lists/{eid1}/void", headers=_h(token), json={"reason": "cancelled"})
         assert r.status_code == 200
         detail = (await client.get(f"/lists/{eid1}", headers=_h(token))).json()
-        assert detail["status"] == "void"
-        assert detail["void_reason"] == "cancelled"
+        assert detail["status"] == "void" and detail["void_reason"] == "cancelled"
 
-        # void sent
+        # void finalized
         eid2 = await _create_list(client, token)
-        await client.post(f"/lists/{eid2}/send", headers=_h(token), json={})
-        r = await client.post(f"/lists/{eid2}/void", headers=_h(token), json={})
-        assert r.status_code == 200
+        await client.post(f"/lists/{eid2}/finalize", headers=_h(token))
+        assert (await client.post(f"/lists/{eid2}/void", headers=_h(token), json={})).status_code == 200
+
+        # cannot void a closed list
+        eid3 = await _create_list(client, token)
+        await client.post(f"/lists/{eid3}/finalize", headers=_h(token))
+        await client.post(f"/lists/{eid3}/convert", headers=_h(token), json={"target_type": "invoice"})
+        assert (await client.post(f"/lists/{eid3}/void", headers=_h(token), json={})).status_code == 409
 
     @pytest.mark.asyncio
     async def test_void_already_voided_rejected(self, client):
@@ -287,17 +288,6 @@ class TestListLifecycle:
         await client.post(f"/lists/{eid}/void", headers=_h(token), json={})
         r = await client.post(f"/lists/{eid}/void", headers=_h(token), json={})
         assert r.status_code == 409
-
-    @pytest.mark.asyncio
-    async def test_send_stores_metadata(self, client):
-        token = await _register(client)
-        eid = await _create_list(client, token)
-        await client.post(f"/lists/{eid}/send", headers=_h(token), json={
-            "sent_via": "whatsapp", "sent_to": "+66812345678",
-        })
-        detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
-        assert detail["sent_via"] == "whatsapp"
-        assert detail["sent_to"] == "+66812345678"
 
 
 # ---------------------------------------------------------------------------
@@ -310,22 +300,20 @@ class TestListConvert:
     async def test_convert_to_invoice(self, client):
         token = await _register(client)
         eid = await _create_list(client, token)
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))  # terminal action needs finalize first
 
-        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={
-            "target_type": "invoice",
-        })
+        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "invoice"})
         assert r.status_code == 200
         body = r.json()
-        assert "target_doc_id" in body
         assert body["target_doc_id"].startswith("doc:")
 
-        # list status should be converted
+        # list closes with result=converted
         detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
-        assert detail["status"] == "converted"
+        assert detail["status"] == "closed" and detail["result"] == "converted"
         assert detail["converted_to"] == body["target_doc_id"]
         assert detail["converted_to_type"] == "invoice"
 
-        # target doc should exist as draft invoice
+        # target doc exists as a draft invoice
         doc = (await client.get(f"/docs/{body['target_doc_id']}", headers=_h(token))).json()
         assert doc["doc_type"] == "invoice"
         assert doc["status"] == "draft"
@@ -335,31 +323,27 @@ class TestListConvert:
     async def test_convert_to_memo(self, client):
         token = await _register(client)
         eid = await _create_list(client, token)
-
-        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={
-            "target_type": "memo",
-        })
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "memo"})
         assert r.status_code == 200
         detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
         assert detail["converted_to_type"] == "memo"
 
     @pytest.mark.asyncio
-    async def test_convert_void_rejected(self, client):
+    async def test_convert_requires_finalize(self, client):
         token = await _register(client)
         eid = await _create_list(client, token)
-        await client.post(f"/lists/{eid}/void", headers=_h(token), json={})
-
-        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={
-            "target_type": "invoice",
-        })
+        # convert straight from draft is rejected — finalize (send) the quote first
+        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "invoice"})
         assert r.status_code == 409
 
     @pytest.mark.asyncio
     async def test_convert_already_converted_rejected(self, client):
         token = await _register(client)
         eid = await _create_list(client, token)
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
         await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "invoice"})
-
+        # already closed -> 409
         r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "memo"})
         assert r.status_code == 409
 
@@ -367,10 +351,8 @@ class TestListConvert:
     async def test_convert_invalid_target_type(self, client):
         token = await _register(client)
         eid = await _create_list(client, token)
-
-        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={
-            "target_type": "purchase_order",
-        })
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+        r = await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "purchase_order"})
         assert r.status_code == 422
 
 
@@ -384,8 +366,8 @@ class TestListDuplicate:
     async def test_duplicate_creates_new_draft(self, client):
         token = await _register(client)
         eid = await _create_list(client, token, customer_name="Original Corp")
-        # send the original so it's not draft
-        await client.post(f"/lists/{eid}/send", headers=_h(token), json={})
+        # finalize the original so it's not a draft
+        await client.post(f"/lists/{eid}/finalize", headers=_h(token))
 
         r = await client.post(f"/lists/{eid}/duplicate", headers=_h(token))
         assert r.status_code == 200
@@ -426,7 +408,7 @@ class TestListImport:
                 "line_items": [{"name": "Gem", "quantity": 1, "unit_price": 500, "line_total": 500}],
                 "subtotal": 500, "total": 500, "status": "draft",
             },
-            "source": "gemcloud",
+            "source": "old_system",
             "idempotency_key": "imp-key-001",
         })
         assert r.status_code == 200
@@ -443,7 +425,7 @@ class TestListImport:
             "entity_id": "list:IMP-002",
             "event_type": "list.created",
             "data": {"ref_id": "IMP-002", "status": "draft", "line_items": []},
-            "source": "gemcloud",
+            "source": "old_system",
             "idempotency_key": "imp-key-002",
         }
         r1 = await client.post("/lists/import", headers=_h(token), json=payload)
@@ -459,12 +441,12 @@ class TestListImport:
         await client.post("/lists/import", headers=_h(token), json={
             "entity_id": "list:IMP-003", "event_type": "list.created",
             "data": {"ref_id": "IMP-003", "status": "draft", "line_items": []},
-            "source": "gemcloud", "idempotency_key": "key-a",
+            "source": "old_system", "idempotency_key": "key-a",
         })
         r = await client.post("/lists/import", headers=_h(token), json={
             "entity_id": "list:IMP-003", "event_type": "list.created",
             "data": {"ref_id": "IMP-003", "status": "draft", "line_items": []},
-            "source": "gemcloud", "idempotency_key": "key-b",
+            "source": "old_system", "idempotency_key": "key-b",
         })
         assert r.status_code == 409
 
@@ -474,16 +456,16 @@ class TestListImport:
         await client.post("/lists/import", headers=_h(token), json={
             "entity_id": "list:IMP-004", "event_type": "list.created",
             "data": {"ref_id": "IMP-004", "status": "draft", "line_items": []},
-            "source": "gemcloud", "idempotency_key": "key-create-004",
+            "source": "old_system", "idempotency_key": "key-create-004",
         })
         r = await client.post("/lists/import", headers=_h(token), json={
-            "entity_id": "list:IMP-004", "event_type": "list.sent",
-            "data": {"sent_via": "email"},
-            "source": "gemcloud", "idempotency_key": "key-send-004",
+            "entity_id": "list:IMP-004", "event_type": "list.finalized",
+            "data": {"status": "finalized", "sent_at": "2026-06-17T00:00:00+00:00"},
+            "source": "old_system", "idempotency_key": "key-finalize-004",
         })
         assert r.status_code == 200
         detail = (await client.get("/lists/list:IMP-004", headers=_h(token))).json()
-        assert detail["status"] == "sent"
+        assert detail["status"] == "finalized"
 
     @pytest.mark.asyncio
     async def test_batch_import(self, client):
@@ -494,7 +476,7 @@ class TestListImport:
                 "event_type": "list.created",
                 "data": {"ref_id": f"BATCH-{i:03d}", "status": "draft", "line_items": [],
                          "customer_name": f"Customer {i}"},
-                "source": "gemcloud",
+                "source": "old_system",
                 "idempotency_key": f"batch-key-{i:03d}",
             }
             for i in range(5)
@@ -517,7 +499,7 @@ class TestListImport:
             "entity_id": "list:BATCH-DUP",
             "event_type": "list.created",
             "data": {"ref_id": "BATCH-DUP", "status": "draft", "line_items": []},
-            "source": "gemcloud",
+            "source": "old_system",
             "idempotency_key": "batch-dup-key",
         }
         # first import
@@ -762,34 +744,98 @@ async def test_list_totals_correct_after_patch_with_per_line_tax(client):
 # Revert sent list to draft
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
-async def test_list_revert_sent_to_draft(client):
-    """Sent list can be reverted to draft."""
+@pytest.mark.asyncio
+async def test_list_revert_finalized_to_draft(client):
+    """A finalized list can be reverted to draft."""
     token = await _register(client)
     eid = await _create_list(client, token)
-    # Send it
-    r = await client.post(f"/lists/{eid}/send", headers=_h(token))
+    r = await client.post(f"/lists/{eid}/finalize", headers=_h(token))
     assert r.status_code == 200
-    assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["status"] == "sent"
-    # Revert
+    assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["status"] == "finalized"
     r = await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={"reason": "test"})
     assert r.status_code == 200, r.text
-    detail = (await client.get(f"/lists/{eid}", headers=_h(token))).json()
-    assert detail["status"] == "draft"
+    assert (await client.get(f"/lists/{eid}", headers=_h(token))).json()["status"] == "draft"
 
 
-@pytest.mark.anyio
-async def test_list_revert_only_from_sent(client):
-    """Reverting a draft or completed list returns 409."""
+@pytest.mark.asyncio
+async def test_list_revert_only_from_finalized(client):
+    """Reverting a draft or a closed list returns 409."""
     token = await _register(client)
     eid = await _create_list(client, token)
     # Draft - cannot revert
-    r = await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})
-    assert r.status_code == 409
+    assert (await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})).status_code == 409
+    # Close it (finalize -> convert), then revert is rejected (terminal action already ran)
+    await client.post(f"/lists/{eid}/finalize", headers=_h(token))
+    await client.post(f"/lists/{eid}/convert", headers=_h(token), json={"target_type": "invoice"})
+    assert (await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})).status_code == 409
 
-    # Complete the list then try to revert (completed != sent)
-    await client.post(f"/lists/{eid}/send", headers=_h(token))
-    await client.post(f"/lists/{eid}/accept", headers=_h(token))
-    await client.post(f"/lists/{eid}/complete", headers=_h(token))
-    r = await client.post(f"/lists/{eid}/revert-to-draft", headers=_h(token), json={})
-    assert r.status_code == 409
+
+@pytest.mark.asyncio
+async def test_transfer_move_relocates_items_and_stays_finalized(client):
+    """A finalized transfer's 'Move all to <location>' relocates every line item (via the inventory
+    item.transferred event) and stays finalized so it can be moved again (repeatable, no close)."""
+    token = await _register(client)
+    h = _h(token)
+    loc_a = (await client.post("/companies/me/locations", headers=h, json={"name": "A", "type": "warehouse"})).json()["id"]
+    loc_b = (await client.post("/companies/me/locations", headers=h, json={"name": "B", "type": "warehouse"})).json()["id"]
+    it = (await client.post("/items", headers=h, json={
+        "sku": "MV1", "name": "Mover", "sell_by": "piece", "quantity": 5, "location_id": loc_a})).json()["id"]
+    eid = (await client.post("/lists", headers=h, json={
+        "list_type": "transfer", "line_items": [{"item_id": it, "sku": "MV1", "name": "Mover", "quantity": 5}]})).json()["id"]
+
+    # Move before Issue -> 409 (must finalize first).
+    assert (await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc_b})).status_code == 409
+    await client.post(f"/lists/{eid}/finalize", headers=h)
+    r = await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc_b})
+    assert r.status_code == 200 and r.json()["moved"] == 1
+    assert (await client.get(f"/items/{it}", headers=h)).json()["location_id"] == loc_b
+    # Repeatable: still finalized, can move again.
+    assert (await client.get(f"/lists/{eid}", headers=h)).json()["status"] == "finalized"
+    assert (await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc_a})).status_code == 200
+    assert (await client.get(f"/items/{it}", headers=h)).json()["location_id"] == loc_a
+
+
+@pytest.mark.asyncio
+async def test_only_transfer_can_move(client):
+    token = await _register(client)
+    h = _h(token)
+    loc = (await client.post("/companies/me/locations", headers=h, json={"name": "A", "type": "warehouse"})).json()["id"]
+    eid = await _create_list(client, token, list_type="quotation")
+    await client.post(f"/lists/{eid}/finalize", headers=h)
+    assert (await client.post(f"/lists/{eid}/move", headers=h, json={"to_location_id": loc})).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_change_type_while_issued(client):
+    """A list's type can be changed while draft or issued (finalized); the change is recorded and the
+    status is preserved. Switching a finalized list to audit re-freezes the on-hand baseline. Closed
+    lists are terminal and reject the change."""
+    token = await _register(client)
+    h = _h(token)
+    loc = (await client.post("/companies/me/locations", headers=h, json={"name": "WH", "type": "warehouse"})).json()["id"]
+    it = (await client.post("/items", headers=h, json={"sku": "CT1", "name": "W", "sell_by": "piece", "quantity": 12, "location_id": loc})).json()["id"]
+
+    eid = (await client.post("/lists", headers=h, json={
+        "list_type": "transfer", "line_items": [{"item_id": it, "sku": "CT1", "name": "W", "quantity": 3}]})).json()["id"]
+    await client.post(f"/lists/{eid}/finalize", headers=h)
+
+    # Issued transfer -> quotation: type changes, status stays finalized.
+    r = await client.post(f"/lists/{eid}/change-type", headers=h, json={"list_type": "quotation"})
+    assert r.status_code == 200
+    st = (await client.get(f"/lists/{eid}", headers=h)).json()
+    assert st["list_type"] == "quotation" and st["status"] == "finalized"
+
+    # Issued -> audit re-freezes on-hand from live qty (12), so Adjust/variance have a baseline.
+    r = await client.post(f"/lists/{eid}/change-type", headers=h, json={"list_type": "audit"})
+    assert r.status_code == 200
+    st = (await client.get(f"/lists/{eid}", headers=h)).json()
+    assert st["list_type"] == "audit" and st["line_items"][0]["on_hand"] == 12.0
+
+    # Unknown type -> 422.
+    assert (await client.post(f"/lists/{eid}/change-type", headers=h, json={"list_type": "nope"})).status_code == 422
+
+    # Closed list -> 409 (terminal).
+    q = await _create_list(client, token, list_type="quotation")
+    await client.post(f"/lists/{q}/finalize", headers=h)
+    await client.post(f"/lists/{q}/convert", headers=h, json={"target_type": "invoice"})
+    assert (await client.post(f"/lists/{q}/change-type", headers=h, json={"list_type": "transfer"})).status_code == 409

@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """
 Coverage gap closers for routers/accounting.py:
   - PATCH /accounts/{code} — not found (404) + all optional fields

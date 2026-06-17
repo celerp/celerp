@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 import uuid
 
@@ -45,8 +45,8 @@ async def upsert_from_connector(company_id: str, item) -> bool:
         # Check before emit to distinguish created vs skipped
         existing = (
             await session.execute(
-                text("SELECT id FROM ledger WHERE idempotency_key=:k"),
-                {"k": idem_key},
+                text("SELECT id FROM ledger WHERE company_id = CAST(:cid AS uuid) AND idempotency_key=:k"),
+                {"cid": str(company_id), "k": idem_key},
             )
         ).first()
         if existing:

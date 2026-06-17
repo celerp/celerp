@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Data Universal Limited
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Application-wide constants. Single source of truth for shared validation sets."""
 
 ISO_4217_CURRENCIES: frozenset[str] = frozenset({

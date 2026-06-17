@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Module loader — scans DATA_DIR/modules/, imports enabled modules,
 registers slots, wires API and UI routes.
 
@@ -80,6 +80,10 @@ _BUNDLED_MODULES_DIRS: tuple[Path, ...] = _resolve_bundled_dirs()
 
 # Loaded manifests — populated by load_all()
 _loaded: list[dict] = []
+
+# Proprietary cloud components folded into core: wired directly at app construction (celerp/main.py,
+# ui/app.py), never loaded as pluggable/replaceable modules.
+_CORE_FOLDED: frozenset[str] = frozenset({"celerp-ai", "celerp-backup", "celerp-connectors"})
 
 
 class ModuleLoadError(Exception):
@@ -245,6 +249,11 @@ def load_all(module_dir: str | Path, enabled: set[str]) -> list[dict]:
             if not p.is_dir() or not (p / "__init__.py").exists():
                 continue
             if p.name not in enabled:
+                continue
+            if p.name in _CORE_FOLDED:
+                # Proprietary cloud core (ai/backup/connectors) is wired directly at app construction
+                # (see celerp/main.py and ui/app.py), never as a pluggable module. Skip it here so it is
+                # not double-registered and cannot be replaced by a user-supplied module of the same name.
                 continue
             # Each module dir (e.g. default_modules/celerp-inventory/) must be on
             # sys.path so that its inner packages (e.g. celerp_inventory) are

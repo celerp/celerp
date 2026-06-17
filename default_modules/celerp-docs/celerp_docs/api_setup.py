@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """API route registration for celerp-docs module."""
 
 from celerp_docs.routes import router as docs_router, lists_router

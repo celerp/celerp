@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 """Fulfill and un-fulfill execution — emits events, creates JEs.
 
@@ -19,8 +19,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services import auto_je
 from celerp.services.pick import PickResult
-
-_SERVICE_SELL_BY = {"service", "hour"}
+from celerp.services.units import is_non_stock_line
 
 # Doc types where COGS must NOT be recognized at fulfillment time.
 # consignment_in: goods not owned; COGS when vendor bill settled.
@@ -147,18 +146,17 @@ async def execute_fulfill(
 
         total_cogs += pick.pick_qty * pick.cost_price
 
-    # Service items: auto-mark fulfilled (no physical pick).
-    # A line item is a service if its sell_by is a service unit OR the referenced item
-    # has inventory_type == "service".
+    # Non-stock lines (service or freight charge): auto-mark fulfilled (no physical pick).
+    # Detected by sell_by being a service unit OR the referenced item being a non-stock type.
     for line in doc_state.get("line_items", []):
         sell_by = line.get("sell_by") or ""
         item_id = line.get("item_id")
-        is_service_type = False
+        inv_type = None
         if item_id:
             item_proj = await session.get(Projection, {"company_id": cid, "entity_id": item_id})
-            if item_proj and (item_proj.state.get("inventory_type") or "stocked") == "service":
-                is_service_type = True
-        if sell_by in _SERVICE_SELL_BY or is_service_type:
+            if item_proj:
+                inv_type = item_proj.state.get("inventory_type")
+        if is_non_stock_line(inv_type, sell_by):
             fulfilled_items.append({
                 "item_id": None,
                 "sku": line.get("sku", ""),

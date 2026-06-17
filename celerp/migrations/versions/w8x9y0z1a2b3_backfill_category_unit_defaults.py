@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
 """Backfill category-specific purchase_unit and weight_unit defaults.
 
@@ -157,85 +157,42 @@ CARAT_TO_GRAM = {
 
 def upgrade() -> None:
     conn = op.get_bind()
-    dialect = conn.dialect.name
 
-    if dialect == "postgresql":
-        for cat, defaults in CATEGORY_DEFAULTS.items():
-            purchase_unit = defaults["purchase_unit"]
-            weight_unit = defaults.get("weight_unit")
+    for cat, defaults in CATEGORY_DEFAULTS.items():
+        purchase_unit = defaults["purchase_unit"]
+        weight_unit = defaults.get("weight_unit")
 
-            # Fix sell_by carat → gram
-            if cat in CARAT_TO_GRAM:
-                conn.execute(sa.text("""
-                    UPDATE projections
-                    SET state = state::jsonb || '{"sell_by": "gram"}'::jsonb
-                    WHERE entity_type = 'item'
-                      AND (state::jsonb)->>'category' = :cat
-                      AND (state::jsonb)->>'sell_by' = 'carat'
-                """), {"cat": cat})
-
-            # Backfill purchase_unit (overwrite if it equals sell_by - the old generic fallback)
+        # Fix sell_by carat → gram
+        if cat in CARAT_TO_GRAM:
             conn.execute(sa.text("""
                 UPDATE projections
-                SET state = state::jsonb || jsonb_build_object('purchase_unit', :pu)
+                SET state = state::jsonb || '{"sell_by": "gram"}'::jsonb
                 WHERE entity_type = 'item'
                   AND (state::jsonb)->>'category' = :cat
-                  AND (
-                    (state::jsonb)->'purchase_unit' IS NULL
-                    OR (state::jsonb)->>'purchase_unit' = (state::jsonb)->>'sell_by'
-                  )
-            """), {"cat": cat, "pu": purchase_unit})
+                  AND (state::jsonb)->>'sell_by' = 'carat'
+            """), {"cat": cat})
 
-            # Backfill weight_unit where NULL
-            if weight_unit:
-                conn.execute(sa.text("""
-                    UPDATE projections
-                    SET state = state::jsonb || jsonb_build_object('weight_unit', :wu)
-                    WHERE entity_type = 'item'
-                      AND (state::jsonb)->>'category' = :cat
-                      AND (state::jsonb)->'weight_unit' IS NULL
-                """), {"cat": cat, "wu": weight_unit})
-    else:
-        # SQLite / test environments
-        import json
-        rows = conn.execute(sa.text("""
-            SELECT company_id, entity_id, state
-            FROM projections
+        # Backfill purchase_unit (overwrite if it equals sell_by - the old generic fallback)
+        conn.execute(sa.text("""
+            UPDATE projections
+            SET state = state::jsonb || jsonb_build_object('purchase_unit', :pu)
             WHERE entity_type = 'item'
-        """)).fetchall()
-        for company_id, entity_id, raw_state in rows:
-            state = json.loads(raw_state) if isinstance(raw_state, str) else (raw_state or {})
-            cat = state.get("category")
-            if cat not in CATEGORY_DEFAULTS:
-                continue
-            defaults = CATEGORY_DEFAULTS[cat]
-            changed = False
+              AND (state::jsonb)->>'category' = :cat
+              AND (
+                (state::jsonb)->'purchase_unit' IS NULL
+                OR (state::jsonb)->>'purchase_unit' = (state::jsonb)->>'sell_by'
+              )
+        """), {"cat": cat, "pu": purchase_unit})
 
-            # Fix sell_by carat → gram
-            if cat in CARAT_TO_GRAM and state.get("sell_by") == "carat":
-                state["sell_by"] = "gram"
-                changed = True
-
-            # Backfill purchase_unit
-            pu = defaults["purchase_unit"]
-            if state.get("purchase_unit") is None or state.get("purchase_unit") == state.get("sell_by"):
-                state["purchase_unit"] = pu
-                changed = True
-
-            # Backfill weight_unit
-            wu = defaults.get("weight_unit")
-            if wu and state.get("weight_unit") is None:
-                state["weight_unit"] = wu
-                changed = True
-
-            if changed:
-                conn.execute(
-                    sa.text("""
-                        UPDATE projections SET state = :state
-                        WHERE company_id = :company_id AND entity_id = :entity_id
-                    """),
-                    {"state": json.dumps(state), "company_id": company_id, "entity_id": entity_id},
-                )
+        # Backfill weight_unit where NULL
+        if weight_unit:
+            conn.execute(sa.text("""
+                UPDATE projections
+                SET state = state::jsonb || jsonb_build_object('weight_unit', :wu)
+                WHERE entity_type = 'item'
+                  AND (state::jsonb)->>'category' = :cat
+                  AND (state::jsonb)->'weight_unit' IS NULL
+            """), {"cat": cat, "wu": weight_unit})
 
 
 def downgrade() -> None:

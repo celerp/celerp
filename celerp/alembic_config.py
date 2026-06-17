@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 """Shared alembic.ini lookup for `cli.py` and `backup_import.py`.
 
 `AlembicConfig("alembic.ini")` is CWD-relative. The celerp package can be

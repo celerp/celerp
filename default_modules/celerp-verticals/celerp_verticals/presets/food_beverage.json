@@ -1,7 +1,7 @@
 {
   "name": "food_beverage",
   "display_name": "Food & Beverage",
-  "license": "BSL-1.1",
+  "license": "MIT",
   "categories": [
     "packaged_food",
     "beverage_nonalc",
@@ -15,15 +15,13 @@
   },
   "modules": [
     "celerp-inventory",
-    "celerp-warehousing",
+    "celerp-manufacturing",
     "celerp-docs",
     "celerp-contacts",
     "celerp-accounting",
     "celerp-reports",
     "celerp-dashboard",
-    "celerp-backup",
     "celerp-labels",
-    "celerp-verticals",
-    "celerp-ai"
+    "celerp-verticals"
   ]
 }

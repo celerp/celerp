@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """celerp-accounting UI routes - delegates to ui.routes.accounting."""
 from __future__ import annotations
 import logging

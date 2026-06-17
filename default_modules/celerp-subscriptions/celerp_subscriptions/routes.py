@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """celerp-subscriptions API routes.
 
 Subscription templates are stored as docs with doc_type "subscription_invoice"

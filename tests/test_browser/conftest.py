@@ -19,8 +19,9 @@ import time
 import httpx
 import pytest
 
-# Must set env vars BEFORE importing any celerp modules (they read on import)
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///test_browser.db")
+# Must set env vars BEFORE importing any celerp modules (they read on import).
+# DATABASE_URL is provided by the root conftest (Postgres via testcontainers or a
+# preset URL); the browser servers run against that same database.
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 os.environ.setdefault("MODULE_DIR", "default_modules,premium_modules")
 _ALL_MODULES = (
@@ -60,21 +61,36 @@ def _is_port_free(port: int) -> bool:
         return True
 
 
+def _reset_pg_database() -> None:
+    """Drop + recreate the public schema so the browser session starts clean.
+    The app rebuilds all tables via create_all when the server boots."""
+    import psycopg2
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
+    conn = psycopg2.connect(host=parts.hostname, port=parts.port, user=parts.username,
+                            password=parts.password, dbname=parts.path.lstrip("/"))
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
+    finally:
+        conn.close()
+
+
 # ── Server fixtures ───────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
 def api_server():
-    """Start FastAPI on port 18000 with in-memory-ish SQLite."""
+    """Start FastAPI on port 18000 against the (Postgres) test database."""
     if not _is_port_free(_API_PORT):
         # Already running (e.g. re-run within same process) - skip restart
         yield _API_BASE
         return
 
     import uvicorn
-    # Drop and recreate the test DB file to ensure clean state
-    db_path = "test_browser.db"
-    if os.path.exists(db_path):
-        os.unlink(db_path)
+    # Start from a clean schema; the app rebuilds tables on startup (create_all).
+    _reset_pg_database()
 
     from celerp.main import app
     config = uvicorn.Config(app, host="127.0.0.1", port=_API_PORT, log_level="error")
@@ -241,6 +257,38 @@ def api(api_server, seeded_user):
     headers = {"Authorization": f"Bearer {seeded_user['access_token']}"}
     with httpx.Client(base_url=api_server, headers=headers, timeout=10) as client:
         yield client
+
+
+def _set_auth_cookie(browser_context, token: str) -> None:
+    browser_context.clear_cookies()
+    browser_context.add_cookies([{
+        "name": "celerp_token", "value": token, "domain": "127.0.0.1", "path": "/",
+    }])
+
+
+@pytest.fixture
+def fresh_company(api_server, seeded_user, browser_context, api):
+    """A brand-new, empty company for tests that need a clean slate, isolated from
+    the shared session company's accumulated data (drafts/finals/contacts).
+
+    Creates the company (POST /companies), points BOTH the browser page (auth
+    cookie) and the returned API client at it, and restores the session company
+    afterward so other tests are unaffected.
+    """
+    import uuid as _uuid
+    r = api.post("/companies", json={"name": f"Isolated {_uuid.uuid4().hex[:6]}"})
+    assert r.status_code in (200, 201), f"create company failed: {r.text}"
+    new_token = r.json()["access_token"]
+
+    _set_auth_cookie(browser_context, new_token)
+    client = httpx.Client(
+        base_url=api_server, headers={"Authorization": f"Bearer {new_token}"}, timeout=10
+    )
+    try:
+        yield client
+    finally:
+        client.close()
+        _set_auth_cookie(browser_context, seeded_user["access_token"])
 
 
 @pytest.fixture(scope="session", autouse=True)

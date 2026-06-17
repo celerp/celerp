@@ -18,12 +18,12 @@ import pytest
 
 pytestmark = pytest.mark.browser
 
-_SCREENSHOT_DIR = pathlib.Path("/mnt/storage/agent_storage/celerp/screenshots/bulk-doc-actions")
-
 
 def _save(page, name: str) -> None:
-    _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(_SCREENSHOT_DIR / f"{name}.png"), full_page=True)
+    # Debug screenshots disabled — the hardcoded /mnt/storage path is not portable.
+    # _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    # page.screenshot(path=str(_SCREENSHOT_DIR / f"{name}.png"), full_page=True)
+    pass
 
 
 def _no_crash(page, ctx: str = "") -> None:
@@ -41,7 +41,7 @@ def _create_draft(api, doc_type: str = "invoice") -> str:
 def test_draft_list_has_checkboxes(page, ui_server, api):
     """BULK-DOC-01: Draft invoice list renders checkboxes on each row."""
     _create_draft(api, "invoice")
-    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="domcontentloaded")
     _no_crash(page, "BULK-DOC-01")
     _save(page, "01-draft-list")
 
@@ -55,7 +55,7 @@ def test_draft_list_has_checkboxes(page, ui_server, api):
 def test_bulk_toolbar_shows_on_checkbox_select(page, ui_server, api):
     """BULK-DOC-02: Selecting a checkbox shows bulk toolbar with action dropdown."""
     _create_draft(api, "invoice")
-    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="domcontentloaded")
 
     # Click first row checkbox
     first_cb = page.locator("input.doc-row-select").first
@@ -76,7 +76,7 @@ def test_bulk_toolbar_shows_on_checkbox_select(page, ui_server, api):
 def test_bulk_delete_confirm_button_appears(page, ui_server, api):
     """BULK-DOC-02b: Select delete action → Delete Selected confirm button appears."""
     _create_draft(api, "invoice")
-    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="domcontentloaded")
 
     page.locator("input.doc-row-select").first.click()
     page.wait_for_selector("#doc-bulk-bar", state="visible", timeout=3000)
@@ -98,7 +98,7 @@ def test_bulk_delete_removes_draft(page, ui_server, api):
     # Create a draft specifically for deletion
     doc_id = _create_draft(api, "invoice")
 
-    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="domcontentloaded")
     _save(page, "04-before-delete")
 
     # Find the checkbox for our specific draft
@@ -110,13 +110,11 @@ def test_bulk_delete_removes_draft(page, ui_server, api):
     page.locator("#doc-bulk-select").select_option("doc-delete")
     page.wait_for_selector("#doc-bulk-delete-btn:not([style*='none'])", timeout=2000)
 
-    # Handle confirm dialog
+    # Accept the hx-confirm dialog; the delete runs via htmx and returns
+    # HX-Refresh, so the page reloads only once the docs are actually gone.
     page.once("dialog", lambda d: d.accept())
-    page.locator("#doc-bulk-delete-btn").click()
-
-    # Page reloads after delete
-    page.wait_for_load_state("networkidle", timeout=8000)
-    _save(page, "05-after-delete")
+    with page.expect_navigation(wait_until="load", timeout=8000):
+        page.locator("#doc-bulk-delete-btn").click()
     _no_crash(page, "BULK-DOC-03")
 
     # Verify the doc is gone from API
@@ -130,7 +128,7 @@ def test_select_all_then_delete(page, ui_server, api):
     id1 = _create_draft(api, "invoice")
     id2 = _create_draft(api, "invoice")
 
-    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="networkidle")
+    page.goto(f"{ui_server}/docs?type=invoice&view=drafts", wait_until="domcontentloaded")
     initial_count = page.locator("input.doc-row-select").count()
     assert initial_count >= 2, f"Expected at least 2 drafts, got {initial_count}"
 
@@ -145,11 +143,10 @@ def test_select_all_then_delete(page, ui_server, api):
     page.locator("#doc-bulk-select").select_option("doc-delete")
     page.wait_for_selector("#doc-bulk-delete-btn:not([style*='none'])", timeout=2000)
 
+    # htmx delete + HX-Refresh: the page reloads only after the docs are gone.
     page.once("dialog", lambda d: d.accept())
-    page.locator("#doc-bulk-delete-btn").click()
-
-    page.wait_for_load_state("networkidle", timeout=8000)
-    _save(page, "07-after-delete-all")
+    with page.expect_navigation(wait_until="load", timeout=8000):
+        page.locator("#doc-bulk-delete-btn").click()
     _no_crash(page, "BULK-DOC-03b")
 
     # Both docs deleted
@@ -157,13 +154,18 @@ def test_select_all_then_delete(page, ui_server, api):
     assert api.get(f"/docs/{id2}").status_code == 404
 
 
-def test_auto_redirect_drafts_when_no_finals(page, ui_server, api):
-    """BULK-DOC-05: Visiting /docs?type=invoice with no finals but with drafts auto-redirects to drafts view."""
-    # Ensure at least one draft exists
-    _create_draft(api, "invoice")
+def test_auto_redirect_drafts_when_no_finals(page, ui_server, fresh_company):
+    """BULK-DOC-05: Visiting /docs?type=invoice with no finals but with drafts auto-redirects to drafts view.
+
+    Uses an isolated, empty company (fresh_company) — the shared session company
+    accumulates finalized invoices from other tests, which would suppress the
+    "no finals" redirect.
+    """
+    # Ensure at least one draft exists (in the fresh company)
+    _create_draft(fresh_company, "invoice")
 
     # Navigate to invoice list (no type=draft, no view=drafts)
-    page.goto(f"{ui_server}/docs?type=invoice", wait_until="networkidle")
+    page.goto(f"{ui_server}/docs?type=invoice", wait_until="domcontentloaded")
     _save(page, "08-auto-redirect-drafts")
     _no_crash(page, "BULK-DOC-05")
 

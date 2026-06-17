@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -21,7 +21,7 @@ from celerp.events.engine import emit_event
 from celerp.models.projections import Projection
 from celerp.services.auth import get_current_company_id, get_current_user, get_current_role, require_admin, require_manager, ROLE_LEVELS
 from celerp.services.auto_je import create_for_item_transform
-from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit
+from celerp.services.units import DEFAULT_UNITS, validate_quantity, build_unit_map, is_weight_unit, is_pieces_unit, LANDED_COST_KINDS
 from celerp_inventory.projections import is_item_available
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
@@ -31,7 +31,7 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 # Validation helpers
 # ---------------------------------------------------------------------------
 
-VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "non_stocked", "service"})
+VALID_INVENTORY_TYPES: frozenset[str] = frozenset({"stocked", "component", "non_stocked", "service", "freight"})
 
 _DEFAULT_UNITS = DEFAULT_UNITS  # backwards-compat alias for any internal callers
 
@@ -99,6 +99,19 @@ _CHILD_RESET_FIELDS: frozenset[str] = frozenset({
 })
 
 
+def _recipe_standard_unit_cost(state: dict) -> float | None:
+    """The rolled standard unit cost of a recipe-backed (manufactured) item, else None.
+
+    For a manufactured item the recipe's rolled ``unit_cost`` is the SINGLE source of truth for
+    cost — read at standard, never at a lingering build-lot ``cost_total``. Read ``recipe.unit_cost``
+    (not the ``cost_price`` field, which ``_recompute_cost`` can pop) so it is robust and stays
+    consistent with the manufacturing cost roll-up. Only a recipe with components carries a cost.
+    """
+    recipe = state.get("recipe") or {}
+    unit_cost = recipe.get("unit_cost") if recipe.get("components") else None
+    return float(unit_cost) if unit_cost is not None else None
+
+
 def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, location_name: str | None = None, created_at: object | None = None, updated_at: object | None = None) -> dict:
     """Flatten attributes dict to top-level so schema-driven UI sees all fields."""
     flat = dict(state)
@@ -117,7 +130,13 @@ def _flatten_item(state: dict, entity_id: str, location_id: str | None = None, l
     if updated_at is not None:
         flat["updated_at"] = updated_at.isoformat() if hasattr(updated_at, "isoformat") else str(updated_at)
     qty = float(flat.get("quantity") or 0)
-    if flat.get("cost_total") is not None:
+    _recipe_unit = _recipe_standard_unit_cost(flat)
+    if _recipe_unit is not None:
+        # Recipe-backed item: derive cost from the rolled standard (single source of truth); never
+        # let a lingering build-lot cost_total silently override it. See _recipe_standard_unit_cost.
+        flat["cost_price"] = _recipe_unit
+        flat["cost_total"] = round(_recipe_unit * qty, 2) if qty else 0.0
+    elif flat.get("cost_total") is not None:
         flat["cost_price"] = round(float(flat["cost_total"]) / qty, 10) if qty else 0.0
     elif flat.get("cost_price") is not None:
         flat["cost_total"] = round(float(flat["cost_price"]) * qty, 2)
@@ -172,7 +191,10 @@ class ItemCreate(BaseModel):
     allow_splitting: bool = True
     attributes: dict = Field(default_factory=dict)
     idempotency_key: str | None = None
-    inventory_type: str = "stocked"  # stocked | non_stocked | service
+    inventory_type: str = "stocked"  # stocked | component | non_stocked | service | freight
+    # Landed-cost charge lines (inventory_type=freight): refines reporting/GL routing.
+    landed_cost_kind: str | None = None      # freight | insurance | duty | import_vat
+    recoverable: bool | None = None          # import_vat only: recoverable VAT does not capitalise
 
 
 class ItemPatch(BaseModel):
@@ -257,6 +279,7 @@ _COST_ITEM_KEYS: frozenset[str] = frozenset({"cost_price", "cost_total"})
 
 @router.get("")
 async def list_items(
+    request: Request,
     company_id=Depends(get_current_company_id),
     session: AsyncSession = Depends(get_session),
     role: str = Depends(get_current_role),
@@ -269,6 +292,7 @@ async def list_items(
     status: str | None = None,
     category: str | None = None,
     inventory_type: str | None = None,
+    location_id: str | None = None,
     sort: str | None = None,
     dir: str = "desc",
 ) -> dict:
@@ -296,10 +320,13 @@ async def list_items(
         for r in rows
     ]
 
-    # Status filtering: default excludes hidden statuses; "all" skips filtering;
-    # "archived" expands to include merged/expired (and legacy disposed events).
+    # Status filtering: default excludes hidden statuses; "all" skips filtering; "archived" expands
+    # to include merged/expired; a comma-separated value matches any (column-filter multi-select).
+    status_set = {s.strip().lower() for s in status.split(",") if s.strip()} if (status and "," in status) else None
     if status == "all":
         pass  # no filter
+    elif status_set:
+        result = [r for r in result if str(r.get("status") or "").lower() in status_set]
     elif status == "archived":
         result = [r for r in result if str(r.get("status") or "").lower() in _ARCHIVED_GROUP]
     elif status:
@@ -308,10 +335,40 @@ async def list_items(
         result = [r for r in result if str(r.get("status") or "").lower() not in _HIDDEN_STATUSES]
 
     if category:
-        result = [r for r in result if str(r.get("category") or "") == category]
+        cats = {c.strip() for c in category.split(",") if c.strip()}
+        result = [r for r in result if str(r.get("category") or "") in cats]
 
     if inventory_type:
-        result = [r for r in result if (r.get("inventory_type") or "stocked") == inventory_type]
+        types = {it.strip() for it in inventory_type.split(",") if it.strip()}
+        result = [r for r in result if (r.get("inventory_type") or "stocked") in types]
+
+    if location_id:
+        locs = {loc.strip() for loc in location_id.split(",") if loc.strip()}
+        result = [r for r in result if str(r.get("location_id") or "") in locs]
+
+    # Distinct attribute values for the column-filter funnels, over the status/category/type/location
+    # scope and BEFORE attribute filters are applied (so every available value stays selectable).
+    _FACET_MAX = 500
+    attrs_by_id = {r.entity_id: (r.state.get("attributes") or {}) for r in rows}
+    facet_sets: dict[str, set] = {}
+    for r in result:
+        for akey, aval in attrs_by_id.get(r.get("id"), {}).items():
+            if aval in (None, ""):
+                continue
+            s = facet_sets.setdefault(akey, set())
+            if len(s) < _FACET_MAX:
+                s.add(str(aval))
+    attribute_facets = {k: sorted(s) for k, s in facet_sets.items() if s}
+
+    # Category-attribute column filters: ?attr.<key>=v1,v2 keeps items whose (flattened) attribute
+    # value is in the chosen set. Multiple attribute filters AND together.
+    for qk, qv in request.query_params.multi_items():
+        if not qk.startswith("attr.") or not qv:
+            continue
+        akey = qk[len("attr."):]
+        wanted = {x.strip() for x in qv.split(",") if x.strip()}
+        if wanted:
+            result = [r for r in result if str(r.get(akey) if r.get(akey) is not None else "") in wanted]
 
     if sku:
         result = [r for r in result if str(r.get("sku", "")) == sku]
@@ -384,7 +441,8 @@ async def list_items(
         result.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
 
     total = len(result)
-    return {"items": result[offset: offset + limit], "total": total}
+    return {"items": result[offset: offset + limit], "total": total,
+            "attribute_facets": attribute_facets}
 
 
 @router.get("/valuation")
@@ -475,10 +533,14 @@ async def get_valuation(
             key = f"{pl_name.lower()}_price"
             try:
                 if pl_name.lower() in ("cost", "cost price", "landed"):
-                    # Cost uses stored cost_total (lot total), else fallback to unit price * qty
-                    tc = state.get("cost_total")
-                    if tc is not None:
-                        price_totals[pl_name] += Decimal(str(tc))
+                    # Recipe-backed item: value at the recipe's standard unit cost (single source of
+                    # truth, consistent with _flatten_item). Else stored cost_total (lot total),
+                    # else fallback to unit price * qty.
+                    _runit = _recipe_standard_unit_cost(state)
+                    if _runit is not None:
+                        price_totals[pl_name] += Decimal(str(_runit)) * Decimal(str(qty))
+                    elif state.get("cost_total") is not None:
+                        price_totals[pl_name] += Decimal(str(state.get("cost_total")))
                     elif state.get(key) is not None:
                         price_totals[pl_name] += Decimal(str(state[key])) * Decimal(str(qty))
                 else:
@@ -667,6 +729,9 @@ async def post_item(payload: ItemCreate, company_id=Depends(get_current_company_
 
     if payload.inventory_type not in VALID_INVENTORY_TYPES:
         raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
+
+    if payload.landed_cost_kind is not None and payload.landed_cost_kind not in LANDED_COST_KINDS:
+        raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
 
     # Validate sell_by against company units
     units = await _get_company_units(session, company_id)
@@ -864,6 +929,12 @@ async def patch_item(entity_id: str, payload: ItemPatch, company_id=Depends(get_
         new_inv_type = (payload.fields_changed["inventory_type"] or {}).get("new")
         if new_inv_type not in VALID_INVENTORY_TYPES:
             raise HTTPException(status_code=422, detail=f"inventory_type must be one of {sorted(VALID_INVENTORY_TYPES)}")
+
+    # Validate landed_cost_kind if changing
+    if "landed_cost_kind" in changed_keys:
+        new_kind = (payload.fields_changed["landed_cost_kind"] or {}).get("new")
+        if new_kind is not None and new_kind not in LANDED_COST_KINDS:
+            raise HTTPException(status_code=422, detail=f"landed_cost_kind must be one of {sorted(LANDED_COST_KINDS)}")
 
     # Validate weight is non-negative
     if "weight" in changed_keys:
@@ -1410,6 +1481,148 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     }
 
 
+async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_proj: Projection,
+                          child_qty: float, child_weight: float | None = None,
+                          child_pieces: int | None = None) -> tuple[str, str]:
+    """Split one child of ``child_qty`` off ``parent_proj`` → ``(child_eid, child_sku)``.
+
+    The child (SKU ``{parent_sku}.N``) is the split-off portion; the mother keeps
+    the remainder under its original SKU. Cost splits proportionally by quantity.
+    Weight and pieces come ONLY from the explicit args — no proportional fallback,
+    no auto-derivation; the mother keeps ``parent - child`` for each.
+
+    Invariants (raise ValueError if violated):
+      - parcel has weight (weight-unit sell_by OR a weight attribute)
+            -> child_weight is required
+      - sell_by is a weight unit  -> child_weight must equal child_qty
+      - parcel has pieces (piece-unit sell_by OR a pieces attribute)
+            -> child_pieces is required
+      - sell_by is a pieces unit  -> child_pieces must equal child_qty
+
+    Does NOT commit — the caller owns the transaction.
+    """
+    parent = parent_proj
+    entity_id = parent.entity_id
+    parent_sku = parent.state.get("sku", "")
+    parent_qty = float(parent.state.get("quantity") or 0)
+    parent_attrs = dict(parent.state.get("attributes") or {})
+
+    units = await _get_company_units(session, company_id)
+    unit_map = {u["name"]: u for u in units}
+    sell_by = parent.state.get("sell_by") or ""
+    weight_type = is_weight_unit(sell_by, unit_map)
+    pieces_type = is_pieces_unit(sell_by, unit_map)
+    parent_weight = _read_float(parent.state, "weight")
+    parent_pieces = _read_pieces(parent.state)
+
+    # --- validate (no omission, no fallback) ---
+    if (weight_type or parent_weight is not None) and child_weight is None:
+        raise ValueError("child_weight is required: this item is weight-tracked")
+    if weight_type and child_weight is not None and abs(child_weight - child_qty) > 1e-9:
+        raise ValueError("for weight-sold items child_weight must equal child_qty")
+    if (pieces_type or parent_pieces is not None) and child_pieces is None:
+        raise ValueError("child_pieces is required: this item is piece-tracked")
+    if pieces_type and child_pieces is not None and abs(child_pieces - child_qty) > 1e-9:
+        raise ValueError("for piece-sold items child_pieces must equal child_qty")
+
+    # Next free child SKU: {parent_sku}.N
+    rows = (await session.execute(
+        select(Projection).where(Projection.company_id == company_id, Projection.entity_type == "item")
+    )).scalars().all()
+    prefix = f"{parent_sku}."
+    max_suffix = 0
+    for it in rows:
+        sku = str(it.state.get("sku", "") or "")
+        if sku.startswith(prefix) and "." not in sku[len(prefix):]:
+            try:
+                max_suffix = max(max_suffix, int(sku[len(prefix):]))
+            except ValueError:
+                pass
+    child_sku = f"{prefix}{max_suffix + 1}"
+
+    # Cost: proportional by quantity (unit-cost invariant).
+    parent_cost_total = float(parent.state.get("cost_total") or 0) or (
+        float(parent.state.get("cost_price") or 0) * parent_qty
+    )
+    child_cost_total: float | None = None
+    if parent_cost_total and parent_qty:
+        unit_cost = Decimal(str(parent_cost_total)) / Decimal(str(parent_qty))
+        child_cost_total = float((unit_cost * Decimal(str(child_qty))).quantize(Decimal("0.0000000001")))
+
+    ch_pieces = _to_int_pieces(child_pieces) if child_pieces is not None else None
+    parent_prices = {
+        k: parent.state[k] for k in parent.state
+        if k.endswith("_price") and parent.state[k] is not None and k != "cost_price"
+    }
+
+    # --- create the child ---
+    child_eid = f"item:{uuid.uuid4()}"
+    next_barcode_seq = await _next_seq(session, company_id)
+    child_attrs = dict(parent_attrs)
+    if ch_pieces is not None:
+        child_attrs["pieces"] = ch_pieces
+    child_data = {k: v for k, v in parent.state.items() if k not in _CHILD_RESET_FIELDS}
+    child_data.update({
+        "sku": child_sku,
+        "name": parent.state.get("name", child_sku),
+        "quantity": child_qty,
+        "status": "available",
+        "attributes": child_attrs,
+        "barcode": str(next_barcode_seq).zfill(6),
+    })
+    if child_weight is not None:
+        child_data["weight"] = child_weight
+    await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
+                     event_type="item.created", data=child_data, actor_id=user_id,
+                     location_id=_parse_uuid(parent.state.get("location_id")), source="fulfill_split",
+                     idempotency_key=str(uuid.uuid4()), metadata_={"parent_id": entity_id})
+    for price_type, price_val in parent_prices.items():
+        await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
+                         event_type="item.pricing.set", data={"price_type": price_type, "new_price": price_val},
+                         actor_id=user_id, location_id=None, source="fulfill_split",
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
+    if child_cost_total is not None:
+        await emit_event(session, company_id=company_id, entity_id=child_eid, entity_type="item",
+                         event_type="item.pricing.set", data={"price_type": "cost_total", "new_price": child_cost_total},
+                         actor_id=user_id, location_id=None, source="fulfill_split",
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "from_split"})
+
+    # --- reduce the mother ---
+    new_parent_qty = max(0.0, round(parent_qty - child_qty, 10))
+    await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                     event_type="item.quantity.adjusted", data={"new_qty": new_parent_qty},
+                     actor_id=user_id, location_id=None, source="fulfill_split",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    if child_cost_total is not None and parent_cost_total:
+        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                         event_type="item.pricing.set",
+                         data={"price_type": "cost_total", "new_price": max(0.0, round(parent_cost_total - child_cost_total, 10))},
+                         actor_id=user_id, location_id=None, source="fulfill_split",
+                         idempotency_key=str(uuid.uuid4()), metadata_={})
+    # Secondary measures are NOT conserved: the child keeps its (uncapped) value and
+    # the mother floors at 0 (e.g. child weight 20 of a 15ct mother -> mother 0ct).
+    fields_changed: dict[str, dict] = {}
+    if child_weight is not None and parent_weight is not None:
+        fields_changed["weight"] = {"old": parent.state.get("weight"), "new": max(0.0, round(parent_weight - child_weight, 10))}
+    if ch_pieces is not None and parent_pieces is not None:
+        new_attrs = dict(parent_attrs)
+        new_attrs["pieces"] = max(0, _to_int_pieces(parent_pieces) - ch_pieces)
+        fields_changed["attributes"] = {"old": parent_attrs, "new": new_attrs}
+    if fields_changed:
+        await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                         event_type="item.updated", data={"fields_changed": fields_changed},
+                         actor_id=user_id, location_id=None, source="fulfill_split",
+                         idempotency_key=str(uuid.uuid4()), metadata_={})
+
+    # history
+    await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
+                     event_type="item.split",
+                     data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty]},
+                     actor_id=user_id, location_id=None, source="fulfill_split",
+                     idempotency_key=str(uuid.uuid4()), metadata_={})
+    return child_eid, child_sku
+
+
 @router.post("/{entity_id}/transform")
 async def transform_item(entity_id: str, payload: TransformBody, company_id=Depends(get_current_company_id), user=Depends(get_current_user), session: AsyncSession = Depends(get_session)) -> dict:
     # Fetch parent
@@ -1590,6 +1803,26 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         raise HTTPException(
             status_code=422,
             detail=f"All items must belong to the same category to merge. Found: {sorted(categories)}.",
+        )
+
+    # Validate units: merging sums quantities (in the sell unit) and net weights (in the weight
+    # unit), so the sources must agree on both - you cannot add grams to carats.
+    sell_units = {str(p.state.get("sell_by") or "").strip() for p in source_projections}
+    sell_units.discard("")
+    if len(sell_units) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Items measured in different units cannot be merged. Found: {', '.join(sorted(sell_units))}.",
+        )
+    weight_units = {
+        str(p.state.get("weight_unit") or "").strip()
+        for p in source_projections if p.state.get("weight") not in (None, "")
+    }
+    weight_units.discard("")
+    if len(weight_units) > 1:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Items with different weight units cannot be merged. Found: {', '.join(sorted(weight_units))}.",
         )
 
     # Resolve target projection (SKU/barcode/name/prices come from this source).

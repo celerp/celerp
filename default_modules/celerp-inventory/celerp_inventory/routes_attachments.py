@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 """Attachment endpoints.
 
@@ -383,7 +383,12 @@ async def upload_item_file(
     # First image uploaded → auto-set as hero if no hero exists
     existing_files: list[dict] = row.state.get("files", [])
     has_hero = any(f.get("is_hero") for f in existing_files)
-    is_hero = (not has_hero) and meta.get("mime", "").startswith("image/")
+    _is_image = meta.get("mime", "").startswith("image/")
+    is_hero = (not has_hero) and _is_image
+    # The upload area implies the type: an image attached to an inventory item is a product image, so
+    # tag it as such by default (untagged-image uploads otherwise show up untagged everywhere).
+    if document_tag is None and _is_image:
+        document_tag = "product_images"
 
     from datetime import datetime, timezone
     await emit_event(

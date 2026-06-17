@@ -47,6 +47,8 @@ def format_value(v, fmt: str = "text", currency: str | None = None) -> str | FT:
             return fmt_money(float(v), currency)
         except (ValueError, TypeError):
             return EMPTY
+    if fmt == "rate":
+        return fmt_rate(v, currency)
     if fmt == "badge":
         raw = str(v)
         key = raw.lower().replace(" ", "-").replace("_", "-")
@@ -94,12 +96,32 @@ def currency_symbol(currency: str | None) -> str:
 
 
 def fmt_money(value: str | float, currency: str | None = None) -> str:
-    """Format a numeric value as a currency string."""
+    """Format a money AMOUNT (total, tax, etc.) at currency precision."""
     sym = currency_symbol(currency)
     try:
         return f"{sym}{float(value):,.2f}"
     except (ValueError, TypeError):
         return EMPTY
+
+
+def fmt_rate(value: str | float, currency: str | None = None) -> str:
+    """Format a unit price (a RATE): currency symbol + at least currency_dp decimals, up to rate_dp,
+    with trailing zeros beyond currency precision trimmed (15.28, 15.285, 15.30 - never 15.2850)."""
+    from celerp.services.money import currency_dp as _cdp, rate_dp as _rdp
+    sym = currency_symbol(currency)
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        return EMPTY
+    lo, hi = _cdp(currency or "USD"), _rdp(currency or "USD")
+    s = f"{v:,.{hi}f}"
+    if "." in s:
+        intp, frac = s.split(".")
+        frac = frac.rstrip("0")
+        if len(frac) < lo:
+            frac = frac.ljust(lo, "0")
+        s = f"{intp}.{frac}" if frac else intp
+    return f"{sym}{s}"
 
 
 def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True, all_label: str = "All") -> FT:
@@ -112,7 +134,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
     "All" card (status=None/"") is prepended unless show_all_card=False.
     total_override: if provided, the "All" card shows this count instead of summing cards.
     """
-    def _card(label: str, count: int, total: float | None, status: str | None, color: str, href_override: str | None = None, active_key: str | None = None) -> FT:
+    def _card(label: str, count: int, total: float | None, status: str | None, color: str, href_override: str | None = None, active_key: str | None = None, title: str | None = None) -> FT:
         _cmp = active_key if active_key is not None else (status or "")
         is_active = (active_status or "") == _cmp
         color_cls = color if color in _STATUS_CARD_COLORS else "gray"
@@ -129,7 +151,7 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
         ]
         if total is not None:
             inner.append(Span(fmt_money(total, currency), cls="status-card-total"))
-        return A(*inner, href=href, cls=cls)
+        return A(*inner, href=href, cls=cls, **({"title": title} if title else {}))
 
     # Ensure "All" card is first (optional)
     all_total = total_override if total_override is not None else sum(c.get("count", 0) for c in cards)
@@ -143,8 +165,394 @@ def status_cards(cards: list[dict], base_url: str, active_status: str | None = N
             c.get("color", "gray"),
             href_override=c.get("_url"),
             active_key=c.get("_active_key"),
+            title=c.get("title"),
         ))
     return Div(*els, cls="status-cards")
+
+
+# Shared bulk-action toolbar: [N selected] [Clear] [Action ▾]. Reused across list pages so bulk
+# actions are consistent and extensible. Rows are `.bulk-select` checkboxes (name='selected',
+# value=id) in the table; the header `.bulk-select-all` checkbox toggles visible rows; only
+# VISIBLE (not .dp-row-hidden) rows count, so it composes with the column filters.
+BULK_TOOLBAR_JS = """
+(function(){
+  if(window.__celerpBulkbar)return;window.__celerpBulkbar=true;
+  function table(bar){return document.getElementById(bar.getAttribute('data-table'));}
+  function visBoxes(t){if(!t)return [];return Array.prototype.slice.call(
+    t.querySelectorAll('tbody tr.data-row:not(.dp-row-hidden) .bulk-select'));}
+  function checkedIds(t){var seen={},out=[];visBoxes(t).forEach(function(c){
+    if(c.checked&&!(c.value in seen)){seen[c.value]=1;out.push(c.value);}});return out;}
+  function refresh(bar){
+    var t=table(bar);if(!t)return;var b=visBoxes(t),n=b.filter(function(c){return c.checked}).length;
+    var cnt=bar.querySelector('.bulk-count');if(cnt)cnt.textContent=n+' selected';
+    var sel=bar.querySelector('.bulk-action-select');if(sel)sel.disabled=n===0;
+    var clr=bar.querySelector('.bulk-clear');if(clr)clr.style.visibility=n>0?'visible':'hidden';
+    var all=t.querySelector('thead .bulk-select-all');if(all){all.checked=n>0&&n===b.length;all.indeterminate=n>0&&n<b.length;}
+  }
+  function refreshAll(){document.querySelectorAll('.bulkbar').forEach(refresh);}
+  window.celerpBulkRefresh=refreshAll;
+  function doAction(sel){
+    var bar=sel.closest('.bulkbar');var t=table(bar);if(!t)return;
+    var ids=checkedIds(t),val=sel.value;sel.selectedIndex=0;
+    if(!ids.length||!val)return;
+    var acts=JSON.parse(sel.getAttribute('data-actions')||'[]'),a=null;
+    for(var i=0;i<acts.length;i++){if(acts[i].value===val){a=acts[i];break;}}
+    if(!a)return;
+    if(a.confirm&&!confirm(a.confirm))return;
+    if(a.method==='open'){window.open(a.url+(a.url.indexOf('?')>=0?'&':'?')+'ids='+encodeURIComponent(ids.join(',')),'_blank');return;}
+    var form=document.createElement('form');
+    ids.forEach(function(id){var inp=document.createElement('input');inp.type='hidden';inp.name='selected';inp.value=id;form.appendChild(inp);});
+    document.body.appendChild(form);
+    htmx.ajax('POST',a.url,{source:form,target:a.target||('#'+t.id),swap:a.swap||'outerHTML'})
+      .then(function(){form.remove();},function(){form.remove();});
+  }
+  document.addEventListener('change',function(e){
+    var el=e.target;if(!el||!el.classList)return;
+    if(el.classList.contains('bulk-select-all')){var t=el.closest('table');
+      if(t)visBoxes(t).forEach(function(c){c.checked=el.checked;});refreshAll();}
+    else if(el.classList.contains('bulk-select')){refreshAll();}
+    else if(el.classList.contains('bulk-action-select')){doAction(el);}
+  });
+  document.addEventListener('click',function(e){
+    var clr=e.target.closest&&e.target.closest('.bulk-clear');
+    if(clr){var t=table(clr.closest('.bulkbar'));if(t)visBoxes(t).forEach(function(c){c.checked=false;});refreshAll();}
+  });
+  document.addEventListener('htmx:afterSwap',function(){refreshAll();});
+  refreshAll();
+})();
+"""
+
+
+def bulk_toolbar(table_id: str, actions: list[dict]) -> FT:
+    """Standard bulk-action toolbar: [N selected] [Clear] [Action ▾].
+    actions: [{value, label, method('post'|'open'), url, confirm?, target?, swap?}].
+    POST actions submit the selected ids (name='selected') via htmx; 'open' actions open
+    url?ids=<csv> in a new tab. Pair with `.bulk-select` row checkboxes + a `.bulk-select-all`
+    header checkbox in #table_id. `data-table` lives on the outer Div (the JS reads it there)."""
+    import json as _json
+    opts = [Option("Action…", value="", disabled=True, selected=True)]
+    opts += [Option(a["label"], value=a["value"]) for a in actions]
+    return Div(
+        Span("0 selected", cls="bulk-count"),
+        Button("Clear", type="button", cls="btn btn--xs btn--ghost bulk-clear"),
+        Select(*opts, cls="bulk-action-select", disabled=True,
+               **{"data-actions": _json.dumps(actions)}),
+        Script(BULK_TOOLBAR_JS),
+        cls="bulkbar bulk-action-bar", id=f"bulkbar-{table_id}",
+        **{"data-table": table_id},
+    )
+
+
+def filter_th(label: str, col: int, *, center: bool = False, sortable: bool = False,
+              right: bool = False, default_exclude: list[str] | None = None) -> FT:
+    """A column header with an Excel-style filter funnel (client-side checkbox value list).
+    `col` is the 0-based cell index the funnel filters on. Pair with COLUMN_FILTER_JS on the page.
+    With sortable=True the label also sorts the column (needs ENHANCED_TABLE_JS); the sort arrow sits
+    inner (right after the label) and the funnel arrow outer - matching the inventory list. right=True
+    right-aligns the header to match numeric cells. The funnel is guarded so clicking it filters.
+    default_exclude: values hidden by default (the funnel starts with them unchecked) - e.g. Status
+    excludes Completed/Cancelled until the user re-checks them."""
+    attrs = {"data-col": str(col), "aria-label": f"Filter by {label}"}
+    if default_exclude:
+        attrs["data-filter-exclude"] = "␟".join(default_exclude)  # unit-separator: values may contain commas
+    inner = [Span(label)] + ([Span(cls="sort-ind")] if sortable else [])
+    inner.append(Button("▾", type="button", cls="colfilter", title=f"Filter by {label}", **attrs))
+    cls = ("colfilter-th" + (" sortable-th" if sortable else "")
+           + (" cell--center" if center else "") + (" cell--number" if right else ""))
+    return Th(*inner, cls=cls, **({"data-sort": str(col)} if sortable else {}))
+
+
+def date_range_filter(table_id: str, col: int, label: str) -> FT:
+    """A from/to date-range filter bound to a client table column (composes with the Excel funnels
+    via COLUMN_FILTER_JS). `col` is the 0-based cell index holding an ISO date (YYYY-MM-DD)."""
+    return Span(
+        Span(f"{label}:", cls="daterange-label"),
+        Input(type="date", cls="daterange-input", aria_label=f"{label} from", **{"data-bound": "from"}),
+        Span("to", cls="daterange-sep"),
+        Input(type="date", cls="daterange-input", aria_label=f"{label} to", **{"data-bound": "to"}),
+        cls="daterange", **{"data-daterange-table": table_id, "data-daterange-col": str(col)},
+    )
+
+
+# Excel-style column filters: each `.colfilter` funnel (in a `filter_th`) opens a checkbox list of
+# the distinct values in its column (data-col = cell index). Filtering is client-side and instant;
+# multiple columns AND together; hidden rows get `.dp-row-hidden` and are de-selected. Per-table
+# state (WeakMap) so it works on any table on the page; resets when a table is re-rendered via htmx.
+COLUMN_FILTER_JS = """
+(function(){
+  if(window.__celerpColFilter)return;window.__celerpColFilter=true;
+  var state=new WeakMap();
+  function active(t){if(!state.has(t))state.set(t,{});return state.get(t);}
+  function rows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}
+  function cellText(r,col){var c=r.children[col];if(!c)return '';var dv=c.getAttribute('data-filter-value');return (dv!==null?dv:c.textContent).trim();}
+  function distinct(t,col){var out=[],seen={};rows(t).forEach(function(r){var v=cellText(r,col);if(!(v in seen)){seen[v]=1;out.push(v);}});out.sort();return out;}
+  function apply(t){
+    var a=active(t);
+    rows(t).forEach(function(r){
+      var show=true;
+      for(var key in a){
+        var s=a[key];
+        if(key.indexOf('_range_')===0){
+          // Date-range filter: cell must be an ISO date within [from, to].
+          var rc=+key.slice(7), cv=cellText(r,rc), ok=/^\\d{4}-\\d{2}-\\d{2}/.test(cv);
+          if(!ok){show=false;break;}
+          if(s.from&&cv<s.from){show=false;break;}
+          if(s.to&&cv>s.to){show=false;break;}
+        } else if(s&&!s.has(cellText(r,+key))){show=false;break;}
+      }
+      r.classList.toggle('dp-row-hidden',!show);
+      if(!show){var cb=r.querySelector('.bulk-select');if(cb&&cb.checked)cb.checked=false;}
+    });
+    t.querySelectorAll('thead .colfilter').forEach(function(b){b.classList.toggle('colfilter--active',!!a[b.getAttribute('data-col')]);});
+    if(window.celerpBulkRefresh)window.celerpBulkRefresh();
+    if(window.celerpTableEnhance)window.celerpTableEnhance(t);
+  }
+  // Seed a column's default-excluded values (e.g. Status hides Completed/Cancelled) once per table.
+  function seedDefaults(t){
+    var a=active(t);
+    t.querySelectorAll('thead .colfilter[data-filter-exclude]').forEach(function(b){
+      var col=b.getAttribute('data-col'); if(col in a) return;
+      var ex=b.getAttribute('data-filter-exclude').split('\\u241f');
+      var keep=distinct(t,+col).filter(function(v){return ex.indexOf(v)<0;});
+      a[col]=new Set(keep);
+    });
+  }
+  function refresh(t){ if(t){seedDefaults(t);apply(t);} }
+  // Seed default filters for tables under `root` (called by sections after an htmx swap, since
+  // htmx:afterSwap's target is unreliable for outerHTML swaps). A freshly swapped table is a new
+  // element with empty state, so this seeds it without wiping user filters elsewhere.
+  window.celerpRefreshFilters=function(root){(root||document).querySelectorAll('table.js-table,table.data-table').forEach(refresh);};
+  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
+  function open(btn){
+    var t=btn.closest('table');if(!t)return;
+    var col=btn.getAttribute('data-col');
+    var a=active(t),values=distinct(t,+col);
+    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-col',col);
+    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder='Search\\u2026';
+    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';
+    var selAllCb=document.createElement('input');selAllCb.type='checkbox';
+    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' (Select all)'));
+    var list=document.createElement('div');list.className='colfilter-list';
+    function commit(){
+      var checked=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)checked.push(c.value);});
+      if(checked.length===values.length){delete a[col];}else{a[col]=new Set(checked);}
+      selAllCb.checked=(checked.length===values.length);
+      selAllCb.indeterminate=(checked.length>0&&checked.length<values.length);
+      apply(t);
+    }
+    values.forEach(function(v){
+      var lbl=document.createElement('label');lbl.className='colfilter-item';
+      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;
+      cb.checked=!a[col]||a[col].has(v);
+      cb.addEventListener('change',commit);
+      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+(v||'(blank)')));
+      list.appendChild(lbl);
+    });
+    selAllCb.checked=!a[col];selAllCb.indeterminate=!!a[col];
+    selAllCb.addEventListener('change',function(){
+      list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});commit();});
+    search.addEventListener('input',function(){var q=search.value.toLowerCase();
+      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
+    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent='Clear filter';
+    clear.addEventListener('click',function(){delete a[col];closeAll();apply(t);});
+    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(clear);
+    pop.style.position='fixed';
+    document.body.appendChild(pop);
+    var br=btn.getBoundingClientRect();
+    pop.style.top=(br.bottom+2)+'px';
+    pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';
+    search.focus();
+  }
+  document.addEventListener('click',function(e){
+    var btn=e.target.closest&&e.target.closest('.colfilter');
+    if(btn){e.preventDefault();e.stopPropagation();
+      var wasOpen=!!document.querySelector('.colfilter-pop[data-col="'+btn.getAttribute('data-col')+'"]');
+      closeAll();if(!wasOpen)open(btn);return;}
+    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+  // Date-range inputs (date_range_filter): bound to a table column via .daterange wrapper.
+  document.addEventListener('change',function(e){
+    var inp=e.target;
+    if(!(inp.classList&&inp.classList.contains('daterange-input')))return;
+    var wrap=inp.closest('.daterange');if(!wrap)return;
+    var t=document.getElementById(wrap.getAttribute('data-daterange-table'));if(!t)return;
+    var col=wrap.getAttribute('data-daterange-col'),a=active(t);
+    var from=(wrap.querySelector('[data-bound=from]')||{}).value||'';
+    var to=(wrap.querySelector('[data-bound=to]')||{}).value||'';
+    if(from||to)a['_range_'+col]={from:from,to:to};else delete a['_range_'+col];
+    apply(t);
+  });
+  document.addEventListener('htmx:afterSwap',function(e){
+    var tg=e.detail&&e.detail.target;if(!tg)return;
+    var tables=tg.tagName==='TABLE'?[tg]:(tg.querySelectorAll?tg.querySelectorAll('table'):[]);
+    if(tables.length){closeAll();Array.prototype.forEach.call(tables,function(t){state.delete(t);refresh(t);});}
+  });
+  if(document.readyState!=='loading')document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);
+  else document.addEventListener('DOMContentLoaded',function(){document.querySelectorAll('table.js-table,table.data-table').forEach(refresh);});
+})();
+"""
+
+
+def _filter_funnel_btn(param: str, options: list, selected, label: str = "") -> FT:
+    """The funnel button for a server-backed column filter. `options` is [(value, label), ...];
+    `selected` is the active values (from the current query). SERVER_FILTER_JS handles the rest."""
+    import json as _json
+    sel = [str(s) for s in (selected or [])]
+    return Button(
+        "▾", type="button", cls="colfilter" + (" colfilter--active" if sel else ""),
+        title=f"Filter by {label}" if label else "Filter",
+        **{"data-param": param,
+           "data-options": _json.dumps([[str(v), (lbl if lbl is not None else str(v))] for v, lbl in options]),
+           "data-selected": _json.dumps(sel),
+           "aria-label": f"Filter by {label}" if label else "Filter"},
+    )
+
+
+def server_filter_th(label: str, param: str, options: list, selected=None, *, center: bool = False) -> FT:
+    """A column header with a SERVER-backed Excel filter funnel (for paginated lists). Checking
+    values and applying reloads the page with `?<param>=<csv>` so the full dataset is filtered
+    server-side. Pair with SERVER_FILTER_JS on the page."""
+    return Th(
+        Span(label), _filter_funnel_btn(param, options, selected, label),
+        cls="colfilter-th" + (" cell--center" if center else ""),
+    )
+
+
+# Server-backed column filter: the funnel popup lists the column's value domain (provided
+# server-side); Apply reloads with the chosen values as a `?<param>=csv` query so a PAGINATED list
+# is filtered across its whole dataset, not just the visible page. Reuses the .colfilter-pop styling.
+SERVER_FILTER_JS = """
+(function(){
+  if(window.__celerpSrvFilter)return;window.__celerpSrvFilter=true;
+  function closeAll(){var p=document.querySelector('.colfilter-pop');if(p)p.remove();}
+  function build(btn){
+    var param=btn.getAttribute('data-param');
+    var options=JSON.parse(btn.getAttribute('data-options')||'[]');
+    var selected=new Set(JSON.parse(btn.getAttribute('data-selected')||'[]'));
+    var noFilter=selected.size===0;
+    var pop=document.createElement('div');pop.className='colfilter-pop';pop.setAttribute('data-param',param);
+    var search=document.createElement('input');search.type='text';search.className='colfilter-search';search.placeholder='Search\\u2026';
+    var selAll=document.createElement('label');selAll.className='colfilter-item colfilter-all';
+    var selAllCb=document.createElement('input');selAllCb.type='checkbox';
+    selAll.appendChild(selAllCb);selAll.appendChild(document.createTextNode(' (Select all)'));
+    var list=document.createElement('div');list.className='colfilter-list';
+    options.forEach(function(o){
+      var v=String(o[0]),label=o[1]==null?v:o[1];
+      var lbl=document.createElement('label');lbl.className='colfilter-item';
+      var cb=document.createElement('input');cb.type='checkbox';cb.value=v;cb.checked=noFilter||selected.has(v);
+      lbl.appendChild(cb);lbl.appendChild(document.createTextNode(' '+label));
+      list.appendChild(lbl);
+    });
+    function checkedVals(){var out=[];list.querySelectorAll('input[type=checkbox]').forEach(function(c){if(c.checked)out.push(c.value);});return out;}
+    function syncAll(){var n=checkedVals().length;selAllCb.checked=n===options.length;selAllCb.indeterminate=n>0&&n<options.length;}
+    syncAll();list.addEventListener('change',syncAll);
+    selAllCb.addEventListener('change',function(){list.querySelectorAll('input[type=checkbox]').forEach(function(c){c.checked=selAllCb.checked;});});
+    search.addEventListener('input',function(){var q=search.value.toLowerCase();
+      list.querySelectorAll('.colfilter-item').forEach(function(it){it.style.display=it.textContent.toLowerCase().indexOf(q)>=0?'':'none';});});
+    function go(vals){var p=new URLSearchParams(window.location.search);
+      if(!vals||vals.length===0||vals.length===options.length){p.delete(param);}else{p.set(param,vals.join(','));}
+      p.set('page','1');window.location.search=p.toString();}
+    var foot=document.createElement('div');foot.className='colfilter-foot';
+    var apply=document.createElement('button');apply.type='button';apply.className='btn btn--xs btn--primary';apply.textContent='Apply';
+    apply.addEventListener('click',function(){go(checkedVals());});
+    var clear=document.createElement('button');clear.type='button';clear.className='colfilter-clear';clear.textContent='Clear';
+    clear.addEventListener('click',function(){go([]);});
+    foot.appendChild(apply);foot.appendChild(clear);
+    pop.appendChild(search);pop.appendChild(selAll);pop.appendChild(list);pop.appendChild(foot);
+    pop.style.position='fixed';document.body.appendChild(pop);
+    var br=btn.getBoundingClientRect();
+    pop.style.top=(br.bottom+2)+'px';pop.style.left=Math.max(8,Math.min(br.left,window.innerWidth-8-pop.offsetWidth))+'px';
+    search.focus();
+  }
+  document.addEventListener('click',function(e){
+    var btn=e.target.closest&&e.target.closest('.colfilter[data-param]');
+    if(btn){e.preventDefault();e.stopPropagation();
+      var open=!!document.querySelector('.colfilter-pop[data-param="'+btn.getAttribute('data-param')+'"]');
+      closeAll();if(!open)build(btn);return;}
+    if(!(e.target.closest&&e.target.closest('.colfilter-pop')))closeAll();
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeAll();});
+})();
+"""
+
+
+def sortable_th(label, col: int, *, center: bool = False, right: bool = False) -> FT:
+    """A clickable, client-sortable column header (asc/desc); the sort arrow sits inner (right after
+    the label). Pair with ENHANCED_TABLE_JS and a `js-table` table. `col` is the 0-based cell index
+    to sort on. right=True right-aligns the header to match numeric cells."""
+    cls = "sortable-th" + (" cell--center" if center else "") + (" cell--number" if right else "")
+    return Th(Span(label), Span(cls="sort-ind"), cls=cls, **{"data-sort": str(col)})
+
+
+def table_pager(table_id: str) -> FT:
+    """Client-side pager controls for a `js-table` (hidden until the table spans >1 page)."""
+    return Div(
+        Button("‹ Prev", type="button", cls="btn btn--xs btn--ghost",
+               **{"data-page-nav": "prev", "data-page-for": table_id}),
+        Span("", cls="enh-page-info"),
+        Button("Next ›", type="button", cls="btn btn--xs btn--ghost",
+               **{"data-page-nav": "next", "data-page-for": table_id}),
+        cls="enh-pager", style="display:none", **{"data-pager-for": table_id},
+    )
+
+
+# Client-side table enhancer for bounded tables (`table.js-table`): clickable sort on
+# `th[data-sort]` (asc/desc) and windowed pagination (`data-page-size`). Composes with the Excel
+# column funnels - it only paginates VISIBLE (not .dp-row-hidden) rows and re-windows when a filter
+# changes. Reusable across pages; no server round-trips.
+ENHANCED_TABLE_JS = """
+(function(){
+  if(window.__celerpEnhTable)return;window.__celerpEnhTable=true;
+  function dataRows(t){return Array.prototype.slice.call(t.querySelectorAll('tbody tr.data-row'));}
+  function visible(t){return dataRows(t).filter(function(r){return !r.classList.contains('dp-row-hidden');});}
+  function num(s){var n=parseFloat(String(s).replace(/[^0-9.\\-]/g,''));return (s!==''&&!isNaN(n))?n:null;}
+  function cmp(a,b,col,dir){
+    var av=a.children[col]?a.children[col].textContent.trim():'';
+    var bv=b.children[col]?b.children[col].textContent.trim():'';
+    var an=num(av),bn=num(bv),r;
+    if(an!==null&&bn!==null)r=an-bn; else r=av.toLowerCase().localeCompare(bv.toLowerCase());
+    return dir==='asc'?r:-r;
+  }
+  function paginate(t){
+    var size=parseInt(t.getAttribute('data-page-size')||'0',10);
+    var vis=visible(t),pager=document.querySelector('[data-pager-for="'+t.id+'"]');
+    if(!size){return;}
+    var pages=Math.max(1,Math.ceil(vis.length/size));
+    var page=Math.min(pages,Math.max(1,parseInt(t.getAttribute('data-page')||'1',10)));
+    t.setAttribute('data-page',page);
+    vis.forEach(function(r,i){r.classList.toggle('enh-page-hidden',!(i>=(page-1)*size&&i<page*size));});
+    if(pager){
+      pager.style.display=pages>1?'':'none';
+      var info=pager.querySelector('.enh-page-info');if(info)info.textContent=page+' / '+pages+' ('+vis.length+')';
+      var prev=pager.querySelector('[data-page-nav=prev]'),next=pager.querySelector('[data-page-nav=next]');
+      if(prev)prev.disabled=page<=1; if(next)next.disabled=page>=pages;
+    }
+  }
+  function sortBy(t,col){
+    var cur=t.getAttribute('data-sort-col');
+    var dir=(cur===String(col)&&t.getAttribute('data-sort-dir')==='asc')?'desc':'asc';
+    t.setAttribute('data-sort-col',col);t.setAttribute('data-sort-dir',dir);t.setAttribute('data-page','1');
+    var tb=t.querySelector('tbody');
+    dataRows(t).sort(function(a,b){return cmp(a,b,col,dir);}).forEach(function(r){tb.appendChild(r);});
+    t.querySelectorAll('thead th[data-sort]').forEach(function(th){th.classList.remove('sort-asc','sort-desc');});
+    var th=t.querySelector('thead th[data-sort="'+col+'"]');if(th)th.classList.add(dir==='asc'?'sort-asc':'sort-desc');
+    paginate(t);
+  }
+  window.celerpTableEnhance=function(t){ if(t){paginate(t);return;} document.querySelectorAll('table.js-table').forEach(paginate); };
+  document.addEventListener('click',function(e){
+    if(e.target.closest&&e.target.closest('.colfilter'))return;  // funnel handles its own clicks
+    var th=e.target.closest&&e.target.closest('th[data-sort]');
+    if(th){var t=th.closest('table');if(t&&t.classList.contains('js-table'))sortBy(t,parseInt(th.getAttribute('data-sort'),10));return;}
+    var nav=e.target.closest&&e.target.closest('[data-page-nav]');
+    if(nav){var t=document.getElementById(nav.getAttribute('data-page-for'));if(!t)return;
+      var p=parseInt(t.getAttribute('data-page')||'1',10);
+      t.setAttribute('data-page',nav.getAttribute('data-page-nav')==='next'?p+1:p-1);paginate(t);}
+  });
+  document.addEventListener('htmx:afterSwap',function(){document.querySelectorAll('table.js-table').forEach(paginate);});
+  document.querySelectorAll('table.js-table').forEach(paginate);
+})();
+"""
 
 
 def empty_state_cta(
@@ -194,10 +602,17 @@ def searchable_select(
     # Current label for display
     display_label = next((lbl for val, lbl in normalized if val == value), value)
 
-    opt_els = [
-        Div(label, cls=f"combobox-option{' combobox-option--new' if val.startswith('__new__') else ''}", data_value=val)
-        for val, label in normalized
-    ]
+    def _opt_cls(val: str) -> str:
+        # "__"-prefixed values are action options (add-new, scope toggles): pinned so they
+        # survive typing/filtering; "__new__" additionally gets the add-new styling.
+        cls = "combobox-option"
+        if val.startswith("__"):
+            cls += " combobox-option--pinned"
+        if val.startswith("__new__"):
+            cls += " combobox-option--new"
+        return cls
+
+    opt_els = [Div(label, cls=_opt_cls(val), data_value=val) for val, label in normalized]
     opt_els.append(Div(t("msg.no_results"), cls="combobox-option combobox-option--empty", style="display:none"))
 
     wrap_attrs: dict = {"cls": "combobox-wrap"}
@@ -395,8 +810,10 @@ def editable_cell(
                 onkeydown=escape_js,
                 onblur=blur_restore_js,
             )
-    elif cell_type in ("money", "weight"):
-        step = "0.01" if cell_type == "money" else "0.001"
+    elif cell_type in ("money", "weight", "rate"):
+        # A rate (unit price) may carry more precision than a money amount, so don't constrain the
+        # input step to whole cents - accept any precision and normalise on the server (GDR 2e).
+        step = {"money": "0.01", "weight": "0.001"}.get(cell_type, "any")
         input_el = Input(
             type="number", name="value", value=display_val, step=step,
             **swap,
@@ -404,6 +821,20 @@ def editable_cell(
             cls="cell-input cell-input--number",
             autofocus=True,
             onkeydown=escape_js,
+        )
+    elif cell_type == "textarea":
+        # Multi-line editor: Enter inserts a newline (not save), Esc cancels, blur saves.
+        textarea_escape_js = (
+            f"if(event.key==='Escape'){{this._escaping=true;"
+            f"htmx.ajax('GET','{restore_url}',{{target:this.closest('td'),swap:'outerHTML'}});"
+            f"event.preventDefault();}}"
+        )
+        input_el = Textarea(
+            display_val, name="value", **swap,
+            hx_trigger="blur delay:200ms",
+            cls="cell-input cell-textarea-input", rows="5",
+            autofocus=True,
+            onkeydown=textarea_escape_js,
         )
     elif cell_type == "bool":
         # Toggle: send "true"/"false" on change
@@ -454,6 +885,8 @@ def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
             return Span(fmt_money(s, currency), cls="cell-money") if s else Span(EMPTY)
         except ValueError:
             return Span(EMPTY)
+    if cell_type == "rate":
+        return Span(fmt_rate(s, currency), cls="cell-money") if s else Span(EMPTY)
     if cell_type == "number":
         if not s:
             return Span(EMPTY)
@@ -467,6 +900,9 @@ def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
         if s:
             return Img(src=s, cls="cell-thumbnail", loading="lazy", alt="")
         return Span("＋", cls="cell-image-empty", title="Drop image here or click to upload")
+    if cell_type == "textarea":
+        # Multi-line text: preserve line breaks on display (CSS white-space: pre-wrap).
+        return Span(s, cls="cell-textarea") if s else Span(EMPTY)
     return Span(s or EMPTY, cls="cell-text")
 
 
@@ -584,6 +1020,7 @@ def data_table(
     delete_url_tpl: str | None = None,
     cell_renderers: dict | None = None,
     hidden_fields: set | None = None,
+    column_filters: dict | None = None,
 ) -> FT:
     """
     Dynamic spreadsheet table. Headers from schema (never hardcoded), rows from API.
@@ -633,6 +1070,10 @@ def data_table(
         key = f["key"]
         default_width = _DEFAULT_COL_WIDTHS.get(key, _DEFAULT_COL_WIDTHS["_attr_default"])
         th_style = f"width:{default_width}"
+        spec = (column_filters or {}).get(key)
+        funnel = _filter_funnel_btn(spec["param"], spec["options"], spec.get("selected"),
+                                    f["label"]) if spec else ""
+        th_cls = f"col-{key}" + (" colfilter-th" if spec else "")
         if sort_url:
             params = {**(extra_params or {}), "sort": key}
             new_dir = "asc" if (sort_key == key and sort_dir == "desc") else "desc"
@@ -648,11 +1089,12 @@ def data_table(
                   hx_swap="outerHTML",
                   hx_push_url="true",
                   cls="sort-link"),
-                cls=f"col-{key}", data_key=key, draggable="true",
+                funnel,
+                cls=th_cls, data_key=key, draggable="true",
                 title="Drag to reorder columns",
                 style=th_style,
             )
-        return Th(f["label"], cls=f"col-{key}", data_key=key, draggable="true",
+        return Th(f["label"], funnel, cls=th_cls, data_key=key, draggable="true",
                    title="Drag to reorder columns", style=th_style)
 
     checkbox_th = [Th(Input(type="checkbox", id="select-all-rows", title="Select all"), cls="col-checkbox")] if show_checkboxes else []
@@ -694,6 +1136,8 @@ def data_table(
                ), cls="col-checkbox")] if show_checkboxes else []
         status_val = str(row.get("status", "") or "").lower()
         row_cls = "data-row data-row--inactive" if status_val in INACTIVE_ITEM_STATUSES else "data-row"
+        if str(row.get("inventory_type") or "") == "component":
+            row_cls += " data-row--component"  # visual cue for component (raw-material) items
         return Tr(
             *checkbox_td,
             *[
@@ -1082,8 +1526,10 @@ function _bulkImmediate(url,extraName,extraValue){
     form.appendChild(ex);
   }
   document.body.appendChild(form);
-  htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'});
-  setTimeout(function(){form.remove()},100);
+  // Remove the form only after the request completes (see merge handler note) so HX-Trigger
+  // events fired on the source element still reach the document-level listeners.
+  htmx.ajax('POST',url,{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+    .then(function(){form.remove();},function(){form.remove();});
 }
 function _populateMergeTargets(){
   var sel=document.getElementById('merge-target-select');
@@ -1123,8 +1569,10 @@ function _populateMergeTargets(){
       var t=document.createElement('input');t.type='hidden';t.name='target_sku_from';t.value=sel.value;
       form.appendChild(t);
       document.body.appendChild(form);
-      htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'});
-      setTimeout(function(){form.remove()},100);
+      // Keep the form attached until the request finishes - removing it early detaches the htmx
+      // event source so HX-Trigger toasts (e.g. a unit-mismatch error) never reach the listener.
+      htmx.ajax('POST','/api/items/bulk/merge',{source:form,target:'#bulk-action-result',swap:'outerHTML'})
+        .then(function(){form.remove();},function(){form.remove();});
     });
     var cancel=document.createElement('button');
     cancel.type='button';cancel.className='btn btn--ghost btn--sm';cancel.textContent='Cancel';
@@ -1238,7 +1686,7 @@ function sendToTypeChanged(docType){
     var path=(e.detail.requestConfig&&e.detail.requestConfig.path)||
              (e.detail.pathInfo&&e.detail.pathInfo.requestPath)||'';
     if(!path){return;}
-    var m=path.match(/\/api\/items\/([^/]+)\/field\/quantity/);
+    var m=path.match(/\\/api\\/items\\/([^/]+)\\/field\\/quantity/);
     if(!m){return;}
     var eid=m[1];
     var safeId=eid.replace(/:/g,'-');
@@ -1589,3 +2037,61 @@ def unwrap_address(raw) -> str:
                 text = text + ("\n" if text else "") + v
         return text
     return str(raw)
+
+
+def col_resize_script(table_selector: str, storage_key: str):
+    """Reusable PROPORTIONAL drag-to-resize for a header's columns.
+
+    The table is meant to fill its container (``width:100%; table-layout:fixed``). Every column
+    width is held as a PERCENTAGE of the table, so the layout scales with the viewport and the
+    rightmost column stays locked to the right edge at any screen size. Dragging a handle widens
+    one column and narrows its right-hand neighbour by the same amount, so the columns always sum
+    to 100% (no overflow, no horizontal scroll).
+
+    On first load (no saved prefs) the columns' current rendered proportions are captured as the
+    baseline; otherwise the saved percentages are restored. Widths persist to
+    ``localStorage[storage_key]`` keyed by each th's first ``col-*`` class. The column set is
+    fixed — this only resizes, never adds/removes/reorders. The last column has no handle (it is
+    pinned to the right edge; resize it by dragging its left neighbour's handle).
+    """
+    import json as _json
+    sel = _json.dumps(table_selector)
+    key = _json.dumps(storage_key)
+    js = (
+        "(function(){"
+        "var SEL=" + sel + ",KEY=" + key + ",MIN=3;"  # MIN = floor width per column, in %
+        "function ck(h){var m=(h.className||'').match(/col-[a-z-]+/);return m?m[0]:'';}"
+        "document.querySelectorAll(SEL).forEach(function(t){"
+        "if(t.dataset.colResize)return;t.dataset.colResize='1';"
+        # Only VISIBLE columns participate: a display:none column (e.g. price/tax hidden on a no-money
+        # audit/transfer list) must never be a resize neighbour, or dragging its visible left column
+        # resizes nothing (the qty-can't-grow-into-on-hand bug).
+        "var ths=Array.from(t.querySelectorAll('thead th')).filter(function(h){return getComputedStyle(h).display!=='none';});if(!ths.length)return;"
+        "function tw(){return t.offsetWidth||1;}"
+        "function pct(h){return h.offsetWidth/tw()*100;}"
+        "function save(){var w={};ths.forEach(function(h){var k=ck(h);if(k)w[k]=parseFloat(h.style.width)||pct(h);});try{localStorage.setItem(KEY,JSON.stringify(w));}catch(e){}}"
+        # Baseline: restore saved % per column, else capture the current rendered proportions;
+        # then normalise so the set sums to exactly 100% and fills the table.
+        "requestAnimationFrame(function(){"
+        "var sv=null;try{sv=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}"
+        "var ws=ths.map(function(h){var k=ck(h);return(sv&&sv[k]!=null)?sv[k]:pct(h);});"
+        "var s=ws.reduce(function(a,b){return a+b;},0)||1;"
+        "ths.forEach(function(h,i){h.style.width=(ws[i]/s*100)+'%';});"
+        "});"
+        # Handles on every column except the last (which is pinned to the right edge).
+        "ths.forEach(function(h,idx){"
+        "if(idx>=ths.length-1)return;"
+        "if(h.querySelector('.col-resize-handle'))return;"
+        "var d=document.createElement('div');d.className='col-resize-handle';h.style.position='relative';h.appendChild(d);"
+        "d.addEventListener('mousedown',function(e){"
+        "var nx=ths[idx+1],W=tw(),sx=e.pageX,a0=h.offsetWidth/W*100,b0=nx.offsetWidth/W*100,sum=a0+b0;"
+        "document.body.style.cursor='col-resize';"
+        "function mv(ev){var dp=(ev.pageX-sx)/W*100,a=a0+dp,b=b0-dp;"
+        "if(a<MIN){a=MIN;b=sum-MIN;}if(b<MIN){b=MIN;a=sum-MIN;}"
+        "h.style.width=a+'%';nx.style.width=b+'%';}"
+        "function up(){document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.body.style.cursor='';save();}"
+        "document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);e.preventDefault();e.stopPropagation();"
+        "});});});"
+        "})();"
+    )
+    return Script(js)

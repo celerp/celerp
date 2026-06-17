@@ -140,6 +140,8 @@ async def test_cloud_disconnect_clears_session_token(client, session):
     # Verify the login gate now actually fires (patch relay token to empty, as disconnect does)
     from datetime import datetime, timedelta, timezone as _tz
     await _clear_tracker(session)
+    from test_helpers import ensure_user
+    await ensure_user(session, "00000000-0000-0000-0000-000000000099")
     await _register_token(session, str(_uuid.uuid4()), "00000000-0000-0000-0000-000000000099", datetime.now(_tz.utc) + timedelta(seconds=900))
     with patch("celerp.gateway.state.get_session_token", return_value=""):
         r2 = await client.post("/auth/login", json={"email": "cloud-disc-session@test.local", "password": "pw"})

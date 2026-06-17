@@ -109,11 +109,8 @@
     {
       "key": "coa",
       "label": "Certificate of Authenticity",
-      "type": "select",
-      "options": [
-        "Yes",
-        "No"
-      ],
+      "type": "boolean",
+      "options": [],
       "visible_to_roles": []
     }
   ],

@@ -2,6 +2,29 @@
 
 Issues and PRs welcome. This guide covers the development workflow.
 
+## Contribution terms
+
+Celerp is multi-licensed (see `LICENSING.md`). What the public *receives* depends on the component
+(BUSL-1.1 core, MIT modules, proprietary layer). What you *grant us* when contributing is governed as
+follows:
+
+- **Anything accepted into an official Celerp repository** - including the MIT modules - requires a signed
+  **Contributor License Agreement** (`CLA.md`). The module stays MIT for everyone downstream; the CLA only
+  governs the rights you grant Celerp (so we can keep multi-licensing, move code between layers, and offer
+  commercial terms). Open an issue before substantial work and we will arrange signing.
+- **Third-party modules you do not submit upstream** (e.g. your own marketplace modules) need no CLA - a
+  Developer Certificate of Origin sign-off (`git commit -s`) is sufficient for those. The MIT modules are
+  the recommended starting point: fork one, rename it (see `TRADEMARK.md`), and license your derivative
+  however you wish.
+
+**How CLA acceptance works.** Contributions to official Celerp repositories require CLA acceptance before
+merge. Opening a pull request does not by itself complete the CLA. When prompted by the CLA bot on your
+pull request, post the exact acceptance phrase from your authenticated GitHub account; that one-time
+acceptance is recorded against the current `CLA.md` version. The bot blocks merge until acceptance is
+recorded.
+
+Trademarks are not licensed by any code license; see `TRADEMARK.md`.
+
 ## Environment variables
 
 | Variable | Default | Notes |
@@ -68,4 +91,7 @@ To add a new module, follow the pattern in any existing module (e.g. `celerp-inv
 
 ## License
 
-The project is licensed under [BSL-1.1](LICENSE). By submitting a PR, you agree to license your contribution under the same terms. Don't worry about license headers in your code - we'll sort that out during review.
+Celerp is multi-licensed (see [LICENSING.md](LICENSING.md)). Your contribution is governed by the
+**Contribution terms** at the top of this file (a signed CLA for anything accepted upstream, including
+the MIT modules; DCO for third-party modules you keep). License headers follow the per-path policy in
+`LICENSING.md` and are enforced by `scripts/licenses.py`.

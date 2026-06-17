@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 """Tests for celerp-verticals API endpoints."""
 from __future__ import annotations
 
@@ -48,13 +48,11 @@ def _auth(token: str) -> dict:
 # GET /companies/verticals/categories
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_list_categories_requires_auth(client: AsyncClient):
     r = await client.get("/companies/verticals/categories")
     assert r.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_list_categories_returns_list(client: AsyncClient):
     token = await _register(client)
     r = await client.get("/companies/verticals/categories", headers=_auth(token))
@@ -68,7 +66,6 @@ async def test_list_categories_returns_list(client: AsyncClient):
         assert isinstance(item["vertical_tags"], list)
 
 
-@pytest.mark.anyio
 async def test_list_categories_not_empty(client: AsyncClient):
     token = await _register(client)
     r = await client.get("/companies/verticals/categories", headers=_auth(token))
@@ -80,13 +77,11 @@ async def test_list_categories_not_empty(client: AsyncClient):
 # GET /companies/verticals/categories/{name}
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_get_category_requires_auth(client: AsyncClient):
     r = await client.get("/companies/verticals/categories/diamond")
     assert r.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_get_category_diamond(client: AsyncClient):
     token = await _register(client)
     r = await client.get("/companies/verticals/categories/diamond", headers=_auth(token))
@@ -98,14 +93,12 @@ async def test_get_category_diamond(client: AsyncClient):
     assert len(data["fields"]) > 0
 
 
-@pytest.mark.anyio
 async def test_get_category_not_found(client: AsyncClient):
     token = await _register(client)
     r = await client.get("/companies/verticals/categories/nonexistent_xyz_abc", headers=_auth(token))
     assert r.status_code == 404
 
 
-@pytest.mark.anyio
 async def test_get_category_fields_have_required_keys(client: AsyncClient):
     token = await _register(client)
     r = await client.get("/companies/verticals/categories/diamond", headers=_auth(token))
@@ -121,13 +114,11 @@ async def test_get_category_fields_have_required_keys(client: AsyncClient):
 # GET /companies/verticals/presets
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_list_presets_requires_auth(client: AsyncClient):
     r = await client.get("/companies/verticals/presets")
     assert r.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_list_presets_returns_list(client: AsyncClient):
     token = await _register(client)
     r = await client.get("/companies/verticals/presets", headers=_auth(token))
@@ -141,7 +132,6 @@ async def test_list_presets_returns_list(client: AsyncClient):
         assert isinstance(p["categories"], list)
 
 
-@pytest.mark.anyio
 async def test_list_presets_includes_gemstones(client: AsyncClient):
     token = await _register(client)
     r = await client.get("/companies/verticals/presets", headers=_auth(token))
@@ -149,7 +139,6 @@ async def test_list_presets_includes_gemstones(client: AsyncClient):
     assert "gemstones" in names
 
 
-@pytest.mark.anyio
 async def test_list_presets_includes_all_verticals(client: AsyncClient):
     token = await _register(client)
     r = await client.get("/companies/verticals/presets", headers=_auth(token))
@@ -167,13 +156,11 @@ async def test_list_presets_includes_all_verticals(client: AsyncClient):
 # POST /companies/me/apply-preset
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_apply_preset_requires_auth(client: AsyncClient):
     r = await client.post("/companies/me/apply-preset", params={"vertical": "gemstones"})
     assert r.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_apply_preset_gemstones(client: AsyncClient):
     token = await _register(client)
     r = await client.post(
@@ -187,7 +174,6 @@ async def test_apply_preset_gemstones(client: AsyncClient):
     assert data["categories"] > 0
 
 
-@pytest.mark.anyio
 async def test_apply_preset_seeds_category_schemas(client: AsyncClient):
     token = await _register(client)
     r = await client.post(
@@ -204,7 +190,6 @@ async def test_apply_preset_seeds_category_schemas(client: AsyncClient):
     assert len(schemas) > 0
 
 
-@pytest.mark.anyio
 async def test_apply_preset_not_found(client: AsyncClient):
     token = await _register(client)
     r = await client.post(
@@ -215,7 +200,6 @@ async def test_apply_preset_not_found(client: AsyncClient):
     assert r.status_code == 404
 
 
-@pytest.mark.anyio
 async def test_apply_preset_fefo_company_settings(client: AsyncClient):
     """F&B preset should set inventory_method=fefo in company.settings."""
     token = await _register(client)
@@ -229,7 +213,6 @@ async def test_apply_preset_fefo_company_settings(client: AsyncClient):
     assert data.get("company_settings", {}).get("inventory_method") == "fefo"
 
 
-@pytest.mark.anyio
 async def test_apply_preset_agricultural_fefo(client: AsyncClient):
     token = await _register(client)
     r = await client.post(
@@ -241,7 +224,6 @@ async def test_apply_preset_agricultural_fefo(client: AsyncClient):
     assert r.json().get("company_settings", {}).get("inventory_method") == "fefo"
 
 
-@pytest.mark.anyio
 async def test_apply_preset_idempotent(client: AsyncClient):
     token = await _register(client)
     r1 = await client.post(
@@ -263,13 +245,11 @@ async def test_apply_preset_idempotent(client: AsyncClient):
 # POST /companies/me/apply-category
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_apply_category_requires_auth(client: AsyncClient):
     r = await client.post("/companies/me/apply-category", params={"name": "diamond"})
     assert r.status_code == 401
 
 
-@pytest.mark.anyio
 async def test_apply_category_diamond(client: AsyncClient):
     token = await _register(client)
     r = await client.post(
@@ -283,7 +263,6 @@ async def test_apply_category_diamond(client: AsyncClient):
     assert "display_name" in data
 
 
-@pytest.mark.anyio
 async def test_apply_category_seeds_schema(client: AsyncClient):
     token = await _register(client)
     r = await client.post(
@@ -292,16 +271,16 @@ async def test_apply_category_seeds_schema(client: AsyncClient):
         headers=_auth(token),
     )
     assert r.status_code == 200
-    display = r.json()["display_name"]
+    # Schemas are keyed by the stable category slug, not the display_name.
+    slug = r.json()["applied"]
 
     r2 = await client.get("/companies/me/category-schemas", headers=_auth(token))
     schemas = r2.json()
-    assert display in schemas
-    assert isinstance(schemas[display], list)
-    assert len(schemas[display]) > 0
+    assert slug in schemas
+    assert isinstance(schemas[slug], list)
+    assert len(schemas[slug]) > 0
 
 
-@pytest.mark.anyio
 async def test_apply_category_not_found(client: AsyncClient):
     token = await _register(client)
     r = await client.post(
@@ -312,7 +291,6 @@ async def test_apply_category_not_found(client: AsyncClient):
     assert r.status_code == 404
 
 
-@pytest.mark.anyio
 async def test_apply_category_idempotent(client: AsyncClient):
     token = await _register(client)
     r1 = await client.post(
@@ -330,7 +308,6 @@ async def test_apply_category_idempotent(client: AsyncClient):
     assert r1.json()["applied"] == r2.json()["applied"]
 
 
-@pytest.mark.anyio
 async def test_apply_category_multiple_verticals(client: AsyncClient):
     """Apply one category from each major vertical group."""
     token = await _register(client)
@@ -348,7 +325,6 @@ async def test_apply_category_multiple_verticals(client: AsyncClient):
 # Non-admin blocked
 # ---------------------------------------------------------------------------
 
-@pytest.mark.anyio
 async def test_apply_preset_requires_admin(client: AsyncClient, session):
     admin_token = await _register(client)
     mgr_token = await _register_manager(client, session, admin_token)
@@ -360,7 +336,6 @@ async def test_apply_preset_requires_admin(client: AsyncClient, session):
     assert r.status_code == 403
 
 
-@pytest.mark.anyio
 async def test_apply_category_requires_admin(client: AsyncClient, session):
     admin_token = await _register(client)
     mgr_token = await _register_manager(client, session, admin_token)

@@ -63,12 +63,12 @@ dev = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
     "faker>=24.0",
-    "aiosqlite>=0.20",
     "respx>=0.21",
     "playwright>=1.43",
     "pytest-playwright>=0.5",
     "pytest-timeout>=2.3",
     "pytest-xdist>=3.5",
+    "testcontainers[postgres]>=4.0",
 ]
 prod = [
     "gunicorn>=22.0",
@@ -77,7 +77,7 @@ prod = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 addopts = "-q --cov=celerp --cov-report=term-missing -m 'not browser' --timeout=30"
-norecursedirs = [".git", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
+norecursedirs = [".git", ".claude", ".venv", "__pycache__", "build", "dist", "premium_modules/*/tests"]
 pythonpath = [".", ".."]
 markers = [
     "browser: Playwright browser UI tests (requires running servers + Chromium). Run separately with: pytest tests/test_browser/ -m browser",

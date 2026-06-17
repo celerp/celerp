@@ -95,6 +95,10 @@ def _raise(r: httpx.Response) -> httpx.Response:
         if r.status_code == 401:
             # 401 is expected during fresh init / token expiry; not a warning
             logger.debug("API 401: %s", detail)
+        elif r.status_code == 409 and detail == "direct_connection_limit":
+            # Expected when another session is already active (single-session enforcement);
+            # the caller handles it (force-login prompt), so it is not a warning.
+            logger.debug("API 409: %s", detail)
         else:
             logger.warning("API %s: %s", r.status_code, detail)
         raise APIError(r.status_code, detail)
@@ -1025,19 +1029,64 @@ async def activate_subscription(token: str, entity_id: str) -> dict:
 # Manufacturing
 # ---------------------------------------------------------------------------
 
-async def list_mfg_orders(token: str) -> dict:
+async def list_mfg_orders(token: str, params: dict | None = None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.get("/manufacturing")).json()
+        return _raise(await c.get("/manufacturing", params=params or {})).json()
 
 
-async def get_mfg_order(token: str, order_id: str) -> dict:
+async def manufacturing_to_make(token: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.get(f"/manufacturing/{order_id}")).json()
+        return _raise(await c.get("/manufacturing/to-make")).json()
 
 
-async def create_mfg_order(token: str, data: dict) -> dict:
+async def manufacturing_make_work_orders(token: str, lines: list[dict], complete: bool = False) -> dict:
+    """Create one work order per selected demand line (each {item_id, doc_id}), linked 1:1 to its
+    source order, for the line's shortfall. With complete=True, also issue/receive/close each."""
     async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing", json=data)).json()
+        return _raise(await c.post("/manufacturing/to-make/make",
+                                   json={"lines": lines, "complete": complete})).json()
+
+
+async def manufacturing_requirements(token: str, item_ids: list[str]) -> dict:
+    """Aggregated raw-material + sub-assembly requirements to make the selected products' shortfall."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/manufacturing/to-make/requirements",
+                                   json={"item_ids": item_ids})).json()
+
+
+async def manufacturing_bulk_run_action(token: str, run_ids: list[str], action: str) -> dict:
+    """Apply a lifecycle action (start/issue/complete/hold/resume/cancel) to many runs at once."""
+    async with _api_client(token) as c:
+        return _raise(await c.post("/manufacturing/bulk-action",
+                                   json={"run_ids": run_ids, "action": action})).json()
+
+
+async def manufacturing_item_hub(token: str, item_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get(f"/manufacturing/items/{item_id}/hub")).json()
+
+
+
+
+async def set_item_recipe(token: str, entity_id: str, recipe: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/manufacturing/items/{entity_id}/recipe", json=recipe)).json()
+
+
+async def set_item_workflow(token: str, entity_id: str, workflow: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.put(f"/manufacturing/items/{entity_id}/workflow", json=workflow)).json()
+
+
+async def recost_dependents(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/items/{entity_id}/recost-dependents")).json()
+
+
+async def build_item(token: str, item_id: str, quantity: float, complete: bool = False) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/items/{item_id}/build",
+                                   json={"quantity": quantity, "complete": complete})).json()
 
 
 async def start_mfg_order(token: str, order_id: str) -> dict:
@@ -1045,14 +1094,16 @@ async def start_mfg_order(token: str, order_id: str) -> dict:
         return _raise(await c.post(f"/manufacturing/{order_id}/start")).json()
 
 
-async def complete_mfg_step(token: str, order_id: str, step_id: str, notes: str | None = None) -> dict:
+async def issue_mfg_order(token: str, order_id: str, items: list[dict] | None = None) -> dict:
+    """Issue components into a run (decrements them; auto-advances to In Progress). None = issue all."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/step", json={"step_id": step_id, "notes": notes})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/issue", json={"items": items})).json()
 
 
-async def consume_mfg_input(token: str, order_id: str, item_id: str, quantity: float) -> dict:
+async def receive_mfg_order(token: str, order_id: str, quantity: float | None = None) -> dict:
+    """Receive finished goods from a run (restocks per allow_splitting). None = receive all remaining."""
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/manufacturing/{order_id}/consume", json={"item_id": item_id, "quantity": quantity})).json()
+        return _raise(await c.post(f"/manufacturing/{order_id}/receive", json={"quantity": quantity})).json()
 
 
 async def complete_mfg_order(token: str, order_id: str, data: dict | None = None) -> dict:
@@ -1065,34 +1116,52 @@ async def cancel_mfg_order(token: str, order_id: str, reason: str | None = None)
         return _raise(await c.post(f"/manufacturing/{order_id}/cancel", json={"reason": reason})).json()
 
 
+async def hold_mfg_order(token: str, order_id: str, reason: str | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/hold", json={"reason": reason})).json()
+
+
+async def resume_mfg_order(token: str, order_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/resume")).json()
+
+
+async def schedule_mfg_order(token: str, order_id: str, fields: dict) -> dict:
+    """Set scheduling fields (due_date / planned_start / priority) on a run."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/manufacturing/{order_id}/schedule", json=fields)).json()
+
+
+# ── Work Centers (manufacturing master data) ──────────────────────────────────
+async def list_work_centers(token: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.get("/manufacturing/work-centers")).json()
+
+
+async def create_work_center(token: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post("/manufacturing/work-centers", json=data)).json()
+
+
+async def patch_work_center(token: str, wc_id: str, data: dict) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.patch(f"/manufacturing/work-centers/{wc_id}", json=data)).json()
+
+
+async def delete_work_center(token: str, wc_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.delete(f"/manufacturing/work-centers/{wc_id}")).json()
+
+
+async def update_mfg_settings(token: str, mfg: dict) -> dict:
+    """Persist the manufacturing settings block under company.settings.manufacturing."""
+    async with _api_client(token) as c:
+        return _raise(await c.patch("/companies/me", json={"settings": {"manufacturing": mfg}})).json()
+
+
 # ---------------------------------------------------------------------------
 # BOM
 # ---------------------------------------------------------------------------
-
-async def list_boms(token: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get("/manufacturing/boms")).json()
-
-
-async def get_bom(token: str, bom_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.get(f"/manufacturing/boms/{bom_id}")).json()
-
-
-async def create_bom(token: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.post("/manufacturing/boms", json=data)).json()
-
-
-async def update_bom(token: str, bom_id: str, data: dict) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.put(f"/manufacturing/boms/{bom_id}", json=data)).json()
-
-
-async def delete_bom(token: str, bom_id: str) -> dict:
-    async with _api_client(token) as c:
-        return _raise(await c.delete(f"/manufacturing/boms/{bom_id}")).json()
-
 
 # ---------------------------------------------------------------------------
 # Scanning disabled — module not yet complete
@@ -1178,19 +1247,67 @@ async def patch_list(token: str, entity_id: str, data: dict) -> dict:
         return _raise(await c.patch(f"/lists/{entity_id}", json={"fields_changed": fields_changed})).json()
 
 
-async def send_list(token: str, entity_id: str) -> dict:
+# ── Inventory audits (a list_type=audit on the unified /lists lifecycle) ──────
+async def create_audit(token: str, location_id: str) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/send", json={})).json()
+        return _raise(await c.post("/lists/audit", json={"location_id": location_id})).json()
 
 
-async def accept_list(token: str, entity_id: str) -> dict:
+async def get_audit(token: str, entity_id: str) -> dict:
+    return await get_list(token, entity_id)
+
+
+async def scan_list(token: str, entity_id: str, barcode: str, price_list: str | None = None) -> dict:
+    body: dict = {"barcode": barcode}
+    if price_list:
+        body["price_list"] = price_list
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/accept", json={})).json()
+        return _raise(await c.post(f"/lists/{entity_id}/scan", json=body)).json()
 
 
-async def complete_list(token: str, entity_id: str) -> dict:
+async def set_audit_count(token: str, entity_id: str, item_id: str, counted_qty: float | None) -> dict:
     async with _api_client(token) as c:
-        return _raise(await c.post(f"/lists/{entity_id}/complete", json={})).json()
+        return _raise(await c.patch(f"/lists/{entity_id}/line/{item_id}", json={"counted_qty": counted_qty})).json()
+
+
+async def move_transfer(token: str, entity_id: str, to_location_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/move", json={"to_location_id": to_location_id})).json()
+
+
+async def set_scanned(token: str, entity_id: str, item_ids: list[str] | None = None, scanned: bool = True) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/set-scanned", json={"item_ids": item_ids or [], "scanned": scanned})).json()
+
+
+async def change_list_type(token: str, entity_id: str, list_type: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/change-type", json={"list_type": list_type})).json()
+
+
+async def send_list(token: str, entity_id: str, data: dict | None = None) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/send", json=data or {})).json()
+
+
+async def unmark_list_sent(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/unmark-sent")).json()
+
+
+async def list_action(token: str, entity_id: str, action: str) -> dict:
+    """Unified lifecycle/terminal action: finalize, revert-to-draft, adjust, undo-adjust, receive."""
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/{action}")).json()
+
+
+async def finalize_list(token: str, entity_id: str) -> dict:
+    return await list_action(token, entity_id, "finalize")
+
+
+async def revert_list(token: str, entity_id: str) -> dict:
+    async with _api_client(token) as c:
+        return _raise(await c.post(f"/lists/{entity_id}/revert-to-draft", json={})).json()
 
 
 async def void_list(token: str, entity_id: str, reason: str | None = None) -> dict:

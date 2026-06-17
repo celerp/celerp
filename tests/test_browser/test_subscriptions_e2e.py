@@ -17,12 +17,12 @@ import pytest
 
 pytestmark = pytest.mark.browser
 
-_SCREENSHOT_DIR = pathlib.Path("/mnt/storage/agent_storage/celerp/screenshots/subscriptions-e2e")
-
 
 def _save(page, name: str) -> None:
-    _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
-    page.screenshot(path=str(_SCREENSHOT_DIR / f"{name}.png"), full_page=True)
+    # Debug screenshots disabled — the hardcoded /mnt/storage path is not portable.
+    # _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+    # page.screenshot(path=str(_SCREENSHOT_DIR / f"{name}.png"), full_page=True)
+    pass
 
 
 def _no_crash(page, ctx: str = "") -> None:
@@ -37,7 +37,7 @@ def _no_crash(page, ctx: str = "") -> None:
 def test_sub_list_sales(page, ui_server):
     """SUB-E2E-01: Sales subscriptions list renders without crash."""
     page.goto(f"{ui_server}/subscriptions?direction=sales")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     _save(page, "01-list-sales")
     _no_crash(page, "list-sales")
     assert "Subscription" in page.title() or "Subscription" in page.locator("h1,h2").first.inner_text()
@@ -46,66 +46,44 @@ def test_sub_list_sales(page, ui_server):
 def test_sub_list_purchasing(page, ui_server):
     """SUB-E2E-02: Purchasing subscriptions list renders without crash."""
     page.goto(f"{ui_server}/subscriptions?direction=purchasing")
-    page.wait_for_load_state("networkidle")
+    page.wait_for_load_state("load")
     _save(page, "02-list-purchasing")
     _no_crash(page, "list-purchasing")
 
 
 def test_sub_new_form_loads(page, ui_server):
-    """SUB-E2E-03: New subscription form loads all fields without crash."""
-    page.goto(f"{ui_server}/subscriptions/new?direction=sales")
-    page.wait_for_load_state("networkidle")
-    _save(page, "03-new-form")
-    _no_crash(page, "new-form")
-    # Verify key fields present
-    assert page.locator("input[name='name']").is_visible(), "Name field missing"
-    assert page.locator("select[name='frequency']").is_visible(), "Frequency select missing"
-    assert page.locator("input[name='start_date']").is_visible(), "Start date field missing"
-    assert page.locator("button[type='submit']").is_visible(), "Submit button missing"
+    """SUB-E2E-03: 'New subscription' creates a draft and opens its detail page.
+
+    There is no standalone GET form at /subscriptions/new — the New action does an
+    htmx POST that HX-Redirects to the new draft's detail page (edited inline there).
+    """
+    page.goto(f"{ui_server}/subscriptions?direction=sales", wait_until="domcontentloaded")
+    page.wait_for_load_state("load")
+    _no_crash(page, "subscriptions-list")
+    new_btn = page.locator("[hx-post*='/subscriptions/new']").first
+    assert new_btn.count() > 0, "New subscription button missing on the list"
+    new_btn.click()
+    # htmx follows the HX-Redirect to /subscriptions/{id}
+    page.wait_for_url(lambda url: "/subscriptions/" in url, timeout=10000)
+    _no_crash(page, "new-subscription-detail")
+    assert "/new" not in page.url, f"Should land on the draft detail page, got {page.url}"
 
 
 def test_sub_create_and_detail(page, ui_server, api):
-    """SUB-E2E-04+05+06: Create subscription, verify redirect to detail, check fields."""
-    page.goto(f"{ui_server}/subscriptions/new?direction=sales")
-    page.wait_for_load_state("networkidle")
-    _save(page, "04-form-before-fill")
-    _no_crash(page, "new-form-before-fill")
+    """SUB-E2E-04: Create a subscription → its detail page renders the editable
+    frequency / start-date controls (inline-edit, not a submit form)."""
+    page.goto(f"{ui_server}/subscriptions?direction=sales", wait_until="domcontentloaded")
+    page.wait_for_load_state("load")
+    new_btn = page.locator("[hx-post*='/subscriptions/new']").first
+    assert new_btn.count() > 0, "New subscription button missing on the list"
+    new_btn.click()
+    page.wait_for_url(lambda url: "/subscriptions/" in url, timeout=10000)
+    page.wait_for_load_state("load")
+    _no_crash(page, "subscription-detail")
+    assert "/new" not in page.url, f"Expected a subscription detail page, got {page.url}"
 
-    # Fill in name
-    page.fill("input[name='name']", "Monthly Retainer E2E")
-
-    # Select frequency
-    page.select_option("select[name='frequency']", "monthly")
-
-    # Fill start date
-    page.fill("input[name='start_date']", "2026-06-01")
-
-    _save(page, "05-form-filled")
-
-    # Submit form
-    page.click("button[type='submit']")
-    page.wait_for_load_state("networkidle")
-    _save(page, "06-after-submit")
-    _no_crash(page, "after-submit")
-
-    # Should be on detail page now (redirect on success)
-    # Either on detail or list - either is acceptable (depends on redirect logic)
-    current_url = page.url
-    body_text = page.locator("body").inner_text()
-
-    # If still on form, check for validation errors (acceptable)
-    if "/new" in current_url:
-        # Form validation may have caught something - take screenshot and pass
-        _save(page, "06b-form-validation")
-        # Still no crash is the critical assertion
-        _no_crash(page, "form-validation")
-        return
-
-    # On detail or list page
-    _save(page, "07-detail-page")
-    _no_crash(page, "detail-page")
-
-    # If on a detail page, verify content
-    if "/subscriptions/" in current_url and "/new" not in current_url:
-        assert "Monthly Retainer E2E" in body_text or "Retainer" in body_text, \
-            "Subscription name not found on detail page"
+    # Draft detail must expose the inline-editable subscription controls.
+    assert page.locator("select[hx-patch$='/field/frequency']").count() > 0, \
+        "Frequency control missing on subscription detail"
+    assert page.locator("input[hx-patch$='/field/start_date']").count() > 0, \
+        "Start-date control missing on subscription detail"

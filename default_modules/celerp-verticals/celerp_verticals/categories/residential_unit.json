@@ -80,21 +80,21 @@
     {
       "key": "lease_start",
       "label": "Lease Start",
-      "type": "text",
+      "type": "date",
       "options": [],
       "visible_to_roles": []
     },
     {
       "key": "lease_end",
       "label": "Lease End",
-      "type": "text",
+      "type": "date",
       "options": [],
       "visible_to_roles": []
     },
     {
       "key": "deposit_held",
       "label": "Deposit Held",
-      "type": "number",
+      "type": "money",
       "options": [],
       "visible_to_roles": []
     },
@@ -107,5 +107,6 @@
     }
   ],
   "default_sell_by": "piece",
+  "default_inventory_type": "service",
   "default_purchase_unit": "piece"
 }

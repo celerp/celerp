@@ -8,6 +8,7 @@ import uuid
 import pytest
 
 from celerp.events.engine import emit_event
+from celerp.models.company import Company
 from celerp.models.projections import Projection
 from celerp.projections.engine import ProjectionEngine
 
@@ -15,6 +16,9 @@ from celerp.projections.engine import ProjectionEngine
 @pytest.mark.asyncio
 async def test_projection_apply_and_rebuild(session):
     company_id = uuid.uuid4()
+    # Postgres enforces ledger.company_id → companies; seed a real company first.
+    session.add(Company(id=company_id, name="ProjCo", slug=f"projco-{company_id.hex[:8]}"))
+    await session.flush()
 
     e1 = await emit_event(
         session,

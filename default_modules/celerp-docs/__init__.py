@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """celerp-docs module: document lifecycle (invoices, POs, quotations, credit notes, etc.) and lists."""
 
 PLUGIN_MANIFEST = {
@@ -7,7 +7,7 @@ PLUGIN_MANIFEST = {
     "version": "1.0.0",
     "display_name": "Documents",
     "description": "Document lifecycle: invoices, purchase orders, quotations, credit notes, and lists.",
-    "license": "BSL-1.1",
+    "license": "MIT",
     "author": "Celerp",
     "api_routes": "celerp_docs.api_setup",
     "ui_routes": "celerp_docs.ui_routes",

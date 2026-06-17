@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 # Target: PostgreSQL. Do not run against SQLite.
 """initial schema
 
@@ -8,7 +8,7 @@ Revises:
 Create Date: 2026-02-23 01:20:00.000000
 
 Hand-written from model definitions. Covers all tables for the initial PostgreSQL deploy.
-SQLite dev environment uses create_all() — Alembic is PostgreSQL-only.
+Tests bootstrap their schema with create_all(); Alembic itself is PostgreSQL-only.
 """
 from typing import Sequence, Union
 

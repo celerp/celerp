@@ -1,0 +1,114 @@
+# Contributor License Agreement gate (REVIEW DRAFT — pending counsel sign-off; not yet active).
+#
+# Clickwrap CLA acceptance for pull requests into official Celerp repositories, per counsel's advice:
+# the PR is notice; the recorded, authenticated acceptance comment is the signature (E-SIGN). The bot
+# blocks merge until acceptance against the current CLA version is recorded.
+#
+# Scope: EVERY contribution accepted into an official Celerp repository requires the CLA, including
+# changes to MIT modules. The gate is repo-wide. (DCO applies only to third-party modules that are NOT
+# submitted upstream; those never enter this repo, so they are out of scope for this workflow.)
+#
+# Acceptance is by AUTHENTICATED PR COMMENT (custom-pr-sign-comment below), not a link.
+#
+# ── SAFE TO MERGE TO main, INERT UNTIL ENABLED ────────────────────────────────────────────────────────
+# The job is gated on the repo variable CLA_ENABLED == 'true'. While that variable is unset the workflow
+# does NOTHING, so the zero-SHA placeholder cannot hard-block PRs even if this file is on the default
+# branch. Flip CLA_ENABLED to 'true' ONLY after every "BEFORE ENABLING" item below is done.
+#
+# ── SECURITY (keep pull_request_target sterile, forever) ──────────────────────────────────────────────
+#   - pull_request_target runs in the BASE repo context with secrets. This workflow MUST NEVER check out
+#     PR head code, execute PR scripts, or interpolate any PR-controlled text (title/body/branch/comment)
+#     into a shell. The CLA action operates purely via the GitHub API. Do not add steps that break this.
+#   - issue_comment is guarded to PR comments whose body is EXACTLY the acceptance/recheck phrase.
+#   - Least privilege: only contents/pull-requests/statuses write (no actions: write).
+#
+# ── BEFORE ENABLING (all mandatory; order matters) ────────────────────────────────────────────────────
+#   1. Replace the zero-SHA with a verified full 40-char commit SHA of the action. It is ARCHIVED and is
+#      handed a private-repo-write PAT and runs on fork PRs — STRONGLY prefer vendoring/forking it into
+#      celerp/ so the code is under our review, not just pinned.
+#   2. Set path-to-document to an IMMUTABLE commit/blob URL of CLA.md (a tag is only immutable if
+#      protected). Use the commit SHA that finalizes CLA.md v1.0. On a material CLA change, bump the
+#      version, cut a new commit, AND bump the signature path (v1 -> v2).
+#   3. Create a dedicated PRIVATE signatures repo (celerp/cla-signatures). It holds contributor personal
+#      data (usernames + timestamps): restrict access and set retention per the privacy policy. Its
+#      default branch must be UNPROTECTED so the bot can write to it.
+#   4. Add CLA_SIGNATURES_TOKEN: a FINE-GRAINED PAT scoped to Contents:write on celerp/cla-signatures only.
+#   5. Confirm least privilege: base GITHUB_TOKEN stays contents:read; drop issues:write if a dry run shows
+#      it unused; never grant contents:write.
+#   6. Set the repo variable CLA_ENABLED = 'true' to activate the bot.
+#   7. On a THROWAWAY EXTERNAL (non-maintainer, fork) PR, read the EXACT commit-status context the action
+#      posts (e.g. "license/cla"). The action exits 0 and gates ONLY via that status — requiring the "CLA"
+#      workflow/job here would fail OPEN (the job is green whether or not the contributor signed).
+#   8. Make THAT status context (not "CLA") a required status check in branch protection on main. Then
+#      re-run the throwaway PR end to end: blocked unsigned -> sign by comment -> status goes green ->
+#      mergeable -> PR locks after merge -> record lands in the private signatures repo.
+
+name: CLA
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+# Least privilege for the base-repo GITHUB_TOKEN. Signatures are written by CLA_SIGNATURES_TOKEN (the PAT)
+# to the PRIVATE signatures repo, so the base token must NOT have contents write. actions: write is also
+# not granted. If a dry run shows issues: write is unused, drop it too.
+permissions:
+  contents: read           # no writes to the Celerp repo via GITHUB_TOKEN (the PAT writes signatures)
+  issues: write            # PR conversation comments go through the Issues API
+  pull-requests: write     # PR metadata / labels
+  statuses: write          # set the CLA commit status that gates merge
+
+jobs:
+  cla:
+    runs-on: ubuntu-latest
+    # Inert until explicitly enabled; then PR events only, and PR comments that carry the acceptance or
+    # recheck phrase. `contains` (not `==`) so a trailing space/newline in the comment does not lock a
+    # contributor out of signing; the action itself does the authoritative phrase match. This is sterile
+    # (no checkout/execution), so a comment merely containing the phrase cannot do harm.
+    if: >
+      vars.CLA_ENABLED == 'true' &&
+      (
+        github.event_name == 'pull_request_target' ||
+        (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          (
+            contains(github.event.comment.body, 'I have read the Celerp CLA and I accept it') ||
+            contains(github.event.comment.body, 'recheck')
+          )
+        )
+      )
+    steps:
+      # NOTE: no actions/checkout of PR head code here, and none must ever be added.
+      - name: CLA acceptance
+        # ARCHIVED action — replace with a verified full commit SHA before enabling; vendor/fork if relied on.
+        uses: contributor-assistant/github-action@0000000000000000000000000000000000000000  # TODO: pin real SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fine-grained PAT scoped to Contents:write on celerp/cla-signatures ONLY (minimal blast radius).
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_SIGNATURES_TOKEN }}
+        with:
+          # Signatures stored in a dedicated PRIVATE repo (preferred over a same-repo branch).
+          remote-organization-name: 'celerp'
+          remote-repository-name: 'cla-signatures'       # private; its default branch must be UNPROTECTED
+          branch: 'main'
+          path-to-signatures: 'v1/cla.json'              # bump to v2/ when the CLA version changes
+          # IMMUTABLE reference: pin to the commit SHA that finalizes CLA.md v1.0 (not a movable tag/branch).
+          path-to-document: 'https://github.com/celerp/celerp/blob/<CLA_V1_0_COMMIT_SHA>/CLA.md'
+          # Lock the PR conversation after merge so signature comments cannot be altered/deleted post-hoc.
+          lock-pullrequest-aftermerge: true
+          # The exact phrase a contributor comments to accept (clickwrap-by-comment); matches the if: guard.
+          custom-pr-sign-comment: 'I have read the Celerp CLA and I accept it'
+          custom-notsigned-prcomment: >
+            Thanks for your contribution. Before this can be merged, please accept the
+            [Celerp Contributor License Agreement](https://github.com/celerp/celerp/blob/<CLA_V1_0_COMMIT_SHA>/CLA.md)
+            by posting this exact comment from your GitHub account:
+            **I have read the Celerp CLA and I accept it**.
+            This one-time acceptance is recorded against the current CLA version.
+          # EXACT names only — no broad bot wildcard, no general maintainer allowlist. The licensor
+          # (Noah Severs, who grants rights to no one) is exempt; everyone else — contractors, employees,
+          # collaborators, other maintainers — must sign unless covered by an entity CLA. Confirm
+          # `ngsevers` is the licensor's exact GitHub login before activation.
+          allowlist: 'ngsevers,dependabot[bot],github-actions[bot]'

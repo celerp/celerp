@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 """celerp-inventory UI routes.
 
 Delegates to the existing core UI route module. The module loader calls

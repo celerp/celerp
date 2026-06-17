@@ -495,22 +495,32 @@ async def connectors_tab_content(lang: str = "en", token: str = "") -> FT:
             cfg = await _ensure_connector_config(iid, c["id"], c.get("category", "website"))
             configs[c["id"]] = cfg
 
-    # Group by category
+    # Group by category, labelled by what the sync does for the customer
+    group_labels = {
+        "website": t("connectors.group_website", lang, default="Website Sync"),
+        "accounting": t("connectors.group_accounting", lang, default="Accounting Sync"),
+    }
     categories: dict[str, list[dict]] = {}
     for c in catalog:
-        cat = c.get("category", "other").title()
-        categories.setdefault(cat, []).append(c)
+        categories.setdefault(c.get("category", "other"), []).append(c)
+
+    # Stable order: website first, then accounting, then anything else
+    order = ["website", "accounting"]
+    ordered_cats = sorted(
+        categories, key=lambda k: (order.index(k) if k in order else len(order), k)
+    )
 
     sections: list[FT] = []
-    for cat_name, connectors in categories.items():
+    for cat in ordered_cats:
+        label = group_labels.get(cat, cat.title())
         cards = [
             _connector_card(c, last_runs.get(c["id"]), relay_url, iid,
                           config=configs.get(c["id"]), lang=lang)
-            for c in connectors
+            for c in categories[cat]
         ]
         sections.append(
             Div(
-                P(cat_name, cls="connector-section-title"),
+                P(label, cls="connector-section-title"),
                 *cards,
             )
         )

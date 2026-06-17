@@ -12,11 +12,10 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 
 def _pdf(doc: dict, company: dict | None = None) -> bytes:
-    from celerp_docs.pdf import generate_document_pdf
+    from celerp.output.pdf import generate_document_pdf
     return generate_document_pdf(doc, company)
 
 

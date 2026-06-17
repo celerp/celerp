@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 
 from ui.components.cloud_gate import _SUBSCRIBE_BASE, cloud_gate, upgrade_banner
 

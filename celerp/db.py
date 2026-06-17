@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: BUSL-1.1
 
+import os
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -12,18 +13,22 @@ from celerp.config import settings
 # Default workers 2 API + 1 GUI → 2*(10+5) + 1*(5+5) = 40 connections max.
 # Postgres default max_connections=100 leaves 60 for migrations, admin tools, etc.
 # If you increase worker counts, recalculate this budget before deploying.
-#
-# SQLite (used in tests and Electron) does not support QueuePool args - it uses
-# StaticPool. Pool kwargs are only passed for Postgres/asyncpg.
-_is_postgres = settings.database_url.startswith("postgresql")
-_pool_kwargs: dict = {"pool_size": 10, "max_overflow": 5} if _is_postgres else {}
+if os.environ.get("CELERP_TEST_NULLPOOL"):
+    # Test mode: a fresh connection per use that closes on return, so a failed
+    # test can't leave a poisoned/locked connection lingering in a pooled
+    # connection and block the next test's TRUNCATE. Only ever set by the test
+    # harness; no effect in production.
+    from sqlalchemy.pool import NullPool
 
-engine = create_async_engine(
-    settings.database_url,
-    future=True,
-    pool_pre_ping=True,
-    **_pool_kwargs,
-)
+    engine = create_async_engine(settings.database_url, future=True, poolclass=NullPool)
+else:
+    engine = create_async_engine(
+        settings.database_url,
+        future=True,
+        pool_pre_ping=True,
+        pool_size=10,
+        max_overflow=5,
+    )
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 

@@ -30,9 +30,8 @@ _NAV_ROUTES = [
     ("/subscriptions", None),
     ("/subscriptions/new", None),
     ("/manufacturing", None),
-    ("/manufacturing/new", None),
-    ("/manufacturing/boms", None),
-    ("/manufacturing/boms/new", None),
+    ("/manufacturing/production", None),
+    ("/docs?type=production_order", None),
     ("/dashboard", None),
     ("/scanning", None),
     ("/labels", None),
@@ -54,6 +53,47 @@ def test_nav_route_loads(page, ui_server, route, expected_text):
     # Optional text assertion
     if expected_text:
         assert expected_text in body, f"{route} body missing expected text: {expected_text!r}"
+
+
+def test_active_nav_scrolled_into_view(page, ui_server):
+    """NAV-23: on a short viewport, the active nav link is scrolled into view within the sidebar -
+    a group near the bottom (Manufacturing) must not sit below the fold."""
+    page.set_viewport_size({"width": 1280, "height": 600})
+    page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
+    page.wait_for_selector(".sidebar .nav-link--active", timeout=8000)
+    link = page.locator(".sidebar .nav-link--active").first
+    assert link.inner_text().strip() != ""
+    lb, sb = link.bounding_box(), page.locator(".sidebar").bounding_box()
+    assert lb is not None and sb is not None
+    # The active link sits within the sidebar's visible vertical bounds (allow 1px rounding).
+    assert lb["y"] >= sb["y"] - 1, "active nav link is above the sidebar viewport"
+    assert lb["y"] + lb["height"] <= sb["y"] + sb["height"] + 1, "active nav link is below the fold"
+
+
+def test_wip_page_highlights_correct_nav_item(page, ui_server):
+    """FIX-3: on /manufacturing/production the sidebar must highlight 'Work In Progress',
+    NOT 'Demand Planning', and the active link must be within the sidebar's visible bounds."""
+    page.set_viewport_size({"width": 1440, "height": 900})
+    page.goto(f"{ui_server}/manufacturing/production", wait_until="domcontentloaded")
+    page.wait_for_selector(".sidebar .nav-link--active", timeout=8000)
+
+    active_link = page.locator(".sidebar .nav-link--active").first
+    active_text = active_link.inner_text().strip()
+    assert active_text == "Work In Progress", (
+        f"Sidebar active nav link on /manufacturing/production should be 'Work In Progress'; "
+        f"got: {active_text!r}. Was 'Demand Planning' highlighted instead (FIX-3 regression)?"
+    )
+
+    # The active link must be within the sidebar's visible vertical bounds (allow 1px rounding).
+    lb = active_link.bounding_box()
+    sb = page.locator(".sidebar").bounding_box()
+    assert lb is not None and sb is not None, "Could not get bounding boxes for active link / sidebar"
+    assert lb["y"] >= sb["y"] - 1, (
+        f"Active nav link y={lb['y']} is above the sidebar top y={sb['y']}"
+    )
+    assert lb["y"] + lb["height"] <= sb["y"] + sb["height"] + 1, (
+        f"Active nav link bottom={lb['y']+lb['height']} is below sidebar bottom={sb['y']+sb['height']}"
+    )
 
 
 def test_search_loads_with_query(page, ui_server):

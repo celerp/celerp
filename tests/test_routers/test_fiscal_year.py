@@ -119,3 +119,16 @@ class TestResolvePreset:
         dfrom_fy, _ = _resolve_preset("this_fy")
         dfrom_jan, _ = _resolve_preset("this_fy", "01-01")
         assert dfrom_fy == dfrom_jan
+
+
+class TestFinancialSummaryRobustness:
+    """The contact financial summary consumes the company's fiscal_year_start; a
+    malformed value (e.g. "01" with no day, leaked into the DB by other tests)
+    must not 500 the contact page — it falls back to Jan 1 like _fy_start."""
+
+    @pytest.mark.parametrize("fy", ["01", "bad", "", "1-1", "04-01", "01-01"])
+    def test_financial_summary_survives_malformed_fiscal_year_start(self, fy):
+        from fasthtml.common import to_xml
+        from ui.routes.contacts import _financial_summary
+        out = to_xml(_financial_summary([], contact_id="contact:1", fiscal_year_start=fy))
+        assert out  # rendered without raising

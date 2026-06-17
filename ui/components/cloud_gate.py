@@ -56,7 +56,7 @@ def upgrade_banner(
             cls="upgrade-banner__left",
         ),
         A(
-            f"Subscribe - {price}",
+            f"{t('cloud.start_trial', lang)} - {price}",
             href=href,
             target="_blank",
             cls="btn btn--primary upgrade-banner__cta",

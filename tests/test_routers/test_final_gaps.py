@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from test_helpers import default_location_id
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -98,8 +100,9 @@ async def test_receive_po_legacy_zero_total(client):
     assert r.status_code == 200
     po_id = r.json()["id"]
 
+    loc = await default_location_id(client, _h(tok))
     r2 = await client.post(f"/docs/{po_id}/receive", headers=_h(tok), json={
-        "location_id": str(uuid.uuid4()),
+        "location_id": loc,
         "received_items": [],
     })
     assert r2.status_code == 200
@@ -123,8 +126,9 @@ async def test_receive_po_create_item_from_sku_name(client):
     })
     po_id = r.json()["id"]
 
+    loc = await default_location_id(client, _h(tok))
     r2 = await client.post(f"/docs/{po_id}/receive", headers=_h(tok), json={
-        "location_id": str(uuid.uuid4()),
+        "location_id": loc,
         "received_items": [{"po_line_index": 0, "sku": "SKU-NEW", "name": "New Widget", "quantity_received": 5}],
     })
     assert r2.status_code == 200
@@ -247,9 +251,14 @@ async def test_events_engine_integrity_error_reraise():
 
     mock_session = AsyncMock()
     mock_session.flush = AsyncMock(side_effect=IntegrityError("dup", {}, Exception()))
-    mock_session.rollback = AsyncMock()
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.add = MagicMock()
+    # emit_event runs the insert inside `async with session.begin_nested()`.
+    # begin_nested() is a sync call returning an async CM; __aexit__ must NOT
+    # suppress the IntegrityError (return False) so it reaches the handler.
+    _sp = AsyncMock()
+    _sp.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin_nested = MagicMock(return_value=_sp)
 
     with pytest.raises(IntegrityError):
         await emit_event(
@@ -408,6 +417,10 @@ async def test_events_engine_pg_notify_exception_swallowed():
     # pg_notify raises an exception
     mock_session.execute = AsyncMock(side_effect=Exception("pg_notify failed"))
     mock_session.add = MagicMock()
+    # begin_nested() is a sync call returning an async CM (savepoint).
+    _sp = AsyncMock()
+    _sp.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin_nested = MagicMock(return_value=_sp)
 
     added_entry = None
 

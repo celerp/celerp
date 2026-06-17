@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: BSL-1.1
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -371,28 +371,31 @@ def apply_documents_event(state: dict, event_type: str, data: dict) -> dict:
                 continue  # currency is immutable after creation
             current[field] = change.get("new")
         current = _recalc_list_totals(current)
-    elif event_type == "list.sent":
-        current["status"] = "sent"
-        if data.get("sent_via"):
-            current["sent_via"] = data["sent_via"]
-        if data.get("sent_to"):
-            current["sent_to"] = data["sent_to"]
-    elif event_type == "list.accepted":
-        current["status"] = "accepted"
-        if data.get("notes"):
-            current["accepted_notes"] = data["notes"]
-    elif event_type == "list.completed":
-        current["status"] = "completed"
-        if data.get("notes"):
-            current["completed_notes"] = data["notes"]
+    elif event_type == "list.finalized":
+        # draft -> finalized. Carries status + finalize milestone (sent_at / issued_at) and, for
+        # audits, the frozen on-hand snapshot (line_items with l["on_hand"]).
+        current.update(data)
+        current["status"] = "finalized"
+    elif event_type == "list.reverted":
+        # finalized -> draft (go back, before any terminal action). Drop finalize milestones so the
+        # badge/UX reflect a clean draft again.
+        current["status"] = "draft"
+        for k in ("finalized_at", "sent_at", "issued_at", "accepted_at"):
+            current.pop(k, None)
+    elif event_type == "list.closed":
+        # finalized -> closed. The terminal outcome lives in `result`; terminal-specific fields
+        # (converted_to / line_items+adjust_count for audit) ride along in data.
+        current.update(data)
+        current["status"] = "closed"
+    elif event_type == "list.reopened":
+        # closed -> finalized (undo a terminal action, e.g. undo-adjust). Clear the outcome.
+        current.update(data)
+        current["status"] = "finalized"
+        current.pop("result", None)
     elif event_type == "list.voided":
         current["status"] = "void"
         if data.get("reason"):
             current["void_reason"] = data["reason"]
-    elif event_type == "list.converted":
-        current["status"] = "converted"
-        current["converted_to"] = data["target_doc_id"]
-        current["converted_to_type"] = data["target_doc_type"]
 
     elif event_type in {"doc.patched", "list.patched"}:
         # CSV upsert: merge data fields into existing state

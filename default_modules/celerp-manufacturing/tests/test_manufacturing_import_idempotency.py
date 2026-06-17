@@ -1,5 +1,5 @@
 # Copyright (c) 2026 Noah Severs
-# SPDX-License-Identifier: LicenseRef-Proprietary
+# SPDX-License-Identifier: MIT
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ async def test_manufacturing_import_batch_idempotency(client, session):
     company_id = uuid.uuid4()
     user_id = uuid.uuid4()
 
+    # Commit Company + User before UserCompany: SQLAlchemy has no mapped relationship
+    # between them, so a single flush can emit the FK child first and violate
+    # user_companies_user_id_fkey.
     session.add(Company(id=company_id, name="TestCo", slug="testco"))
     session.add(User(
         id=user_id,
@@ -25,21 +28,22 @@ async def test_manufacturing_import_batch_idempotency(client, session):
         auth_hash="x",
         is_active=True,
     ))
+    await session.commit()
     session.add(UserCompany(id=uuid.uuid4(), user_id=user_id, company_id=company_id, role="admin", is_active=True))
     await session.commit()
 
     token, _ = create_access_token(subject=str(user_id), company_id=str(company_id), role="admin")
     headers = {"Authorization": f"Bearer {token}"}
 
-    entity_id = "bom-test-" + uuid.uuid4().hex[:8]
+    entity_id = "mfg-test-" + uuid.uuid4().hex[:8]
     payload = {
         "records": [
             {
                 "entity_id": entity_id,
-                "event_type": "bom.created",
-                "data": {"name": "Import BOM", "output_qty": 1.0, "components": []},
+                "event_type": "mfg.order.created",
+                "data": {"description": "Import order", "inputs": [], "expected_outputs": []},
                 "source": "import",
-                "idempotency_key": "bom-created-" + entity_id,
+                "idempotency_key": "mfg-created-" + entity_id,
             }
         ]
     }
