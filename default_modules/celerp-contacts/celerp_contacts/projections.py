@@ -20,16 +20,19 @@ def _compose_address(addr: dict) -> str:
 
 
 def _sync_primary_address_fields(state: dict) -> None:
-    """Update top-level billing_address/shipping_address from the default address of each type."""
+    """Keep exactly one primary (is_default) address per type and mirror it onto the top-level
+    billing_address / shipping_address fields. Whenever a type has addresses but none is marked primary
+    (the first one was just added, or a merge/removal dropped the previous primary), the first of that
+    type is promoted - so any contact that has addresses always has a primary, which the UI then refuses
+    to delete. Manually-entered top-level values are preserved when a type has no addresses at all."""
     addresses = state.get("addresses") or []
     for addr_type, field in (("billing", "billing_address"), ("shipping", "shipping_address")):
-        default = next((a for a in addresses if a.get("address_type") == addr_type and a.get("is_default")), None)
+        of_type = [a for a in addresses if a.get("address_type") == addr_type]
+        if of_type and not any(a.get("is_default") for a in of_type):
+            of_type[0]["is_default"] = True  # a type with addresses always keeps exactly one primary
+        default = next((a for a in of_type if a.get("is_default")), None)
         if default:
             state[field] = _compose_address(default)
-        elif not any(a.get("address_type") == addr_type for a in addresses):
-            # No addresses of this type remain — clear the field only if it was previously synced
-            # (don't wipe manually-entered values unless there were addresses of this type)
-            pass  # preserve manually-set values
 
 
 def apply_contact_event(state: dict, event_type: str, data: dict) -> dict:

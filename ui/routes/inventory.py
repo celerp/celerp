@@ -3831,7 +3831,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.post("/items/{entity_id}/files/{file_id}/tag")
     async def item_tag_file(request: Request, entity_id: str, file_id: str):
@@ -3845,7 +3845,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.post("/items/{entity_id}/files/{file_id}/description")
     async def item_describe_file(request: Request, entity_id: str, file_id: str):
@@ -3859,7 +3859,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.post("/items/{entity_id}/files/{file_id}/hero")
     async def item_set_file_hero(request: Request, entity_id: str, file_id: str):
@@ -3871,7 +3871,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.delete("/items/{entity_id}/files/{file_id}")
     async def item_delete_file(request: Request, entity_id: str, file_id: str):
@@ -3883,7 +3883,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.get("/items/{entity_id}/files/_section")
     async def item_files_section_partial(request: Request, entity_id: str):
@@ -3894,7 +3894,7 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item)
+        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
 
     @app.get("/items/{entity_id}/files/{file_id}/download")
     async def item_download_file(request: Request, entity_id: str, file_id: str):
@@ -5061,7 +5061,18 @@ def _print_label_dropdown(entity_id: str) -> FT:
     )
 
 
-def _item_files_section(entity_id: str, item: dict, *, title: str = "Production documents & images") -> FT:
+def _item_files_preview(request: Request) -> bool:
+    """Whether the item files table should show inline thumbnails.
+
+    Thumbnails show on the Details tab (the default); they stay hidden on the
+    Manufacturing tab, whose gallery already shows images large. HTMX file
+    mutations echo the originating tab back via the HX-Current-URL header, so the
+    re-rendered section keeps thumbnails on Details and omits them on Manufacturing.
+    """
+    return "tab=manufacturing" not in request.headers.get("HX-Current-URL", "")
+
+
+def _item_files_section(entity_id: str, item: dict, *, title: str = "Production documents & images", show_preview: bool = False) -> FT:
     """Render the shared files section for an item, with hero toggle enabled.
 
     Titled "Production documents & images" everywhere it appears (Details +
@@ -5096,11 +5107,12 @@ def _item_files_section(entity_id: str, item: dict, *, title: str = "Production 
                 "uploaded_at": None,
                 "is_hero": is_hero,
             })
-    # Lives in a narrow column on the Manufacturing tab: no inline preview (the gallery shows
-    # images large above) and no hero column (set the hero by clicking a gallery thumbnail);
-    # compact filters so the bar stays on one row.
+    # On the Manufacturing tab this lives in a narrow column with no inline preview (the gallery
+    # shows images large above), so callers default show_preview=False; the Details tab passes
+    # show_preview=True to put thumbnails back next to filenames. No hero column either way (set
+    # the hero by clicking a gallery thumbnail); compact filters keep the bar on one row.
     return _shared_files_section("item", entity_id, files, can_set_hero=False, show_linked=False,
-                                 title=title, show_preview=False, compact=True)
+                                 title=title, show_preview=show_preview, compact=True)
 
 
 def _recipe_money(v, currency: str | None) -> str:
@@ -6008,7 +6020,7 @@ def _item_detail_tabs(
         )
     # Files + item operations belong with the item's core details — keep them off the
     # Pricing / Manufacturing / Activity tabs so each tab shows only its own concern.
-    extras = (_item_files_section(entity_id, item), _advanced_panel(entity_id, item)) if active_tab == "details" else ()
+    extras = (_item_files_section(entity_id, item, show_preview=True), _advanced_panel(entity_id, item)) if active_tab == "details" else ()
     return Div(
         tab_bar,
         panel,
@@ -6030,6 +6042,15 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     cur_sym = currency or ""
     has_recipe = bool((item.get("recipe") or {}).get("components"))
 
+    from celerp.services.money import currency_dp as _currency_dp, rate_dp as _rate_dp
+    cdp, rdp = _currency_dp(currency or "USD"), _rate_dp(currency or "USD")
+
+    def _num(v: float) -> str:
+        """Plain numeric string for an input: the unit price at its full saved rate
+        precision, trailing zeros trimmed (15.285, not 15.28 and not 15.2850)."""
+        s = f"{v:.{rdp}f}"
+        return s.rstrip("0").rstrip(".") if "." in s else s
+
     unit_hdr = f"Unit ({cur_sym} / {sell_by})" if cur_sym else f"Unit / {sell_by}"
     total_hdr = f"Total ({qty:g} {sell_by})" if has_qty else "Total (no stock)"
 
@@ -6039,7 +6060,7 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
     def _row(pl_name: str, editable: bool) -> FT:
         conventional_key = f"{pl_name.lower()}_price"
         price_val = _resolve_price(item, pl_name)
-        unit_val = f"{price_val:.2f}" if price_val else ""
+        unit_val = _num(price_val) if price_val else ""
         total_val = f"{price_val * qty:.2f}" if price_val and has_qty else ""
         if not editable:
             # Recipe-managed cost: read-only display (edited on the Manufacturing tab).
@@ -6056,12 +6077,12 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
         _save = {"hx_post": f"/api/items/{entity_id}/price", "hx_trigger": "change",
                  "hx_include": "this", "hx_swap": "none"}
         unit_input = Input(type="number", name=conventional_key, id=unit_id, value=unit_val,
-                           step="0.01", min="0", placeholder="--", cls="form-input",
+                           step="any", min="0", placeholder="--", cls="form-input",
                            oninput=f"syncPricingTotal('{unit_id}','{total_id}',{qty})",
                            onkeydown=enter_commits, **_save)
         total_input = Input(type="number", id=total_id, value=total_val, step="0.01", min="0",
                             placeholder="--", cls="form-input", disabled=not has_qty,
-                            oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty})",
+                            oninput=f"syncPricingUnit('{unit_id}','{total_id}',{qty},{cdp},{rdp})",
                             onkeydown=enter_commits,
                             # Editing the total back-fills the unit, then re-fires its autosave.
                             onchange=f"document.getElementById('{unit_id}').dispatchEvent(new Event('change'))")
@@ -6090,16 +6111,27 @@ def _pricing_form(entity_id: str, item: dict, price_lists: list[dict], currency:
 
     return Div(
         Script("""
+function roundTo(x, d) { var f = Math.pow(10, d); return Math.round((x + Number.EPSILON) * f) / f; }
 function syncPricingTotal(unitId, totalId, qty) {
   var u = parseFloat(document.getElementById(unitId).value);
   var tEl = document.getElementById(totalId);
   if (tEl) tEl.value = (isNaN(u) || !qty) ? '' : (u * qty).toFixed(2);
 }
-function syncPricingUnit(unitId, totalId, qty) {
+function syncPricingUnit(unitId, totalId, qty, cdp, rdp) {
   if (!qty) return;
   var total = parseFloat(document.getElementById(totalId).value);
   var uEl = document.getElementById(unitId);
-  uEl.value = isNaN(total) ? '' : (total / qty).toFixed(2);
+  if (isNaN(total)) { uEl.value = ''; return; }
+  // Fewest decimals (cdp..rdp) where unit*qty still rounds to the entered total - mirrors the
+  // server's unit_price_from_total so the saved unit price actually matches the total entered.
+  var target = roundTo(total, cdp), out = null;
+  for (var d = cdp; d <= rdp; d++) {
+    var cand = roundTo(total / qty, d);
+    if (roundTo(cand * qty, cdp) === target) { out = cand.toFixed(d); break; }
+  }
+  if (out === null) out = (total / qty).toFixed(rdp);
+  if (out.indexOf('.') >= 0) { out = out.replace(/0+$/, ''); if (out.charAt(out.length - 1) === '.') out = out.slice(0, -1); }
+  uEl.value = out;
 }
 """),
         Div("Prices save automatically.", id="pricing-save-status", cls="recipe-save-status hint"),

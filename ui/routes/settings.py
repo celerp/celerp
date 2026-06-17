@@ -2278,111 +2278,6 @@ def setup_routes(app):
             pass
         return _category_row(new_key, new_name, len(schemas.get(new_key, [])))
 
-    # ── Company Address CRUD routes ─────────────────────────────────────────
-
-    async def _get_locations_list(token: str) -> list[dict]:
-        try:
-            resp = await api.get_locations(token)
-            locs = resp.get("items") or resp.get("locations") or (resp if isinstance(resp, list) else [])
-            return locs
-        except Exception:
-            return []
-
-    @app.get("/settings/company/addresses")
-    async def company_addresses_get(request: Request):
-        token = _token(request)
-        if not token:
-            return _company_addresses_section([])
-        locations = await _get_locations_list(token)
-        return _company_addresses_section(locations)
-
-    @app.get("/settings/company/addresses/{location_id}/edit")
-    async def company_address_edit_form(request: Request, location_id: str):
-        token = _token(request)
-        if not token:
-            return _company_addresses_section([])
-        locations = await _get_locations_list(token)
-        loc = next((l for l in locations if str(l.get("id")) == location_id), None)
-        if not loc:
-            return _company_addresses_section(locations)
-        loc_id = str(loc.get("id", ""))
-        name = loc.get("name") or ""
-        addr_text = unwrap_address(loc.get("address"))
-        return Form(
-            Input(name="name", value=name, cls="cell-input", placeholder="Name"),
-            Textarea(addr_text, name="address_text", cls="cell-input", rows="3", placeholder="Address"),
-            Div(
-                Button(t("btn.save"), type="submit", cls="btn btn--xs btn--primary"),
-                Button(t("btn.cancel"),
-                    hx_get="/settings/company/addresses",
-                    hx_target="#company-addresses-section",
-                    hx_swap="outerHTML",
-                    cls="btn btn--xs btn--ghost",
-                    type="button",
-                ),
-                cls="addr-actions",
-            ),
-            hx_patch=f"/settings/company/addresses/{loc_id}",
-            hx_target="#company-addresses-section",
-            hx_swap="outerHTML",
-            cls="address-card",
-            id=f"co-addr-{loc_id}",
-        )
-
-    @app.post("/settings/company/addresses")
-    async def company_address_add(request: Request):
-        token = _token(request)
-        if not token:
-            return _company_addresses_section([])
-        try:
-            await api.create_location(token, {"name": "New Address", "type": "address", "address": {}})
-        except Exception:
-            pass
-        locations = await _get_locations_list(token)
-        return _company_addresses_section(locations)
-
-    @app.patch("/settings/company/addresses/{location_id}")
-    async def company_address_patch(request: Request, location_id: str):
-        token = _token(request)
-        if not token:
-            return _company_addresses_section([])
-        form = await request.form()
-        name = form.get("name") or ""
-        addr_text = form.get("address_text") or ""
-        try:
-            await api.patch_location(token, location_id, {
-                "name": name,
-                "address": {"text": addr_text},
-            })
-        except Exception:
-            pass
-        locations = await _get_locations_list(token)
-        return _company_addresses_section(locations)
-
-    @app.delete("/settings/company/addresses/{location_id}")
-    async def company_address_delete(request: Request, location_id: str):
-        token = _token(request)
-        if not token:
-            return _company_addresses_section([])
-        try:
-            await api.delete_location(token, location_id)
-        except Exception:
-            pass
-        locations = await _get_locations_list(token)
-        return _company_addresses_section(locations)
-
-    @app.post("/settings/company/addresses/{location_id}/set-default")
-    async def company_address_set_default(request: Request, location_id: str):
-        token = _token(request)
-        if not token:
-            return _company_addresses_section([])
-        try:
-            await api.patch_location(token, location_id, {"is_default": True})
-        except Exception:
-            pass
-        locations = await _get_locations_list(token)
-        return _company_addresses_section(locations)
-
     @app.post("/settings/factory-reset")
     async def factory_reset_ui(request: Request):
         """Proxy factory-reset to the API. Owner only."""
@@ -2957,73 +2852,6 @@ def _settings_content(
         return _verticals_tab(vert_categories or [], vert_presets or [], cat_schemas or {})
     return P(t("msg.unknown_tab", lang), cls="error-banner")
 
-
-
-def _company_address_card(loc: dict) -> FT:
-    """Read-mode address card for a company location."""
-    loc_id = str(loc.get("id", ""))
-    name = loc.get("name") or ""
-    addr_text = unwrap_address(loc.get("address"))
-    is_default = bool(loc.get("is_default"))
-    default_badge = (
-        Span(t("settings._default"), cls="badge badge--primary")
-        if is_default else
-        Button(t("btn._set_as_default"),
-            hx_post=f"/settings/company/addresses/{loc_id}/set-default",
-            hx_target="#company-addresses-section",
-            hx_swap="outerHTML",
-            cls="btn btn--xs btn--ghost",
-        )
-    )
-    addr_lines = [P(line, cls="addr-line") for line in addr_text.splitlines() if line.strip()]
-    delete_btn = [] if is_default else [
-        Button(
-            "×",
-            hx_delete=f"/settings/company/addresses/{loc_id}",
-            hx_target="#company-addresses-section",
-            hx_swap="outerHTML",
-            hx_confirm="Remove this address?",
-            cls="btn btn--xs btn--danger",
-        )
-    ]
-    return Div(
-        Div(
-            Button(
-                "✏",
-                hx_get=f"/settings/company/addresses/{loc_id}/edit",
-                hx_target=f"#co-addr-{loc_id}",
-                hx_swap="outerHTML",
-                cls="btn btn--xs btn--ghost",
-            ),
-            *delete_btn,
-            cls="addr-actions",
-        ),
-        Strong(name or "Unnamed", cls="addr-name"),
-        *addr_lines,
-        default_badge,
-        cls="address-card",
-        id=f"co-addr-{loc_id}",
-    )
-
-
-def _company_addresses_section(locations: list[dict]) -> FT:
-    """Company branch addresses section — mirrors contacts _addresses_section."""
-    return Div(
-        Div(
-            H3(t("page.company_addresses"), cls="section-title"),
-            Button(t("btn._add_address"),
-                hx_post="/settings/company/addresses",
-                hx_target="#company-addresses-section",
-                hx_swap="outerHTML",
-                cls="btn btn--xs btn--secondary",
-            ),
-            cls="addr-col-header",
-        ),
-        *([_company_address_card(loc) for loc in locations] if locations else [P(t("settings.no_addresses_yet"), cls="empty-state-msg")]),
-        Div(id="co-addr-new"),
-        id="company-addresses-section",
-        cls="section-card",
-    )
 
 
 def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
@@ -4225,7 +4053,7 @@ def _connectors_tab() -> FT:
             H3(t("settings.tab_connectors"), cls="settings-section-title"),
             upgrade_banner(
                 "Cloud Connectors",
-                "Connect Shopify, WooCommerce, QuickBooks, Xero, Lazada, and Shopee. "
+                "Connect Shopify, WooCommerce, QuickBooks, and Xero. "
                 "OAuth is handled by Celerp Cloud - no API keys to manage.",
                 price="USD $29/mo",
                 anchor="cloud",

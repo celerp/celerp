@@ -1843,7 +1843,7 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .address-card, .person-card { border: 1px solid var(--c-border); border-radius: var(--radius); padding: 0.75rem; margin-bottom: 0.5rem; position: relative; }
 /* A filled address card should read as a white card (it was transparent over the gray page bg) and sit
    at a comparable height to the dashed "none yet" placeholder in the other column. */
-.address-card { background: var(--c-bg2); padding: 1rem; min-height: 4.25rem; }
+.address-card { background: var(--c-bg2); padding: 1rem; min-height: 5.25rem; }  /* match .empty-state-msg height so a lone billing card and an empty shipping box are the same size */
 .address-card .addr-actions, .person-card .person-actions { position: absolute; top: 0.5rem; right: 0.5rem; display: flex; gap: 0.25rem; }
 .addr-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .addr-col { min-width: 0; }
@@ -1864,6 +1864,8 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .financial-card--link:hover { background: var(--c-bg-hover, #f0f0f0); }
 .financial-card-value { font-size: 1.3rem; font-weight: 700; margin-top: 0.25rem; }
 .section-card { margin-bottom: 1.5rem; }
+/* Contact Info / Settings cards: inset the header + table so they aren't flush against the card border. */
+.detail-card.section-card { padding: 12px 14px; }
 .inline-form { border: 1px solid var(--c-border); border-radius: var(--radius); padding: 1rem; margin-top: 0.5rem; background: var(--c-bg-alt, #f8f9fa); }
 .inline-form .form-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 0.5rem; }
 .inline-form .form-group { flex: 1; min-width: 120px; }
@@ -2288,12 +2290,19 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 
 .cloud-features {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 16px;
     margin: 24px 0;
 }
+/* The two sync cards sit as a centred pair under the trio */
+.cloud-features--pair {
+    grid-template-columns: repeat(2, 1fr);
+    max-width: 66%;
+    margin: 0 auto 24px;
+}
 @media (max-width: 768px) {
     .cloud-features { grid-template-columns: repeat(2, 1fr); }
+    .cloud-features--pair { max-width: 100%; margin: 0 0 24px; }
 }
 .cloud-feature-card {
     padding: 20px 16px;
@@ -2333,6 +2342,21 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .cloud-plan-card ul { text-align: left; list-style: none; padding: 0; margin: 0 0 16px; }
 .cloud-plan-card li { padding: 3px 0; font-size: 13px; }
 .cloud-plan-card li::before { content: "✓ "; color: var(--c-success); }
+
+.cloud-trial-banner {
+    text-align: center;
+    margin: 12px 0 4px;
+}
+.cloud-trial-banner__head {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--c-accent);
+}
+.cloud-trial-banner__sub {
+    margin-top: 2px;
+    font-size: 13px;
+    color: var(--c-text2);
+}
 
 .cloud-connect-section {
     margin-top: 24px;

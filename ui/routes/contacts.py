@@ -317,6 +317,7 @@ def _compose_address_str(addr: dict) -> str:
 def _address_card(cid: str, addr: dict) -> FT:
     """Render a single address card with edit/delete/make-primary actions."""
     addr_id = addr.get("address_id", "")
+    _dom = f"addr-{addr_id.replace(':', '-')}"  # address ids contain ':' which is invalid in a CSS id selector
     addr_type = addr.get("address_type", "billing")
     is_default = bool(addr.get("is_default"))
     lines = [P(addr.get("line1", ""))] if addr.get("line1") else []
@@ -346,11 +347,14 @@ def _address_card(cid: str, addr: dict) -> FT:
         *lines,
         Div(
             primary_btn,
-            Button("✏", hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#addr-{addr_id}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title="Edit"),
-            Button("×", hx_delete=f"/contacts/{cid}/addresses/{addr_id}", hx_target="#addresses-section", hx_swap="outerHTML", hx_confirm="Remove this address?", cls="btn btn--xs btn--danger", title="Remove"),
+            Button("✏", hx_get=f"/contacts/{cid}/addresses/{addr_id}/edit", hx_target=f"#{_dom}", hx_swap="outerHTML", cls="btn btn--xs btn--secondary", title="Edit"),
+            # The primary address can't be deleted - it keeps the contact (incl. the company) with a
+            # billing address at all times; make another address primary first to remove this one.
+            (Button("×", hx_delete=f"/contacts/{cid}/addresses/{addr_id}", hx_target="#addresses-section", hx_swap="outerHTML", hx_confirm="Remove this address?", cls="btn btn--xs btn--danger", title="Remove")
+             if not is_default else None),
             cls="addr-actions",
         ),
-        cls="address-card", id=f"addr-{addr_id}",
+        cls="address-card", id=_dom,
     )
 
 
@@ -1478,7 +1482,7 @@ def setup_routes(app):
                 hx_swap="outerHTML",
                 hx_trigger="submit",
             ),
-            cls="inline-form", id=f"addr-{address_id}",
+            cls="inline-form", id=f"addr-{address_id.replace(':', '-')}",
         )
 
     @app.patch("/contacts/{contact_id}/addresses/{address_id}")
@@ -1503,6 +1507,15 @@ def setup_routes(app):
         token = _token(request)
         if not token:
             return P(t("error.unauthorized"), cls="cell-error")
+        try:
+            contact = await api.get_contact(token, contact_id)
+        except APIError:
+            contact = {}
+        # Never delete the primary address - the contact (incl. the company self-contact) must always keep
+        # a primary billing address. The UI hides the delete button on it; this guards the route too.
+        target = next((a for a in (contact.get("addresses") or []) if str(a.get("address_id", "")) == address_id), None)
+        if target is not None and target.get("is_default"):
+            return P("Make another address primary before removing this one.", cls="cell-error")
         try:
             await api.remove_contact_address(token, contact_id, address_id)
             contact = await api.get_contact(token, contact_id)

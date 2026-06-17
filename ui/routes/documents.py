@@ -1950,6 +1950,19 @@ celerpUpdateBulkAlloc();
             f"htmx.ajax('GET','{restore_url}',{{target:this.closest('.editable-cell'),swap:'outerHTML'}});"
             f"event.preventDefault();}}"
         )
+        if field == "company_address":
+            # Re-editing the From address must re-open the location picker (the same control shown on
+            # initial render), not a bare text box - otherwise the user can't switch back to a saved
+            # location address once they've picked one. Fall through to free-text only when no location
+            # has a usable address.
+            try:
+                _loc_resp = await api.get_locations(token)
+                _all_locs = _loc_resp.get("items") or _loc_resp.get("locations") or (_loc_resp if isinstance(_loc_resp, list) else [])
+            except Exception:
+                _all_locs = []
+            if isinstance(_all_locs, list) and any(unwrap_address(l.get("address")) for l in _all_locs):
+                return _company_address_picker(entity_id, value, _all_locs)
+            # else: no usable location addresses -> fall through to the plain text input below.
         if field == "status":
             # Status is a state-machine field; transitions happen via lifecycle buttons only.
             # Return a non-editable display to block direct manipulation via URL.
@@ -4834,16 +4847,21 @@ def _contact_ship_to_picker(doc_id: str, current_address: str, contact_shipping_
 def _company_address_picker(doc_id: str, current_address, company_locations: list) -> FT:
     """Render address as a location picker dropdown if locations exist, else a plain editable cell."""
     current_address = unwrap_address(current_address)  # may arrive as a structured dict, not a string
-    if not company_locations:
-        # Fallback: plain editable cell (no locations configured)
+
+    def _addr_text(loc: dict) -> str:
+        return unwrap_address(loc.get("address"))
+
+    # Only locations that actually carry an address can be a "print-from" address. A location with no
+    # address (e.g. a stub named "Location 2") must never appear here: offering it let users set the
+    # company_address field to the location's *name*, which then printed a bogus address.
+    addressed = [l for l in (company_locations or []) if _addr_text(l)]
+    if not addressed:
+        # Fallback: plain editable cell (no usable location addresses configured)
         display = current_address or "--"
         return _doc_display_cell(doc_id, "company_address", display)
 
-    def _addr_text(loc: dict) -> str:
-        return unwrap_address(loc.get("address")) or loc.get("name") or ""
-
     options = [Option("-- select address --", value="", selected=(not current_address))]
-    for loc in company_locations:
+    for loc in addressed:
         addr_text = _addr_text(loc)
         options.append(Option(
             loc.get("name") or addr_text,
@@ -4851,7 +4869,7 @@ def _company_address_picker(doc_id: str, current_address, company_locations: lis
             selected=(addr_text == current_address),
         ))
     # Free-text option if current_address doesn't match any location
-    known = {_addr_text(l) for l in company_locations}
+    known = {_addr_text(l) for l in addressed}
     if current_address and current_address not in known and current_address != "--":
         options.append(Option(f"Custom: {current_address[:40]}", value=current_address, selected=True))
 

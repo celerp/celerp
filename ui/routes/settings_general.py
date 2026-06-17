@@ -35,7 +35,6 @@ from ui.routes.settings import (
     _modules_tab,
     _company_tab,
     _users_tab,
-    _company_addresses_section,
     _password_form,
 )
 

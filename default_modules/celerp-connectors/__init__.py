@@ -22,8 +22,8 @@ PLUGIN_MANIFEST = {
     "version": "0.1.0",
     "display_name": "Connectors",
     "description": (
-        "Sync products, orders, and contacts from Shopify, QuickBooks, Xero, "
-        "Lazada, and Shopee. Requires Celerp Cloud subscription."
+        "Sync products, orders, and contacts from Shopify, QuickBooks, and "
+        "Xero. Requires Celerp Cloud subscription."
     ),
     "license": "LicenseRef-Proprietary",
     "author": "Celerp",

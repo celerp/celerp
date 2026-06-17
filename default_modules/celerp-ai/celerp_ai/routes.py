@@ -683,7 +683,7 @@ async def usage_stats(
 
     Returns list of {user_id, user_name, query_count, credits_used, last_query_at}.
     """
-    from datetime import date
+    from datetime import date, datetime, timezone
     from sqlalchemy import func, select
     from celerp.models.ai import AIConversation, AIMessage
     from celerp.models.company import User

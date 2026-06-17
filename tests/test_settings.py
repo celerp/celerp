@@ -285,49 +285,6 @@ class TestCompanyAddressesUI:
         assert b"Demo Data" not in r.content
         assert b"Reload Demo Items" not in r.content
 
-    @pytest.mark.asyncio
-    async def test_company_addresses_section_present(self, ui_client):
-        """Company tab HTML must contain company-addresses-section."""
-        with (
-            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
-            patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": 1})),
-            patch("ui.api_client.get_modules", new=AsyncMock(return_value=_MODULES)),
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
-        ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert r.status_code == 200
-        assert b"company-addresses-section" in r.content
-
-    @pytest.mark.asyncio
-    async def test_company_address_add(self, ui_client):
-        """POST /settings/company/addresses creates a location and returns the section."""
-        created_loc = {"id": "loc-123", "name": "New Address", "type": "address", "address": {}, "is_default": False}
-        with (
-            patch("ui.api_client.create_location", new=AsyncMock(return_value=created_loc)),
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [created_loc], "total": 1})),
-        ):
-            r = await ui_client.post("/settings/company/addresses", cookies=_authed())
-        assert r.status_code == 200
-        assert b"company-addresses-section" in r.content
-
-    @pytest.mark.asyncio
-    async def test_company_address_set_default(self, ui_client):
-        """POST /settings/company/addresses/{id}/set-default patches is_default."""
-        patched_loc = {"id": "loc-123", "name": "Head Office", "type": "address", "address": {}, "is_default": True}
-        patch_mock = AsyncMock(return_value=patched_loc)
-        with (
-            patch("ui.api_client.patch_location", new=patch_mock),
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [patched_loc], "total": 1})),
-        ):
-            r = await ui_client.post("/settings/company/addresses/loc-123/set-default", cookies=_authed())
-        assert r.status_code == 200
-        assert b"company-addresses-section" in r.content
-        # Verify patch_location was called with is_default=True
-        patch_mock.assert_called_once()
-        call_args = patch_mock.call_args
-        assert call_args[0][1] == "loc-123"
-        assert call_args[0][2].get("is_default") is True
-
 
 class TestCategoriesCRUDUI:
 
