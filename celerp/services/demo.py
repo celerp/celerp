@@ -1697,33 +1697,49 @@ async def seed_self_contacts(
     company_name: str,
     email: str,
 ) -> None:
-    """Seed the owner as both a customer and vendor contact for the new company.
+    """Seed the company's own contact as ONE record.
 
-    Called from both the initial registration flow and the create-additional-company flow
-    so every company always starts with one self-referential contact.
+    The company is its own customer AND vendor, so it gets a single contact typed `both` and flagged
+    `is_self`. `both` is already routed into both the customer and vendor pickers (see
+    `_CONTACT_TYPE_FILTER`), so this one record appears wherever either is expected and editing it edits
+    every context at once - no duplicated, divergeable records. The id is cached on
+    `company.settings.self_contact_id` so the Company Details page can load it directly.
+
+    Called from both the initial registration flow and the create-additional-company flow.
     """
-    _seed_data = {
-        "name": person_name,
-        "company_name": company_name,
-        "email": email,
-    }
     import logging as _logging
+    from celerp.models.company import Company
     _log = _logging.getLogger(__name__)
-    for contact_type, role in (("customer", "customer"), ("vendor", "vendor")):
-        entity_id = f"contact:{uuid.uuid4()}"
-        try:
-            await emit_event(
-                session,
-                company_id=company_id,
-                entity_id=entity_id,
-                entity_type="contact",
-                event_type="crm.contact.created",
-                data={**_seed_data, "contact_type": contact_type},
-                actor_id=actor_id,
-                location_id=None,
-                source="registration",
-                idempotency_key=f"reg:contact:{contact_type}:{company_id}",
-                metadata_={},
-            )
-        except Exception as exc:
-            _log.warning("seed_self_contacts %s failed (non-fatal): %s", contact_type, exc)
+
+    entity_id = f"contact:{uuid.uuid4()}"
+    try:
+        await emit_event(
+            session,
+            company_id=company_id,
+            entity_id=entity_id,
+            entity_type="contact",
+            event_type="crm.contact.created",
+            data={
+                "name": person_name,
+                "company_name": company_name,
+                "email": email,
+                "contact_type": "both",
+                "is_self": True,
+            },
+            actor_id=actor_id,
+            location_id=None,
+            source="registration",
+            idempotency_key=f"reg:contact:self:{company_id}",
+            metadata_={},
+        )
+    except Exception as exc:
+        _log.warning("seed_self_contacts failed (non-fatal): %s", exc)
+        return
+
+    # Cache the self-contact id for a direct (no-scan) lookup by the Company Details page.
+    try:
+        company = await session.get(Company, company_id)
+        if company is not None:
+            company.settings = {**(company.settings or {}), "self_contact_id": entity_id}
+    except Exception as exc:
+        _log.warning("seed_self_contacts settings cache failed (non-fatal): %s", exc)

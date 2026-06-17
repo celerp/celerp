@@ -211,7 +211,7 @@ async def create_company(
     # Fire module lifecycle hooks (e.g. celerp-accounting seeds chart of accounts)
     from celerp.modules.slots import fire_lifecycle
     await fire_lifecycle("on_company_created", session=session, company_id=company.id)
-    # Seed owner as customer + vendor contact (mirrors registration flow)
+    # Seed the company's single self-contact (typed `both`, mirrors registration flow)
     from celerp.services.demo import seed_self_contacts
     await seed_self_contacts(
         session,

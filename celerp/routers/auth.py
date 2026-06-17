@@ -130,7 +130,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     await session.flush()
     from celerp.services.demo import seed_demo_items
     await seed_demo_items(session, company.id, user.id, default_location_id=head_office.id)
-    # Seed company self-contacts (customer + vendor) with company name, owner name + admin email
+    # Seed the company's single self-contact (typed `both`) with company name, owner name + admin email
     from celerp.services.demo import seed_self_contacts
     await seed_self_contacts(
         session,
