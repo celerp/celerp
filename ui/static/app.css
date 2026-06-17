@@ -1841,6 +1841,9 @@ option.unit-unknown-option { color: var(--c-red, #ef4444); font-style: italic; }
 .detail-col-left { flex: 3; min-width: 0; }
 .detail-col-right { flex: 2; min-width: 0; }
 .address-card, .person-card { border: 1px solid var(--c-border); border-radius: var(--radius); padding: 0.75rem; margin-bottom: 0.5rem; position: relative; }
+/* A filled address card should read as a white card (it was transparent over the gray page bg) and sit
+   at a comparable height to the dashed "none yet" placeholder in the other column. */
+.address-card { background: var(--c-bg2); padding: 1rem; min-height: 4.25rem; }
 .address-card .addr-actions, .person-card .person-actions { position: absolute; top: 0.5rem; right: 0.5rem; display: flex; gap: 0.25rem; }
 .addr-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
 .addr-col { min-width: 0; }

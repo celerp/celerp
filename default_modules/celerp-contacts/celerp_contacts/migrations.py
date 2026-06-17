@@ -27,38 +27,60 @@ from celerp.models.projections import Projection
 _log = logging.getLogger(__name__)
 
 
-async def backfill_self_contact_address(session: AsyncSession, company_id) -> bool:
-    """Copy the company's default-Location address onto its self-contact as a billing address, if the
-    self-contact has none. Company setup stored the entered address on the Head Office Location, but the
-    Company Details page + document letterhead read the self-contact's billing address - so without this
-    the company address shows blank there. Idempotent: skips when the self-contact already has any address;
-    the event carries a deterministic key. Returns True if it added one."""
+def _blank_str(v) -> bool:
+    return not (str(v).strip() if v is not None else "")
+
+
+async def backfill_self_contact_identity(session: AsyncSession, company_id) -> bool:
+    """Sync the company's identity onto its self-contact where missing: the scalar fields tax_id / phone
+    / email from company settings, and a billing address from the default Location. Company setup stored
+    these on company settings + the Head Office Location, but the Company Details page and the document
+    letterhead read the self-contact - so without this they show blank there. Idempotent: each piece is
+    skipped when the self-contact already has it. Returns True if anything was added."""
     company = await session.get(Company, company_id)
     sid = (company.settings or {}).get("self_contact_id") if company else None
     if not sid:
         return False
     row = await session.get(Projection, {"company_id": company_id, "entity_id": sid})
-    if row is None or (row.state.get("addresses") or []):
-        return False  # no self-contact, or it already has addresses (don't overwrite)
-    loc = (await session.execute(
-        select(Location).where(Location.company_id == company_id, Location.is_default.is_(True))
-    )).scalars().first() or (await session.execute(
-        select(Location).where(Location.company_id == company_id)
-    )).scalars().first()
-    addr = loc.address if loc else None
-    text = (addr.get("text") if isinstance(addr, dict) else addr if isinstance(addr, str) else "") or ""
-    text = text.strip()
-    if not text:
+    if row is None:
         return False
-    await emit_event(
-        session, company_id=company_id, entity_id=sid, entity_type="contact",
-        event_type="crm.contact.address_added",
-        data={"address_id": f"address:self-{company_id}", "address_type": "billing",
-              "line1": text, "is_default": True},
-        actor_id=None, location_id=None, source="migration",
-        idempotency_key=f"self-migrate:address:{sid}", metadata_={},
-    )
-    return True
+    state = row.state or {}
+    settings = company.settings or {}
+    changed = False
+
+    # 1. Scalar identity (tax_id / phone / email): copy from settings where the self-contact is blank.
+    fields = {f: settings.get(f) for f in ("tax_id", "phone", "email")
+              if _blank_str(state.get(f)) and not _blank_str(settings.get(f))}
+    if fields:
+        await emit_event(
+            session, company_id=company_id, entity_id=sid, entity_type="contact",
+            event_type="crm.contact.updated",
+            data={"fields_changed": {k: {"new": v} for k, v in fields.items()}},
+            actor_id=None, location_id=None, source="migration",
+            idempotency_key=f"self-migrate:identity:{sid}", metadata_={},
+        )
+        changed = True
+
+    # 2. Billing address from the default Location, if the self-contact has none.
+    if not (state.get("addresses") or []):
+        loc = (await session.execute(
+            select(Location).where(Location.company_id == company_id, Location.is_default.is_(True))
+        )).scalars().first() or (await session.execute(
+            select(Location).where(Location.company_id == company_id)
+        )).scalars().first()
+        addr = loc.address if loc else None
+        text = ((addr.get("text") if isinstance(addr, dict) else addr if isinstance(addr, str) else "") or "").strip()
+        if text:
+            await emit_event(
+                session, company_id=company_id, entity_id=sid, entity_type="contact",
+                event_type="crm.contact.address_added",
+                data={"address_id": f"address:self-{company_id}", "address_type": "billing",
+                      "line1": text, "is_default": True},
+                actor_id=None, location_id=None, source="migration",
+                idempotency_key=f"self-migrate:address:{sid}", metadata_={},
+            )
+            changed = True
+    return changed
 
 # Identity fields filled onto the winner from the vendor record only when the winner's value is blank.
 # Customer record wins; vendor fills gaps (owner-approved precedence, Q1).
@@ -170,8 +192,8 @@ async def backfill_self_contacts_hook(*, session: AsyncSession) -> None:
     await migrate_all_self_contacts(session)
     for cid in (await session.execute(select(Company.id))).scalars().all():
         try:
-            if await backfill_self_contact_address(session, cid):
+            if await backfill_self_contact_identity(session, cid):
                 await session.commit()
         except Exception as exc:  # one bad company must not abort the batch
             await session.rollback()
-            _log.warning("self-contact address backfill failed for company %s: %s", cid, exc)
+            _log.warning("self-contact identity backfill failed for company %s: %s", cid, exc)

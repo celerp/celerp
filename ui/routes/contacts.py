@@ -446,10 +446,10 @@ def _documents_tab(docs: list[dict], contact: dict | None = None, contact_id: st
     The Company Details page passes show_files=False because company files have their own page."""
     # Related documents table
     if not docs:
-        docs_section = Div(
-            P(t("label.no_documents_yet"), cls="empty-state-msg"),
-            P("Invoices, quotes, receipts, bills and other transactional documents involving this contact "
-              "will appear here automatically as you create them.", cls="hint", style="text-align:center;"),
+        docs_section = P(
+            "Invoices, quotes, receipts, bills and credit notes involving this contact appear here "
+            "automatically as you create them. None yet.",
+            cls="empty-state-msg",
         )
     else:
         sorted_docs = sorted(docs, key=lambda d: d.get("issue_date") or d.get("created_at") or "", reverse=True)
@@ -1162,7 +1162,7 @@ def setup_routes(app):
         sid = await _resolve_self_contact_id(token)
         if not sid:
             return base_shell(
-                page_header("Company Details"),
+                page_header("🏢 Company Details"),
                 empty_state_cta("Your company's own contact record has not been initialised yet."),
                 title="Company Details - Celerp", nav_active="company-details", request=request,
             )
@@ -1182,7 +1182,7 @@ def setup_routes(app):
         from ui.i18n import get_lang
         return base_shell(
             breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", None)]),
-            page_header("Company Details"),
+            page_header("🏢 Company Details"),
             Div(
                 Div(_contact_info_card(contact, hide_fields=("currency", "billing_address", "shipping_address")),
                     cls="detail-col-left"),

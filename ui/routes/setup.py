@@ -149,26 +149,30 @@ def setup_routes(app):
                 title="Company setup - Celerp",
             )
 
-        # Populate the default (Head Office) location with the address entered
+        # Mirror the company identity onto the self-contact - the Company Details page and the document
+        # letterhead read the self-contact, not company settings / the Location. address -> Head Office
+        # location + the self-contact billing address; tax_id / phone -> the self-contact fields.
         address_text = data.get("address", "").strip()
-        if address_text:
-            try:
+        try:
+            company = await api.get_company(token)
+            sid = (company.get("settings") or {}).get("self_contact_id")
+            if address_text:
                 locs_resp = await api.get_locations(token)
                 locs = locs_resp.get("items") or locs_resp.get("locations") or (locs_resp if isinstance(locs_resp, list) else [])
                 default_loc = next((l for l in locs if l.get("is_default")), None)
                 if default_loc:
                     await api.patch_location(token, str(default_loc["id"]), {"address": {"text": address_text}})
-                # Also seed the company self-contact's billing address - the Company Details page and the
-                # document letterhead read the self-contact, not the Location. Skip if it already has one.
-                company = await api.get_company(token)
-                sid = (company.get("settings") or {}).get("self_contact_id")
-                if sid:
-                    self_contact = await api.get_contact(token, sid)
-                    if not (self_contact.get("addresses") or []):
-                        await api.add_contact_address(token, sid, {"address_type": "billing",
-                                                                   "line1": address_text, "is_default": True})
-            except Exception:
-                pass
+            if sid:
+                self_contact = await api.get_contact(token, sid)
+                if address_text and not (self_contact.get("addresses") or []):
+                    await api.add_contact_address(token, sid, {"address_type": "billing",
+                                                               "line1": address_text, "is_default": True})
+                identity = {k: data.get(k) for k in ("tax_id", "phone")
+                            if str(data.get(k) or "").strip() and not str(self_contact.get(k) or "").strip()}
+                if identity:
+                    await api.patch_contact(token, sid, identity)
+        except Exception:
+            pass
 
         # Apply vertical preset if one was chosen (blank = no preset, no-op)
         vertical = str(form.get("vertical", "blank"))

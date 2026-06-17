@@ -137,28 +137,29 @@ async def test_migrate_single_survivor_just_retypes(client, session):
 
 
 @pytest.mark.asyncio
-async def test_address_backfill_from_default_location(client, session):
-    """The company's default-Location address is copied onto the self-contact as a billing address when
-    the self-contact has none (so Company Details + letterhead show it). Idempotent."""
+async def test_identity_backfill_address_taxid_phone(client, session):
+    """tax_id / phone (from company settings) and a billing address (from the default Location) are copied
+    onto the self-contact when it lacks them - so Company Details + letterhead show them. Idempotent."""
     from celerp.models.company import Location
-    from celerp_contacts.migrations import backfill_self_contact_address
+    from celerp_contacts.migrations import backfill_self_contact_identity
     await _register(client)
     company = (await session.execute(select(Company))).scalars().first()
     cid = company.id
     sid = (company.settings or {})["self_contact_id"]  # set by the P1 seed
-    # Registration seeds a default Head Office location; set its address (as company setup would).
+    # Company setup put tax_id/phone on company settings and the address on the Head Office Location.
+    company.settings = {**(company.settings or {}), "tax_id": "TX-99", "phone": "+66 2 123"}
     loc = (await session.execute(
         select(Location).where(Location.company_id == cid, Location.is_default.is_(True))
     )).scalars().first()
     loc.address = {"text": "1 Main St, Town"}
     await session.commit()
 
-    assert await backfill_self_contact_address(session, cid) is True
+    assert await backfill_self_contact_identity(session, cid) is True
     await session.commit()
     contact = await session.get(Projection, {"company_id": cid, "entity_id": sid})
+    assert contact.state.get("tax_id") == "TX-99" and contact.state.get("phone") == "+66 2 123"
     addrs = contact.state.get("addresses") or []
-    assert len(addrs) == 1
-    assert addrs[0]["address_type"] == "billing" and addrs[0]["line1"] == "1 Main St, Town"
+    assert len(addrs) == 1 and addrs[0]["address_type"] == "billing" and addrs[0]["line1"] == "1 Main St, Town"
 
-    # Idempotent: re-run does not add another.
-    assert await backfill_self_contact_address(session, cid) is False
+    # Idempotent: re-run changes nothing.
+    assert await backfill_self_contact_identity(session, cid) is False
