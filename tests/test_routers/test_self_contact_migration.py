@@ -92,6 +92,28 @@ async def test_migrate_noop_for_new_seed_company(client, session):
 
 
 @pytest.mark.asyncio
+async def test_backfill_hook_idempotent_and_skips_seeded(client, session):
+    """The on_modules_ready hook runs on startup: a new-model company (self_contact_id already cached)
+    is skipped untouched, and re-running never duplicates anything."""
+    from celerp_contacts.migrations import backfill_self_contacts_hook
+    await _register(client)
+    company = (await session.execute(select(Company))).scalars().first()
+    before = (company.settings or {}).get("self_contact_id")
+    assert before, "P1 seed should have cached self_contact_id"
+
+    await backfill_self_contacts_hook(session=session)
+    await backfill_self_contacts_hook(session=session)  # idempotent
+    await session.refresh(company)
+    assert (company.settings or {}).get("self_contact_id") == before
+
+    contacts = (await session.execute(
+        select(Projection).where(Projection.company_id == company.id, Projection.entity_type == "contact")
+    )).scalars().all()
+    selfs = [c for c in contacts if c.state.get("is_self") and not c.state.get("deleted")]
+    assert len(selfs) == 1  # no duplication
+
+
+@pytest.mark.asyncio
 async def test_migrate_single_survivor_just_retypes(client, session):
     """If only one legacy self-contact remains (the other was deleted), retype it - no merge needed."""
     await _register(client)

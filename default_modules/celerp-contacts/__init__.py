@@ -26,6 +26,9 @@ PLUGIN_MANIFEST = {
         "projection_handler": [
             {"prefix": "crm.contact.", "handler": "celerp_contacts.projections:apply_contact_event"},
         ],
+        # Auto-run on every startup (incl. after a version upgrade): collapse legacy companies that
+        # were seeded with two separate customer+vendor self-contacts into one both+is_self record.
+        "on_modules_ready": {"handler": "celerp_contacts.migrations:backfill_self_contacts_hook"},
         "send_to_targets": [],
     },
     "migrations": None,
