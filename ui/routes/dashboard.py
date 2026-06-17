@@ -610,7 +610,8 @@ def setup_routes(app):
             page_header(t("page.dashboard", lang)),
             _kpi_grid(cfg, values, role=role),
             _secondary_kpi_grid(cfg, values, role=role),
-            _charts_section(cfg, valuation, ar_aging),
+            _charts_section(cfg, valuation, ar_aging,
+                            kpis_data.get("sales", {}).get("revenue_trend", []), currency),
             _activity_feed(activities, currency) if cfg.get("show_activity") else "",
             _quick_links(cfg),
             title=f"Dashboard - {company.get('name', '')}",
@@ -762,10 +763,23 @@ def _secondary_kpi_grid(cfg: dict, values: dict, role: str = "owner") -> FT:
 _CHARTJS_CDN = "https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"
 
 
-def _charts_section(cfg: dict, valuation: dict, ar_aging: dict) -> FT:
+_MONTH_ABBR = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+_CUR_SYMBOLS = {"USD": "$", "CAD": "$", "AUD": "$", "NZD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"}
+
+
+def _charts_section(cfg: dict, valuation: dict, ar_aging: dict,
+                    revenue_trend: list | None = None, currency: str | None = None) -> FT:
     import json
     show_charts = cfg.get("charts", [])
-    if not show_charts:
+
+    # Revenue trend (full-width line chart) — shown whenever there is any invoiced revenue.
+    revenue_trend = revenue_trend or []
+    rev_has_data = any(float(p.get("total", 0) or 0) > 0 for p in revenue_trend)
+    rev_labels = json.dumps([_MONTH_ABBR[int(p["month"][5:7])] for p in revenue_trend]) if rev_has_data else "[]"
+    rev_data = json.dumps([float(p.get("total", 0) or 0) for p in revenue_trend]) if rev_has_data else "[]"
+    cur_sym = _CUR_SYMBOLS.get((currency or "USD").upper(), "")
+
+    if not show_charts and not rev_has_data:
         return ""
 
     buckets = ar_aging.get("buckets", {})
@@ -775,6 +789,12 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict) -> FT:
     cats = valuation.get("category_counts", {})
     cat_labels = json.dumps(list(cats.keys())) if cats else "[]"
     cat_data = json.dumps([int(v) for v in cats.values()]) if cats else "[]"
+
+    revenue_card = Div(
+        H3(t("page.revenue_last_6_months"), cls="chart-title"),
+        Div(Canvas(id="chart-revenue-trend"), cls="chart-line-wrap"),
+        cls="chart-card chart-card--wide",
+    ) if rev_has_data else ""
 
     chart_cards = []
     if "ar_aging" in show_charts:
@@ -794,7 +814,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict) -> FT:
             )
         )
 
-    if not chart_cards:
+    if not chart_cards and not rev_has_data:
         return ""
 
     chart_init = f"""
@@ -811,6 +831,31 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict) -> FT:
       ];
       var textColor = style.getPropertyValue('--c-text').trim() || '#ccc';
       var gridColor = style.getPropertyValue('--c-border').trim() || '#333';
+
+      var revCtx = document.getElementById('chart-revenue-trend');
+      if (revCtx && {rev_data}.length > 0) {{
+        var rg = revCtx.getContext('2d').createLinearGradient(0, 0, 0, 230);
+        rg.addColorStop(0, 'rgba(79,142,247,0.30)');
+        rg.addColorStop(1, 'rgba(79,142,247,0.00)');
+        new Chart(revCtx, {{
+          type: 'line',
+          data: {{ labels: {rev_labels}, datasets: [{{
+            label: 'Revenue', data: {rev_data}, borderColor: colors[0], backgroundColor: rg,
+            fill: true, tension: 0.35, borderWidth: 2.5, pointRadius: 3,
+            pointBackgroundColor: colors[0], pointBorderColor: '#fff', pointBorderWidth: 1.5 }}] }},
+          options: {{
+            responsive: true, maintainAspectRatio: false,
+            plugins: {{
+              legend: {{ display: false }},
+              tooltip: {{ callbacks: {{ label: function(c) {{ return '{cur_sym}' + c.parsed.y.toLocaleString(); }} }} }}
+            }},
+            scales: {{
+              y: {{ beginAtZero: true, ticks: {{ color: textColor, callback: function(v) {{ return '{cur_sym}' + v.toLocaleString(); }} }}, grid: {{ color: gridColor }} }},
+              x: {{ ticks: {{ color: textColor }}, grid: {{ display: false }} }}
+            }}
+          }}
+        }});
+      }}
 
       var arCtx = document.getElementById('chart-ar-aging');
       if (arCtx && {ar_labels}.length > 0) {{
@@ -839,6 +884,7 @@ def _charts_section(cfg: dict, valuation: dict, ar_aging: dict) -> FT:
 
     return Div(
         H2(t("page.charts"), cls="section-title"),
+        revenue_card,
         Div(*chart_cards, cls="charts-grid"),
         Script(src=_CHARTJS_CDN),
         Script(chart_init),

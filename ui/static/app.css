@@ -940,6 +940,8 @@ a:hover { text-decoration: underline; }
 .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 @media (max-width: 768px) { .charts-grid { grid-template-columns: 1fr; } }
 .chart-card { background: var(--c-bg2); border: 1px solid var(--c-border); border-radius: var(--radius); padding: 16px; }
+.chart-card--wide { margin-bottom: 20px; }
+.chart-line-wrap { position: relative; height: 230px; }
 .chart-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; color: var(--c-text); }
 
 /* Global search */
