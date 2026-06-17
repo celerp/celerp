@@ -363,9 +363,6 @@ async def create_for_bill_conversion(
             ))
             if line_total <= 0:
                 continue
-            tax_rate = to_decimal(li.get("tax_rate", 0) or 0)
-            line_tax_d = round_money(to_decimal(line_total) * tax_rate / 100, currency)
-            tax_total_d += line_tax_d
             # receive_as overrides SKU-based account selection for bills.
             receive_as = (li.get("receive_as") or "").strip().lower()
             landed_acct = await landed_account_for_line(session, company_id, li)
@@ -381,6 +378,10 @@ async def create_for_bill_conversion(
             else:
                 account = _INVENTORY_ACCT if li.get("sku") else "6950"
             debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
+        # Input VAT: debit the EFFECTIVE tax that create_doc rolled into `total` (line `taxes[].amount`
+        # + doc_taxes), not a per-line `tax_rate` the structured-tax create path never sets. Using the
+        # wrong source left the bill JE unbalanced (inventory debited net, AP credited gross, no VAT debit).
+        tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
         if tax_total_d > 0:
             debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
 
@@ -490,9 +491,6 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 ))
                 if line_total <= 0:
                     continue
-                tax_rate = to_decimal(li.get("tax_rate", 0) or 0)
-                line_tax_d = round_money(to_decimal(line_total) * tax_rate / 100, currency)
-                tax_total_d += line_tax_d
                 receive_as = (li.get("receive_as") or "").strip().lower()
                 if li.get("account_code"):
                     account = li["account_code"]
@@ -503,6 +501,8 @@ async def create_for_doc_unvoided(session, *, company_id, user_id, doc_id: str, 
                 else:
                     account = _INVENTORY_ACCT if li.get("sku") else "6950"
                 debit_entries.append({"account": account, "debit": _to_base(line_total, rate, base_currency), "credit": 0.0})
+            # Input VAT from the doc's effective tax (see create_for_bill_conversion) — keeps the JE balanced.
+            tax_total_d = round_money(to_decimal(doc.get("tax", 0) or 0), currency)
             if tax_total_d > 0:
                 debit_entries.append({"account": "1150", "debit": _to_base(to_stored_float(tax_total_d), rate, base_currency), "credit": 0.0})
         base_total = _to_base(total, rate, base_currency)

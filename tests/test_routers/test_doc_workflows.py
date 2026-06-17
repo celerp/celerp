@@ -87,6 +87,84 @@ async def test_line_level_tax_splits_revenue_and_output_vat_in_finalize_je(clien
     assert by_acct["2120"]["credit"] == 100.0           # Output VAT liability = the tax
 
 
+# (label, line_items, doc_taxes, subtotal, tax, total) — covers single/multi-rate/compound/doc-level/mixed.
+_INVOICE_TAX_CASES = [
+    ("single_10", [{"name": "A", "quantity": 1, "unit_price": 1000, "taxes": [{"code": "VAT", "name": "VAT", "rate": 10.0}]}],
+     None, 1000.0, 100.0, 1100.0),
+    ("multi_10_and_20", [{"name": "A", "quantity": 1, "unit_price": 1000, "taxes": [{"code": "VAT", "name": "VAT", "rate": 10.0}]},
+                         {"name": "B", "quantity": 1, "unit_price": 500, "taxes": [{"code": "VAT", "name": "VAT", "rate": 20.0}]}],
+     None, 1500.0, 200.0, 1700.0),
+    ("compound_10_then_5", [{"name": "A", "quantity": 1, "unit_price": 1000,
+                             "taxes": [{"code": "VAT", "name": "VAT", "rate": 10.0},
+                                       {"code": "SVC", "name": "Svc", "rate": 5.0, "is_compound": True}]}],
+     None, 1000.0, 155.0, 1155.0),
+    ("doc_level_10", [{"name": "A", "quantity": 1, "unit_price": 1000}],
+     [{"code": "VAT", "name": "VAT", "rate": 10.0}], 1000.0, 100.0, 1100.0),
+    ("mixed_line_and_doc", [{"name": "A", "quantity": 1, "unit_price": 1000, "taxes": [{"code": "VAT", "name": "VAT", "rate": 10.0}]}],
+     [{"code": "GST", "name": "GST", "rate": 5.0}], 1000.0, 150.0, 1150.0),
+]
+
+
+@pytest.mark.parametrize("label,lines,doc_taxes,subtotal,tax,total", _INVOICE_TAX_CASES,
+                         ids=[c[0] for c in _INVOICE_TAX_CASES])
+@pytest.mark.asyncio
+async def test_invoice_tax_matrix_persists_and_splits_revenue_vat(client, session, label, lines, doc_taxes, subtotal, tax, total):
+    """Across tax shapes the doc must persist the effective tax and the finalize JE must credit Revenue
+    net of tax and Output VAT for the tax, and balance."""
+    token = await _register(client)
+    body = {"doc_type": "invoice", "contact_id": "contact:1", "line_items": lines, "currency": "USD"}
+    if doc_taxes:
+        body["doc_taxes"] = doc_taxes
+    did = (await client.post("/docs", headers=_h(token), json=body)).json()["id"]
+    doc = (await client.get(f"/docs/{did}", headers=_h(token))).json()
+    assert (doc["subtotal"], doc["tax"], doc["total"]) == (subtotal, tax, total), f"{label}: {doc['subtotal']}/{doc['tax']}/{doc['total']}"
+
+    assert (await client.post(f"/docs/{did}/finalize", headers=_h(token))).status_code == 200
+    entries = (await _find_je(client, token, "doc.finalized", did))["data"]["entries"]
+    _assert_balanced(entries)
+    by = {e["account"]: e for e in entries}
+    assert by["1120"]["debit"] == total          # AR = gross
+    assert by["4100"]["credit"] == subtotal      # Revenue = net of tax
+    assert by["2120"]["credit"] == tax           # Output VAT = the tax
+
+
+# (label, line_items, doc_taxes, subtotal, tax, total) — bill posts Input VAT (1150), credits AP (2110).
+_BILL_TAX_CASES = [
+    ("bill_line_10", [{"sku": "R", "name": "X", "quantity": 1, "unit_price": 1000, "taxes": [{"code": "VAT", "name": "VAT", "rate": 10.0}]}],
+     None, 1000.0, 100.0, 1100.0),
+    ("bill_doc_10", [{"sku": "R", "name": "X", "quantity": 1, "unit_price": 1000}],
+     [{"code": "VAT", "name": "VAT", "rate": 10.0}], 1000.0, 100.0, 1100.0),
+]
+
+
+@pytest.mark.parametrize("label,lines,doc_taxes,subtotal,tax,total", _BILL_TAX_CASES,
+                         ids=[c[0] for c in _BILL_TAX_CASES])
+@pytest.mark.asyncio
+async def test_bill_tax_posts_input_vat_and_balances(client, session, label, lines, doc_taxes, subtotal, tax, total):
+    """Regression: a vendor bill with tax must debit Inventory net, debit Input VAT (1150) for the tax,
+    and credit AP (2110) for the gross — and BALANCE. Previously the bill JE took tax from a per-line
+    `tax_rate` the structured-tax path never sets, leaving the entry unbalanced by the tax amount."""
+    token = await _register(client)
+    body = {"doc_type": "bill", "contact_id": "contact:1", "line_items": lines, "currency": "USD"}
+    if doc_taxes:
+        body["doc_taxes"] = doc_taxes
+    did = (await client.post("/docs", headers=_h(token), json=body)).json()["id"]
+    doc = (await client.get(f"/docs/{did}", headers=_h(token))).json()
+    assert (doc["subtotal"], doc["tax"], doc["total"]) == (subtotal, tax, total), f"{label}: {doc['subtotal']}/{doc['tax']}/{doc['total']}"
+
+    assert (await client.post(f"/docs/{did}/finalize", headers=_h(token))).status_code == 200
+    rows = (await client.get("/ledger?entity_type=journal_entry", headers=_h(token))).json()["items"]
+    je = next(e for e in rows if did.split(":")[-1] in (e["data"].get("memo") or "") and "bill" in (e["data"].get("memo") or ""))
+    entries = je["data"]["entries"]
+    _assert_balanced(entries)
+    agg: dict[str, float] = {}
+    for e in entries:
+        agg[e["account"]] = agg.get(e["account"], 0.0) + float(e.get("debit", 0) or 0) - float(e.get("credit", 0) or 0)
+    assert round(agg["1130-P"], 2) == subtotal       # inventory at net cost
+    assert round(agg["1150"], 2) == tax              # recoverable input VAT
+    assert round(agg["2110"], 2) == -total           # AP credited the gross
+
+
 @pytest.mark.asyncio
 async def test_invoice_create_send_finalize_and_sequence(client, session):
     token = await _register(client)
