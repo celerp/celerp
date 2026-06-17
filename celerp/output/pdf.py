@@ -100,6 +100,26 @@ def _fmt_money(value: Any, currency: str = "USD") -> str:
         return "-"
 
 
+def _fmt_rate(value: Any, currency: str = "USD") -> str:
+    """Format a unit price (rate) on a printed document: at least currency precision, up to the rate
+    cap, trailing zeros trimmed - so unit_price x quantity visibly reconciles to the line total."""
+    from celerp.services.money import currency_dp as _cdp, rate_dp as _rdp
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    symbol = _CURRENCY_SYMBOLS.get(currency, currency)
+    lo, hi = _cdp(currency or "USD"), _rdp(currency or "USD")
+    s = f"{v:,.{hi}f}"
+    if "." in s:
+        intp, frac = s.split(".")
+        frac = frac.rstrip("0")
+        if len(frac) < lo:
+            frac = frac.ljust(lo, "0")
+        s = f"{intp}.{frac}" if frac else intp
+    return f"{symbol}\u00a0{s}"
+
+
 def _fmt_qty(value: Any) -> str:
     """Format quantity: preserve meaningful decimals (3.52 ct), drop trailing zeros."""
     try:
@@ -327,7 +347,7 @@ def generate_document_pdf(doc: dict[str, Any], company: dict[str, Any] | None = 
             Paragraph(_desc_html, s["td"]),
             Paragraph(str(li.get("sku") or "-"), s["td"]),
             Paragraph(_qty_html, s["td_num"]),
-            Paragraph(_fmt_money(price, currency), s["td_num"]),
+            Paragraph(_fmt_rate(price, currency), s["td_num"]),  # unit price is a rate: show enough precision to reconcile
             *([Paragraph(f"{discount_pct:.1f}%", s["td_num"])] if has_discount else []),
             Paragraph(tax_str, s["td_num"]),
             Paragraph(_fmt_money(line_total, currency), s["td_num"]),

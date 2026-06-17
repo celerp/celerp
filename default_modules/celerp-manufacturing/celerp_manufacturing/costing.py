@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Callable
 
+from celerp.services.money import round_money, round_rate, to_decimal
+
 MAX_RECIPE_DEPTH = 32
 
 ItemLookup = Callable[[str], dict | None]
@@ -41,21 +43,22 @@ def _leaf_unit_cost(item_state: dict) -> float:
     return float(cost_price) if cost_price is not None else 0.0
 
 
-def unit_cost(item_state: dict | None, lookup: ItemLookup, *, _path: frozenset[str] = frozenset(), _depth: int = 0) -> float:
+def unit_cost(item_state: dict | None, lookup: ItemLookup, *, currency: str = "USD", _path: frozenset[str] = frozenset(), _depth: int = 0) -> float:
     """Standard unit cost of an item: its rolled recipe cost if manufacturable, else its leaf cost."""
     state = item_state or {}
     recipe = state.get("recipe")
     if not recipe or not recipe.get("components"):
         return _leaf_unit_cost(state)
-    return roll_up_cost(recipe, lookup, _path=_path, _depth=_depth)["unit_cost"]
+    return roll_up_cost(recipe, lookup, currency=currency, _path=_path, _depth=_depth)["unit_cost"]
 
 
-def roll_up_cost(recipe: dict, lookup: ItemLookup, *, _path: frozenset[str] = frozenset(), _depth: int = 0) -> dict:
+def roll_up_cost(recipe: dict, lookup: ItemLookup, *, currency: str = "USD", _path: frozenset[str] = frozenset(), _depth: int = 0) -> dict:
     """Roll up a recipe into a cost breakdown.
 
-    Returns ``{materials_cost, labor_cost, overhead_cost, unit_cost}`` where unit_cost
-    is the per-output-unit standard cost (total / output_qty). Raises RecipeError on a
-    cycle or on nesting beyond MAX_RECIPE_DEPTH.
+    Returns ``{materials_cost, labor_cost, overhead_cost, unit_cost}``. The *_cost fields are money
+    AMOUNTS (currency precision); unit_cost is a RATE (per-output-unit, carries rate precision so it
+    reconciles when multiplied back by output qty). Internal sums stay unrounded; only outputs round
+    (round-once). Raises RecipeError on a cycle or nesting beyond MAX_RECIPE_DEPTH.
     """
     if _depth > MAX_RECIPE_DEPTH:
         raise RecipeError("recipe nesting exceeds max depth")
@@ -65,12 +68,12 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, _path: frozenset[str] = fr
         cid = comp["item_id"]
         if cid in _path:
             raise RecipeError(f"recipe cycle detected at {cid}")
-        child_cost = unit_cost(lookup(cid), lookup, _path=_path | {cid}, _depth=_depth + 1)
+        child_cost = unit_cost(lookup(cid), lookup, currency=currency, _path=_path | {cid}, _depth=_depth + 1)
         line = float(comp.get("quantity") or 0) * child_cost
-        # Annotate the line in-place so the UI can show each component's catalog unit cost and
-        # extended cost without re-deriving any cost logic (single source of truth = this module).
-        comp["unit_cost"] = round(child_cost, 4)
-        comp["line_cost"] = round(line, 4)
+        # Annotate the line in-place so the UI can show each component's catalog unit cost (a rate)
+        # and extended cost (an amount) without re-deriving any cost logic (single source = this module).
+        comp["unit_cost"] = float(round_rate(child_cost, currency))
+        comp["line_cost"] = float(round_money(line, currency))
         materials += line
 
     labor = sum(_labor_line_cost(l) for l in recipe.get("labor", []))
@@ -78,10 +81,10 @@ def roll_up_cost(recipe: dict, lookup: ItemLookup, *, _path: frozenset[str] = fr
     output_qty = float(recipe.get("output_qty") or 1) or 1
     total = materials + labor + overhead
     return {
-        "materials_cost": round(materials, 4),
-        "labor_cost": round(labor, 4),
-        "overhead_cost": round(overhead, 4),
-        "unit_cost": round(total / output_qty, 4),
+        "materials_cost": float(round_money(materials, currency)),
+        "labor_cost": float(round_money(labor, currency)),
+        "overhead_cost": float(round_money(overhead, currency)),
+        "unit_cost": float(round_rate(to_decimal(total) / to_decimal(output_qty), currency)),
     }
 
 

@@ -8,10 +8,14 @@ import pytest
 from celerp.services.money import (
     CURRENCY_DP,
     DEFAULT_DP,
+    RATE_EXTRA_DP,
     currency_dp,
+    rate_dp,
     round_money,
+    round_rate,
     to_decimal,
     to_stored_float,
+    unit_price_from_total,
 )
 
 
@@ -179,3 +183,67 @@ def test_to_stored_float_preserves_value():
 
 def test_to_stored_float_zero():
     assert to_stored_float(Decimal(0)) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Rates (unit prices): rate_dp / round_rate / unit_price_from_total
+# ---------------------------------------------------------------------------
+
+def test_rate_dp_is_currency_plus_headroom():
+    assert rate_dp("USD") == 2 + RATE_EXTRA_DP        # 6
+    assert rate_dp("JPY") == 0 + RATE_EXTRA_DP        # 4 (0-dp currency)
+    assert rate_dp("KWD") == 3 + RATE_EXTRA_DP        # 7 (3-dp currency)
+
+
+def test_round_rate_ceiling_half_up():
+    assert round_rate("15.2849749", "USD") == Decimal("15.284975")  # 6 dp, HALF_UP
+    assert round_rate("15.28", "USD") == Decimal("15.280000")        # value unchanged, just precision
+
+
+def test_unit_price_from_total_the_reported_bug():
+    # 590 over 38.6 units: 2 dp (15.28) can't reconcile; minimal is 3 dp -> 15.285.
+    up = unit_price_from_total("590.00", "38.6", "USD")
+    assert up == Decimal("15.285")
+    assert round_money(up * to_decimal("38.6"), "USD") == Decimal("590.00")
+
+
+def test_unit_price_from_total_needs_four_dp():
+    # 500 over 38.6 needs 4 dp to reconcile (3 dp gives 499.99).
+    up = unit_price_from_total("500.00", "38.6", "USD")
+    assert round_money(up * to_decimal("38.6"), "USD") == Decimal("500.00")
+    assert up == Decimal("12.9534")
+
+
+def test_unit_price_from_total_clean_price_stays_two_dp():
+    # A total that divides cleanly must NOT gain spurious precision.
+    assert unit_price_from_total("772.00", "38.6", "USD") == Decimal("20.00")
+    assert unit_price_from_total("100.00", "4", "USD") == Decimal("25.00")
+
+
+def test_unit_price_from_total_qty_zero_returns_zero():
+    assert unit_price_from_total("590", "0", "USD") == Decimal(0)
+
+
+def test_unit_price_from_total_beyond_headroom_falls_back_to_cap():
+    # qty above 10**RATE_EXTRA_DP: no precision within the cap reconciles every cent; fall back to
+    # the rate ceiling and accept the nearest representable total (transparent, not silent).
+    up = unit_price_from_total("12345.67", "50000", "USD")
+    assert up == round_rate(up, "USD")  # at the 6-dp ceiling
+    # within a cent of target despite the headroom overflow
+    assert abs(round_money(up * to_decimal("50000"), "USD") - Decimal("12345.67")) <= Decimal("0.50")
+
+
+def test_unit_price_from_total_zero_decimal_currency():
+    # JPY: amounts are whole yen; rate carries up to rate_dp(JPY)=4.
+    up = unit_price_from_total("590", "38.6", "JPY")
+    assert round_money(up * to_decimal("38.6"), "JPY") == Decimal("590")
+
+
+def test_reconciliation_property_random_realistic():
+    # For realistic (total, qty) the derived rate reconciles to the entered total to the cent.
+    import itertools
+    totals = ["0.01", "1.00", "9.99", "100.00", "590.00", "1234.56", "9999.99"]
+    qtys = ["1", "3", "7.5", "38.6", "100", "1500", "9999"]
+    for t, q in itertools.product(totals, qtys):
+        up = unit_price_from_total(t, q, "USD")
+        assert round_money(up * to_decimal(q), "USD") == round_money(t, "USD"), f"{t}/{q} -> {up}"

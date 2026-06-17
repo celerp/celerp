@@ -5573,7 +5573,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(Td(_qty_input, cls="col-qty"))
                 cells.append(Td(_unit_span, cls="col-unit"))
             cells.extend([
-                Td(Input(type="number", value=str(price), step="0.01",
+                Td(Input(type="number", value=str(price), step="any",
                          data_name="unit_price", oninput="celerpFieldEdited(this)",
                          onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-unit-price"),
@@ -5669,7 +5669,7 @@ def _doc_detail(doc: dict, locations: list | None = None, ledger: list | None = 
                 cells.append(Td(_e_qty_input, cls="col-qty"))
                 cells.append(Td(_e_unit_span, cls="col-unit"))
             cells.extend([
-                Td(Input(type="number", value="0", step="0.01", data_name="unit_price",
+                Td(Input(type="number", value="0", step="any", data_name="unit_price",
                          oninput="celerpFieldEdited(this)", onblur="celerpAutoSave()",
                          cls="cell-input cell-input--xs"), cls="col-unit-price"),
                 Td(Input(type="number", value="0", step="0.01", data_name="discount_pct",

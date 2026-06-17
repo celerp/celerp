@@ -67,3 +67,50 @@ def to_stored_float(v: Decimal) -> float:
     The explicit wrapper makes every storage boundary searchable in code.
     """
     return float(v)
+
+
+# ---------------------------------------------------------------------------
+# Rates (unit prices) vs amounts.
+# A unit price is a RATE, not a money amount: it may carry more precision so that
+# rate * quantity reconciles to a currency-rounded total for fractional quantities.
+# Amounts (line totals, tax, valuation, JE postings) ALWAYS use round_money.
+# ---------------------------------------------------------------------------
+RATE_EXTRA_DP: int = 4
+
+
+def rate_dp(currency: str) -> int:
+    """Decimal-place ceiling for a unit price/rate: currency precision + RATE_EXTRA_DP of headroom.
+
+    A rate needs ``2 + log10(qty)`` decimals for ``round(rate*qty)`` to hit any cent; +4 covers
+    quantities up to 10**RATE_EXTRA_DP (USD -> 6 dp covers qty <= 10,000, incl. weight/volume goods).
+    """
+    return currency_dp(currency) + RATE_EXTRA_DP
+
+
+def round_rate(v: _MoneyInput, currency: str) -> Decimal:
+    """Round a unit price/rate to the rate ceiling. Use for storing any directly entered or derived
+    unit price. Amounts (totals, tax) must use round_money instead."""
+    quant = Decimal(10) ** -rate_dp(currency)
+    return to_decimal(v).quantize(quant, rounding=ROUND_HALF_UP)
+
+
+def unit_price_from_total(total: _MoneyInput, qty: _MoneyInput, currency: str) -> Decimal:
+    """Derive the unit price from a target line/lot total at the FEWEST decimals (currency_dp..rate_dp)
+    such that ``round_money(unit * qty) == round_money(total)``.
+
+    This lets a typed total be honoured exactly while keeping the stored rate as clean as possible
+    (e.g. 590 / 38.6 -> 15.285, not 15.284974). Falls back to the rate ceiling when qty exceeds the
+    headroom (then round_money(unit*qty) is the nearest representable total). Returns 0 for qty == 0;
+    the caller must guard that case (a rate cannot be derived from a total at zero quantity).
+    """
+    q = to_decimal(qty)
+    if q == 0:
+        return Decimal(0)
+    target = round_money(total, currency)
+    exact = to_decimal(total) / q
+    lo, hi = currency_dp(currency), rate_dp(currency)
+    for d in range(lo, hi + 1):
+        cand = exact.quantize(Decimal(10) ** -d, rounding=ROUND_HALF_UP)
+        if round_money(cand * q, currency) == target:
+            return cand
+    return exact.quantize(Decimal(10) ** -hi, rounding=ROUND_HALF_UP)

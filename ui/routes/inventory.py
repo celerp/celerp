@@ -985,6 +985,13 @@ def setup_routes(app):
 
         location_map: dict[str, str] = {l["name"]: l["id"] for l in existing_locs}
 
+        # Company currency for unit-price (rate) derivation; fetched once for the whole import.
+        try:
+            _imp_co = await api.get_company(token)
+            _imp_currency = (_imp_co.get("currency") or "").strip() or "USD"
+        except Exception:
+            _imp_currency = "USD"
+
         # Determine default location (used when location_name is blank/absent)
         default_location_id: str | None = None
         if len(existing_locs) == 1:
@@ -1143,8 +1150,11 @@ def setup_routes(app):
                         # cost_total is the primitive; store directly (no back-calculation)
                         data["cost_total"] = total_val
                         continue
-                    # qty=0 or missing: treat as 1 (total = unit price for a single item)
-                    data[unit_key] = round(total_val / (qty or 1), 10)
+                    # Derive the unit price (a rate) at the fewest decimals that reconcile the entered
+                    # total to the cent - same helper as the interactive "set from total" edit (DRY).
+                    # qty=0 or missing: treat as 1 (total = unit price for a single item).
+                    from celerp.services.money import unit_price_from_total, to_stored_float
+                    data[unit_key] = to_stored_float(unit_price_from_total(total_val, qty or 1, _imp_currency))
                 elif col_key.endswith("_price") and _flt(col_key) is not None:
                     data[col_key] = _flt(col_key)
             if _price_errors:
@@ -2001,7 +2011,16 @@ function celerpPrintLabel(entityId, templateId) {
                     qty = float(old_item.get("quantity") or 0)
                     if qty == 0:
                         return P(t("error.cannot_divide_by_zero_qty", "Cannot compute unit price: quantity is zero"), cls="cell-error")
-                    unit_price = float(value) / qty
+                    # Derive the unit price (a rate) at the fewest decimals that make rate*qty
+                    # reconcile to the entered total - so the typed total is honoured exactly and the
+                    # stored rate stays clean. Same helper as CSV import (DRY) -> both pages agree.
+                    try:
+                        _co = await api.get_company(token)
+                        _cur = (_co.get("currency") or "").strip() or "USD"
+                    except Exception:
+                        _cur = "USD"
+                    from celerp.services.money import unit_price_from_total, to_stored_float
+                    unit_price = to_stored_float(unit_price_from_total(value, qty, _cur))
                     old_unit_price = old_item.get(unit_price_field)
                     await api.patch_item(token, entity_id, {unit_price_field: {"old": old_unit_price, "new": unit_price}})
                 safe_id = entity_id.replace(":", "-")

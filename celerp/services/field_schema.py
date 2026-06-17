@@ -70,7 +70,7 @@ def _inject_price_columns(base: list[dict], price_lists: list[dict]) -> list[dic
         price_cols.append({
             "key": key,
             "label": name,
-            "type": "money",
+            "type": "rate",  # a unit price is a rate (may carry > currency precision); total stays money
             "editable": True,
             "required": False,
             "options": [],

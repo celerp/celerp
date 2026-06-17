@@ -47,6 +47,8 @@ def format_value(v, fmt: str = "text", currency: str | None = None) -> str | FT:
             return fmt_money(float(v), currency)
         except (ValueError, TypeError):
             return EMPTY
+    if fmt == "rate":
+        return fmt_rate(v, currency)
     if fmt == "badge":
         raw = str(v)
         key = raw.lower().replace(" ", "-").replace("_", "-")
@@ -94,12 +96,32 @@ def currency_symbol(currency: str | None) -> str:
 
 
 def fmt_money(value: str | float, currency: str | None = None) -> str:
-    """Format a numeric value as a currency string."""
+    """Format a money AMOUNT (total, tax, etc.) at currency precision."""
     sym = currency_symbol(currency)
     try:
         return f"{sym}{float(value):,.2f}"
     except (ValueError, TypeError):
         return EMPTY
+
+
+def fmt_rate(value: str | float, currency: str | None = None) -> str:
+    """Format a unit price (a RATE): currency symbol + at least currency_dp decimals, up to rate_dp,
+    with trailing zeros beyond currency precision trimmed (15.28, 15.285, 15.30 - never 15.2850)."""
+    from celerp.services.money import currency_dp as _cdp, rate_dp as _rdp
+    sym = currency_symbol(currency)
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        return EMPTY
+    lo, hi = _cdp(currency or "USD"), _rdp(currency or "USD")
+    s = f"{v:,.{hi}f}"
+    if "." in s:
+        intp, frac = s.split(".")
+        frac = frac.rstrip("0")
+        if len(frac) < lo:
+            frac = frac.ljust(lo, "0")
+        s = f"{intp}.{frac}" if frac else intp
+    return f"{sym}{s}"
 
 
 def status_cards(cards: list[dict], base_url: str, active_status: str | None = None, total_override: int | None = None, currency: str | None = None, show_all_card: bool = True, all_label: str = "All") -> FT:
@@ -788,8 +810,10 @@ def editable_cell(
                 onkeydown=escape_js,
                 onblur=blur_restore_js,
             )
-    elif cell_type in ("money", "weight"):
-        step = "0.01" if cell_type == "money" else "0.001"
+    elif cell_type in ("money", "weight", "rate"):
+        # A rate (unit price) may carry more precision than a money amount, so don't constrain the
+        # input step to whole cents - accept any precision and normalise on the server (GDR 2e).
+        step = {"money": "0.01", "weight": "0.001"}.get(cell_type, "any")
         input_el = Input(
             type="number", name="value", value=display_val, step=step,
             **swap,
@@ -861,6 +885,8 @@ def _display_val(value, cell_type: str, currency: str | None = None) -> FT:
             return Span(fmt_money(s, currency), cls="cell-money") if s else Span(EMPTY)
         except ValueError:
             return Span(EMPTY)
+    if cell_type == "rate":
+        return Span(fmt_rate(s, currency), cls="cell-money") if s else Span(EMPTY)
     if cell_type == "number":
         if not s:
             return Span(EMPTY)
