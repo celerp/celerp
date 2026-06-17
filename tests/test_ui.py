@@ -2272,22 +2272,11 @@ class TestSettingsPolish:
                 r = await ui_client.get(url, cookies=_authed())
                 assert b"cell--clickable" in r.content, f"No clickable cells on tab={tab} (url={url})"
 
-    @pytest.mark.asyncio
-    async def test_settings_cells_have_title_attribute(self, ui_client):
-        """cell--clickable cells must have title='Click to edit' for tooltip."""
-        with (
-            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
-            patch("ui.api_client.get_taxes", new=AsyncMock(return_value=_TAXES)),
-            patch("ui.api_client.get_payment_terms", new=AsyncMock(return_value=_TERMS)),
-            patch("ui.api_client.get_users", new=AsyncMock(return_value={"items": _USERS, "total": len(_USERS)})),
-            patch("ui.api_client.get_item_schema", new=AsyncMock(return_value=_SCHEMA)),
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [], "total": 0})),
-            patch("ui.api_client.list_import_batches", new=AsyncMock(return_value={"batches": []})),
-            patch("ui.api_client.get_units", new=AsyncMock(return_value=[])),
-            patch("ui.api_client.get_price_lists", new=AsyncMock(return_value=[])),
-        ):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert b"Click to edit" in r.content
+    def test_settings_cells_have_title_attribute(self):
+        """The editable company cells must carry title='Click to edit' (now on the company-details form)."""
+        from ui.routes.settings import _company_details_form
+        from fasthtml.common import to_xml
+        assert "Click to edit" in to_xml(_company_details_form({"name": "Co", "settings": {}}))
 
 
 class TestColumnManager:
@@ -6919,12 +6908,12 @@ class TestNikolaiFixedBugs:
     # ── Currency display ──────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_company_tab_shows_currency_code(self, ui_client):
-        """Currency column must show the currency code (e.g. THB) on the settings page."""
-        with self._stack({"currency": "THB"}):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert r.status_code == 200
-        assert b"THB" in r.content
+    def test_company_tab_shows_currency_code(self):
+        """Currency must show the currency code (e.g. THB) on the company-details form."""
+        from ui.routes.settings import _company_details_form
+        from fasthtml.common import to_xml
+        html = to_xml(_company_details_form({"settings": {"currency": "THB"}}))
+        assert "THB" in html
 
     @pytest.mark.asyncio
     async def test_company_tab_currency_edit_shows_select(self, ui_client):
@@ -6954,13 +6943,12 @@ class TestNikolaiFixedBugs:
     # ── Fiscal year display ───────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_company_tab_shows_fiscal_year_human_label(self, ui_client):
-        """fiscal_year_start must render as human month name, not raw code."""
-        with self._stack({"fiscal_year_start": "01-01"}):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert r.status_code == 200
-        # Raw "01-01" alone is meaningless — should show a month name
-        assert b"January" in r.content
+    def test_company_tab_shows_fiscal_year_human_label(self):
+        """fiscal_year_start must render as a human month name on the company-details form."""
+        from ui.routes.settings import _company_details_form
+        from fasthtml.common import to_xml
+        html = to_xml(_company_details_form({"settings": {"fiscal_year_start": "01-01"}}))
+        assert "January" in html
 
     @pytest.mark.asyncio
     async def test_company_tab_fiscal_year_edit_shows_select(self, ui_client):
@@ -6989,12 +6977,12 @@ class TestNikolaiFixedBugs:
     # ── Timezone display ──────────────────────────────────────────────────────
 
     @pytest.mark.asyncio
-    async def test_company_tab_shows_timezone(self, ui_client):
-        """Timezone must be rendered on company settings tab (not blank)."""
-        with self._stack({"timezone": "Asia/Bangkok"}):
-            r = await ui_client.get("/settings/general?tab=company", cookies=_authed())
-        assert r.status_code == 200
-        assert b"Asia/Bangkok" in r.content
+    def test_company_tab_shows_timezone(self):
+        """Timezone must render on the company-details form (not blank)."""
+        from ui.routes.settings import _company_details_form
+        from fasthtml.common import to_xml
+        html = to_xml(_company_details_form({"settings": {"timezone": "Asia/Bangkok"}}))
+        assert "Asia/Bangkok" in html
 
     @pytest.mark.asyncio
     async def test_company_tab_timezone_edit_shows_combobox(self, ui_client):
@@ -8226,39 +8214,35 @@ class TestAuditColumnAlignment:
 
 
 class TestCompanyDetailsPage:
-    """The Finance > Company Details page reuses the contact-detail layout for the self-contact, minus
-    the four financial cards, and is gated to admin and above."""
+    """The Finance > Company Details page shows the company-details form (moved from settings) plus the
+    self-contact's billing/shipping address book, with no contact cards / tags / files. Admin+ only."""
 
     _COMPANY = {"settings": {"self_contact_id": "contact:self"}, "fiscal_year_start": "01-01", "name": "My Co"}
     _SELF = {"id": "contact:self", "entity_id": "contact:self", "name": "My Co",
-             "contact_type": "both", "is_self": True, "email": "me@myco.test"}
+             "contact_type": "both", "is_self": True, "email": "me@myco.test",
+             "addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]}
 
     def _patches(self):
         from contextlib import ExitStack
         stack = ExitStack()
         for name, val in (
             ("get_company", self._COMPANY), ("get_contact", self._SELF),
-            ("list_contact_docs", {"items": []}), ("get_contact_tags_vocabulary", []),
             ("list_contacts", {"items": [self._SELF]}),
-            ("get_locations", {"items": [{"id": "loc:1", "name": "Head Office", "address": "1 Main St"}]}),
         ):
             stack.enter_context(patch(f"ui.api_client.{name}", new=AsyncMock(return_value=val)))
         return stack
 
     @pytest.mark.asyncio
-    async def test_renders_without_financial_cards(self, ui_client):
+    async def test_renders_form_and_addresses_no_cards(self, ui_client):
         with self._patches():
             r = await ui_client.get("/finance/company-details", cookies=_authed(role="admin"))
         assert r.status_code == 200, r.text
-        # The four financial-summary cards must be absent...
+        # No financial cards, no contact-detail clutter.
         assert "Total Invoiced" not in r.text
-        assert "Avg Days to Pay" not in r.text
-        assert "Outstanding" not in r.text
-        # ...but the page identity + the contact-info card are present.
+        # The company-details form (its inline-edit cells) + the billing/shipping address book are here.
         assert "Company Details" in r.text
-        assert "My Co" in r.text
-        # The single (Locations) address book renders on the page.
-        assert "company-addresses-section" in r.text
+        assert "/settings/company/name/edit" in r.text          # company-details form
+        assert "Billing" in r.text and "Shipping" in r.text     # two-column address book
 
     @pytest.mark.asyncio
     async def test_admin_allowed_below_admin_redirected(self, ui_client):
@@ -8321,49 +8305,48 @@ class TestCompanyAllFilesView:
 
 
 class TestCompanyLetterhead:
-    """Document letterhead identity is canonical on the self-contact (edited at Company Details), so
-    name/phone/tax_id/email come from there and the address from the default Location."""
+    """Document letterhead reads the scalar identity (name/phone/tax_id/email) from company settings -
+    the company-details form is the edit point - and the address from the self-contact's billing book."""
 
     @pytest.mark.asyncio
-    async def test_reads_identity_from_self_contact(self):
+    async def test_scalars_from_settings_address_from_self_contact(self):
         from ui.routes.documents import _company_letterhead
         with (
-            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "WorkspaceName", "settings": {"self_contact_id": "contact:self"}})),
-            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test"})),
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": [{"address": "1 Main St", "is_default": True}]})),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Real Co Ltd", "phone": "555", "tax_id": "TAX9", "email": "x@co.test", "settings": {"self_contact_id": "contact:self"}})),
+            patch("ui.api_client.get_contact", new=AsyncMock(return_value={"addresses": [{"address_type": "billing", "line1": "1 Main St", "city": "Town"}]})),
         ):
             lh = await _company_letterhead("tok")
-        assert lh["company_name"] == "Real Co Ltd"   # self-contact, not the workspace name
-        assert lh["company_address"] == "1 Main St"  # default location
+        assert lh["company_name"] == "Real Co Ltd"          # from company settings (the form)
+        assert lh["company_address"] == "1 Main St, Town"   # composed from the self-contact billing addr
         assert lh["company_tax_id"] == "TAX9"
         assert lh["company_phone"] == "555"
         assert lh["company_email"] == "x@co.test"
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_company_settings_when_no_self_contact(self):
+    async def test_falls_back_to_settings_address_when_no_contact_addr(self):
         from ui.routes.documents import _company_letterhead
         with (
             patch("ui.api_client.get_company", new=AsyncMock(return_value={"name": "Legacy Co", "address": "Old Addr", "settings": {}})),
             patch("ui.api_client.list_contacts", new=AsyncMock(return_value={"items": []})),
-            patch("ui.api_client.get_locations", new=AsyncMock(return_value={"items": []})),
         ):
             lh = await _company_letterhead("tok")
         assert lh["company_name"] == "Legacy Co"
         assert lh["company_address"] == "Old Addr"
 
 
-class TestCompanySettingsTabSlimmed:
-    """The settings company tab no longer edits identity fields (now on the self-contact); only the
-    workspace name + operational regional settings remain."""
+class TestCompanyDetailsFormMoved:
+    """The company-details form moved out of the settings General tab onto Finance > Company Details:
+    the settings tab no longer renders its edit cells, the form component does."""
 
-    def test_identity_fields_removed_regional_kept(self):
-        from ui.routes.settings import _company_tab
+    def test_form_fields_gone_from_settings_present_in_form(self):
+        from ui.routes.settings import _company_tab, _company_details_form
         from fasthtml.common import to_xml as _to_xml
-        html = _to_xml(_company_tab({"name": "Co", "settings": {}}))
-        for gone in ("tax_id", "phone", "email", "address"):
-            assert f"/settings/company/{gone}/edit" not in html, f"{gone} should no longer be editable here"
-        for kept in ("name", "currency", "timezone", "fiscal_year_start"):
-            assert f"/settings/company/{kept}/edit" in html
+        company = {"name": "Co", "settings": {}}
+        settings_html = _to_xml(_company_tab(company))
+        form_html = _to_xml(_company_details_form(company))
+        for key in ("name", "tax_id", "phone", "email", "currency", "timezone", "fiscal_year_start"):
+            assert f"/settings/company/{key}/edit" not in settings_html, f"{key} should not be in the settings tab"
+            assert f"/settings/company/{key}/edit" in form_html, f"{key} should be in the company-details form"
 
 
 class TestCalculateDueDate:

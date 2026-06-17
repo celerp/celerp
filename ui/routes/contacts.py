@@ -1162,37 +1162,22 @@ def setup_routes(app):
         except Exception:
             contact = {}
         try:
-            docs_resp = await api.list_contact_docs(token, sid, {"limit": 999})
-            docs = docs_resp.get("items", []) if isinstance(docs_resp, dict) else docs_resp
-        except Exception:
-            docs = []
-        try:
-            vocab = await api.get_contact_tags_vocabulary(token)
-        except Exception:
-            vocab = []
-        try:
             company = await api.get_company(token)
         except Exception:
             company = {}
-        # One unified address book for the company entity: the Locations book (documents already draw
-        # company addresses from Locations). The self-contact's own billing/shipping addresses are NOT
-        # shown - there is a single book, not two (owner decision Q4).
-        from ui.routes.settings import _company_addresses_section
-        try:
-            loc_resp = await api.get_locations(token)
-            company_locations = loc_resp.get("items") or loc_resp.get("locations") or (loc_resp if isinstance(loc_resp, list) else [])
-        except Exception:
-            company_locations = []
-        return build_contact_detail(
-            contact, docs, vocab, company, request, contact_id=sid,
-            show_financials=False, show_delete=False, show_contact_addresses=False,
-            extra_sections=[
-                _company_addresses_section(company_locations),
-                Div(A("View all company files →", href="/finance/company-files",
-                      cls="btn btn--secondary btn--sm"),
-                    cls="section-card", style="margin-top:12px;"),
-            ],
-            back=("Finance", "/accounting"), nav_active="company-details", title="Company Details",
+        # The page is the company's identity: the company-details form (moved here from settings) plus
+        # the self-contact's billing/shipping address book (same two-column layout as customers/vendors).
+        # No contact-info card, settings card, tags or files section - those live elsewhere (files have
+        # their own Company Files page).
+        from ui.routes.settings import _company_details_form
+        from ui.i18n import get_lang
+        return base_shell(
+            breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", None)]),
+            page_header("Company Details"),
+            _company_details_form(company, get_lang(request)),
+            _addresses_section(contact),
+            title="Company Details - Celerp", nav_active="company-details",
+            extra_head=_phone_head_items(), request=request,
         )
 
     async def _company_files_section(token: str, **section_kwargs) -> FT:
@@ -1214,10 +1199,13 @@ def setup_routes(app):
         except Exception:
             docs = []
         files = _collect_company_files(self_contact, items, docs)
+        # can_upload=True: the dropzone POSTs to base_url (/finance/company-files), which routes the file
+        # onto the self-contact so it shows here AND in the company's customer/vendor entries. Item and
+        # doc rows stay read-only via their per-row _no_delete override.
         return _shared_files_section(
             "company", "all", files, can_tag=False, can_describe=False, can_set_hero=False,
-            can_upload=False, show_linked=True, base_url="/finance/company-files",
-            title="All company files", **section_kwargs,
+            can_upload=True, show_linked=True, base_url="/finance/company-files",
+            title="Company files", **section_kwargs,
         )
 
     @app.get("/finance/company-files")
@@ -1232,10 +1220,36 @@ def setup_routes(app):
             breadcrumbs([("Dashboard", "/dashboard"), ("Company Details", "/finance/company-details"), ("All files", None)]),
             page_header("All Files"),
             P("Every file across the company - documents, product images and attachments - in one place. "
-              "Product images are hidden by default; use the Tag funnel to show them.", cls="hint"),
+              "Drop files here to add company documents; product images are hidden by default (use the "
+              "Tag funnel to show them).", cls="hint"),
             await _company_files_section(token),
-            title="All Files - Celerp", nav_active="company-details", request=request,
+            title="Company Files - Celerp", nav_active="company-files", request=request,
         )
+
+    @app.post("/finance/company-files")
+    async def company_files_upload(request: Request):
+        """Dropzone upload from the Company Files page: store the file on the self-contact so it appears
+        both here and in the company's customer/vendor entries. Returns the refreshed aggregated section."""
+        from ui.routes.settings import _check_role
+        token = _token(request)
+        if not token:
+            return P(t("error.unauthorized"), cls="cell-error")
+        if (r := _check_role(request, "admin")):
+            return r
+        sid = await _resolve_self_contact_id(token)
+        form = await request.form()
+        file = form.get("file")
+        if file is not None and hasattr(file, "read") and sid:
+            content = await file.read()
+            filename = getattr(file, "filename", "upload")
+            content_type = getattr(file, "content_type", "application/octet-stream") or "application/octet-stream"
+            try:
+                await api.upload_contact_file(token, sid, content, filename, content_type,
+                                              str(form.get("description", "")).strip(),
+                                              str(form.get("document_tag", "")).strip())
+            except APIError as e:
+                return P(str(e.detail), cls="cell-error")
+        return await _company_files_section(token)
 
     @app.get("/finance/company-files/_section")
     async def company_files_section(request: Request, page: int = 1, sort_dir: str = "desc",

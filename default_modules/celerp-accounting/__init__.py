@@ -15,7 +15,6 @@ PLUGIN_MANIFEST = {
         "nav": [
             {"group": "Finance", "key": "accounting", "href": "/accounting", "label": "Accounting", "label_key": "nav.accounting", "order": 50, "settings_href": "/settings/accounting", "min_role": "manager"},
             {"group": "Finance", "key": "reconcile", "href": "/accounting/reconcile/start", "label": "Reconcile", "label_key": "nav.reconcile", "order": 52, "min_role": "manager"},
-            {"group": "Finance", "key": "company-details", "href": "/finance/company-details", "label": "Company Details", "label_key": "nav.company_details", "order": 48, "min_role": "admin"},
         ],
         "on_company_created": {"handler": "celerp_accounting.routes:seed_chart_of_accounts_hook"},
         "on_modules_ready": {"handler": "celerp_accounting.routes:backfill_chart_of_accounts_hook"},

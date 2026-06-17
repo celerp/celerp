@@ -21,13 +21,20 @@ from ui.components.notes import notes_tab as _shared_notes_tab, note_edit_form a
 from ui.components.files import _files_section as _shared_doc_files_section
 
 
+def _compose_company_address(a: dict) -> str:
+    """One-line address from a contact address dict (for the letterhead)."""
+    parts = [a.get("line1", ""), a.get("line2", ""), a.get("city", ""), a.get("state", ""),
+             a.get("postal_code", ""), a.get("country", "")]
+    return ", ".join(p for p in parts if p)
+
+
 async def _company_letterhead(token: str) -> dict:
     """The company's letterhead identity (name/address/phone/tax_id/email) for documents.
 
-    The company's identity is canonical on its self-contact (the company's own customer+vendor record,
-    edited on Finance > Company Details), so name/phone/tax_id/email are read from there - falling back
-    to company settings for legacy/unmigrated data. The address comes from the company's default
-    Location (the single address book), else the legacy settings address."""
+    The company-details form (Finance > Company Details) is the edit point and writes company settings,
+    so name/phone/tax_id/email are read from there (with the self-contact as a fallback). The address
+    comes from the company's own (self-)contact billing address - the same address book shown on that
+    page - falling back to the legacy settings address."""
     company = await api.get_company(token)
     self_id = (company.get("settings") or {}).get("self_contact_id")
     contact: dict = {}
@@ -44,20 +51,15 @@ async def _company_letterhead(token: str) -> dict:
                     break
         except Exception:
             pass
-    address = ""
-    try:
-        locs = (await api.get_locations(token)).get("items") or []
-        primary = next((l for l in locs if l.get("is_default")), None) or (locs[0] if locs else None)
-        if primary:
-            address = primary.get("address") or ""
-    except Exception:
-        pass
+    addrs = contact.get("addresses") or []
+    primary = next((a for a in addrs if a.get("address_type") == "billing"), None) or (addrs[0] if addrs else None)
+    address = (_compose_company_address(primary) if primary else "") or company.get("address") or ""
     return {
-        "company_name": contact.get("name") or company.get("name") or "",
-        "company_address": address or company.get("address") or "",
-        "company_phone": contact.get("phone") or company.get("phone") or "",
-        "company_tax_id": contact.get("tax_id") or company.get("tax_id") or "",
-        "company_email": contact.get("email") or company.get("email") or "",
+        "company_name": company.get("name") or contact.get("name") or "",
+        "company_address": address,
+        "company_phone": company.get("phone") or contact.get("phone") or "",
+        "company_tax_id": company.get("tax_id") or contact.get("tax_id") or "",
+        "company_email": company.get("email") or contact.get("email") or "",
     }
 
 

@@ -3067,19 +3067,20 @@ def _password_form(error: str = "", success: str = "", lang: str = "en") -> FT:
     )
 
 
-def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
-    # Identity fields (tax_id / phone / email / address) live on the self-contact now and are edited at
-    # Finance > Company Details (the document letterhead reads them from there). Only the workspace name
-    # and the operational regional settings remain here.
+def _company_details_form(company: dict, lang: str = "en") -> FT:
+    """The company identity form (name + currency/timezone/fiscal + language), edited inline via the
+    existing /settings/company/{field} routes. Rendered on Finance > Company Details (moved out of the
+    settings General tab so company info is managed in one place)."""
+    # Name + contact identity (tax_id/phone/email used on document letterhead) + regional settings. The
+    # address itself is managed in the address book below this form (self-contact billing/shipping).
     fields = [
         ("name", t("label.company_name", lang)),
+        ("tax_id", t("label.tax_id", lang)),
+        ("phone", t("label.phone", lang)),
+        ("email", t("label.email", lang)),
         ("currency", t("label.currency", lang)),
         ("timezone", t("label.timezone", lang)),
         ("fiscal_year_start", t("label.fiscal_year_start", lang)),
-    ]
-    prefs = [
-        ("docs_default_preset", t("label.docs_default_preset", lang)),
-        ("default_per_page", t("label.default_per_page", lang)),
     ]
     from pathlib import Path as _Path2
     _LANGUAGES = sorted(
@@ -3087,12 +3088,11 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
          for p in (_Path2(__file__).parent.parent / "locales").glob("*.json")],
         key=lambda x: x[1],
     )
-    current_lang = lang
     lang_row = Tr(
         Td(t("settings.language_label", lang), cls="detail-label"),
         Td(
             Select(
-                *[Option(label, value=code, selected=(code == current_lang)) for code, label in _LANGUAGES],
+                *[Option(label, value=code, selected=(code == lang)) for code, label in _LANGUAGES],
                 name="language",
                 hx_post="/settings/company/language",
                 hx_target="this",
@@ -3102,6 +3102,24 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
             ),
         ),
     )
+    flat = {**company, **(company.get("settings") or {})}
+    return Div(
+        H3(t("settings.company_details", lang), cls="section-title"),
+        Table(
+            *[Tr(Td(label, cls="detail-label"), _company_display_cell(key, flat.get(key)))
+              for key, label in fields],
+            lang_row,
+            cls="detail-table",
+        ),
+        cls="section-card",
+    )
+
+
+def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
+    prefs = [
+        ("docs_default_preset", t("label.docs_default_preset", lang)),
+        ("default_per_page", t("label.default_per_page", lang)),
+    ]
     # Merge top-level company keys with settings dict; settings keys take precedence
     flat = {**company, **(company.get("settings") or {})}
     return Div(
@@ -3118,21 +3136,7 @@ def _company_tab(company: dict, lang: str = "en", is_owner: bool = False) -> FT:
             cls="btn btn--xs btn--secondary",
             style="margin-top:8px;display:inline-block;",
         ),
-        Div(
-            H3(t("settings.company_details", lang), cls="settings-section-title", style="margin:0;"),
-            cls="addr-col-header",
-            style="margin-top:24px;",
-        ),
-        Table(
-            *[Tr(
-                Td(label, cls="detail-label"),
-                _company_display_cell(key, flat.get(key)),
-            ) for key, label in fields],
-            lang_row,
-            cls="detail-table",
-        ),
-        # Company addresses live on the Company Details page (Finance > Company Details) now - one book,
-        # not duplicated here. The /settings/company/addresses CRUD routes are unchanged and serve it there.
+        # Company details (name + regional settings) + addresses live on Finance > Company Details now.
         H3(t("settings.preferences", lang), cls="settings-section-title"),
         P(t("msg.preferences_hint", lang), cls="settings-hint"),
         Table(
