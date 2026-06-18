@@ -330,16 +330,11 @@ async def bulk_attach_files(
                     idempotency_key=str(uuid.uuid4()),
                     metadata_={},
                 )
-                # Keep in-memory projection current for subsequent files on same SKU
-                from celerp_inventory.projections import apply_item_event as _apply
-                row.state = _apply(dict(row.state), "item.file.attached", {
-                    "entity_id": row.entity_id, "entity_type": "item",
-                    "file_id": meta["id"], "filename": meta["filename"],
-                    "mime": meta["mime"], "size": meta["size"],
-                    "url": meta.get("url", ""), "document_tag": tag,
-                    "description": label, "uploaded_at": datetime.now(timezone.utc).isoformat(),
-                    "is_hero": is_hero,
-                })
+                # NOTE: do NOT re-apply the event here. emit_event() ->
+                # ProjectionEngine.apply_event already appended the file to this
+                # same projection row (session identity map), so row.state is
+                # current for the next file on this SKU. Re-applying double-counts
+                # the file (two entries with the same file_id) — see F1.
 
                 matched += 1
                 report.append({"sku": sku_part, "file": name, "status": "ok",

@@ -1689,6 +1689,36 @@ async def test_bulk_attach_bare_image_is_hero(client):
 
 
 @pytest.mark.asyncio
+async def test_bulk_attach_does_not_duplicate_files(client):
+    """F1: bulk attach must add each file exactly ONCE.
+
+    Regression for the double-applied `item.file.attached` event (emit_event
+    already updates the projection, and the handler re-applied it manually), which
+    left each bulk-attached file twice in state.files with the same file_id.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "BULK-DUP-001", "name": "Dup", "quantity": 1, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+
+    fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
+    zdata = _make_zip({
+        "BULK-DUP-001.jpg": fake_jpg,
+        "BULK-DUP-001-cert-grs.pdf": b"%PDF-1.4",
+    })
+    result = await client.post("/items/files/bulk", files={"file": ("dup.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200, result.text
+    assert result.json()["matched"] == 2
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    files = item.get("files") or (item.get("attributes") or {}).get("files") or []
+    ids = [f.get("id") for f in files]
+    assert len(ids) == len(set(ids)), f"duplicate file_ids after bulk attach: {ids}"
+    assert len(files) == 2, f"expected 2 distinct files, got {len(files)}: {ids}"
+
+
+@pytest.mark.asyncio
 async def test_bulk_attach_multi_image_only_first_hero(client):
     """First alphabetical bare image gets hero; second does not."""
     token = await _token(client)
