@@ -1719,6 +1719,30 @@ async def test_bulk_attach_does_not_duplicate_files(client):
 
 
 @pytest.mark.asyncio
+async def test_bulk_attach_skips_nested_dotfiles(client):
+    """F5: a nested dotfile (sub/.DS_Store) must be skipped, not processed as
+    unmatched. It slips the skip because its full ZIP path doesn't start with
+    '.'/'__' — the skip must look at the basename.
+    """
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    await client.post("/items", json={"sku": "F5-ITEM-001", "name": "F5", "quantity": 1, "sell_by": "piece"}, headers=h)
+
+    fake_jpg = b"\xff\xd8\xff" + b"\x00" * 10
+    zdata = _make_zip({
+        "F5-ITEM-001.jpg": fake_jpg,   # valid → should match
+        "sub/.DS_Store": b"x",         # nested junk → must be skipped
+    })
+    result = await client.post("/items/files/bulk", files={"file": ("attach.zip", zdata, "application/zip")}, headers=h)
+    assert result.status_code == 200, result.text
+    data = result.json()
+    assert data["matched"] == 1, data
+    assert data["unmatched"] == 0, f"nested dotfile should be skipped, not unmatched: {data}"
+    reported = " ".join(r.get("file", "") for r in data["report"])
+    assert ".DS_Store" not in reported, reported
+
+
+@pytest.mark.asyncio
 async def test_bulk_attach_multi_image_only_first_hero(client):
     """First alphabetical bare image gets hero; second does not."""
     token = await _token(client)

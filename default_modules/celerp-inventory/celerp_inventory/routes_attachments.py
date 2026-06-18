@@ -256,7 +256,10 @@ async def bulk_attach_files(
 
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
         for name in sorted(zf.namelist()):  # sorted for deterministic hero selection
-            if name.endswith("/") or name.startswith("__") or name.startswith("."):
+            # Check the BASENAME, not the full ZIP path, so nested junk like
+            # sub/.DS_Store is skipped too (the full name doesn't start with '.') — F5.
+            base = _Path(name).name
+            if name.endswith("/") or base.startswith("__") or base.startswith("."):
                 continue
 
             stem = _Path(name).stem
