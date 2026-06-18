@@ -3894,7 +3894,13 @@ function celerpPrintLabel(entityId, templateId) {
             item = await api.get_item(token, entity_id)
         except APIError as e:
             return P(str(e.detail), cls="cell-error")
-        return _item_files_section(entity_id, item, show_preview=_item_files_preview(request))
+        qp = request.query_params
+        return _item_files_section(
+            entity_id, item, show_preview=_item_files_preview(request),
+            tag_filter=qp.get("tag_filter", ""), search=qp.get("search", ""),
+            sort_dir=qp.get("sort_dir", "desc"), page=int(qp.get("page") or 1),
+            date_from=qp.get("date_from", ""), date_to=qp.get("date_to", ""),
+        )
 
     @app.get("/items/{entity_id}/files/{file_id}/download")
     async def item_download_file(request: Request, entity_id: str, file_id: str):
@@ -5072,7 +5078,7 @@ def _item_files_preview(request: Request) -> bool:
     return "tab=manufacturing" not in request.headers.get("HX-Current-URL", "")
 
 
-def _item_files_section(entity_id: str, item: dict, *, title: str = "Production documents & images", show_preview: bool = False) -> FT:
+def _item_files_section(entity_id: str, item: dict, *, title: str = "Production documents & images", show_preview: bool = False, tag_filter: str = "", search: str = "", sort_dir: str = "desc", page: int = 1, date_from: str = "", date_to: str = "") -> FT:
     """Render the shared files section for an item, with hero toggle enabled.
 
     Titled "Production documents & images" everywhere it appears (Details +
@@ -5112,7 +5118,9 @@ def _item_files_section(entity_id: str, item: dict, *, title: str = "Production 
     # show_preview=True to put thumbnails back next to filenames. No hero column either way (set
     # the hero by clicking a gallery thumbnail); compact filters keep the bar on one row.
     return _shared_files_section("item", entity_id, files, can_set_hero=False, show_linked=False,
-                                 title=title, show_preview=show_preview, compact=True)
+                                 title=title, show_preview=show_preview, compact=True,
+                                 tag_filter=tag_filter, search=search, sort_dir=sort_dir,
+                                 page=page, date_from=date_from, date_to=date_to)
 
 
 def _recipe_money(v, currency: str | None) -> str:

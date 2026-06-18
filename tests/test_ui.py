@@ -13685,3 +13685,25 @@ class TestDangerZoneUI:
             r = await ui_client.get("/settings/general?tab=company", cookies=_authed(role="admin"))
         assert r.status_code == 200
         assert "Reset All Data" not in r.text
+
+
+@pytest.mark.asyncio
+async def test_item_files_section_applies_tag_filter(ui_client):
+    """F3: GET /items/{id}/files/_section?tag_filter=X must apply the tag filter
+    (show only that tag's files), not silently reset to "All tags"."""
+    item = {
+        "entity_id": "item:f3", "id": "item:f3", "sku": "F3", "name": "F3 Item",
+        "files": [
+            {"id": "a", "filename": "front-photo.jpg", "mime": "image/jpeg",
+             "size": 1, "url": "/x/a", "document_tag": "product_images"},
+            {"id": "b", "filename": "gia-report.pdf", "mime": "application/pdf",
+             "size": 1, "url": "/x/b", "document_tag": "certificates"},
+        ],
+    }
+    with patch("ui.api_client.get_item", new=AsyncMock(return_value=item)):
+        r = await ui_client.get(
+            "/items/item:f3/files/_section?tag_filter=certificates", cookies=_authed())
+    assert r.status_code == 200, r.text
+    body = r.text
+    assert "gia-report" in body, "the certificates file should be shown"
+    assert "front-photo" not in body, "the product_images file must be filtered out"
