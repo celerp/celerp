@@ -393,7 +393,8 @@ def test_build_yml_has_prepare_release_job():
         "build.yml is missing a 'prepare-release' job. "
         "Add it to run asset-clearing before the build matrix starts."
     )
-    assert "needs: [prepare-release]" in yml or "needs: prepare-release" in yml, (
+    # Accept prepare-release alone or alongside other deps (e.g. setup-matrix).
+    assert "needs: [prepare-release" in yml or "needs: prepare-release" in yml, (
         "The build matrix job does not declare 'needs: prepare-release'. "
         "Without this, the build matrix runs in parallel with prepare-release."
     )

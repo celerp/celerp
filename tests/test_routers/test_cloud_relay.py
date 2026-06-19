@@ -642,3 +642,19 @@ async def test_connector_authorize_url_shopify_passes_shop(client):
     assert r.status_code == 200
     assert "authorize_url" in r.json()
     assert captured_params.get("shop") == "my-shop.myshopify.com"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["connecting", "error"])
+async def test_cloud_status_not_connected_while_connecting_or_error(client, status):
+    """The relay dot must NOT report connected (green) for transient/failed states
+    — only 'active'/'tos_required'. It was greening on 'connecting'/'error', i.e.
+    showing "connected" while the relay was actually returning 502."""
+    token = await _register(client, status)
+    gw = _mock_gw(status)
+    with patch("celerp.gateway.client.get_client", return_value=gw), \
+         patch("celerp.gateway.state.get_session_token", return_value="tok"):
+        r = await client.get("/settings/cloud-status", headers=_h(token))
+    assert r.status_code == 200
+    assert r.json()["connected"] is False, r.json()
+    assert r.json()["relay_status"] == status

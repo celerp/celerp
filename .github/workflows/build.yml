@@ -3,7 +3,7 @@ name: Build Binaries
 on:
   push:
     tags: ["v*"]
-    branches: ["develop"]
+    branches: ["develop", "bugfix"]
   workflow_dispatch:
 
 permissions:
@@ -68,29 +68,32 @@ jobs:
           done
           echo "Assets cleared"
 
+  # Compute the build matrix: the bugfix branch builds macOS only (a fast unsigned
+  # test DMG); every other ref builds all three platforms.
+  setup-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - id: gen
+        shell: bash
+        run: |
+          mac='{"os":"macos-latest","build_cmd":"pnpm run build:mac","platform_flag":"--mac","standalone_dir":"mac-arm64","pbs_triple":"aarch64-apple-darwin"}'
+          win='{"os":"windows-latest","build_cmd":"pnpm run build:win","platform_flag":"--win","standalone_dir":"win-x64","pbs_triple":"x86_64-pc-windows-msvc"}'
+          lin='{"os":"ubuntu-latest","build_cmd":"pnpm run build:linux","platform_flag":"--linux","standalone_dir":"linux-x64","pbs_triple":"x86_64-unknown-linux-gnu"}'
+          if [ "${{ github.ref_name }}" = "bugfix" ]; then
+            echo "matrix={\"include\":[$mac]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix={\"include\":[$lin,$win,$mac]}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
-    needs: [prepare-release]
+    needs: [prepare-release, setup-matrix]
     # prepare-release is skipped on non-tag builds; treat skipped as success.
-    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped')
+    if: always() && (needs.prepare-release.result == 'success' || needs.prepare-release.result == 'skipped') && needs.setup-matrix.result == 'success'
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            build_cmd: pnpm run build:linux
-            platform_flag: --linux
-            standalone_dir: linux-x64
-            pbs_triple: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            build_cmd: pnpm run build:win
-            platform_flag: --win
-            standalone_dir: win-x64
-            pbs_triple: x86_64-pc-windows-msvc
-          - os: macos-latest
-            build_cmd: pnpm run build:mac
-            platform_flag: --mac
-            standalone_dir: mac-arm64
-            pbs_triple: aarch64-apple-darwin
+      matrix: ${{ fromJSON(needs.setup-matrix.outputs.matrix) }}
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 180
@@ -341,13 +344,26 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm run build:mac -- --publish always
 
-      - name: Build macOS (dev - signed only, no notarization)
-        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v')
+      - name: Build macOS (develop dev - signed only, no notarization)
+        if: matrix.os == 'macos-latest' && !startsWith(github.ref, 'refs/tags/v') && github.ref_name != 'bugfix'
         timeout-minutes: 60
         working-directory: electron
         env:
           CSC_LINK: ${{ secrets.APPLE_CERTIFICATE }}
           CSC_KEY_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
+
+      - name: Build macOS (bugfix dev - UNSIGNED, fast)
+        # bugfix-branch dev builds skip macOS code signing (~20 min) entirely to
+        # speed up the test loop. The resulting .app/.dmg is unsigned and is for our
+        # own testing only — get it past Gatekeeper with
+        #   xattr -dr com.apple.quarantine /Applications/Celerp.app
+        # (or right-click -> Open). Not for distribution.
+        if: matrix.os == 'macos-latest' && github.ref_name == 'bugfix'
+        timeout-minutes: 60
+        working-directory: electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: pnpm exec electron-builder ${{ matrix.platform_flag }} --publish never
 
       - name: Build (Windows / Linux - release tag)
@@ -475,7 +491,9 @@ jobs:
           if-no-files-found: warn
 
       - name: Release (dev build)
-        if: "!startsWith(github.ref, 'refs/tags/v')"
+        # bugfix builds stay as downloadable workflow artifacts only (above) — don't
+        # publish them to the shared dev-latest release, which tracks develop.
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') && github.ref_name != 'bugfix' }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev-latest
