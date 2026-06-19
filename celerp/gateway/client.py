@@ -282,11 +282,14 @@ class GatewayClient:
             })
             return
 
-        # API-only paths go to the API server; everything else to the UI
-        if path.startswith("/api/") or path.startswith("/openapi"):
-            port = self._api_port
-        else:
-            port = self._ui_port
+        # Everything proxied through the relay goes to the UI server. The browser
+        # only ever talks to the UI server — including routes under /api/, which are
+        # UI-server endpoints (HTMX fragments, image/barcode previews, item & bulk
+        # actions), NOT the internal data API. The API server (self._api_port) is an
+        # internal backend the UI calls server-side via api_client and is never
+        # browser-facing, so routing /api/* there over the relay just 404s those UI
+        # routes (barcode preview, label-templates, bulk split/merge, etc.).
+        port = self._ui_port
 
         url = f"http://127.0.0.1:{port}{path}"
         if query:

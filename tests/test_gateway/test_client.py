@@ -299,3 +299,53 @@ async def test_connect_and_serve_uses_keepalive(client, monkeypatch):
 
     assert captured.get("ping_interval") == 20, captured
     assert captured.get("ping_timeout") == 20, captured
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", [
+    "/api/labels/preview/barcode",
+    "/api/items/bulk/split-preview",
+    "/inventory/x",
+])
+async def test_proxy_routes_everything_to_ui_server(client, monkeypatch, path):
+    """Relay-proxied requests (including /api/*) must go to the UI server (8080).
+
+    The browser only ever talks to the UI server; the /api/* routes it calls are
+    UI-server endpoints (HTMX fragments / previews), not the internal data API. The
+    API server (8000) is an internal backend the UI calls server-side, so sending
+    /api/* there over the relay 404s those UI routes.
+    """
+    client._ui_port = 8080
+    client._api_port = 8000
+
+    captured = {}
+
+    class FakeResp:
+        status_code = 200
+        content = b"ok"
+        headers = {}
+
+    class FakeClient:
+        def __init__(self, *a, **k):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def request(self, method, url, headers=None, content=None):
+            captured["url"] = url
+            return FakeResp()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+
+    async def fake_send(ws, msg):
+        pass
+    monkeypatch.setattr(client.__class__, "_send", staticmethod(fake_send))
+    client._ws = object()
+
+    await client._handle_proxy_request({
+        "id": "r1", "method": "GET", "path": path,
+        "query": "", "headers": {}, "body_b64": "",
+    })
+    assert "127.0.0.1:8080" in captured["url"], captured
+    assert "127.0.0.1:8000" not in captured["url"], captured
