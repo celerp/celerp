@@ -76,7 +76,10 @@ async def cloud_status() -> dict:
     from celerp.gateway.state import get_session_token
     gw = get_client()
     relay_status = gw.relay_status if gw else "inactive"
-    connected = relay_status in ("active", "tos_required", "connecting", "error")
+    # Only report "connected" (green dot) when the tunnel is really up. "connecting"
+    # and "error" are transient/failed states — reporting them as connected is the
+    # "green but still 502" the user sees while the relay has no live upstream.
+    connected = relay_status in ("active", "tos_required")
     if not connected:
         return {"connected": False, "relay_status": relay_status, "tier": None, "last_backup": None, "email_quota": 0, "email_used": 0, "public_url": settings.celerp_public_url, "gateway_token_set": bool(settings.gateway_token)}
 

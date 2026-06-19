@@ -270,3 +270,32 @@ async def test_tos_required_blocks_reconnect(client, monkeypatch):
     # Should have connected once, then looped in tos_required wait
     assert len(connect_calls) == 1
     assert len(wait_calls) >= 1
+
+
+@pytest.mark.asyncio
+async def test_connect_and_serve_uses_keepalive(client, monkeypatch):
+    """The relay WS must open with keepalive (ping_interval/ping_timeout) so a
+    silently-dead connection (e.g. the Mac sleeping) raises and the backoff loop
+    reconnects. With ping_interval=None a half-open socket never raises, so the
+    client never reconnects and the relay returns 502 until a manual restart.
+    """
+    import celerp.gateway.client as gwc
+    captured = {}
+
+    class _CM:
+        async def __aenter__(self):
+            raise ConnectionError("stop after capturing connect kwargs")
+        async def __aexit__(self, *a):
+            return False
+
+    def fake_connect(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return _CM()
+
+    monkeypatch.setattr(gwc.websockets, "connect", fake_connect)
+    with pytest.raises(ConnectionError):
+        await client._connect_and_serve()
+
+    assert captured.get("ping_interval") == 20, captured
+    assert captured.get("ping_timeout") == 20, captured

@@ -126,7 +126,11 @@ class GatewayClient:
     async def _connect_and_serve(self) -> None:
         log.debug("Connecting to gateway at %s", self._url)
         self._relay_status = "connecting"
-        async with websockets.connect(self._url, ping_interval=None) as ws:
+        # Keepalive on: a silently-dead connection (e.g. the host sleeping) raises
+        # ConnectionClosed within ~ping_interval+ping_timeout, so _connect_and_serve
+        # exits and run()'s backoff loop reconnects — instead of blocking forever on
+        # a half-open socket while the relay returns 502.
+        async with websockets.connect(self._url, ping_interval=20, ping_timeout=20) as ws:
             self._ws = ws
             # Read current TOS version from config
             from celerp.config import read_config
