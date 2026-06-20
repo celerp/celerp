@@ -2200,6 +2200,12 @@ async def batch_import_items(
         # Strip any client-supplied timestamps: created_at is set by ProjectionEngine on INSERT.
         rec.data.pop("created_at", None)
         rec.data.pop("updated_at", None)
+        # Normalize allow_splitting to a real bool if the import provided one (CSV
+        # gives strings like "Yes"/"No", and None means "unset"). Imports that omit
+        # it default to no-split in the create branch below; the split guard
+        # requires an explicit True, so a string/None must never read as splittable.
+        if "allow_splitting" in rec.data and not isinstance(rec.data["allow_splitting"], bool):
+            rec.data["allow_splitting"] = str(rec.data["allow_splitting"]).strip().lower() in ("true", "yes", "1", "y", "t")
 
         # Validate sell_by against company units before attempting any DB work.
         sell_by = str(rec.data.get("sell_by") or "").strip()
@@ -2258,6 +2264,10 @@ async def batch_import_items(
                 skipped += 1
             continue
         try:
+            # Imported items default to no-split until splitting is explicitly
+            # enabled per item (matches how they display; the split guard requires
+            # an explicit True).
+            rec.data.setdefault("allow_splitting", False)
             loc_id: uuid.UUID | None = None
             raw_loc = rec.data.get("location_id")
             if raw_loc:
