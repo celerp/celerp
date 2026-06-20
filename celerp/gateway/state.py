@@ -98,6 +98,10 @@ def relay_subscribe_url(anchor: str = "") -> str:
     from celerp.config import settings
     iid = _instance_id or settings.gateway_instance_id
     base = "https://celerp.com/subscribe"
-    url = f"{base}?instance_id={iid}" if iid else base
+    params = "utm_source=app&utm_medium=inapp"
+    if iid:
+        url = f"{base}?instance_id={iid}&{params}"
+    else:
+        url = f"{base}?{params}"
     return f"{url}#{anchor}" if anchor else url
 

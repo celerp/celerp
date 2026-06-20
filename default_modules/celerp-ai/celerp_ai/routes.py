@@ -57,9 +57,9 @@ from celerp.session_gate import require_session_token
 def _upgrade_url() -> str:
     from celerp.config import settings
     iid = settings.gateway_instance_id
-    base = "https://celerp.com/subscribe"
+    base = "https://celerp.com/subscribe?utm_source=app&utm_medium=inapp"
     if iid:
-        return f"{base}?instance_id={iid}#ai"
+        return f"{base}&instance_id={iid}#ai"
     return f"{base}#ai"
 _CLOUD_FILE_LIMIT = 1
 

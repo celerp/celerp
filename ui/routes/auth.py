@@ -660,10 +660,10 @@ def _onboarding_view() -> FT:
 
 def _direct_connection_gate(email: str, password: str) -> FT:
     """Shown when a second user tries to log in without relay connected."""
-    subscribe_url = "https://celerp.com/subscribe"
+    subscribe_url = "https://celerp.com/subscribe?utm_source=app&utm_medium=inapp"
     try:
         from celerp.config import ensure_instance_id
-        subscribe_url += f"?instance_id={ensure_instance_id()}#cloud"
+        subscribe_url += f"&instance_id={ensure_instance_id()}#cloud"
     except Exception:
         pass
 
@@ -780,7 +780,7 @@ def _forgot_password_cli() -> FT:
     """Forgot-password page for self-hosted installs without email transport."""
     from celerp.config import ensure_instance_id
     iid = ensure_instance_id()
-    subscribe_url = f"https://celerp.com/subscribe?instance_id={iid}#cloud"
+    subscribe_url = f"https://celerp.com/subscribe?utm_source=app&utm_medium=inapp&instance_id={iid}#cloud"
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),

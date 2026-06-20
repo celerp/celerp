@@ -162,7 +162,7 @@ def setup_ui_routes(app) -> None:
                 limit = 0
 
             if code == "quota_exceeded":
-                topup_url = f"https://celerp.com/subscribe/topup?instance_id={detail.get('instance_id', '')}"
+                topup_url = f"https://celerp.com/subscribe/topup?utm_source=app&utm_medium=inapp&instance_id={detail.get('instance_id', '')}"
                 upgrade_url = detail.get("upgrade_url", _subscribe_url("ai"))
                 is_ai_tier = "ai" in str(detail.get("tier", "")) or "team" in str(detail.get("tier", ""))
                 if is_ai_tier:
@@ -980,7 +980,7 @@ function _celerpAiUploadFormData(formData, fileNames) {
             badge.classList.add('ai-quota--low');
         }
         if (remaining < 20 && (data.tier === 'ai' || data.tier === 'team')) {
-            link.href = 'https://celerp.com/subscribe/topup?instance_id=' + encodeURIComponent(data.instance_id || '');
+            link.href = 'https://celerp.com/subscribe/topup?utm_source=app&utm_medium=inapp&instance_id=' + encodeURIComponent(data.instance_id || '');
             link.style.display = 'inline';
         }
     })
