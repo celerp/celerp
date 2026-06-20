@@ -1634,8 +1634,8 @@ def setup_routes(app):
         connected = data.get("connected", False)
 
         iid = ensure_instance_id()
-        subscribe_url = "https://celerp.com/subscribe"
-        subscribe_url += f"?instance_id={iid}"
+        subscribe_url = "https://celerp.com/subscribe?utm_source=app&utm_medium=inapp"
+        subscribe_url += f"&instance_id={iid}"
         # Include local app URL so Stripe success page can offer a direct return link
         local_url = str(request.base_url).rstrip("/")
         subscribe_url += f"&local_url={local_url}"
@@ -3631,7 +3631,7 @@ def _cloud_relay_unconnected(
             Used when embedding inside the Web Access value-prop page which already
             has its own plan cards and CTAs.
     """
-    subscribe_url = f"https://celerp.com/subscribe?instance_id={iid}"
+    subscribe_url = f"https://celerp.com/subscribe?utm_source=app&utm_medium=inapp&instance_id={iid}"
     children: list = []
     if show_header:
         children += [

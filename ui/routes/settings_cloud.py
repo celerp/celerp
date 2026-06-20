@@ -65,7 +65,7 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
 
 def _value_prop_page(iid: str, lang: str = "en") -> FT:
     """Full value-proposition landing page shown when not connected to cloud."""
-    subscribe_base = f"https://celerp.com/subscribe?instance_id={iid}"
+    subscribe_base = f"https://celerp.com/subscribe?utm_source=app&utm_medium=inapp&instance_id={iid}"
 
     return Div(
         # Hero - explain the relay concept simply

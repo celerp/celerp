@@ -22,7 +22,8 @@ def _subscribe_url(anchor: str = "") -> str:
     from celerp.config import ensure_instance_id
     base = _SUBSCRIBE_BASE
     iid = ensure_instance_id()
-    base += "?" + urlencode({"instance_id": iid})
+    params = {"instance_id": iid, "utm_source": "app", "utm_medium": "inapp"}
+    base += "?" + urlencode(params)
     if anchor:
         base += f"#{anchor}"
     return base
