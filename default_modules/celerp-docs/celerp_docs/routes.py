@@ -3089,7 +3089,9 @@ async def fulfill_lines(
                 f"{sku}: insufficient stock — invoiced {line_qty:g}, available {available:g}"
             )
             continue
-        if line_qty + 1e-9 < available and not item_proj.state.get("allow_splitting", True):
+        # Split-on-fulfill is allowed only when splitting is explicitly enabled.
+        # A missing/None allow_splitting (e.g. older imports) must NOT bypass this.
+        if line_qty + 1e-9 < available and item_proj.state.get("allow_splitting") is not True:
             blocked.append(
                 f"{sku}: invoiced {line_qty:g} of {available:g} but 'Allow Splitting' is off — "
                 f"enable splitting or invoice the full quantity"

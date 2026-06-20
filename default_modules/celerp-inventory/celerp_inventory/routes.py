@@ -1203,7 +1203,9 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     if parent is None or not is_item_available(parent.state):
         raise HTTPException(status_code=404, detail="Item not found or unavailable")
 
-    if not parent.state.get("allow_splitting", True):
+    # Allow splitting ONLY when explicitly enabled (== True). A missing/None value
+    # (e.g. older imports that never set the field) must NOT bypass this gate.
+    if parent.state.get("allow_splitting") is not True:
         raise HTTPException(
             status_code=422,
             detail="Allow splitting is set to No for this item. Change Allow Splitting to Yes in the item details to enable splitting.",

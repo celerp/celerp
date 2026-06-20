@@ -556,6 +556,38 @@ async def test_split_blocked_when_allow_splitting_false(client):
 
 
 @pytest.mark.asyncio
+async def test_split_blocked_when_allow_splitting_field_missing(client, session):
+    """A missing/None allow_splitting must NOT bypass the split guard — only an
+    explicit True allows splitting. Simulate an item whose projection state lacks
+    the field (as older imports produced) by removing it before splitting.
+    """
+    from celerp.models.projections import Projection
+    from sqlalchemy import select
+
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "MISSING-SPLIT", "name": "Item", "quantity": 10, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+
+    # Remove allow_splitting from the item's projection state (manual edit).
+    row = (await session.execute(select(Projection).where(Projection.entity_id == item_id))).scalar_one()
+    new_state = dict(row.state)
+    new_state.pop("allow_splitting", None)
+    row.state = new_state
+    await session.commit()
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item.get("allow_splitting") is None, f"field should be gone, got {item.get('allow_splitting')!r}"
+
+    rs = await client.post(f"/items/{item_id}/split", json={
+        "children": [{"sku": "MISSING-SPLIT-1", "quantity": 3}]
+    }, headers=h)
+    assert rs.status_code == 422, f"missing allow_splitting must block split, got {rs.status_code}: {rs.text}"
+    assert "Allow Splitting" in rs.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_split_allowed_when_allow_splitting_true(client):
     """Split must succeed when allow_splitting is explicitly True."""
     token = await _token(client)
