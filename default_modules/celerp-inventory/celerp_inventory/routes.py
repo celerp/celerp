@@ -1334,6 +1334,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
     running_qty = parent_qty
     running_pieces = parent_pieces
     running_weight = parent_weight
+    running_cost = parent_cost_total
 
     for i, child in enumerate(children):
         child_eid = f"item:{uuid.uuid4()}"
@@ -1408,6 +1409,10 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             detail["weight_before"] = running_weight
             running_weight = round((running_weight or 0) - (ch_weight or 0), weight_decimals)
             detail["weight_after"] = running_weight
+        if parent_cost_total and _child_cost_totals[i] is not None:
+            detail["cost_before"] = running_cost
+            running_cost = round(running_cost - _child_cost_totals[i], 10)
+            detail["cost_after"] = running_cost
         children_detail.append(detail)
 
         # Preserve prices from parent via pricing events (excluding cost - set proportionally below)
@@ -1457,7 +1462,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
         location_id=None,
         source="api",
         idempotency_key=str(uuid.uuid4()),
-        metadata_={},
+        metadata_={"reason": "split_parent"},
     )
 
     # Update parent cost_total (reduce by sum of child cost_totals; pre-computed values guarantee conservation)
@@ -1475,7 +1480,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "split_parent"},
         )
 
     # Apply mother parcel overrides: weight computed server-side, pieces computed server-side
@@ -1511,7 +1516,7 @@ async def split_item(entity_id: str, payload: SplitBody, company_id=Depends(get_
             location_id=None,
             source="api",
             idempotency_key=str(uuid.uuid4()),
-            metadata_={},
+            metadata_={"reason": "split_parent"},
         )
 
     # If parent quantity is now 0, mark as archived (consumed by split)
@@ -1678,13 +1683,13 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.quantity.adjusted", data={"new_qty": new_parent_qty},
                      actor_id=user_id, location_id=None, source="fulfill_split",
-                     idempotency_key=str(uuid.uuid4()), metadata_={})
+                     idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
     if child_cost_total is not None and parent_cost_total:
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                          event_type="item.pricing.set",
                          data={"price_type": "cost_total", "new_price": max(0.0, round(parent_cost_total - child_cost_total, 10))},
                          actor_id=user_id, location_id=None, source="fulfill_split",
-                         idempotency_key=str(uuid.uuid4()), metadata_={})
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
     # Secondary measures are NOT conserved: the child keeps its (uncapped) value and
     # the mother floors at 0 (e.g. child weight 20 of a 15ct mother -> mother 0ct).
     fields_changed: dict[str, dict] = {}
@@ -1698,7 +1703,7 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
         await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                          event_type="item.updated", data={"fields_changed": fields_changed},
                          actor_id=user_id, location_id=None, source="fulfill_split",
-                         idempotency_key=str(uuid.uuid4()), metadata_={})
+                         idempotency_key=str(uuid.uuid4()), metadata_={"reason": "split_parent"})
 
     # history
     child_detail: dict = {
@@ -1711,6 +1716,9 @@ async def split_off_child(session: AsyncSession, *, company_id, user_id, parent_
     if parent_weight is not None and child_weight is not None:
         child_detail["weight_before"] = parent_weight
         child_detail["weight_after"] = max(0.0, round(parent_weight - child_weight, 10))
+    if child_cost_total is not None and parent_cost_total:
+        child_detail["cost_before"] = parent_cost_total
+        child_detail["cost_after"] = max(0.0, round(parent_cost_total - child_cost_total, 10))
     await emit_event(session, company_id=company_id, entity_id=entity_id, entity_type="item",
                      event_type="item.split",
                      data={"child_ids": [child_eid], "child_skus": [child_sku], "quantities": [child_qty],

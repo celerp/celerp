@@ -96,6 +96,36 @@ async def test_split_summary_carries_mother_deltas(client):
 
 
 @pytest.mark.asyncio
+async def test_split_summary_carries_cost_before_after(client):
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, cost_price=100.0)  # cost_total = 1000
+    r = await client.post(f"/items/{parent_id}/split",
+                          json={"children": [{"sku": "MUM.1", "quantity": 4.0}]}, headers=h)
+    assert r.status_code == 200, r.text
+    split = [e for e in await _events(client, h, parent_id) if e["event_type"] == "item.split"][0]
+    c0 = split["data"]["children_detail"][0]
+    # 4 of 10 units carved off: parent cost 1000 -> 600.
+    assert c0["cost_before"] == pytest.approx(1000.0)
+    assert c0["cost_after"] == pytest.approx(600.0)
+
+
+@pytest.mark.asyncio
+async def test_split_parent_mechanical_rows_collapse(client):
+    # The split summary is the single coherent parent entry; mechanical per-field rows
+    # (quantity.adjusted / cost pricing.set / weight-pieces updated) are suppressed in the feed.
+    h = {"Authorization": f"Bearer {await _token(client)}"}
+    parent_id = await _seed(client, h, quantity=10.0, cost_price=100.0)
+    await client.post(f"/items/{parent_id}/split",
+                      json={"children": [{"sku": "MUM.1", "quantity": 4.0}]}, headers=h)
+    ledger = await _events(client, h, parent_id)
+    html = to_xml(activity_table(ledger, subject_entity_id=parent_id, currency="USD"))
+    assert "Item Split - MUM" in html
+    assert "Qty: 10 → 6" in html and "Cost: $1,000.00 → $600.00" in html
+    # The bare "Qty → 6" mechanical row must not appear (collapsed into the summary).
+    assert "Qty → 6" not in html
+
+
+@pytest.mark.asyncio
 async def test_split_pieces_omitted_when_unused(client):
     h = {"Authorization": f"Bearer {await _token(client)}"}
     # Non-pieces item: pieces fields must be absent from the descriptor.

@@ -157,6 +157,9 @@ _OPERATION_NOISE_REASONS = frozenset({
     "from_split",
     "from_transform",
     "from_merge",
+    # The mother's per-field reductions during a split (qty/cost/weight/pieces). The
+    # item.split summary already shows them as one coherent before -> after entry.
+    "split_parent",
 })
 
 # Origin markers emitted on a split/transform CHILD. They ARE the child's first history
@@ -567,8 +570,10 @@ def _item_link(entity_id, label: str, anchor=None) -> FT:
     return A(label, href=url, cls="table-link") if url else Span(label)
 
 
-def _qpw_delta(d: dict) -> str:
-    """'Qty: a → b, Pcs: c → d, Wt: e → f' from before/after fields; only changed measures shown."""
+def _qpw_delta(d: dict, currency: str | None = None) -> str:
+    """'Qty: a → b, Pcs: c → d, Wt: e → f, Cost: g → h' from before/after fields; only
+    measures that are present are shown. Cost is currency-formatted (and absent for
+    under-manager viewers, since it is redacted server-side)."""
     if not isinstance(d, dict):
         return ""
     parts: list[str] = []
@@ -578,6 +583,8 @@ def _qpw_delta(d: dict) -> str:
         parts.append(f"Pcs: {fmt_qty(d.get('pieces_before'))} → {fmt_qty(d.get('pieces_after'))}")
     if d.get("weight_before") is not None or d.get("weight_after") is not None:
         parts.append(f"Wt: {fmt_qty(d.get('weight_before'))} → {fmt_qty(d.get('weight_after'))}")
+    if d.get("cost_before") is not None or d.get("cost_after") is not None:
+        parts.append(f"Cost: {fmt_money(d.get('cost_before'), currency)} → {fmt_money(d.get('cost_after'), currency)}")
     return ", ".join(parts)
 
 
@@ -593,7 +600,7 @@ def _origin_detail(data: dict, with_category: bool = False) -> str:
     return ", ".join(parts)
 
 
-def _lifecycle_rows_spec(e: dict) -> list[tuple[FT, str, str]] | None:
+def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT, str, str]] | None:
     """For split/transform/merge events, return [(event_content, detail, anchor_suffix), ...]
     with linked SKUs in the requested style. Returns None for non-lifecycle events (or legacy
     rows lacking the enriched payload) so the caller falls back to generic rendering."""
@@ -613,7 +620,7 @@ def _lifecycle_rows_spec(e: dict) -> list[tuple[FT, str, str]] | None:
                 f"Item Split - {psku} → ",
                 _item_link(c.get("child_id"), str(c.get("child_sku") or ""), c.get("origin_event_id")),
             )
-            specs.append((content, _qpw_delta(c), f"-{i}"))
+            specs.append((content, _qpw_delta(c, currency), f"-{i}"))
         return specs
 
     if etype == "item.split_from":
@@ -628,7 +635,7 @@ def _lifecycle_rows_spec(e: dict) -> list[tuple[FT, str, str]] | None:
             f"Item Transform - {psku} → ",
             _item_link(data.get("child_id"), str(data.get("child_sku") or ""), data.get("child_origin_event_id")),
         )
-        return [(content, _qpw_delta(data), "")]
+        return [(content, _qpw_delta(data, currency), "")]
 
     if etype == "item.transformed_from":
         content = Span("Transformed from ", _item_link(data.get("parent_id"), str(data.get("parent_sku") or "")))
@@ -724,7 +731,7 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
                 return []
 
         # Rich lifecycle rendering (split/transform/merge): linked SKUs + qty/pcs/wt deltas.
-        spec = _lifecycle_rows_spec(e)
+        spec = _lifecycle_rows_spec(e, currency)
         if spec is not None:
             return [_assemble(e, content, detail, suffix) for content, detail, suffix in spec]
 
