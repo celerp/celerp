@@ -811,12 +811,12 @@ _BUG_REPORT_URL: str | None = None
 
 
 def _bug_report_url() -> str:
-    """GitHub 'new issue' link with the Environment section pre-filled (Celerp version
-    and the host OS) so reports arrive with the two fields users most often leave out.
+    """GitHub 'new issue' link that opens the bug_report.yml issue form with the
+    Celerp version and host OS pre-filled (the two fields users most often leave out).
 
-    Built once per process - the version and OS don't change at runtime. The body mirrors
-    the bug_report.md template; we pass it inline (instead of ?template=) because GitHub
-    ignores body prefill when a template is selected.
+    Built once per process - version and OS don't change at runtime. Uses the form's
+    field-prefill query params, so the form's own labels (bug, triage) still apply for
+    every reporter (unlike inline body prefill, which would suppress the template).
     """
     global _BUG_REPORT_URL
     if _BUG_REPORT_URL is None:
@@ -832,21 +832,7 @@ def _bug_report_url() -> str:
             osname = f"Windows {platform.release()}".strip()
         else:
             osname = f"{system} {platform.release()}".strip() or platform.platform()
-        body = (
-            "## Environment\n"
-            f"- **Celerp version:** {ver}\n"
-            f"- **OS:** {osname}\n"
-            "- **Installation method:** [e.g. .dmg, .exe, AppImage, pip]\n\n"
-            "## Steps to Reproduce\n1. \n2. \n3. \n\n"
-            "## Expected Behavior\n\n\n"
-            "## Actual Behavior\n\n\n"
-            "## Screenshots (if applicable)\n\n\n"
-            "## Logs (if applicable)\n"
-            "<!-- Desktop logs: macOS ~/Library/Application Support/celerp/celerp-data/logs/ - "
-            "Windows %APPDATA%\\celerp\\celerp-data\\logs\\ - "
-            "Linux ~/.config/celerp/celerp-data/logs/ -->\n"
-        )
-        qs = urlencode({"title": "Bug: ", "labels": "bug,triage", "body": body})
+        qs = urlencode({"template": "bug_report.yml", "version": ver, "os": osname})
         _BUG_REPORT_URL = f"https://github.com/celerp/celerp/issues/new?{qs}"
     return _BUG_REPORT_URL
 
