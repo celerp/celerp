@@ -942,7 +942,8 @@ async def finalize_doc(entity_id: str, company_id: str = Depends(get_current_com
                 await emit_event(
                     session, company_id=_cid, entity_id=_eid, entity_type="item",
                     event_type="item.status.set",
-                    data={"new_status": "sold", "source_doc_id": entity_id},
+                    data={"new_status": "sold", "source_doc_id": entity_id,
+                          "doc_number": _initial_doc_state.get("doc_number") or _initial_doc_state.get("ref_id") or ""},
                     actor_id=_user_id, location_id=None, source="invoice_finalize",
                     idempotency_key=str(uuid.uuid4()), metadata_={"doc_id": entity_id},
                 )
@@ -3195,6 +3196,7 @@ async def fulfill_lines(
             event_type="item.fulfilled",
             data={
                 "source_doc_id": entity_id,
+                "doc_number": state.get("doc_number") or state.get("ref_id") or "",
                 "quantity_fulfilled": qty,
                 "fulfilled_by": str(uid),
                 "doc_type": doc_type,
@@ -3331,6 +3333,7 @@ async def revert_lines(
             event_type="item.fulfillment_reversed",
             data={
                 "source_doc_id": entity_id,
+                "doc_number": state.get("doc_number") or state.get("ref_id") or "",
                 "quantity_restored": qty,
                 "reversed_by": str(uid),
                 "reason": "per_line_revert",

@@ -307,6 +307,55 @@ async def test_fulfill_creates_events_and_updates_projections(client, session, a
 
 
 @pytest.mark.asyncio
+async def test_fulfilled_item_event_carries_doc_number(client, session, auth, _setup_ids):
+    """Issue 2: a sold/fulfilled item's history event records source_doc_id + a stable
+    doc_number, and the Activity renderer turns it into a link to the doc."""
+    from celerp.models.projections import Projection
+    from celerp.models.ledger import LedgerEntry
+    from celerp.services.fulfill import execute_fulfill
+    from celerp.services.pick import compute_pick_plan
+    from sqlalchemy import select
+
+    # qty == line qty -> a "full" pick, so item.fulfilled lands on the item itself
+    # (a partial pick would carve a child and fulfill that instead).
+    item_id = await _create_item(client, auth, "DOCNUM-A", 2, cost_price=2.0)
+    doc_id = await _create_and_finalize_invoice(
+        client, auth, [{"sku": "DOCNUM-A", "quantity": 2, "unit_price": 9.0}], ref_id="INV-DOCNUM-1")
+
+    doc_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": doc_id})
+    inv_row = await session.get(Projection, {"company_id": _setup_ids["company_id"], "entity_id": item_id})
+    available_inv = [{"entity_id": item_id, "sku": inv_row.state["sku"],
+                      "quantity": float(inv_row.state["quantity"]),
+                      "created_at": inv_row.created_at.isoformat() if inv_row.created_at else "",
+                      "expires_at": inv_row.state.get("expires_at"),
+                      "cost_total": float(inv_row.state.get("cost_total", 0))}]
+    pick_result = compute_pick_plan(doc_row.state.get("line_items", []), available_inv)
+    await execute_fulfill(session, doc_entity_id=doc_id, doc_state=doc_row.state,
+                          pick_result=pick_result, company_id=_setup_ids["company_id"],
+                          user_id=str(_setup_ids["user_id"]), doc_type="invoice")
+    await session.commit()
+
+    rows = (await session.execute(select(LedgerEntry).where(
+        LedgerEntry.company_id == _setup_ids["company_id"],
+        LedgerEntry.entity_id == item_id,
+        LedgerEntry.event_type == "item.fulfilled"))).scalars().all()
+    assert rows, "item.fulfilled must be emitted on the sold item"
+    data = rows[0].data
+    assert data["source_doc_id"] == doc_id
+    # doc_number is the doc's real current number (finalize renumbers it), which can differ
+    # from the entity_id suffix — exactly why it must be captured at emit time.
+    expected_num = doc_row.state.get("doc_number") or doc_row.state.get("ref_id")
+    assert expected_num and data["doc_number"] == expected_num
+
+    from ui.components.activity import activity_table
+    from fasthtml.common import to_xml
+    html = to_xml(activity_table([{"id": rows[0].id, "event_type": "item.fulfilled",
+                                   "entity_id": item_id, "ts": "2026-06-21T10:00:00+00:00", "data": data}],
+                                 subject_entity_id=item_id))
+    assert expected_num in html and f"/docs/{doc_id}" in html
+
+
+@pytest.mark.asyncio
 async def test_unfulfill_restores_stock_and_reverses_je(client, session, auth, _setup_ids):
     """Un-fulfill: restores stock and reverses JE."""
     from celerp.models.projections import Projection

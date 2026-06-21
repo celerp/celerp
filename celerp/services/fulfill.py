@@ -52,6 +52,9 @@ async def execute_fulfill(
     total_cogs = 0.0
     cid = _to_uuid(company_id)
     uid = _to_uuid(user_id)
+    # Stable human doc number for the item's history (the entity_id suffix can diverge on
+    # finalize/renumber, e.g. PF-... -> INV-...), so capture it from the doc at emit time.
+    doc_number = doc_state.get("doc_number") or doc_state.get("ref_id") or ""
 
     for pick in pick_result.picks:
         if pick.action == "full":
@@ -63,6 +66,7 @@ async def execute_fulfill(
                 event_type="item.fulfilled",
                 data={
                     "source_doc_id": doc_entity_id,
+                    "doc_number": doc_number,
                     "quantity_fulfilled": pick.pick_qty,
                     "fulfilled_by": str(uid),
                     "doc_type": doc_type,
@@ -125,6 +129,7 @@ async def execute_fulfill(
                 event_type="item.fulfilled",
                 data={
                     "source_doc_id": doc_entity_id,
+                    "doc_number": doc_number,
                     "quantity_fulfilled": pick.pick_qty,
                     "fulfilled_by": str(uid),
                     "doc_type": doc_type,
@@ -242,6 +247,7 @@ async def execute_unfulfill(
     fulfilled_items = doc_state.get("fulfilled_items", [])
     cid = _to_uuid(company_id)
     uid = _to_uuid(user_id)
+    doc_number = doc_state.get("doc_number") or doc_state.get("ref_id") or ""
     reversed_items: list[dict] = []
 
     if not fulfilled_items:
@@ -288,6 +294,7 @@ async def execute_unfulfill(
             event_type="item.fulfillment_reversed",
             data={
                 "source_doc_id": doc_entity_id,
+                "doc_number": doc_number,
                 "quantity_restored": qty,
                 "reversed_by": str(uid),
                 "reason": reason,

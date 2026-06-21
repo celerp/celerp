@@ -279,6 +279,39 @@ def test_activity_table_see_all_footer_link():
     assert "/inventory/item:x/history" in html and "Showing last" in html
 
 
+def test_doc_tied_item_events_link_doc_number():
+    # Issue 2: sold/consigned/fulfilled/reversed events show a linkable doc number.
+    def _ev(eid, etype, data):
+        return {"id": eid, "event_type": etype, "entity_id": "item:x",
+                "ts": "2026-06-21T10:00:00+00:00", "data": data}
+    sold = _ev(1, "item.fulfilled", {"source_doc_id": "doc:INV-2606-0001",
+               "doc_number": "INV-2606-0001", "quantity_fulfilled": 2, "doc_type": "invoice"})
+    html = to_xml(activity_table([sold], subject_entity_id="item:x"))
+    assert "Sold" in html and "INV-2606-0001" in html
+    assert "/docs/doc:INV-2606-0001" in html and "Qty: 2" in html
+    # memo -> consigned verb
+    cons = _ev(2, "item.fulfilled", {"source_doc_id": "doc:MEMO-1", "doc_number": "MEMO-1",
+               "quantity_fulfilled": 1, "doc_type": "memo"})
+    assert "Consigned" in to_xml(activity_table([cons], subject_entity_id="item:x"))
+    # reversal
+    rev = _ev(3, "item.fulfillment_reversed", {"source_doc_id": "doc:INV-9",
+              "doc_number": "INV-9", "quantity_restored": 2, "doc_type": "invoice"})
+    assert "Sale reversed" in to_xml(activity_table([rev], subject_entity_id="item:x"))
+    # memo->invoice sale confirmation via status.set
+    st = _ev(4, "item.status.set", {"new_status": "sold", "source_doc_id": "doc:INV-7", "doc_number": "INV-7"})
+    h2 = to_xml(activity_table([st], subject_entity_id="item:x"))
+    assert "Sold" in h2 and "/docs/doc:INV-7" in h2
+
+
+def test_doc_link_falls_back_to_entity_suffix():
+    # Existing events without a stored doc_number still show a linkable number (entity suffix).
+    ev = {"id": 1, "event_type": "item.fulfilled", "entity_id": "item:x",
+          "ts": "2026-06-21T10:00:00+00:00",
+          "data": {"source_doc_id": "doc:INV-9", "quantity_fulfilled": 1, "doc_type": "invoice"}}
+    html = to_xml(activity_table([ev], subject_entity_id="item:x"))
+    assert "INV-9" in html and "/docs/doc:INV-9" in html
+
+
 def test_transfer_detail_degrades_gracefully():
     # No source (e.g. item had no location) -> "-> to".
     assert detail_from_entry({"to_location_name": "B"}, "item.transferred") == "→ B"

@@ -35,6 +35,8 @@ EVENT_TYPE_LABELS: dict[str, str] = {
     "item.transform": "Item transformed",
     "item.transformed_from": "Transformed from",
     "item.source_deactivated": "Merged into another item",
+    "item.fulfilled": "Sold / fulfilled",
+    "item.fulfillment_reversed": "Sale reversed",
     "item.consumed": "Consumed in production",
     "item.produced": "Produced",
     "doc.created": "Document created",
@@ -622,14 +624,49 @@ def _origin_detail(data: dict, with_category: bool = False) -> str:
     return ", ".join(parts)
 
 
+def _doc_link(doc_id, doc_number=None) -> FT:
+    """A linked doc-number chip from an item event's source_doc_id (+ optional doc_number).
+    Falls back to the entity_id suffix as the label when no explicit doc_number was stored."""
+    did = str(doc_id or "")
+    label = str(doc_number or "") or (did[4:] if did.startswith("doc:") else did)
+    url = entity_url(did)  # "doc:..." -> /docs/{id}
+    return A(label, href=url, cls="table-link") if (url and label) else Span(label or did)
+
+
+# Verbs for doc-tied item events, keyed by doc_type (memo = consignment).
+def _fulfil_verb(doc_type: str, reversed_: bool) -> str:
+    memo = (doc_type or "") == "memo"
+    if reversed_:
+        return "Consignment returned" if memo else "Sale reversed"
+    return "Consigned" if memo else "Sold"
+
+
 def _lifecycle_rows_spec(e: dict, currency: str | None = None) -> list[tuple[FT, str, str]] | None:
-    """For split/transform/merge events, return [(event_content, detail, anchor_suffix), ...]
-    with linked SKUs in the requested style. Returns None for non-lifecycle events (or legacy
-    rows lacking the enriched payload) so the caller falls back to generic rendering."""
+    """For split/transform/merge events and doc-tied item events, return
+    [(event_content, detail, anchor_suffix), ...] with linked SKUs/doc-numbers in the
+    requested style. Returns None for non-lifecycle events (or legacy rows lacking the
+    enriched payload) so the caller falls back to generic rendering."""
     etype = str(e.get("event_type") or "")
     data = e.get("data") or {}
     if not isinstance(data, dict):
         return None
+
+    # Doc-tied item events: show a linkable doc number (sold/consigned/fulfilled/reversed).
+    if etype in ("item.fulfilled", "item.fulfillment_reversed"):
+        doc_id = data.get("source_doc_id")
+        if not doc_id:
+            return None
+        reversed_ = etype == "item.fulfillment_reversed"
+        content = Span(f"{_fulfil_verb(data.get('doc_type'), reversed_)} ",
+                       _doc_link(doc_id, data.get("doc_number")))
+        qty = data.get("quantity_restored") if reversed_ else data.get("quantity_fulfilled")
+        detail = f"Qty: {fmt_qty(qty)}" if qty is not None else ""
+        return [(content, detail, "")]
+    if etype == "item.status.set" and data.get("source_doc_id"):
+        status = str(data.get("new_status") or "")
+        verb = {"sold": "Sold", "memo_out": "Consigned"}.get(status, (status.replace("_", " ").title() or "Status"))
+        content = Span(f"{verb} ", _doc_link(data.get("source_doc_id"), data.get("doc_number")))
+        return [(content, "", "")]
 
     if etype == "item.split":
         children = data.get("children_detail") or []
