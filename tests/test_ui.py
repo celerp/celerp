@@ -2396,6 +2396,23 @@ class TestPhase2DeepPolish:
         assert b"Back to inventory" in r.content
 
     @pytest.mark.asyncio
+    async def test_item_history_page_renders_with_pagination(self, ui_client):
+        """H7: full paginated item history page (the Activity tab's 'see all' surface)."""
+        events = [{"id": i, "event_type": "item.created", "entity_id": "gc:123",
+                   "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "S", "name": "n"}}
+                  for i in range(50)]
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value=_ITEM)),
+            patch("ui.api_client.get_company", new=AsyncMock(return_value=_COMPANY)),
+            patch("ui.api_client.list_ledger", new=AsyncMock(return_value={"items": events, "total": 120})),
+        ):
+            r = await ui_client.get("/inventory/gc:123/history", cookies=_authed())
+        assert r.status_code == 200
+        assert b"Ruby" in r.content and b"Back to item" in r.content
+        # total 120 > per_page 50 -> pager with a page-2 link.
+        assert b"page=2" in r.content
+
+    @pytest.mark.asyncio
     async def test_crm_contact_field_patch(self, ui_client):
         contact = {**_CONTACTS[0], "address": "x", "payment_terms": "Net 30"}
         updated = {**contact, "phone": "999"}

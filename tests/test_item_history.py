@@ -245,6 +245,14 @@ async def test_bulk_transfer_records_from_to(client):
     assert ev["data"]["from_location_name"] == "A" and ev["data"]["to_location_name"] == "B"
 
 
+def test_activity_table_see_all_footer_link():
+    # H7: when more events exist than are shown, the footer links to the full-history page.
+    evs = [{"id": i, "event_type": "item.created", "entity_id": "item:x",
+            "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "S", "name": "n"}} for i in range(5)]
+    html = to_xml(activity_table(evs, max_display=2, history_url="/inventory/item:x/history"))
+    assert "/inventory/item:x/history" in html and "Showing last" in html
+
+
 def test_transfer_detail_degrades_gracefully():
     # No source (e.g. item had no location) -> "-> to".
     assert detail_from_entry({"to_location_name": "B"}, "item.transferred") == "→ B"
