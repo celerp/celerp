@@ -1,0 +1,85 @@
+name: Bug Report
+description: Report a bug to help us improve Celerp
+title: "Bug: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        **Have a question or feature request?** Please use
+        [Discussions](https://github.com/celerp/celerp/discussions) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Celerp version
+      description: Shown under Settings, or in the title bar. Pre-filled when you open this from inside the app.
+      placeholder: e.g. 1.2.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Pre-filled when you open this from inside the app.
+      placeholder: e.g. macOS 14.4, Windows 11, Ubuntu 22.04
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Installation method
+      options:
+        - .dmg (macOS)
+        - .exe (Windows)
+        - AppImage (Linux)
+        - pip
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (if applicable)
+      description: >
+        Desktop app log locations -
+        macOS: `~/Library/Application Support/celerp/celerp-data/logs/` ·
+        Windows: `%APPDATA%\celerp\celerp-data\logs\` ·
+        Linux: `~/.config/celerp/celerp-data/logs/`.
+        Attach `api.log` and/or `ui.log` if relevant. For pip installs, paste any relevant terminal output.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: anything_else
+    attributes:
+      label: Anything else?
+      description: Screenshots, context, or anything else that helps.
+    validations:
+      required: false
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for reporting! If you find Celerp useful, consider giving us a
+        ⭐ on [GitHub](https://github.com/celerp/celerp).

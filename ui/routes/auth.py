@@ -663,7 +663,8 @@ def _direct_connection_gate(email: str, password: str) -> FT:
     subscribe_url = "https://celerp.com/subscribe"
     try:
         from celerp.config import ensure_instance_id
-        subscribe_url += f"?instance_id={ensure_instance_id()}#cloud"
+        from celerp.gateway.state import build_subscribe_url
+        subscribe_url = build_subscribe_url(ensure_instance_id(), "cloud")
     except Exception:
         pass
 
@@ -779,8 +780,9 @@ def _forgot_password_sent() -> FT:
 def _forgot_password_cli() -> FT:
     """Forgot-password page for self-hosted installs without email transport."""
     from celerp.config import ensure_instance_id
+    from celerp.gateway.state import build_subscribe_url
     iid = ensure_instance_id()
-    subscribe_url = f"https://celerp.com/subscribe?instance_id={iid}#cloud"
+    subscribe_url = build_subscribe_url(iid, "cloud")
     return Div(
         Div(
             Img(src="/static/logo.png", alt="Celerp", cls="auth-logo"),

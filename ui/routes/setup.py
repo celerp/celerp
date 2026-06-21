@@ -594,11 +594,9 @@ def _activating_form(lang: str = "en") -> FT:
 
 def _cloud_form() -> FT:
     from celerp.config import settings
+    from celerp.gateway.state import build_subscribe_url
     iid = settings.gateway_instance_id
-    subscribe_url = "https://celerp.com/subscribe"
-    if iid:
-        subscribe_url += f"?instance_id={iid}"
-    subscribe_url += "#cloud"
+    subscribe_url = build_subscribe_url(iid, "cloud")
 
     pricing_url = "https://celerp.com/pricing"
 

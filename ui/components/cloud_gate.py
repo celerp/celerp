@@ -9,23 +9,15 @@ Keeps all subscribe CTA copy and styling in one place (DRY).
 
 from __future__ import annotations
 
-from urllib.parse import urlencode
-
 from fasthtml.common import *
 from ui.i18n import t, get_lang
-
-_SUBSCRIBE_BASE = "https://celerp.com/subscribe"
 
 
 def _subscribe_url(anchor: str = "") -> str:
     """Build subscribe URL with instance_id passthrough if available."""
     from celerp.config import ensure_instance_id
-    base = _SUBSCRIBE_BASE
-    iid = ensure_instance_id()
-    base += "?" + urlencode({"instance_id": iid})
-    if anchor:
-        base += f"#{anchor}"
-    return base
+    from celerp.gateway.state import build_subscribe_url
+    return build_subscribe_url(ensure_instance_id(), anchor)
 
 
 def upgrade_banner(

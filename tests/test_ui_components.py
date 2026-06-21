@@ -8,7 +8,11 @@ from __future__ import annotations
 import os
 os.environ.setdefault("ALLOW_INSECURE_JWT", "true")
 
-from ui.components.cloud_gate import _SUBSCRIBE_BASE, cloud_gate, upgrade_banner
+from ui.components.cloud_gate import cloud_gate, upgrade_banner
+
+# The subscribe URL base — the helper now lives in celerp.gateway.state and the link
+# carries instance_id + UTM params, but the href still starts with this base.
+_SUBSCRIBE_BASE = "https://celerp.com/subscribe"
 
 
 def _render(ft) -> str:

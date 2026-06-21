@@ -65,7 +65,8 @@ def _plan_card(name: str, price: str, desc: str, bullets: list[str], subscribe_u
 
 def _value_prop_page(iid: str, lang: str = "en") -> FT:
     """Full value-proposition landing page shown when not connected to cloud."""
-    subscribe_base = f"https://celerp.com/subscribe?instance_id={iid}"
+    from celerp.gateway.state import build_subscribe_url
+    subscribe_base = build_subscribe_url(iid)
 
     return Div(
         # Hero - explain the relay concept simply
