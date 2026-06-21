@@ -6,7 +6,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from fasthtml.common import *
 
@@ -807,6 +807,50 @@ def base_shell(*content, title: str = "Celerp", nav_active: str = "", companies:
     )
 
 
+_BUG_REPORT_URL: str | None = None
+
+
+def _bug_report_url() -> str:
+    """GitHub 'new issue' link with the Environment section pre-filled (Celerp version
+    and the host OS) so reports arrive with the two fields users most often leave out.
+
+    Built once per process - the version and OS don't change at runtime. The body mirrors
+    the bug_report.md template; we pass it inline (instead of ?template=) because GitHub
+    ignores body prefill when a template is selected.
+    """
+    global _BUG_REPORT_URL
+    if _BUG_REPORT_URL is None:
+        import platform
+        try:
+            from celerp import __version__ as ver
+        except Exception:
+            ver = "unknown"
+        system = platform.system()
+        if system == "Darwin":
+            osname = f"macOS {platform.mac_ver()[0]}".strip()
+        elif system == "Windows":
+            osname = f"Windows {platform.release()}".strip()
+        else:
+            osname = f"{system} {platform.release()}".strip() or platform.platform()
+        body = (
+            "## Environment\n"
+            f"- **Celerp version:** {ver}\n"
+            f"- **OS:** {osname}\n"
+            "- **Installation method:** [e.g. .dmg, .exe, AppImage, pip]\n\n"
+            "## Steps to Reproduce\n1. \n2. \n3. \n\n"
+            "## Expected Behavior\n\n\n"
+            "## Actual Behavior\n\n\n"
+            "## Screenshots (if applicable)\n\n\n"
+            "## Logs (if applicable)\n"
+            "<!-- Desktop logs: macOS ~/Library/Application Support/celerp/celerp-data/logs/ - "
+            "Windows %APPDATA%\\celerp\\celerp-data\\logs\\ - "
+            "Linux ~/.config/celerp/celerp-data/logs/ -->\n"
+        )
+        qs = urlencode({"title": "Bug: ", "labels": "bug,triage", "body": body})
+        _BUG_REPORT_URL = f"https://github.com/celerp/celerp/issues/new?{qs}"
+    return _BUG_REPORT_URL
+
+
 def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = None, relay_info: dict | None = None) -> FT:
     """Top bar with hamburger toggle, global search, and optional company switcher."""
     parts: list[FT] = [
@@ -927,6 +971,13 @@ def _topbar(companies: list[dict], lang: str = "en", user_email: str | None = No
                 ),
                 # Dropdown
                 Div(
+                    A(
+                        "🐞 " + t("nav.report_bug", lang, default="Report a bug"),
+                        href=_bug_report_url(),
+                        target="_blank",
+                        rel="noopener",
+                        cls="user-menu__item",
+                    ),
                     A(
                         "⎋ " + t("nav.logout", lang),
                         href="/logout",
