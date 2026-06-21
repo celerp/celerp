@@ -73,6 +73,13 @@ class MaxBodySizeMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Bulk file/cert import legitimately uploads a large ZIP (many small files);
+        # exempt it from the body cap. It's bounded instead by the WS tunnel frame
+        # size and the per-file 50 MB limit in store_upload().
+        if scope.get("path", "").endswith(("/items/files/bulk", "/items/attachments/bulk")):
+            await self.app(scope, receive, send)
+            return
+
         headers = dict(scope.get("headers", []))
         cl = headers.get(b"content-length")
         if cl is not None:

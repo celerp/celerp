@@ -130,7 +130,13 @@ class GatewayClient:
         # ConnectionClosed within ~ping_interval+ping_timeout, so _connect_and_serve
         # exits and run()'s backoff loop reconnects — instead of blocking forever on
         # a half-open socket while the relay returns 502.
-        async with websockets.connect(self._url, ping_interval=20, ping_timeout=20) as ws:
+        # max_size: the relay forwards each proxied HTTP request as ONE base64'd WS
+        # message, so the default 1 MiB frame cap silently broke bulk uploads (a ZIP
+        # body > ~750 KB overflowed the frame → connection drop → relay 504). 160 MiB
+        # covers a ~100 MB body (≈134 MB base64) with margin.
+        async with websockets.connect(
+            self._url, ping_interval=20, ping_timeout=20, max_size=160 * 1024 * 1024
+        ) as ws:
             self._ws = ws
             # Read current TOS version from config
             from celerp.config import read_config
@@ -296,7 +302,7 @@ class GatewayClient:
             url = f"{url}?{query}"
 
         try:
-            async with httpx.AsyncClient(timeout=25.0) as client:
+            async with httpx.AsyncClient(timeout=180.0) as client:
                 resp = await client.request(
                     method=method,
                     url=url,

@@ -550,7 +550,8 @@ async def delete_attachment(token: str, entity_id: str, att_id: str) -> None:
 
 
 async def bulk_attach(token: str, file, override_hero: bool = False) -> dict:
-    async with _api_client(token) as c:
+    # Large ZIP upload + per-file processing can take well over the default 10s.
+    async with _api_client(token, timeout=180.0) as c:
         content = await file.read() if hasattr(file, "read") else file.file.read()
         filename = getattr(file, "filename", "attachments.zip")
         params = {"override_hero": "1"} if override_hero else {}
