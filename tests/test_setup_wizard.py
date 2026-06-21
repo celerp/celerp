@@ -540,6 +540,20 @@ class TestLoadVerticals:
             result = setup_mod._load_verticals()
         assert result[-1][0] == "blank", "blank must be last"
 
+    def test_hidden_preset_excluded(self, tmp_path):
+        """A preset flagged 'hidden': true is not offered in the picker."""
+        presets_dir = self._make_presets_dir(tmp_path, [
+            {"name": "gemstones", "display_name": "Gems & Jewelry"},
+            {"name": "property_rental", "display_name": "Property Rental", "hidden": True},
+            {"name": "blank", "display_name": "Blank"},
+        ])
+        import ui.routes.setup as setup_mod
+        with patch.object(setup_mod, "_PRESETS_DIR", presets_dir):
+            result = setup_mod._load_verticals()
+        names = [n for n, _ in result]
+        assert "property_rental" not in names, "hidden preset must be excluded"
+        assert "gemstones" in names
+
     def test_non_blank_alphabetically_sorted(self, tmp_path):
         presets_dir = self._make_presets_dir(tmp_path, [
             {"name": "watches", "display_name": "Watches"},

@@ -71,6 +71,8 @@ def _load_verticals() -> list[tuple[str, str]]:
     """Load vertical options from preset files. Returns [(value, label), ...].
 
     'blank' preset sorts last. All others sort alphabetically by display_name.
+    Presets flagged "hidden": true are skipped — used to stage a vertical that the
+    product can't yet honestly support (see the preset's "hidden_reason").
     """
     pinned_last: list[tuple[str, str]] = []
     options: list[tuple[str, str]] = []
@@ -78,6 +80,8 @@ def _load_verticals() -> list[tuple[str, str]]:
         for p in sorted(_PRESETS_DIR.glob("*.json")):
             try:
                 data = json.loads(p.read_text())
+                if data.get("hidden"):
+                    continue
                 entry = (data["name"], data["display_name"])
                 if data["name"] == "blank":
                     pinned_last.append(entry)

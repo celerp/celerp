@@ -1,6 +1,8 @@
 {
   "name": "property_rental",
   "display_name": "Property Rental",
+  "hidden": true,
+  "hidden_reason": "Rental units are persistent assets with leases and occupancy over time, not goods-inventory items sold to zero. Honestly supporting this needs a dedicated rental module (Unit/Lease entities on the shared event store), not the inventory model. See context/2026-0621-property-rental-vertical-analysis.md. Re-enable when that module exists.",
   "license": "MIT",
   "categories": [
     "residential_unit",
