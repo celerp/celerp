@@ -167,7 +167,11 @@ async def cloud_disconnect() -> dict:
 
     gw = _gw.get_client()
     if gw is not None:
-        gw.stop()
+        # Must await close() (not stop()): stop() only flips a flag the run loop
+        # checks between connections, but the loop is blocked in `async for` on
+        # the live socket. close() actually closes the WS, so the relay drops
+        # _connections[instance_id] and the public URL stops serving immediately.
+        await gw.close()
         _gw.set_client(None)
 
     _set_session_token("")  # must clear before touching config (gate reads this)

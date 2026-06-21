@@ -38,6 +38,7 @@ def _mock_gw(relay_status: str = "active") -> MagicMock:
     gw.relay_status = relay_status
     gw.required_tos_version = ""
     gw.stop = MagicMock()
+    gw.close = AsyncMock()
     gw.run = AsyncMock()
     return gw
 
@@ -99,7 +100,9 @@ async def test_cloud_disconnect_stops_client_and_clears_token(client):
 
     assert r.status_code == 200
     assert r.json()["disconnected"] is True
-    gw.stop.assert_called_once()
+    # close() (not stop()) must be awaited so the live WS is actually torn down —
+    # otherwise the relay keeps routing and the public URL stays online.
+    gw.close.assert_awaited_once()
     mock_set.assert_called_once_with(None)
     assert _s.gateway_token == ""
     assert _s.celerp_public_url == ""
