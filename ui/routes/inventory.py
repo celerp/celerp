@@ -1376,7 +1376,7 @@ def setup_routes(app):
 
         from ui.components.activity import activity_table
         table = activity_table(activities, title="", section_cls="",
-                               subject_entity_id=entity_id, currency=currency)
+                               subject_entity_id=entity_id, currency=currency, resizable=True)
         pages = max(1, (total + per_page - 1) // per_page)
         pager = pagination(page, total, per_page, f"/inventory/{entity_id}/history") if pages > 1 else ""
 
@@ -6230,7 +6230,7 @@ def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: st
     from ui.components.activity import activity_table
     history_url = f"/inventory/{entity_id}/history" if entity_id else None
     return activity_table(ledger, max_display=10, subject_entity_id=entity_id,
-                          currency=currency, history_url=history_url)
+                          currency=currency, history_url=history_url, resizable=True)
 
 
 # ---------------------------------------------------------------------------

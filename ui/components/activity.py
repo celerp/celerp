@@ -693,7 +693,8 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
                    max_display: int | None = None,
                    history_url: str | None = None,
                    subject_entity_id: str | None = None,
-                   currency: str | None = None) -> FT:
+                   currency: str | None = None,
+                   resizable: bool = False) -> FT:
     """Unified DRY activity table used by all detail pages and dashboard.
 
     Columns: Event (linked to entity) | When (timestamp) | User | Details
@@ -792,13 +793,28 @@ def activity_table(ledger: list[dict], *, title: str = "Recent Activity",
     else:
         footer = ""
 
+    table = Table(
+        Thead(Tr(
+            Th(t("th.event"), cls="col-event"),
+            Th(t("th.when"), cls="col-when"),
+            Th(t("th.user"), cls="col-user"),
+            Th(t("th.details"), cls="col-details"),
+        )),
+        Tbody(*display_rows),
+        cls="data-table activity-table",
+        **({"style": "table-layout:fixed;width:100%"} if resizable else {}),
+    )
+    # Drag-to-resize columns, reusing the shared resizer + width persistence (opt-in so the
+    # compact dashboard/contacts/doc activity widgets keep their auto layout).
+    resizer = ""
+    if resizable:
+        from ui.components.table import col_resize_script
+        resizer = col_resize_script("table.activity-table", "celerp_activity_wpct_v1")
+
     return Div(
         Div(*header_parts, cls="section-header") if icon else H3(title, cls="section-title"),
-        Table(
-            Thead(Tr(Th(t("th.event")), Th(t("th.when")), Th(t("th.user")), Th(t("th.details")))),
-            Tbody(*display_rows),
-            cls="data-table",
-        ),
+        table,
         footer,
+        resizer,
         cls=section_cls,
     )

@@ -245,6 +245,18 @@ async def test_bulk_transfer_records_from_to(client):
     assert ev["data"]["from_location_name"] == "A" and ev["data"]["to_location_name"] == "B"
 
 
+def test_activity_table_resizable_opt_in():
+    # H10: resizable=True wires the shared col-resize script + fixed layout; default keeps
+    # the compact auto-layout (so dashboard/contacts/doc widgets are unaffected).
+    evs = [{"id": 1, "event_type": "item.created", "entity_id": "item:x",
+            "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "S", "name": "n"}}]
+    on = to_xml(activity_table(evs, resizable=True))
+    assert "col-resize-handle" in on and "table-layout:fixed" in on and "celerp_activity_wpct_v1" in on
+    assert 'class="col-event"' in on
+    off = to_xml(activity_table(evs))
+    assert "col-resize-handle" not in off and "table-layout:fixed" not in off
+
+
 def test_activity_table_see_all_footer_link():
     # H7: when more events exist than are shown, the footer links to the full-history page.
     evs = [{"id": i, "event_type": "item.created", "entity_id": "item:x",
