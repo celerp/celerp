@@ -289,6 +289,10 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--c-border);
   table-layout: auto;
 }
+/* Activity/history feed tables fill their container instead of shrinking to content
+   width (the base .data-table uses width:max-content). Overrides the cascade since the
+   table carries both classes (data-table activity-table). */
+.activity-table { width: 100%; }
 .data-table thead { background: var(--c-bg3); }
 .data-table th {
   padding: 8px 10px; text-align: center; font-weight: 600; font-size: 11px;

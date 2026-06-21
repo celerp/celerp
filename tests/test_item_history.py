@@ -245,6 +245,20 @@ async def test_bulk_transfer_records_from_to(client):
     assert ev["data"]["from_location_name"] == "A" and ev["data"]["to_location_name"] == "B"
 
 
+def test_activity_table_full_width_css():
+    # Issue 1: the activity/recent-activity feed must fill its container, not shrink to
+    # content width. (a) the table carries the class the CSS targets; (b) the rule exists
+    # and wins the cascade (declared after .data-table's width:max-content).
+    import pathlib, re
+    evs = [{"id": 1, "event_type": "item.created", "entity_id": "item:x",
+            "ts": "2026-06-21T10:00:00+00:00", "data": {"sku": "S", "name": "n"}}]
+    assert "activity-table" in to_xml(activity_table(evs))
+    css = pathlib.Path("ui/static/app.css").read_text()
+    base = css.index("width: max-content")
+    rule = re.search(r"\.activity-table\s*\{[^}]*width:\s*100%", css)
+    assert rule and rule.start() > base, "activity-table width:100% must follow data-table max-content"
+
+
 def test_activity_table_resizable_opt_in():
     # H10: resizable=True wires the shared col-resize script + fixed layout; default keeps
     # the compact auto-layout (so dashboard/contacts/doc widgets are unaffected).
