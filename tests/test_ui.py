@@ -3764,8 +3764,8 @@ class TestSprint5ItemActions:
     @pytest.mark.asyncio
     async def test_split_item_route_accepts_single_child(self, ui_client):
         captured = {}
-        async def _mock(token, entity_id, children):
-            captured['children'] = children
+        async def _mock(token, entity_id, payload):
+            captured['payload'] = payload
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
@@ -3774,8 +3774,36 @@ class TestSprint5ItemActions:
         ):
             r = await ui_client.post("/api/items/gc:123/split", data={"parts": "3"}, cookies=_authed())
         assert r.status_code == 204
-        assert len(captured['children']) == 1
-        assert captured['children'][0]["quantity"] == 3.0
+        children = captured['payload']["children"]
+        assert len(children) == 1
+        assert children[0]["quantity"] == 3.0
+
+    @pytest.mark.asyncio
+    async def test_split_item_route_sends_splitbody_object(self, ui_client):
+        """The item-page split window must send the API a SplitBody OBJECT
+        ({"children": [...]}), not a bare list — a list is rejected by the split
+        endpoint with a model_attributes_type error ("Input should be a valid
+        dictionary or object")."""
+        captured = {}
+        async def _mock(token, entity_id, payload):
+            captured['payload'] = payload
+            return {"event_id": "e1"}
+        with (
+            patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "PARENT-001", "quantity": 10})),
+            patch("ui.api_client.list_items", new=AsyncMock(return_value={"items": [], "total": 0})),
+            patch("ui.api_client.split_item", new=_mock),
+        ):
+            r = await ui_client.post(
+                "/api/items/gc:123/split",
+                json={"children": [{"sku": "SKU", "quantity": 3.0, "pieces": 3}]},
+                cookies=_authed(),
+            )
+        assert r.status_code == 204, r.text
+        payload = captured['payload']
+        assert isinstance(payload, dict), (
+            f"split_item must receive a SplitBody object, got {type(payload).__name__}: {payload!r}"
+        )
+        assert isinstance(payload.get("children"), list) and len(payload["children"]) == 1
 
     @pytest.mark.asyncio
     async def test_split_item_route_invalid_quantities(self, ui_client):
@@ -4300,8 +4328,8 @@ class TestItemActionRouteCompleteness:
     @pytest.mark.asyncio
     async def test_split_passes_correct_quantity_count(self, ui_client):
         captured = {}
-        async def _mock(token, entity_id, children):
-            captured.update({"children": children})
+        async def _mock(token, entity_id, payload):
+            captured.update({"payload": payload})
             return {"event_id": "e1"}
         with (
             patch("ui.api_client.get_item", new=AsyncMock(return_value={"sku": "P-001", "quantity": 20})),
@@ -4309,8 +4337,9 @@ class TestItemActionRouteCompleteness:
             patch("ui.api_client.split_item", new=_mock),
         ):
             await ui_client.post("/api/items/gc:123/split", data={"parts": "5,3,2"}, cookies=_authed())
-        assert len(captured["children"]) == 3
-        assert sorted(c["quantity"] for c in captured["children"]) == [2.0, 3.0, 5.0]
+        children = captured["payload"]["children"]
+        assert len(children) == 3
+        assert sorted(c["quantity"] for c in children) == [2.0, 3.0, 5.0]
 
     # ── merge (additional coverage) ──────────────────────────────────────────
 
@@ -4369,8 +4398,8 @@ class TestBatchSplit:
         """Valid batch split (qty=1, count=5, total=5 ≤ 10) must redirect to filtered inventory."""
         split_calls = []
 
-        async def mock_split(token, entity_id, children):
-            split_calls.append(children)
+        async def mock_split(token, entity_id, payload):
+            split_calls.append(payload)
             return {}
 
         with (
@@ -4388,9 +4417,10 @@ class TestBatchSplit:
         assert r.status_code == 204
         assert "HX-Redirect" in r.headers
         assert "skus=" in r.headers["HX-Redirect"]
-        # Must have generated 5 children
+        # Must have generated 5 children, sent as a SplitBody object.
         assert len(split_calls) == 1
-        assert len(split_calls[0]) == 5
+        assert isinstance(split_calls[0], dict)
+        assert len(split_calls[0]["children"]) == 5
 
     @pytest.mark.asyncio
     async def test_batch_split_total_exceeds_available_rejected(self, ui_client):
