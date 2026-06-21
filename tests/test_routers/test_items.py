@@ -556,6 +556,74 @@ async def test_split_blocked_when_allow_splitting_false(client):
 
 
 @pytest.mark.asyncio
+async def test_split_blocked_when_allow_splitting_field_missing(client, session):
+    """A missing/None allow_splitting must NOT bypass the split guard — only an
+    explicit True allows splitting. Simulate an item whose projection state lacks
+    the field (as older imports produced) by removing it before splitting.
+    """
+    from celerp.models.projections import Projection
+    from sqlalchemy import select
+
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+    r = await client.post("/items", json={"sku": "MISSING-SPLIT", "name": "Item", "quantity": 10, "sell_by": "piece"}, headers=h)
+    assert r.status_code == 200
+    item_id = r.json()["id"]
+
+    # Remove allow_splitting from the item's projection state (manual edit).
+    row = (await session.execute(select(Projection).where(Projection.entity_id == item_id))).scalar_one()
+    new_state = dict(row.state)
+    new_state.pop("allow_splitting", None)
+    row.state = new_state
+    await session.commit()
+
+    item = (await client.get(f"/items/{item_id}", headers=h)).json()
+    assert item.get("allow_splitting") is None, f"field should be gone, got {item.get('allow_splitting')!r}"
+
+    rs = await client.post(f"/items/{item_id}/split", json={
+        "children": [{"sku": "MISSING-SPLIT-1", "quantity": 3}]
+    }, headers=h)
+    assert rs.status_code == 422, f"missing allow_splitting must block split, got {rs.status_code}: {rs.text}"
+    assert "Allow Splitting" in rs.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_import_defaults_no_split_and_coerces_present_value(client):
+    """Imported items default to no-split (allow_splitting=False) when the field is
+    absent, and a present CSV value ("Yes"/"No") is coerced to a real bool."""
+    token = await _token(client)
+    h = {"Authorization": f"Bearer {token}"}
+
+    # (1) Import WITHOUT allow_splitting → defaults to False → split blocked.
+    eid1 = "item:imp-nofield"
+    r = await client.post("/items/import/batch", json={"records": [{
+        "entity_id": eid1, "event_type": "item.created", "source": "csv",
+        "idempotency_key": "imp-nofield",
+        "data": {"sku": "IMP-NF-001", "name": "Imported NoField", "sell_by": "piece", "quantity": 10},
+    }]}, headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["created"] == 1, r.json()
+    item1 = (await client.get(f"/items/{eid1}", headers=h)).json()
+    assert item1.get("allow_splitting") is False, item1.get("allow_splitting")
+    rs1 = await client.post(f"/items/{eid1}/split", json={"children": [{"sku": "IMP-NF-001-1", "quantity": 3}]}, headers=h)
+    assert rs1.status_code == 422, rs1.text
+
+    # (2) Import WITH allow_splitting="Yes" → coerced to True → splittable.
+    eid2 = "item:imp-yes"
+    r = await client.post("/items/import/batch", json={"records": [{
+        "entity_id": eid2, "event_type": "item.created", "source": "csv",
+        "idempotency_key": "imp-yes",
+        "data": {"sku": "IMP-Y-001", "name": "Imported Yes", "sell_by": "piece",
+                 "quantity": 10, "allow_splitting": "Yes"},
+    }]}, headers=h)
+    assert r.status_code == 200, r.text
+    item2 = (await client.get(f"/items/{eid2}", headers=h)).json()
+    assert item2.get("allow_splitting") is True, item2.get("allow_splitting")
+    rs2 = await client.post(f"/items/{eid2}/split", json={"children": [{"sku": "IMP-Y-001-1", "quantity": 3}]}, headers=h)
+    assert rs2.status_code == 200, rs2.text
+
+
+@pytest.mark.asyncio
 async def test_split_allowed_when_allow_splitting_true(client):
     """Split must succeed when allow_splitting is explicitly True."""
     token = await _token(client)
