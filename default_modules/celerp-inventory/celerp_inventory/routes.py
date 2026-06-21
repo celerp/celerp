@@ -2034,6 +2034,12 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
 
     # Apply user overrides.
     resulting_qty = payload.resulting_quantity if payload.resulting_quantity is not None else total_qty
+    # Truncate float-summation noise to the sell unit's precision (e.g. 0.1 + 0.2 -> 0.3, not
+    # 0.30000000000000004). All sources share one sell_by (validated above).
+    _common_sell_by = next(iter(sell_units), "") or str(target_proj.state.get("sell_by") or "")
+    _qty_dp = {u["name"]: u for u in await _get_company_units(session, company_id)}.get(_common_sell_by, {}).get("decimals")
+    if _qty_dp is not None:
+        resulting_qty = round(float(resulting_qty), _qty_dp)
     resulting_cost = payload.resulting_cost_total if payload.resulting_cost_total is not None else merged_cost_total
     resulting_name = payload.resulting_name if payload.resulting_name is not None else str(target_proj.state.get("name") or "")
 
@@ -2079,6 +2085,46 @@ async def merge_items(payload: MergeBody, company_id=Depends(get_current_company
         idempotency_key=payload.idempotency_key or str(uuid.uuid4()),
         metadata_={"merged_from": payload.source_entity_ids},
     )
+
+    # Carry attached files from every source onto the merged item (dedup by id; keep one hero)
+    # so merging never drops attachments.
+    from datetime import datetime as _dt, timezone as _tz
+    _seen_files: set[str] = set()
+    _hero_used = False
+    for proj in source_projections:
+        for f in (proj.state.get("files") or []):
+            fid = f.get("id")
+            if not fid or fid in _seen_files:
+                continue
+            _seen_files.add(fid)
+            is_hero = bool(f.get("is_hero")) and not _hero_used
+            if is_hero:
+                _hero_used = True
+            await emit_event(
+                session,
+                company_id=company_id,
+                entity_id=new_entity_id,
+                entity_type="item",
+                event_type="item.file.attached",
+                data={
+                    "entity_id": new_entity_id,
+                    "entity_type": "item",
+                    "file_id": fid,
+                    "filename": f.get("filename", ""),
+                    "mime": f.get("mime", ""),
+                    "size": f.get("size", 0),
+                    "url": f.get("url", ""),
+                    "document_tag": f.get("document_tag"),
+                    "description": f.get("description"),
+                    "uploaded_at": f.get("uploaded_at") or _dt.now(_tz.utc).isoformat(),
+                    "is_hero": is_hero,
+                },
+                actor_id=user.id,
+                location_id=None,
+                source="api",
+                idempotency_key=str(uuid.uuid4()),
+                metadata_={"reason": "from_merge"},
+            )
 
     # Emit pricing events for all price fields from target; emit cost_total (not cost_price) for cost.
     price_fields: dict = {}
