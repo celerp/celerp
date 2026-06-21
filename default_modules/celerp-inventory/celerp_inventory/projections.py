@@ -227,8 +227,14 @@ def apply_item_event(state: dict, event_type: str, data: dict) -> dict:
         # Parent stays available with reduced qty (qty reduction via item.quantity.adjusted)
         current["children"] = data.get("child_ids", [])
         current["child_skus"] = data.get("child_skus", [])
+    elif event_type == "item.split_from":
+        # Origin marker on the child: state comes from item.created. History-only.
+        current["split_from"] = data.get("parent_id")
     elif event_type == "item.transform":
         current["transformed_into"] = data.get("child_id")
+    elif event_type == "item.transformed_from":
+        # Origin marker on the child: state comes from item.created. History-only.
+        current["transformed_from"] = data.get("parent_id")
     elif event_type == "item.merged":
         # No-op: marker event only. Real state is set by item.created on the new item.
         pass

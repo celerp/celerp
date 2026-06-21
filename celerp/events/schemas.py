@@ -103,9 +103,24 @@ class ItemExpired(BaseModel):
 
 
 class ItemSplit(BaseModel):
+    # Aggregate marker on the MOTHER. The projection consumes child_ids/child_skus;
+    # children_detail drives the per-child history rows (one row per child).
     child_ids: list[str]
     child_skus: list[str] = Field(default_factory=list)
     quantities: list[float]
+    parent_sku: str | None = None
+    # One entry per child: {child_id, child_sku, origin_event_id, qty_before, qty_after,
+    # pieces_before, pieces_after, weight_before, weight_after}. Sequential mother deltas.
+    children_detail: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ItemSplitFrom(BaseModel):
+    """Origin marker on the CHILD created by a split. The child's "first entry"."""
+    parent_id: str
+    parent_sku: str
+    qty: float
+    pieces: float | None = None
+    weight: float | None = None
 
 
 class ItemTransform(BaseModel):
@@ -114,6 +129,24 @@ class ItemTransform(BaseModel):
     child_category: str
     parent_cost_total: float
     child_cost_total: float
+    parent_sku: str | None = None
+    child_origin_event_id: int | None = None
+    qty_before: float | None = None
+    qty_after: float | None = None
+    pieces_before: float | None = None
+    pieces_after: float | None = None
+    weight_before: float | None = None
+    weight_after: float | None = None
+
+
+class ItemTransformedFrom(BaseModel):
+    """Origin marker on the CHILD created by a transform. The child's "first entry"."""
+    parent_id: str
+    parent_sku: str
+    qty: float
+    category: str
+    pieces: float | None = None
+    weight: float | None = None
 
 
 class ItemMerged(BaseModel):
@@ -885,7 +918,9 @@ EVENT_SCHEMA_MAP: dict[str, type[BaseModel]] = {
     "item.fulfillment_reversed": ItemFulfillmentReversed,
     "item.expired": ItemExpired,
     "item.split": ItemSplit,
+    "item.split_from": ItemSplitFrom,
     "item.transform": ItemTransform,
+    "item.transformed_from": ItemTransformedFrom,
     "item.merged": ItemMerged,
     "item.source_deactivated": ItemSourceDeactivated,
     "item.patched": ItemPatched,

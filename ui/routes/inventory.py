@@ -6011,7 +6011,7 @@ def _item_detail_tabs(
         )
     elif active_tab == "activity":
         panel = Div(
-            _ledger_table(ledger),
+            _ledger_table(ledger, entity_id=entity_id, currency=currency),
             cls="detail-grid detail-grid--single",
         )
     else:
@@ -6181,9 +6181,9 @@ def _detail_table(entity_id: str, item: dict, fields: list[dict], title: str = "
     )
 
 
-def _ledger_table(ledger: list[dict]) -> FT:
+def _ledger_table(ledger: list[dict], entity_id: str | None = None, currency: str | None = None) -> FT:
     from ui.components.activity import activity_table
-    return activity_table(ledger, max_display=10)
+    return activity_table(ledger, max_display=10, subject_entity_id=entity_id, currency=currency)
 
 
 # ---------------------------------------------------------------------------
