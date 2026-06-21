@@ -1,6 +1,8 @@
 {
   "name": "property_rental",
   "display_name": "Property Rental",
+  "hidden": true,
+  "hidden_reason": "Disabled pending the property rental v1 (leases, occupancy, deposits, rent-roll). Remove this flag to re-enable.",
   "license": "MIT",
   "categories": [
     "residential_unit",
