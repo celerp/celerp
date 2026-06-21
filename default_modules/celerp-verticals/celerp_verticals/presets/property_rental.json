@@ -2,7 +2,7 @@
   "name": "property_rental",
   "display_name": "Property Rental",
   "hidden": true,
-  "hidden_reason": "A lease is a recurring billing agreement over a term, which today's recurring-invoice schedule almost models but lacks (no term end-date, asset link, or deposit), and occupancy/rent-roll reporting doesn't exist yet. Not a new module - a small shared 'Agreement' extension + derived occupancy reports. See context/2026-0621-saas-property-verticals-market-readiness.md. Re-enable when that v1 lands.",
+  "hidden_reason": "Disabled pending the property rental v1 (leases, occupancy, deposits, rent-roll). Remove this flag to re-enable.",
   "license": "MIT",
   "categories": [
     "residential_unit",
